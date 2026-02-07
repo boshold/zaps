@@ -1,0 +1,27 @@
+{
+  "name": "zaps",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "zaps": "./src/cli.tsx"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "bun build src/cli.tsx --compile --outfile dist/zaps",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^12.1.0",
+    "ink": "^6.7.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "ink-testing-library": "^4.0.0",
+    "react-devtools-core": "^7.0.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
