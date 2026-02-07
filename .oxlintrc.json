@@ -55,7 +55,9 @@
       "files": ["**/*.{test,spec}.{ts,tsx,js,jsx}", "**/test/**", "**/__tests__/**"],
       "rules": {
         "typescript/no-explicit-any": "off",
-        "import/no-relative-parent-imports": "off"
+        "import/no-relative-parent-imports": "off",
+        "import/first": "off",
+        "typescript/no-unsafe-type-assertion": "off"
       }
     },
     {
