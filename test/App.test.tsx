@@ -1,5 +1,6 @@
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
+
 import { App } from "../src/components/App.js";
 
 describe("App", () => {

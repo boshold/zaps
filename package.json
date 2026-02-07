@@ -1,14 +1,16 @@
 {
   "name": "zaps",
   "version": "0.1.0",
-  "type": "module",
   "bin": {
     "zaps": "./src/cli.tsx"
   },
+  "type": "module",
   "scripts": {
     "dev": "tsx src/cli.tsx",
     "build": "bun build src/cli.tsx --compile --outfile dist/zaps",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
+    "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware"
   },
   "dependencies": {
     "chalk": "^5.4.1",
@@ -17,8 +19,12 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
+    "@types/node": "^25.2.3",
     "@types/react": "^19.0.0",
     "ink-testing-library": "^4.0.0",
+    "oxfmt": "^0.31.0",
+    "oxlint": "^1.46.0",
+    "oxlint-tsgolint": "^0.12.0",
     "react-devtools-core": "^7.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

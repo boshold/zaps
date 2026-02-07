@@ -1,0 +1,68 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "env": {
+    "node": true
+  },
+  "plugins": ["typescript", "unicorn", "oxc", "import", "promise", "node", "react"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "warn",
+    "style": "warn",
+    "pedantic": "off",
+    "nursery": "off",
+    "restriction": "warn"
+  },
+  "rules": {
+    "no-debugger": "error",
+    "no-console": "warn",
+    "no-duplicate-imports": "off",
+    "func-style": "off",
+    "max-params": "off",
+    "max-statements": "off",
+    "max-lines": "off",
+    "sort-keys": "off",
+    "eslint/sort-imports": ["warn", { "ignoreDeclarationSort": true }],
+    "import/no-named-export": "off",
+    "import/no-nodejs-modules": "off",
+    "import/no-relative-parent-imports": "error",
+    "typescript/explicit-module-boundary-types": "off",
+    "import/prefer-default-export": "off",
+    "unicorn/no-null": "off",
+    "unicorn/no-process-exit": "off",
+    "unicorn/prefer-node-protocol": "error",
+    "oxc/no-async-await": "off",
+    "oxc/no-optional-chaining": "off",
+    "oxc/no-rest-spread-properties": "off",
+    "typescript/explicit-function-return-type": "off",
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/no-explicit-any": "warn",
+    "typescript/no-non-null-assertion": "warn",
+    "no-magic-numbers": "off",
+    "no-ternary": "off",
+    "id-length": "off",
+    "import/group-exports": "off",
+    "import/no-default-export": "off",
+    "unicorn/filename-case": "off",
+    "promise/avoid-new": "off",
+    "react/react-in-jsx-scope": "off",
+    "react/jsx-filename-extension": "off"
+  },
+  "overrides": [
+    {
+      "files": ["**/*.{test,spec}.{ts,tsx,js,jsx}", "**/test/**", "**/__tests__/**"],
+      "rules": {
+        "typescript/no-explicit-any": "off",
+        "import/no-relative-parent-imports": "off"
+      }
+    },
+    {
+      "files": ["**/*.d.ts"],
+      "rules": {
+        "typescript/no-explicit-any": "off"
+      }
+    }
+  ]
+}

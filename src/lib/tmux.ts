@@ -1,15 +1,18 @@
 import { spawn } from "node:child_process";
 
-function run(args: string[]): Promise<string> {
+async function run(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("tmux", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d));
-    proc.stderr.on("data", (d) => (stderr += d));
-    proc.on("close", (code) => {
-      if (code === 0) resolve(stdout.trim());
-      else reject(new Error(`tmux ${args.join(" ")} failed: ${stderr.trim()}`));
+    proc.stdout.on("data", (d: Buffer) => (stdout += d));
+    proc.stderr.on("data", (d: Buffer) => (stderr += d));
+    proc.on("close", (code: number | null) => {
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(`tmux ${args.join(" ")} failed: ${stderr.trim()}`));
+      }
     });
   });
 }
@@ -32,9 +35,6 @@ export async function hasSession(name: string): Promise<boolean> {
   }
 }
 
-export async function sendKeys(
-  target: string,
-  keys: string,
-): Promise<void> {
+export async function sendKeys(target: string, keys: string): Promise<void> {
   await run(["send-keys", "-t", target, keys, "Enter"]);
 }
