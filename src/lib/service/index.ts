@@ -9,3 +9,5 @@ export {
   shellEscape,
   setServiceEnv,
 } from "./env.js";
+export { ServiceManager } from "./manager.js";
+export type { ServiceManagerEvents, ServiceManagerDeps } from "./manager.js";
