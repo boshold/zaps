@@ -2,9 +2,6 @@
 import path from "node:path";
 
 import { program } from "commander";
-import { render } from "ink";
-
-import { App } from "./components/App.js";
 import { discoverConfig } from "./config/discovery.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { listSessions } from "./lib/tmux.js";
@@ -15,7 +12,8 @@ program
   .command("ui")
   .description("Launch interactive TUI")
   .action(() => {
-    render(<App />);
+    // TODO: Task 16 will wire up manager, config, paneMap
+    process.stdout.write("TUI not yet wired. Use --internal flag.\n");
   });
 
 program
