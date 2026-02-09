@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx src/cli.tsx",
-    "build": "bun run scripts/build.ts",
+    "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "postinstall": "pnpm build",
     "test": "vitest run",
     "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
