@@ -2,12 +2,13 @@
   "name": "zaps",
   "version": "0.1.0",
   "bin": {
-    "zaps": "./src/cli.tsx"
+    "zaps": "./dist/zaps"
   },
   "type": "module",
   "scripts": {
     "dev": "tsx src/cli.tsx",
-    "build": "bun build src/cli.tsx --compile --outfile dist/zaps",
+    "build": "bun run scripts/build.ts",
+    "postinstall": "pnpm build",
     "test": "vitest run",
     "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
     "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware"

@@ -3,14 +3,11 @@ import path from "node:path";
 
 import type { ServiceManagerDeps } from "./lib/service/manager.js";
 import { program } from "commander";
-import { render } from "ink";
 
-import { App } from "./components/App.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { detectPorts, getDescendantPids } from "./lib/port.js";
-import { ServiceManager } from "./lib/service/manager.js";
 import { createLayout } from "./lib/tmux-layout.js";
 import {
   capturePane,
@@ -66,12 +63,15 @@ program
       // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Serialized by outer process
       const paneMap = JSON.parse(paneMapRaw) as Record<string, string>;
       const deps = buildDeps();
+      const { ServiceManager } = await import("./lib/service/manager.js");
       const manager = new ServiceManager(config, paneMap, deps);
 
       // Start services
       await manager.startAll();
 
-      // Render TUI
+      // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
+      const { render } = await import("ink");
+      const { App } = await import("./components/App.js");
       const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />);
 
       await waitUntilExit();
