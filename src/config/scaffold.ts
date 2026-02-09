@@ -1,16 +1,11 @@
 import fs from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+// Inlined at build time by the textFilePlugin in scripts/build.ts
+import defaultTemplate from "./templates/default.template.txt";
 
 const CONFIG_FILENAMES = [".local.zaps.mts", ".local.zaps.ts", ".zaps.mts", ".zaps.ts"];
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-async function readTemplate(): Promise<string> {
-  const templatePath = path.resolve(__dirname, "templates", "default.template.txt");
-  return readFile(templatePath, "utf8");
-}
 
 async function getZapsPath(): Promise<string> {
   // Try resolving installed zaps path
@@ -22,7 +17,7 @@ async function getZapsPath(): Promise<string> {
  * Generate config template with placeholders replaced.
  */
 export async function generateTemplate(projectName?: string): Promise<string> {
-  const template = await readTemplate();
+  const template = defaultTemplate;
   const zapsPath = await getZapsPath();
   return template
     .replace(/\{\{PROJECT_NAME\}\}/g, projectName ?? "my-project")

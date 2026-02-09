@@ -14,6 +14,16 @@
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
 
+const textFilePlugin: BunPlugin = {
+  name: "text-file",
+  setup(build) {
+    build.onLoad({ filter: /\.txt$/ }, async (args) => ({
+      contents: `export default ${JSON.stringify(await Bun.file(args.path).text())};`,
+      loader: "js",
+    }));
+  },
+};
+
 const tlaFixPlugin: BunPlugin = {
   name: "tla-fix",
   setup(build) {
@@ -60,7 +70,7 @@ const result = await Bun.build({
   target: "bun",
   outdir: "./dist",
   naming: "cli.js",
-  plugins: [tlaFixPlugin],
+  plugins: [textFilePlugin, tlaFixPlugin],
 });
 
 if (!result.success) {
