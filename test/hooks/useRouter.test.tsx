@@ -4,27 +4,6 @@ import { describe, expect, it } from "vitest";
 
 import { useRouter } from "../../src/hooks/useRouter.js";
 
-function TestComponent() {
-  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
-
-  return (
-    <>
-      <Text>view:{view}</Text>
-      <Text>logTarget:{logTarget ?? "null"}</Text>
-      <Text
-        // eslint-disable-next-line react/no-unknown-property -- Test helper
-        {...{ "data-go-logs": () => goToLogs("api") }}
-      />
-      <Text
-        {...{ "data-go-dashboard": () => goToDashboard() }}
-      />
-      <Text
-        {...{ "data-go-tasks": () => goToTasks() }}
-      />
-    </>
-  );
-}
-
 // Helper: renders hook in a minimal component and returns getters/actions
 function renderRouter() {
   let hookRef: ReturnType<typeof useRouter> | null = null;
