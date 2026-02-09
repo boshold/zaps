@@ -70,6 +70,12 @@ program
       await manager.startAll();
 
       // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
+      // Ensure yoga-wasm is loaded before Ink creates layout nodes.
+      // __yogaReady is injected by the build plugin (scripts/build.ts) — a no-op in dev.
+      // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- __yogaReady is injected at build time
+      const yoga = await import("yoga-layout") as unknown as Record<string, unknown>;
+      await yoga["__yogaReady"];
+
       const { render } = await import("ink");
       const { App } = await import("./components/App.js");
       const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />);

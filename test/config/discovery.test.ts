@@ -40,9 +40,8 @@ describe("discoverConfig", () => {
     const emptyDir = path.join(tmpDir, "empty");
     fs.mkdirSync(emptyDir, { recursive: true });
 
-    // Walk up will eventually hit root with no config
-    // We test by starting from tmpDir which has no config
-    expect(discoverConfig(emptyDir)).toBeNull();
+    // Limit walk-up to tmpDir so stale configs in /tmp/ don't interfere
+    expect(discoverConfig(emptyDir, tmpDir)).toBeNull();
   });
 
   it("finds config in current dir immediately", () => {
