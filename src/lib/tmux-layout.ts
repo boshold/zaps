@@ -4,7 +4,7 @@ import type { LayoutNode, ServiceConfig } from "../config/types.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Layout needs config type guards
 import { isLayoutLeaf, isLayoutSplit } from "../config/types.js";
 
-import { listPanes, newWindow, splitPane } from "./tmux.js";
+import { splitPane } from "./tmux.js";
 
 type PaneMap = Record<string, string>;
 
@@ -32,26 +32,34 @@ async function walkLayout(
     const { children, direction } = node;
     const dir = direction === "rows" ? "v" : "h";
 
-    // Parse sizes from children
+    // Parse sizes: explicit sizes kept, implicit get equal share of remainder
+    const explicitTotal = children.reduce((sum, child) => {
+      return sum + (child.size ? Number.parseInt(child.size, 10) : 0);
+    }, 0);
+    const implicitCount = children.filter((child) => !child.size).length;
+    const implicitSize = implicitCount > 0
+      ? Math.floor((100 - explicitTotal) / implicitCount)
+      : 0;
+
     const sizes = children.map((child) => {
-      if (child.size) {
-        return Number.parseInt(child.size, 10);
-      }
-      return Math.floor(100 / children.length);
+      return child.size ? Number.parseInt(child.size, 10) : implicitSize;
     });
 
     // First child inherits the current pane
     const paneIds: string[] = [currentPaneId];
 
     // Children 2..N: split from the current pane (must be sequential)
+    // tmux -p is relative to the current physical pane size, so we track
+    // how much of the logical 100% remains after each split.
+    let currentPaneSize = 100;
+
     for (let i = 1; i < children.length; i += 1) {
-      const consumed = sizes.slice(0, i).reduce((a, b) => a + b, 0);
-      const remaining = 100 - consumed;
-      const tmuxPercent = Math.round((sizes[i] / remaining) * 100);
+      const tmuxPercent = Math.round((sizes[i] / currentPaneSize) * 100);
 
       // eslint-disable-next-line no-await-in-loop -- Splits must be sequential
       const newPaneId = await splitPane(currentPaneId, dir, tmuxPercent);
       paneIds.push(newPaneId);
+      currentPaneSize -= sizes[i];
     }
 
     // Recurse into each child (must be sequential for tmux ordering)
@@ -90,25 +98,21 @@ export function validateLayout(layout: LayoutNode, serviceNames: string[]): void
  * Returns a map of service name -> tmux pane ID.
  */
 export async function createLayout(
-  session: string,
+  startPaneId: string,
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
 ): Promise<PaneMap> {
   const paneMap: PaneMap = {};
   const serviceNames = Object.keys(services);
 
-  // Get the first pane from the session (already created by newSession)
-  const panes = await listPanes(session);
-  const firstPaneId = panes[0].id;
-
   if (!layout) {
-    // Case 1: No layout — @tui gets first pane, each service gets a background window
-    paneMap["@tui"] = firstPaneId;
+    // Case 1: No layout — @tui gets start pane, each service gets a split pane
+    paneMap["@tui"] = startPaneId;
 
     for (const name of serviceNames) {
       if (!services[name].detached) {
-        // eslint-disable-next-line no-await-in-loop -- Windows must be created sequentially
-        const paneId = await newWindow(session);
+        // eslint-disable-next-line no-await-in-loop -- Splits must be created sequentially
+        const paneId = await splitPane(startPaneId, "v");
         paneMap[name] = paneId;
       }
     }
@@ -117,13 +121,13 @@ export async function createLayout(
   }
 
   // Case 2: Layout tree provided
-  await walkLayout(layout, firstPaneId, paneMap);
+  await walkLayout(layout, startPaneId, paneMap);
 
-  // Services not in layout get background windows (skip detached)
+  // Services not in layout get split panes (skip detached)
   for (const name of serviceNames) {
     if (!services[name].detached && !(name in paneMap)) {
-      // eslint-disable-next-line no-await-in-loop -- Windows must be created sequentially
-      const paneId = await newWindow(session);
+      // eslint-disable-next-line no-await-in-loop -- Splits must be created sequentially
+      const paneId = await splitPane(startPaneId, "v");
       paneMap[name] = paneId;
     }
   }

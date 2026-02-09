@@ -17,6 +17,14 @@ async function run(args: string[]): Promise<string> {
   });
 }
 
+export async function currentPaneId(): Promise<string> {
+  return run(["display-message", "-p", "#{pane_id}"]);
+}
+
+export async function currentSession(): Promise<string> {
+  return run(["display-message", "-p", "#{session_name}"]);
+}
+
 export async function listSessions(): Promise<string[]> {
   try {
     const out = await run(["list-sessions", "-F", "#{session_name}"]);

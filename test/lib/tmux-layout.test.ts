@@ -3,17 +3,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock tmux functions
 vi.mock("../../src/lib/tmux.js", () => ({
-  newWindow: vi.fn(),
   splitPane: vi.fn(),
-  listPanes: vi.fn(),
 }));
 
 import { createLayout, validateLayout } from "../../src/lib/tmux-layout.js";
-import { newWindow, splitPane, listPanes } from "../../src/lib/tmux.js";
+import { splitPane } from "../../src/lib/tmux.js";
 
-const mockNewWindow = vi.mocked(newWindow);
 const mockSplitPane = vi.mocked(splitPane);
-const mockListPanes = vi.mocked(listPanes);
 
 let paneCounter = 0;
 
@@ -21,11 +17,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   paneCounter = 0;
 
-  mockListPanes.mockResolvedValue([{ id: "%0", pid: 1000, width: 120, height: 40 }]);
-  mockNewWindow.mockImplementation(async () => {
-    const id = `%${(paneCounter += 1)}`;
-    return id;
-  });
   mockSplitPane.mockImplementation(async () => {
     const id = `%${(paneCounter += 1)}`;
     return id;
@@ -33,19 +24,19 @@ beforeEach(() => {
 });
 
 describe("createLayout", () => {
-  it("no layout: @tui mapped to first pane, each service gets a window", async () => {
+  it("no layout: @tui mapped to start pane, each service gets a split pane", async () => {
     const services: Record<string, ServiceConfig> = {
       db: { start: "postgres" },
       api: { start: "npm start" },
     };
 
     // eslint-disable-next-line no-undefined -- Testing the undefined layout path
-    const result = await createLayout("sess", undefined, services);
+    const result = await createLayout("%0", undefined, services);
 
     expect(result["@tui"]).toBe("%0");
     expect(result["db"]).toBe("%1");
     expect(result["api"]).toBe("%2");
-    expect(mockNewWindow).toHaveBeenCalledTimes(2);
+    expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
   it("no layout: skips detached services", async () => {
@@ -55,12 +46,12 @@ describe("createLayout", () => {
     };
 
     // eslint-disable-next-line no-undefined -- Testing the undefined layout path
-    const result = await createLayout("sess", undefined, services);
+    const result = await createLayout("%0", undefined, services);
 
     expect(result["@tui"]).toBe("%0");
     expect(result["api"]).toBe("%1");
     expect(result["db"]).toBeUndefined();
-    expect(mockNewWindow).toHaveBeenCalledTimes(1);
+    expect(mockSplitPane).toHaveBeenCalledTimes(1);
   });
 
   it("simple 2-pane row layout: one split, correct direction", async () => {
@@ -76,13 +67,13 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("sess", layout, services);
+    const result = await createLayout("%0", layout, services);
 
     expect(result["@tui"]).toBe("%0");
     expect(result["api"]).toBe("%1");
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
     // Direction "rows" maps to "v"
-    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 100);
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 50);
   });
 
   it("nested layout: correct split sequence and pane mapping", async () => {
@@ -106,7 +97,7 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("sess", layout, services);
+    const result = await createLayout("%0", layout, services);
 
     expect(result["@tui"]).toBe("%0");
     // First split creates %1 for the right column
@@ -131,19 +122,19 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("sess", layout, services);
+    const result = await createLayout("%0", layout, services);
 
     expect(result["@tui"]).toBe("%0");
     expect(result["api"]).toBe("%1");
     expect(result["web"]).toBe("%2");
 
-    // Child 1 (api): remaining = 100 - 40 = 60, tmux = round(30/60*100) = 50
-    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 50);
-    // Child 2 (web): remaining = 100 - 70 = 30, tmux = round(30/30*100) = 100
-    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%0", "h", 100);
+    // Child 1 (api): currentPaneSize = 100, tmux = round(30/100*100) = 30
+    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 30);
+    // Child 2 (web): currentPaneSize = 70, tmux = round(30/70*100) = 43
+    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%0", "h", 43);
   });
 
-  it("services not in layout get background windows", async () => {
+  it("services not in layout get split panes", async () => {
     const services: Record<string, ServiceConfig> = {
       api: { start: "npm start" },
       worker: { start: "worker" },
@@ -157,12 +148,35 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("sess", layout, services);
+    const result = await createLayout("%0", layout, services);
 
     expect(result["@tui"]).toBe("%0");
     expect(result["api"]).toBe("%1");
     expect(result["worker"]).toBe("%2");
-    expect(mockNewWindow).toHaveBeenCalledTimes(1);
+    expect(mockSplitPane).toHaveBeenCalledTimes(2);
+  });
+
+  it("mixed explicit/implicit sizes: implicit children get remainder", async () => {
+    const services: Record<string, ServiceConfig> = {
+      api: { start: "npm start" },
+    };
+
+    const layout = {
+      direction: "rows" as const,
+      children: [
+        { pane: "@tui", size: "60%" },
+        { pane: "api" },
+      ],
+    };
+
+    const result = await createLayout("%0", layout, services);
+
+    expect(result["@tui"]).toBe("%0");
+    expect(result["api"]).toBe("%1");
+
+    // Implicit child gets remainder: 100 - 60 = 40
+    // currentPaneSize = 100, tmux = round(40/100*100) = 40
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 40);
   });
 });
 
