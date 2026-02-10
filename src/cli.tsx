@@ -92,13 +92,14 @@ program
     const tuiPaneId = paneMap["@tui"];
 
     // Launch inner process in @tui pane
-    await sendKeys(tuiPaneId, `${resolveCommand()} ui`);
+    await sendKeys(tuiPaneId, `${resolveCommand()} ui --start`);
   });
 
 program
   .command("ui")
   .description("Run zaps TUI (called by dev command)")
-  .action(async () => {
+  .option("--start", "Start services before rendering TUI")
+  .action(async (opts: { start?: boolean }) => {
     const configPath = discoverConfig(process.cwd());
     if (!configPath) {
       process.stderr.write("No config found.\n");
@@ -126,8 +127,11 @@ program
     const { ServiceManager } = await import("./lib/service/manager.js");
     const manager = new ServiceManager(config, paneMap, deps);
 
-    // Start services
-    await manager.startAll();
+    // Start services (only when launched via `zaps dev`)
+    if (opts.start) {
+      // eslint-disable-next-line no-void -- Fire-and-forget promise
+      void manager.startAll();
+    }
 
     // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
     // Ensure yoga-wasm is loaded before Ink creates layout nodes.
