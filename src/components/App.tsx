@@ -6,6 +6,9 @@ import type { ResolvedConfig } from "../config/types.js";
 import type { ServiceManager } from "../lib/service/manager.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need service types
 import type { ServiceStatus } from "../lib/service/types.js";
+import { useApp as useInkApp, useInput } from "ink";
+import { useRef, useState } from "react";
+
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need hooks
 import { useLogs } from "../hooks/useLogs.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need router hook
@@ -18,8 +21,6 @@ import { useServiceActions } from "../hooks/useServiceActions.js";
 import { useServices } from "../hooks/useServices.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need app context
 import { AppProvider, useZaps } from "../hooks/useZaps.js";
-import { useApp as useInkApp, useInput } from "ink";
-import { useRef, useState } from "react";
 
 import { Dashboard } from "./Dashboard.js";
 import { LogView } from "./LogView.js";
@@ -69,8 +70,14 @@ function Router() {
   const busyRef = useRef(false);
 
   // Logs state — called unconditionally (hooks rule)
-  const logPaneTarget = logTarget ? paneMap[logTarget] ?? null : null;
-  const { lines: logLines, autoScroll: logAutoScroll, offset: logOffset, scrollUp, scrollDown } = useLogs(logPaneTarget);
+  const logPaneTarget = logTarget ? (paneMap[logTarget] ?? null) : null;
+  const {
+    lines: logLines,
+    autoScroll: logAutoScroll,
+    offset: logOffset,
+    scrollUp,
+    scrollDown,
+  } = useLogs(logPaneTarget);
 
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
@@ -100,13 +107,13 @@ function Router() {
       }
       if (input === "r" && statuses[index] && !busyRef.current) {
         busyRef.current = true;
-        restart(statuses[index].name).finally(() => {
+        void restart(statuses[index].name).finally(() => {
           busyRef.current = false;
         });
       }
       if (input === "s" && statuses[index] && !busyRef.current) {
         busyRef.current = true;
-        toggle(statuses[index].name).finally(() => {
+        void toggle(statuses[index].name).finally(() => {
           busyRef.current = false;
         });
       }
@@ -121,7 +128,7 @@ function Router() {
       }
       if (input === "a" && !busyRef.current) {
         busyRef.current = true;
-        restartAll().finally(() => {
+        void restartAll().finally(() => {
           busyRef.current = false;
         });
       }
