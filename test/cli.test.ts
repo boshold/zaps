@@ -11,6 +11,8 @@ const mockNewSession = vi.fn<(name: string) => Promise<string>>();
 const mockKillSession = vi.fn<(name: string) => Promise<void>>();
 const mockSendKeys = vi.fn<(target: string, keys: string) => Promise<void>>();
 const mockSetEnv = vi.fn<(session: string, key: string, value: string) => Promise<void>>();
+const mockShowEnv = vi.fn<(session: string, key: string) => Promise<string | null>>();
+const mockCurrentSession = vi.fn<() => Promise<string>>();
 const mockCreateLayout = vi.fn();
 const mockSendCtrlC = vi.fn();
 const mockPanePid = vi.fn();
@@ -37,6 +39,8 @@ vi.mock("../src/lib/tmux.js", () => ({
   killSession: async (...args: unknown[]) => mockKillSession(...(args as [string])),
   sendKeys: async (...args: unknown[]) => mockSendKeys(...(args as [string, string])),
   setEnv: async (...args: unknown[]) => mockSetEnv(...(args as [string, string, string])),
+  showEnv: async (...args: unknown[]) => mockShowEnv(...(args as [string, string])),
+  currentSession: async () => mockCurrentSession(),
   sendCtrlC: (...args: unknown[]) => mockSendCtrlC(...args),
   panePid: (...args: unknown[]) => mockPanePid(...args),
   capturePane: (...args: unknown[]) => mockCapturePane(...args),
@@ -89,14 +93,11 @@ vi.mock("../src/components/App.js", () => ({
   App: vi.fn(() => null),
 }));
 
-// Mock child_process for spawnSync
-const mockSpawnSync = vi.fn();
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
-  spawnSync: (...args: unknown[]) => mockSpawnSync(...args),
 }));
 
-describe("CLI — ui command (outer process)", () => {
+describe("CLI — dev command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -137,7 +138,6 @@ describe("CLI — ui command (outer process)", () => {
     mockCreateLayout.mockResolvedValue({ "@tui": "%0", api: "%1" });
     mockSetEnv.mockResolvedValue();
     mockSendKeys.mockResolvedValue();
-    mockSpawnSync.mockReturnValue({ status: 0 });
 
     // Step 1: Discover config
     const configPath = mockDiscoverConfig(process.cwd());
@@ -178,29 +178,35 @@ describe("CLI — ui command (outer process)", () => {
 
     // Step 8: Send keys to @tui pane
     const tuiPaneId = paneMap["@tui"];
-    await mockSendKeys(tuiPaneId, "node zaps ui --internal");
-    expect(mockSendKeys).toHaveBeenCalledWith("%0", "node zaps ui --internal");
+    await mockSendKeys(tuiPaneId, "zaps ui");
+    expect(mockSendKeys).toHaveBeenCalledWith("%0", "zaps ui");
   });
 });
 
-describe("CLI — ui --internal (inner process)", () => {
+describe("CLI — ui command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("reads ZAPS_PANE_MAP from environment", () => {
+  it("reads ZAPS_PANE_MAP via showEnv", async () => {
     const paneMap = { "@tui": "%0", api: "%1" };
-    const serialized = JSON.stringify(paneMap);
-    const parsed = JSON.parse(serialized) as Record<string, string>;
+    mockCurrentSession.mockResolvedValue("my-session");
+    mockShowEnv.mockResolvedValue(JSON.stringify(paneMap));
+
+    const session = await mockCurrentSession();
+    const raw = await mockShowEnv(session, "ZAPS_PANE_MAP");
+    const parsed = JSON.parse(raw!) as Record<string, string>;
     expect(parsed).toEqual(paneMap);
-    expect(parsed["@tui"]).toBe("%0");
-    expect(parsed.api).toBe("%1");
+    expect(mockShowEnv).toHaveBeenCalledWith("my-session", "ZAPS_PANE_MAP");
   });
 
-  it("errors when ZAPS_PANE_MAP not set", () => {
-    // When inner process lacks ZAPS_PANE_MAP, it should fail
-    const paneMapRaw: string | null = null;
-    expect(paneMapRaw).toBeNull();
+  it("errors when ZAPS_PANE_MAP not set in tmux env", async () => {
+    mockCurrentSession.mockResolvedValue("my-session");
+    mockShowEnv.mockResolvedValue(null);
+
+    const session = await mockCurrentSession();
+    const raw = await mockShowEnv(session, "ZAPS_PANE_MAP");
+    expect(raw).toBeNull();
   });
 
   it("creates ServiceManager with correct deps", () => {

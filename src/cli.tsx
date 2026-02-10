@@ -20,6 +20,7 @@ import {
   sendCtrlC,
   sendKeys,
   setEnv,
+  showEnv,
 } from "./lib/tmux.js";
 
 function isPaneMap(value: unknown): value is Record<string, string> {
@@ -32,6 +33,15 @@ function isPaneMap(value: unknown): value is Record<string, string> {
     }
   }
   return true;
+}
+
+function resolveCommand(): string {
+  // Compiled bun binary: argv[1] is virtual /$bunfs/ path
+  if (process.argv[1]?.startsWith("/$bunfs/")) {
+    return path.basename(process.execPath);
+  }
+  // Dev mode (tsx/node): need runtime + script
+  return process.argv.slice(0, 2).join(" ");
 }
 
 program.name("zaps").version("0.1.0").description("Terminal session manager");
@@ -51,103 +61,100 @@ function buildDeps(): ServiceManagerDeps {
 }
 
 program
-  .command("ui", { isDefault: true })
-  .description("Launch zaps TUI")
-  .option("--internal", "Internal: run inside tmux pane")
-  .action(async (opts: { internal?: boolean }) => {
-    if (opts.internal) {
-      // Inner process: session already exists, paneMap in env
-      const configPath = discoverConfig(process.cwd());
-      if (!configPath) {
-        process.stderr.write("No config found.\n");
-        process.exit(1);
+  .command("dev", { isDefault: true })
+  .description("Launch zaps dev session")
+  .action(async () => {
+    const configPath = discoverConfig(process.cwd());
+    if (!configPath) {
+      process.stderr.write("No config found. Run `zaps init` to create one.\n");
+      process.exit(1);
+    }
+
+    const config = await loadConfig(configPath);
+
+    // Must be inside tmux
+    if (!getEnv("TMUX")) {
+      process.stderr.write("zaps must be run from inside a tmux session.\n");
+      process.exit(1);
+    }
+
+    // Get current pane and session
+    const originPane = await currentPaneId();
+    const sessionName = await currentSession();
+
+    // Build pane layout starting from current pane
+    const paneMap = await createLayout(originPane, config.project.layout, config.project.services);
+
+    // Serialize pane map and origin pane to tmux env
+    await setEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));
+    await setEnv(sessionName, "ZAPS_ORIGIN_PANE", originPane);
+
+    const tuiPaneId = paneMap["@tui"];
+
+    // Launch inner process in @tui pane
+    await sendKeys(tuiPaneId, `${resolveCommand()} ui`);
+  });
+
+program
+  .command("ui")
+  .description("Run zaps TUI (called by dev command)")
+  .action(async () => {
+    const configPath = discoverConfig(process.cwd());
+    if (!configPath) {
+      process.stderr.write("No config found.\n");
+      process.exit(1);
+    }
+
+    const config = await loadConfig(configPath);
+
+    const sessionName = await currentSession();
+
+    // Read pane map from tmux environment
+    const paneMapRaw = await showEnv(sessionName, "ZAPS_PANE_MAP");
+    if (!paneMapRaw) {
+      process.stderr.write("ZAPS_PANE_MAP not set. Must run via `zaps dev`.\n");
+      process.exit(1);
+    }
+
+    const parsed: unknown = JSON.parse(paneMapRaw);
+    if (!isPaneMap(parsed)) {
+      process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
+      process.exit(1);
+    }
+    const paneMap = parsed;
+    const deps = buildDeps();
+    const { ServiceManager } = await import("./lib/service/manager.js");
+    const manager = new ServiceManager(config, paneMap, deps);
+
+    // Start services
+    await manager.startAll();
+
+    // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
+    // Ensure yoga-wasm is loaded before Ink creates layout nodes.
+    // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
+    // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
+    const { default: yoga } = await import("yoga-layout");
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Build plugin exposes __yogaReady on Proxy
+    await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
+
+    const { render } = await import("ink");
+    const { App } = await import("./components/App.js");
+    const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />);
+
+    await waitUntilExit();
+
+    // Cleanup — stopAll is idempotent, and it fires onStop hook internally
+    await manager.stopAll();
+
+    // Kill spawned panes, but preserve the origin pane
+    const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
+    for (const paneId of Object.values(paneMap)) {
+      if (paneId !== originPane) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
+        await killPane(paneId).catch(() => {
+          /* Pane may already be gone */
+        });
       }
-
-      const config = await loadConfig(configPath);
-
-      // Read pane map from tmux environment
-      const paneMapRaw = getEnv("ZAPS_PANE_MAP");
-      if (!paneMapRaw) {
-        process.stderr.write("ZAPS_PANE_MAP not set. Must run via outer process.\n");
-        process.exit(1);
-      }
-
-      const parsed: unknown = JSON.parse(paneMapRaw);
-      if (!isPaneMap(parsed)) {
-        process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
-        process.exit(1);
-      }
-      const paneMap = parsed;
-      const deps = buildDeps();
-      const { ServiceManager } = await import("./lib/service/manager.js");
-      const manager = new ServiceManager(config, paneMap, deps);
-
-      // Start services
-      await manager.startAll();
-
-      // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
-      // Ensure yoga-wasm is loaded before Ink creates layout nodes.
-      // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
-      // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
-      const { default: yoga } = await import("yoga-layout");
-      // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Build plugin exposes __yogaReady on Proxy
-      await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
-
-      const { render } = await import("ink");
-      const { App } = await import("./components/App.js");
-      const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />);
-
-      await waitUntilExit();
-
-      // Cleanup — stopAll is idempotent, and it fires onStop hook internally
-      await manager.stopAll();
-
-      // Kill spawned panes, but preserve the origin pane
-      const originPane = getEnv("ZAPS_ORIGIN_PANE");
-      for (const paneId of Object.values(paneMap)) {
-        if (paneId !== originPane) {
-          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-          await killPane(paneId).catch(() => {
-            /* Pane may already be gone */
-          });
-        }
-      }
-    } else {
-      // Outer process: split panes in current tmux window, pass state, exit
-      const configPath = discoverConfig(process.cwd());
-      if (!configPath) {
-        process.stderr.write("No config found. Run `zaps init` to create one.\n");
-        process.exit(1);
-      }
-
-      const config = await loadConfig(configPath);
-
-      // Must be inside tmux
-      if (!getEnv("TMUX")) {
-        process.stderr.write("zaps must be run from inside a tmux session.\n");
-        process.exit(1);
-      }
-
-      // Get current pane and session
-      const originPane = await currentPaneId();
-      const sessionName = await currentSession();
-
-      // Build pane layout starting from current pane
-      const paneMap = await createLayout(
-        originPane,
-        config.project.layout,
-        config.project.services,
-      );
-
-      // Serialize pane map and origin pane to tmux env
-      await setEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));
-
-      // Resolve binary path
-      const binCmd = process.argv.slice(0, 2).join(" ");
-      const tuiPaneId = paneMap["@tui"];
-
-      // Launch inner process in @tui pane with origin pane info
-      await sendKeys(tuiPaneId, `ZAPS_ORIGIN_PANE=${originPane} ${binCmd} ui --internal`);
     }
   });
 
@@ -192,18 +199,12 @@ program
     const sessionName = await currentSession();
 
     // Read pane map from tmux env
-    const { spawnSync } = await import("node:child_process");
-    const result = spawnSync("tmux", ["show-environment", "-t", sessionName, "ZAPS_PANE_MAP"], {
-      encoding: "utf8",
-    });
-
-    if (result.status !== 0 || !result.stdout) {
+    const raw = await showEnv(sessionName, "ZAPS_PANE_MAP");
+    if (!raw) {
       process.stderr.write("No active zaps panes found in this session.\n");
       process.exit(1);
     }
 
-    // Output format: ZAPS_PANE_MAP={"@tui":"%0",...}
-    const raw = result.stdout.trim().replace(/^ZAPS_PANE_MAP=/, "");
     const parsedDown: unknown = JSON.parse(raw);
     if (!isPaneMap(parsedDown)) {
       process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");

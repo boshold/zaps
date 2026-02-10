@@ -93,6 +93,15 @@ export async function setEnv(session: string, key: string, value: string): Promi
   await run(["set-environment", "-t", session, key, value]);
 }
 
+export async function showEnv(session: string, key: string): Promise<string | null> {
+  try {
+    const out = await run(["show-environment", "-t", session, key]);
+    return out.replace(`${key}=`, "");
+  } catch {
+    return null;
+  }
+}
+
 export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
