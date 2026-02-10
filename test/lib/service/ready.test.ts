@@ -25,7 +25,6 @@ afterEach(() => {
 describe("waitForReady", () => {
   it("resolves immediately when config is undefined", async () => {
     const controller = new AbortController();
-    // eslint-disable-next-line no-undefined -- Testing undefined config path
     await waitForReady(undefined, "%0", controller.signal, createDeps());
     // No assertions needed -- just checking it resolves
   });
@@ -63,7 +62,6 @@ describe("waitForReady", () => {
     const promise = waitForReady(config, "%0", controller.signal, createDeps());
 
     // Consume rejection to prevent unhandled rejection during timer advancement
-    // eslint-disable-next-line promise/prefer-await-to-then -- Need non-blocking catch
     const guarded = promise.catch(() => {
       /* Intentional no-op */
     });

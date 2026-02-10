@@ -1,4 +1,3 @@
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need config types
 import type { TaskConfig } from "../config/types.js";
 import { Box, Text } from "ink";
 

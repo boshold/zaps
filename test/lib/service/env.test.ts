@@ -98,7 +98,6 @@ describe("resolveEnv", () => {
   it("calls function with context and returns result", () => {
     const ctx: ServiceContext = {
       services: {
-        // eslint-disable-next-line no-undefined -- Required by ServiceContext interface
         db: { port: 5432, ports: [5432], cwd: undefined },
       },
       projectDir: "/dir",
@@ -112,7 +111,6 @@ describe("resolveEnv", () => {
 
   it("returns empty object when envConfig is undefined", () => {
     const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
-    // eslint-disable-next-line no-undefined -- Testing undefined config path
     expect(resolveEnv(undefined, ctx)).toEqual({});
   });
 });

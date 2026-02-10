@@ -1,7 +1,5 @@
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
-// eslint-disable-next-line import/no-relative-parent-imports -- Hooks need config types
 import type { ResolvedConfig } from "../config/types.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Hooks need service manager type
 import type { ServiceManager } from "../lib/service/manager.js";
 import type { ReactNode } from "react";
 import { createContext, useContext } from "react";

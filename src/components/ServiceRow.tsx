@@ -1,4 +1,3 @@
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service types
 import type { ServiceStatus } from "../lib/service/types.js";
 import { Box, Text } from "ink";
 

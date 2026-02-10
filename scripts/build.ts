@@ -58,7 +58,6 @@ const result = await Bun.build({
 
 if (!result.success) {
   for (const log of result.logs) {
-    // eslint-disable-next-line no-console -- Build script CLI output
     console.error(log);
   }
   process.exit(1);

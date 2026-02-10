@@ -16,16 +16,13 @@ async function poll(checkFn: () => Promise<boolean>, signal: AbortSignal): Promi
 
   const start = Date.now();
 
-  // eslint-disable-next-line no-await-in-loop -- Polling requires sequential awaits
   while (!signal.aborted) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential poll check
     if (await checkFn()) {
       return;
     }
     if (Date.now() - start > TIMEOUT) {
       throw new Error("Ready check timed out after 60s");
     }
-    // eslint-disable-next-line no-await-in-loop -- Sequential poll delay
     await sleep(POLL_INTERVAL);
   }
   throw new Error("Ready check aborted");

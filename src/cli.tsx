@@ -53,14 +53,12 @@ program
       const config = await loadConfig(configPath);
 
       // Read pane map from tmux environment
-      // eslint-disable-next-line node/no-process-env -- Inner process reads serialized pane map from tmux env
       const paneMapRaw = process.env["ZAPS_PANE_MAP"];
       if (!paneMapRaw) {
         process.stderr.write("ZAPS_PANE_MAP not set. Must run via outer process.\n");
         process.exit(1);
       }
 
-      // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Serialized by outer process
       const paneMap = JSON.parse(paneMapRaw) as Record<string, string>;
       const deps = buildDeps();
       const { ServiceManager } = await import("./lib/service/manager.js");
@@ -74,7 +72,6 @@ program
       // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
       // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
       const { default: yoga } = await import("yoga-layout");
-      // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- __yogaReady is injected at build time
       await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
 
       const { render } = await import("ink");
@@ -87,12 +84,12 @@ program
       await manager.stopAll();
 
       // Kill spawned panes, but preserve the origin pane
-      // eslint-disable-next-line node/no-process-env -- Inner process reads origin pane from env
       const originPane = process.env["ZAPS_ORIGIN_PANE"];
       for (const paneId of Object.values(paneMap)) {
         if (paneId !== originPane) {
-          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-          await killPane(paneId).catch(() => { /* Pane may already be gone */ });
+          await killPane(paneId).catch(() => {
+            /* Pane may already be gone */
+          });
         }
       }
     } else {
@@ -106,7 +103,6 @@ program
       const config = await loadConfig(configPath);
 
       // Must be inside tmux
-      // eslint-disable-next-line node/no-process-env -- Check if running inside tmux
       if (!process.env["TMUX"]) {
         process.stderr.write("zaps must be run from inside a tmux session.\n");
         process.exit(1);
@@ -168,7 +164,6 @@ program
   .description("Stop all services and kill spawned panes")
   .action(async () => {
     // Must be inside tmux
-    // eslint-disable-next-line node/no-process-env -- Check if running inside tmux
     if (!process.env["TMUX"]) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
@@ -189,15 +184,15 @@ program
 
     // Output format: ZAPS_PANE_MAP={"@tui":"%0",...}
     const raw = result.stdout.trim().replace(/^ZAPS_PANE_MAP=/, "");
-    // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Serialized by outer process
     const paneMap = JSON.parse(raw) as Record<string, string>;
     const originPane = await currentPaneId();
 
     let killed = 0;
     for (const paneId of Object.values(paneMap)) {
       if (paneId !== originPane) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-        await killPane(paneId).catch(() => { /* Pane may already be gone */ });
+        await killPane(paneId).catch(() => {
+          /* Pane may already be gone */
+        });
         killed += 1;
       }
     }

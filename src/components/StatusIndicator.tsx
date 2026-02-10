@@ -1,4 +1,3 @@
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service types
 import type { ServiceState } from "../lib/service/types.js";
 import { Text } from "ink";
 import { useEffect, useState } from "react";

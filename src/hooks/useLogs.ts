@@ -2,7 +2,6 @@
 /* eslint-disable eslint-plugin-promise/always-return -- Fire-and-forget inside setInterval */
 import { useEffect, useRef, useState } from "react";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Hooks need tmux utilities
 import { capturePane } from "../lib/tmux.js";
 
 export function useLogs(paneTarget: string | null) {
@@ -15,7 +14,6 @@ export function useLogs(paneTarget: string | null) {
     if (!paneTarget) {
       return;
     }
-    // eslint-disable-next-line no-misused-promises -- setInterval callback uses async for sequential fetch
     const id = setInterval(async () => {
       if (fetchingRef.current) {
         return;

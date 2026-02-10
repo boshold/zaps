@@ -1,6 +1,4 @@
-// eslint-disable-next-line import/no-relative-parent-imports -- Hooks need service manager type
 import type { ServiceManager } from "../lib/service/manager.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Hooks need service types
 import type { ServiceStatus } from "../lib/service/types.js";
 import { useEffect, useState } from "react";
 

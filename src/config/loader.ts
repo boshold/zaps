@@ -2,7 +2,6 @@ import path from "node:path";
 
 import type { LayoutNode, ProjectConfig, ResolvedConfig } from "./types.js";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Spec requires importing detectCycles from lib/service/graph
 import { detectCycles } from "../lib/service/graph.js";
 
 import { createZapsLib } from "./builder.js";

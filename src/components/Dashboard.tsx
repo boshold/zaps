@@ -1,8 +1,6 @@
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service types
 import type { ServiceStatus } from "../lib/service/types.js";
 import { Box } from "ink";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need app context
 import { useZaps } from "../hooks/useZaps.js";
 
 import { Header } from "./Header.js";

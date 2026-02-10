@@ -30,7 +30,6 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    // eslint-disable-next-line no-undefined -- Testing the undefined layout path
     const result = await createLayout("%0", undefined, services);
 
     expect(result["@tui"]).toBe("%0");
@@ -45,7 +44,6 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    // eslint-disable-next-line no-undefined -- Testing the undefined layout path
     const result = await createLayout("%0", undefined, services);
 
     expect(result["@tui"]).toBe("%0");

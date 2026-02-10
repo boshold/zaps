@@ -2,26 +2,17 @@
 /* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
 import { execFile } from "node:child_process";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need config types
 import type { ResolvedConfig } from "../config/types.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service manager type
 import type { ServiceManager } from "../lib/service/manager.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service types
 import type { ServiceStatus } from "../lib/service/types.js";
 import { useApp as useInkApp, useInput } from "ink";
 import { useRef, useState } from "react";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need hooks
 import { useLogs } from "../hooks/useLogs.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need router hook
 import { useRouter } from "../hooks/useRouter.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need selection hook
 import { useSelection } from "../hooks/useSelection.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need service actions hook
 import { useServiceActions } from "../hooks/useServiceActions.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need services hook
 import { useServices } from "../hooks/useServices.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need app context
 import { AppProvider, useZaps } from "../hooks/useZaps.js";
 
 import { Dashboard } from "./Dashboard.js";
@@ -48,7 +39,6 @@ function openInBrowser(status: ServiceStatus) {
   })
     .then(() => {
       const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-      // eslint-disable-next-line typescript-eslint/no-non-null-assertion -- Guarded by early return above
       execFile(cmd, [status.url!]);
       return null;
     })
@@ -85,7 +75,6 @@ function Router() {
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
 
-  // eslint-disable-next-line complexity -- Single input handler for all views
   useInput((input, key) => {
     // Global keys
     if (input === "q") {
@@ -95,7 +84,9 @@ function Router() {
       busyRef.current = true;
       manager
         .stopAll()
-        .catch(() => { /* Graceful shutdown */ })
+        .catch(() => {
+          /* Graceful shutdown */
+        })
         .finally(() => {
           exit();
         });
@@ -183,7 +174,6 @@ function Router() {
   return <Dashboard statuses={statuses} selectedIndex={index} />;
 }
 
-// eslint-disable-next-line react/no-multi-comp -- Router is an internal helper, spec allows inline
 export function App({ manager, config, paneMap }: AppProps) {
   return (
     <AppProvider manager={manager} config={config} paneMap={paneMap}>

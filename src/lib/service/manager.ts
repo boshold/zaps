@@ -1,6 +1,5 @@
 import { EventEmitter } from "node:events";
 
-// eslint-disable-next-line import/no-relative-parent-imports -- Manager needs config types
 import type { ResolvedConfig, ServiceConfig } from "../../config/types.js";
 import type { ReadyDeps, ServiceStatus } from "./types.js";
 
@@ -84,7 +83,6 @@ export class ServiceManager extends EventEmitter {
     const levels = topoSort(autostartServices);
 
     for (const level of levels) {
-      // eslint-disable-next-line no-await-in-loop -- Levels must run sequentially
       await Promise.all(
         level.map(async (name) => {
           try {
@@ -112,7 +110,6 @@ export class ServiceManager extends EventEmitter {
     const levels = reverseTopoSort(services);
 
     for (const level of levels) {
-      // eslint-disable-next-line no-await-in-loop -- Levels must run sequentially
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
@@ -192,7 +189,6 @@ export class ServiceManager extends EventEmitter {
       await fireHook(hooks?.onServiceStart, name);
 
       // Start crash monitor in background
-      // eslint-disable-next-line no-void -- Fire-and-forget; no-floating-promises requires void
       void this.monitorCrash(name);
     } catch (error) {
       // If aborted during stop, don't transition to error
@@ -235,17 +231,13 @@ export class ServiceManager extends EventEmitter {
     const STOP_TIMEOUT = 5000;
     let exited = false;
 
-    // eslint-disable-next-line no-await-in-loop -- Sequential polling required
     while (Date.now() - stopStart < STOP_TIMEOUT) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       const rootPid = await this.deps.panePid(paneTarget);
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       const descendants = await this.deps.getDescendantPids(rootPid);
       if (descendants.length <= 1) {
         exited = true;
         break;
       }
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       await sleep(200);
     }
 
@@ -322,16 +314,13 @@ export class ServiceManager extends EventEmitter {
 
     // Poll every 2s: check if process still alive
     while (status.state === "ready") {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       await sleep(2000);
       // Re-check state after sleep (stopService may have changed it)
       if (status.state !== "ready") {
         return;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       const rootPid = await this.deps.panePid(this.paneMap[name]);
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling required
       const descendants = await this.deps.getDescendantPids(rootPid);
 
       // If only shell PID left (no child), service has crashed
@@ -343,11 +332,9 @@ export class ServiceManager extends EventEmitter {
           this.emit("stateChange", name, status);
 
           const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
-          // eslint-disable-next-line no-await-in-loop -- Sequential restart with backoff
           await sleep(backoff);
 
           // Transition: restarting -> starting (handled by startService)
-          // eslint-disable-next-line no-await-in-loop -- Sequential restart
           await this.startService(name);
         } else {
           status.state = transition(status.state, "error");

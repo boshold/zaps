@@ -107,7 +107,6 @@ describe("useSelection", () => {
 
     // Move to index 4
     for (let i = 0; i < 4; i += 1) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential UI state transitions
       await act(() => {
         hookRef?.moveDown();
       });
