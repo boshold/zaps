@@ -1,4 +1,4 @@
-import type { ServiceStatus } from "../lib/service/types.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
 import { Box, Text } from "ink";
 
 import { StatusIndicator } from "./StatusIndicator.js";

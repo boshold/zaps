@@ -1,4 +1,4 @@
-import type { TaskConfig } from "../config/types.js";
+import type { TaskConfig } from "#src/config/types.js";
 import { Box, Text } from "ink";
 
 interface TaskRowProps {

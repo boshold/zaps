@@ -1,6 +1,6 @@
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
-import type { ResolvedConfig } from "../config/types.js";
-import type { ServiceManager } from "../lib/service/manager.js";
+import type { ResolvedConfig } from "#src/config/types.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ReactNode } from "react";
 import { createContext, useContext } from "react";
 

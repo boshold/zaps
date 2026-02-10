@@ -1,6 +1,5 @@
-import type { LayoutNode, ServiceConfig } from "../config/types.js";
-
-import { isLayoutLeaf, isLayoutSplit } from "../config/types.js";
+import type { LayoutNode, ServiceConfig } from "#src/config/types.js";
+import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
 import { splitPane } from "./tmux.js";
 
@@ -53,6 +52,7 @@ async function walkLayout(
     for (let i = 1; i < children.length; i += 1) {
       const tmuxPercent = Math.round((sizes[i] / currentPaneSize) * 100);
 
+      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
       const newPaneId = await splitPane(currentPaneId, dir, tmuxPercent);
       paneIds.push(newPaneId);
       currentPaneSize -= sizes[i];
@@ -60,6 +60,7 @@ async function walkLayout(
 
     // Recurse into each child (must be sequential for tmux ordering)
     for (let i = 0; i < children.length; i += 1) {
+      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
       await walkLayout(children[i], paneIds[i], paneMap);
     }
   }
@@ -106,6 +107,7 @@ export async function createLayout(
 
     for (const name of serviceNames) {
       if (!services[name].detached) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         const paneId = await splitPane(startPaneId, "v");
         paneMap[name] = paneId;
       }
@@ -120,6 +122,7 @@ export async function createLayout(
   // Services not in layout get split panes (skip detached)
   for (const name of serviceNames) {
     if (!services[name].detached && !(name in paneMap)) {
+      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
       const paneId = await splitPane(startPaneId, "v");
       paneMap[name] = paneId;
     }

@@ -7,6 +7,7 @@ import { program } from "commander";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
 import { scaffoldConfig } from "./config/scaffold.js";
+import { getEnv } from "./lib/env.js";
 import { detectPorts, getDescendantPids } from "./lib/port.js";
 import { createLayout } from "./lib/tmux-layout.js";
 import {
@@ -20,6 +21,18 @@ import {
   sendKeys,
   setEnv,
 } from "./lib/tmux.js";
+
+function isPaneMap(value: unknown): value is Record<string, string> {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  for (const v of Object.values(value)) {
+    if (typeof v !== "string") {
+      return false;
+    }
+  }
+  return true;
+}
 
 program.name("zaps").version("0.1.0").description("Terminal session manager");
 
@@ -53,13 +66,18 @@ program
       const config = await loadConfig(configPath);
 
       // Read pane map from tmux environment
-      const paneMapRaw = process.env["ZAPS_PANE_MAP"];
+      const paneMapRaw = getEnv("ZAPS_PANE_MAP");
       if (!paneMapRaw) {
         process.stderr.write("ZAPS_PANE_MAP not set. Must run via outer process.\n");
         process.exit(1);
       }
 
-      const paneMap = JSON.parse(paneMapRaw) as Record<string, string>;
+      const parsed: unknown = JSON.parse(paneMapRaw);
+      if (!isPaneMap(parsed)) {
+        process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
+        process.exit(1);
+      }
+      const paneMap = parsed;
       const deps = buildDeps();
       const { ServiceManager } = await import("./lib/service/manager.js");
       const manager = new ServiceManager(config, paneMap, deps);
@@ -72,6 +90,7 @@ program
       // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
       // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
       const { default: yoga } = await import("yoga-layout");
+      // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Build plugin exposes __yogaReady on Proxy
       await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
 
       const { render } = await import("ink");
@@ -84,9 +103,10 @@ program
       await manager.stopAll();
 
       // Kill spawned panes, but preserve the origin pane
-      const originPane = process.env["ZAPS_ORIGIN_PANE"];
+      const originPane = getEnv("ZAPS_ORIGIN_PANE");
       for (const paneId of Object.values(paneMap)) {
         if (paneId !== originPane) {
+          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
           await killPane(paneId).catch(() => {
             /* Pane may already be gone */
           });
@@ -103,7 +123,7 @@ program
       const config = await loadConfig(configPath);
 
       // Must be inside tmux
-      if (!process.env["TMUX"]) {
+      if (!getEnv("TMUX")) {
         process.stderr.write("zaps must be run from inside a tmux session.\n");
         process.exit(1);
       }
@@ -164,7 +184,7 @@ program
   .description("Stop all services and kill spawned panes")
   .action(async () => {
     // Must be inside tmux
-    if (!process.env["TMUX"]) {
+    if (!getEnv("TMUX")) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
     }
@@ -184,12 +204,18 @@ program
 
     // Output format: ZAPS_PANE_MAP={"@tui":"%0",...}
     const raw = result.stdout.trim().replace(/^ZAPS_PANE_MAP=/, "");
-    const paneMap = JSON.parse(raw) as Record<string, string>;
+    const parsedDown: unknown = JSON.parse(raw);
+    if (!isPaneMap(parsedDown)) {
+      process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
+      process.exit(1);
+    }
+    const paneMap = parsedDown;
     const originPane = await currentPaneId();
 
     let killed = 0;
     for (const paneId of Object.values(paneMap)) {
       if (paneId !== originPane) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         await killPane(paneId).catch(() => {
           /* Pane may already be gone */
         });

@@ -1,8 +1,7 @@
 import path from "node:path";
 
+import { detectCycles } from "#src/lib/service/graph.js";
 import type { LayoutNode, ProjectConfig, ResolvedConfig } from "./types.js";
-
-import { detectCycles } from "../lib/service/graph.js";
 
 import { createZapsLib } from "./builder.js";
 import { isLayoutLeaf, isLayoutSplit } from "./types.js";

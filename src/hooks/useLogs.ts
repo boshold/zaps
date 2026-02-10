@@ -1,8 +1,5 @@
-/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- setInterval callback cannot be async */
-/* eslint-disable eslint-plugin-promise/always-return -- Fire-and-forget inside setInterval */
+import { capturePane } from "#src/lib/tmux.js";
 import { useEffect, useRef, useState } from "react";
-
-import { capturePane } from "../lib/tmux.js";
 
 export function useLogs(paneTarget: string | null) {
   const [lines, setLines] = useState<string[]>([]);
@@ -14,17 +11,20 @@ export function useLogs(paneTarget: string | null) {
     if (!paneTarget) {
       return;
     }
-    const id = setInterval(async () => {
+    const id = setInterval(() => {
       if (fetchingRef.current) {
         return;
       }
       fetchingRef.current = true;
-      try {
-        const output = await capturePane(paneTarget, 200);
-        setLines(output.split("\n"));
-      } finally {
-        fetchingRef.current = false;
-      }
+      // eslint-disable-next-line no-void -- Fire-and-forget promise
+      void (async () => {
+        try {
+          const output = await capturePane(paneTarget, 200);
+          setLines(output.split("\n"));
+        } finally {
+          fetchingRef.current = false;
+        }
+      })();
     }, 500);
     return () => {
       clearInterval(id);

@@ -1,4 +1,4 @@
-import type { ServiceState } from "../lib/service/types.js";
+import type { ServiceState } from "#src/lib/service/types.js";
 import { Text } from "ink";
 import { useEffect, useState } from "react";
 

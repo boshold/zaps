@@ -1,9 +1,8 @@
-import type { TaskConfig } from "../config/types.js";
+import type { TaskConfig } from "#src/config/types.js";
+import { useZaps } from "#src/hooks/useZaps.js";
+import { execCommand } from "#src/lib/exec.js";
 import { Box, Text } from "ink";
 import { useEffect, useRef, useState } from "react";
-
-import { useZaps } from "../hooks/useZaps.js";
-import { execCommand } from "../lib/exec.js";
 
 import { Header } from "./Header.js";
 import { TaskRow } from "./TaskRow.js";
@@ -36,6 +35,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     }
 
     const [taskKey] = entry;
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void runTask(taskKey);
   }, [runTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- Only trigger on runTrigger
 
@@ -58,6 +58,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     // Run deps first
     if (t.dependsOn) {
       for (const dep of t.dependsOn) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential dependency execution
         if (!(await runWithDeps(dep, allTasks, visited, projectDir))) {
           return false;
         }
@@ -73,6 +74,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     for (const cmd of commands) {
       const resolved = typeof cmd === "function" ? cmd() : cmd;
       try {
+        // eslint-disable-next-line no-await-in-loop -- Sequential command execution
         await execCommand(resolved, {
           cwd: t.cwd ?? projectDir,
           onLine: (line) => {
@@ -123,6 +125,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
       {taskOutput.length > 0 && (
         <Box flexDirection="column" marginTop={1} borderStyle="single">
           {taskOutput.slice(-10).map((line, i) => (
+            // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
             <Text key={i}>{line}</Text>
           ))}
         </Box>

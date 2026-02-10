@@ -1,7 +1,6 @@
-import type { ServiceStatus } from "../lib/service/types.js";
+import { useZaps } from "#src/hooks/useZaps.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
 import { Box } from "ink";
-
-import { useZaps } from "../hooks/useZaps.js";
 
 import { Header } from "./Header.js";
 import { HelpBar } from "./HelpBar.js";

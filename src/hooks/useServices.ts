@@ -1,5 +1,5 @@
-import type { ServiceManager } from "../lib/service/manager.js";
-import type { ServiceStatus } from "../lib/service/types.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
 import { useEffect, useState } from "react";
 
 export function useServices(manager: ServiceManager) {

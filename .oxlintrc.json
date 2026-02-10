@@ -57,7 +57,11 @@
         "typescript/no-explicit-any": "off",
         "import/no-relative-parent-imports": "off",
         "import/first": "off",
-        "typescript/no-unsafe-type-assertion": "off"
+        "typescript/no-unsafe-type-assertion": "off",
+        "no-undefined": "off",
+        "no-await-in-loop": "off",
+        "promise/prefer-await-to-then": "off",
+        "init-declarations": "off"
       }
     },
     {

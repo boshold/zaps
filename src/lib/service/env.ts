@@ -60,6 +60,7 @@ export async function setServiceEnv(
 ): Promise<void> {
   // Sequential calls required: tmux set-environment must complete before the next
   for (const [key, value] of Object.entries(env)) {
+    // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
     await deps.setEnv(session, key, value);
   }
 }

@@ -5,6 +5,9 @@
     "zaps": "./dist/zaps"
   },
   "type": "module",
+  "imports": {
+    "#src/*": "./src/*"
+  },
   "scripts": {
     "dev": "tsx src/cli.tsx",
     "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",

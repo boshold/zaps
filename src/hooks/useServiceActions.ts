@@ -1,4 +1,4 @@
-import type { ServiceManager } from "../lib/service/manager.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
 
 export function useServiceActions(manager: ServiceManager) {
   async function restart(name: string) {

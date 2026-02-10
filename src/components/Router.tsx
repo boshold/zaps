@@ -1,0 +1,218 @@
+/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
+/* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
+import { execFile } from "node:child_process";
+
+import { useLogs } from "#src/hooks/useLogs.js";
+import { useRouter } from "#src/hooks/useRouter.js";
+import { useSelection } from "#src/hooks/useSelection.js";
+import { useServiceActions } from "#src/hooks/useServiceActions.js";
+import { useServices } from "#src/hooks/useServices.js";
+import { useZaps } from "#src/hooks/useZaps.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+import type { Key } from "ink";
+import { useApp as useInkApp, useInput } from "ink";
+import { useRef, useState } from "react";
+
+import { Dashboard } from "./Dashboard.js";
+import { LogView } from "./LogView.js";
+import { TasksView } from "./TasksView.js";
+
+function openInBrowser(status: ServiceStatus) {
+  if (!status.url) {
+    return;
+  }
+
+  const { url } = status;
+
+  // HTTP HEAD to verify reachable (2s timeout)
+  fetch(url, {
+    method: "HEAD",
+    signal: AbortSignal.timeout(2000),
+  })
+    .then(() => {
+      const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+      execFile(cmd, [url]);
+      return null;
+    })
+    .catch(() => {
+      // Not reachable — silently ignore
+    });
+}
+
+function handleDashboardInput(
+  input: string,
+  key: Key,
+  ctx: {
+    statuses: ServiceStatus[];
+    index: number;
+    busyRef: React.RefObject<boolean>;
+    moveUp: () => void;
+    moveDown: () => void;
+    restart: (name: string) => Promise<void>;
+    toggle: (name: string) => Promise<void>;
+    restartAll: () => Promise<void>;
+    goToLogs: (name: string) => void;
+    goToTasks: () => void;
+  },
+) {
+  if (key.upArrow) {
+    ctx.moveUp();
+  }
+  if (key.downArrow) {
+    ctx.moveDown();
+  }
+  if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
+    ctx.busyRef.current = true;
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void ctx.restart(ctx.statuses[ctx.index].name).finally(() => {
+      ctx.busyRef.current = false;
+    });
+  }
+  if (input === "s" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
+    ctx.busyRef.current = true;
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void ctx.toggle(ctx.statuses[ctx.index].name).finally(() => {
+      ctx.busyRef.current = false;
+    });
+  }
+  if (input === "l" && ctx.statuses[ctx.index]) {
+    ctx.goToLogs(ctx.statuses[ctx.index].name);
+  }
+  if (input === "o" && ctx.statuses[ctx.index]) {
+    openInBrowser(ctx.statuses[ctx.index]);
+  }
+  if (input === "t") {
+    ctx.goToTasks();
+  }
+  if (input === "a" && !ctx.busyRef.current) {
+    ctx.busyRef.current = true;
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void ctx.restartAll().finally(() => {
+      ctx.busyRef.current = false;
+    });
+  }
+}
+
+function handleLogsInput(
+  key: Key,
+  ctx: { goToDashboard: () => void; scrollUp: () => void; scrollDown: () => void },
+) {
+  if (key.escape) {
+    ctx.goToDashboard();
+  }
+  if (key.upArrow) {
+    ctx.scrollUp();
+  }
+  if (key.downArrow) {
+    ctx.scrollDown();
+  }
+}
+
+function handleTasksInput(
+  key: Key,
+  ctx: {
+    goToDashboard: () => void;
+    moveUp: () => void;
+    moveDown: () => void;
+    setRunTrigger: React.Dispatch<React.SetStateAction<number>>;
+  },
+) {
+  if (key.escape) {
+    ctx.goToDashboard();
+  }
+  if (key.upArrow) {
+    ctx.moveUp();
+  }
+  if (key.downArrow) {
+    ctx.moveDown();
+  }
+  if (key.return) {
+    ctx.setRunTrigger((n) => n + 1);
+  }
+}
+
+export function Router() {
+  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
+  const { manager, paneMap, config } = useZaps();
+  const statuses = useServices(manager);
+  const { restart, toggle, restartAll } = useServiceActions(manager);
+
+  // Selection count depends on view: services for dashboard, tasks for tasks view
+  const taskEntries = Object.entries(config.project.tasks ?? {});
+  const itemCount = view === "tasks" ? taskEntries.length : statuses.length;
+  const { index, moveUp, moveDown } = useSelection(itemCount);
+
+  const { exit } = useInkApp();
+  const busyRef = useRef(false);
+
+  // Logs state — called unconditionally (hooks rule)
+  const logPaneTarget = logTarget ? (paneMap[logTarget] ?? null) : null;
+  const {
+    lines: logLines,
+    autoScroll: logAutoScroll,
+    offset: logOffset,
+    scrollUp,
+    scrollDown,
+  } = useLogs(logPaneTarget);
+
+  // Task run trigger — incremented on Enter in tasks view
+  const [runTrigger, setRunTrigger] = useState(0);
+
+  useInput((input, key) => {
+    // Global keys
+    if (input === "q") {
+      if (busyRef.current) {
+        return;
+      }
+      busyRef.current = true;
+      manager
+        .stopAll()
+        .catch(() => {
+          /* Graceful shutdown */
+        })
+        .finally(() => {
+          exit();
+        });
+      return;
+    }
+
+    if (view === "dashboard") {
+      handleDashboardInput(input, key, {
+        statuses,
+        index,
+        busyRef,
+        moveUp,
+        moveDown,
+        restart,
+        toggle,
+        restartAll,
+        goToLogs,
+        goToTasks,
+      });
+    }
+
+    if (view === "logs") {
+      handleLogsInput(key, { goToDashboard, scrollUp, scrollDown });
+    }
+
+    if (view === "tasks") {
+      handleTasksInput(key, { goToDashboard, moveUp, moveDown, setRunTrigger });
+    }
+  });
+
+  // Conditional render — pass state as props
+  if (view === "logs" && logTarget) {
+    return (
+      <LogView
+        serviceName={logTarget}
+        lines={logLines}
+        autoScroll={logAutoScroll}
+        offset={logOffset}
+      />
+    );
+  }
+  if (view === "tasks") {
+    return <TasksView selectedIndex={index} runTrigger={runTrigger} />;
+  }
+  return <Dashboard statuses={statuses} selectedIndex={index} />;
+}

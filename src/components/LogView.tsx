@@ -22,6 +22,7 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
       <Header projectName={serviceName} />
       <Box flexDirection="column" marginTop={1}>
         {displayLines.map((line, i) => (
+          // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
           <Text key={i}>{line}</Text>
         ))}
       </Box>
