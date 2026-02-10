@@ -1,3 +1,5 @@
+/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- setInterval callback cannot be async */
+/* eslint-disable eslint-plugin-promise/always-return -- Fire-and-forget inside setInterval */
 import { useEffect, useRef, useState } from "react";
 
 // eslint-disable-next-line import/no-relative-parent-imports -- Hooks need tmux utilities
@@ -13,6 +15,7 @@ export function useLogs(paneTarget: string | null) {
     if (!paneTarget) {
       return;
     }
+    // eslint-disable-next-line no-misused-promises -- setInterval callback uses async for sequential fetch
     const id = setInterval(async () => {
       if (fetchingRef.current) {
         return;

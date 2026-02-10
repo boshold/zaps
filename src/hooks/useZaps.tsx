@@ -1,3 +1,4 @@
+/* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
 // eslint-disable-next-line import/no-relative-parent-imports -- Hooks need config types
 import type { ResolvedConfig } from "../config/types.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Hooks need service manager type

@@ -1,3 +1,5 @@
+/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
+/* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
 import { execFile } from "node:child_process";
 
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need config types
@@ -46,8 +48,9 @@ function openInBrowser(status: ServiceStatus) {
   })
     .then(() => {
       const cmd = process.platform === "darwin" ? "open" : "xdg-open";
+      // eslint-disable-next-line typescript-eslint/no-non-null-assertion -- Guarded by early return above
       execFile(cmd, [status.url!]);
-      return undefined;
+      return null;
     })
     .catch(() => {
       // Not reachable — silently ignore
@@ -82,6 +85,7 @@ function Router() {
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
 
+  // eslint-disable-next-line complexity -- Single input handler for all views
   useInput((input, key) => {
     // Global keys
     if (input === "q") {
@@ -91,7 +95,7 @@ function Router() {
       busyRef.current = true;
       manager
         .stopAll()
-        .catch(() => {})
+        .catch(() => { /* Graceful shutdown */ })
         .finally(() => {
           exit();
         });

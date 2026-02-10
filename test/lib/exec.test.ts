@@ -30,7 +30,9 @@ describe("execCommand", () => {
     await expect(
       execCommand("true", {
         cwd: "/tmp",
-        onLine: () => {},
+        onLine() {
+          /* No-op */
+        },
       }),
     ).resolves.toBeUndefined();
   });
@@ -39,7 +41,9 @@ describe("execCommand", () => {
     await expect(
       execCommand("exit 1", {
         cwd: "/tmp",
-        onLine: () => {},
+        onLine() {
+          /* No-op */
+        },
       }),
     ).rejects.toThrow("Command failed with code 1");
   });

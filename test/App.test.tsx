@@ -337,6 +337,7 @@ describe("Keyboard routing — Edge cases", () => {
     ];
 
     // Make restartService take time
+    // eslint-disable-next-line init-declarations -- Initialized inside Promise constructor
     let resolveRestart!: () => void;
     const restartPromise = new Promise<void>((resolve) => {
       resolveRestart = resolve;

@@ -91,9 +91,8 @@ program
       const originPane = process.env["ZAPS_ORIGIN_PANE"];
       for (const paneId of Object.values(paneMap)) {
         if (paneId !== originPane) {
-          await killPane(paneId).catch(() => {
-            // Pane may already be gone
-          });
+          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
+          await killPane(paneId).catch(() => { /* Pane may already be gone */ });
         }
       }
     } else {
@@ -197,7 +196,8 @@ program
     let killed = 0;
     for (const paneId of Object.values(paneMap)) {
       if (paneId !== originPane) {
-        await killPane(paneId).catch(() => {});
+        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
+        await killPane(paneId).catch(() => { /* Pane may already be gone */ });
         killed += 1;
       }
     }

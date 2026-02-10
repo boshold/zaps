@@ -1,3 +1,4 @@
+/* eslint-disable typescript-eslint/unbound-method -- Mock method assertions */
 import { EventEmitter } from "node:events";
 
 import type { ServiceManager } from "../../src/lib/service/manager.js";
