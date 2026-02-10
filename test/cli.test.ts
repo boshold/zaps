@@ -195,7 +195,7 @@ describe("CLI — ui command", () => {
 
     const session = await mockCurrentSession();
     const raw = await mockShowEnv(session, "ZAPS_PANE_MAP");
-    const parsed = JSON.parse(raw!) as Record<string, string>;
+    const parsed = JSON.parse(raw ?? "") as Record<string, string>;
     expect(parsed).toEqual(paneMap);
     expect(mockShowEnv).toHaveBeenCalledWith("my-session", "ZAPS_PANE_MAP");
   });

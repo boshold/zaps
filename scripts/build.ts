@@ -17,18 +17,28 @@ import type { BunPlugin } from "bun";
 const tlaFixPlugin: BunPlugin = {
   name: "tla-fix",
   setup(build) {
+    // Yoga-layout: Force all imports to resolve to the hoisted copy so the
+    // Bundler produces a single module instance (pnpm may create two paths).
+    build.onResolve({ filter: /^yoga-layout$/ }, () => ({
+      path: require.resolve("yoga-layout"),
+    }));
+
     // Yoga-layout: Replace TLA `await loadYoga()` with async IIFE + Proxy
     build.onLoad({ filter: /yoga-layout\/dist\/src\/index\.js$/ }, () => ({
       contents: `
 import loadYoga from '../binaries/yoga-wasm-base64-esm.js';
 import wrapAssembly from "./wrapAssembly.js";
 
-let _yoga;
-const _ready = (async () => { _yoga = wrapAssembly(await loadYoga()); })();
+const _ref = [null];
+const _ready = (async () => { _ref[0] = wrapAssembly(await loadYoga()); })();
 
 export default new Proxy({}, {
-  get(_, p) { return p === "__yogaReady" ? _ready : _yoga[p]; },
-  set(_, p, v) { _yoga[p] = v; return true; },
+  get(_, p) {
+    if (p === "__yogaReady") return _ready;
+    if (!_ref[0]) throw new Error("Yoga not ready — await __yogaReady first");
+    return _ref[0][p];
+  },
+  set(_, p, v) { _ref[0][p] = v; return true; },
 });
 export * from "./generated/YGEnums.js";
 `,
