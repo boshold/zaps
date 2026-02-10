@@ -71,10 +71,11 @@ program
 
       // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
       // Ensure yoga-wasm is loaded before Ink creates layout nodes.
-      // __yogaReady is injected by the build plugin (scripts/build.ts) — a no-op in dev.
+      // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
+      // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
+      const { default: yoga } = await import("yoga-layout");
       // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- __yogaReady is injected at build time
-      const yoga = await import("yoga-layout") as unknown as Record<string, unknown>;
-      await yoga["__yogaReady"];
+      await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
 
       const { render } = await import("ink");
       const { App } = await import("./components/App.js");
@@ -179,7 +180,7 @@ program
     // Read pane map from tmux env
     const { spawnSync } = await import("node:child_process");
     const result = spawnSync("tmux", ["show-environment", "-t", sessionName, "ZAPS_PANE_MAP"], {
-      encoding: "utf-8",
+      encoding: "utf8",
     });
 
     if (result.status !== 0 || !result.stdout) {

@@ -14,24 +14,12 @@
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
 
-const textFilePlugin: BunPlugin = {
-  name: "text-file",
-  setup(build) {
-    build.onLoad({ filter: /\.txt$/ }, async (args) => ({
-      contents: `export default ${JSON.stringify(await Bun.file(args.path).text())};`,
-      loader: "js",
-    }));
-  },
-};
-
 const tlaFixPlugin: BunPlugin = {
   name: "tla-fix",
   setup(build) {
-    // yoga-layout: replace TLA `await loadYoga()` with async IIFE + Proxy
-    build.onLoad(
-      { filter: /yoga-layout\/dist\/src\/index\.js$/ },
-      () => ({
-        contents: `
+    // Yoga-layout: Replace TLA `await loadYoga()` with async IIFE + Proxy
+    build.onLoad({ filter: /yoga-layout\/dist\/src\/index\.js$/ }, () => ({
+      contents: `
 import loadYoga from '../binaries/yoga-wasm-base64-esm.js';
 import wrapAssembly from "./wrapAssembly.js";
 
@@ -39,28 +27,23 @@ let _yoga;
 const _ready = (async () => { _yoga = wrapAssembly(await loadYoga()); })();
 
 export default new Proxy({}, {
-  get(_, p) { return _yoga[p]; },
+  get(_, p) { return p === "__yogaReady" ? _ready : _yoga[p]; },
   set(_, p, v) { _yoga[p] = v; return true; },
 });
-export { _ready as __yogaReady };
 export * from "./generated/YGEnums.js";
 `,
-        loader: "js",
-      }),
-    );
+      loader: "js",
+    }));
 
-    // ink reconciler: strip the devtools TLA block
-    build.onLoad(
-      { filter: /ink\/build\/reconciler\.js$/ },
-      async (args) => {
-        let contents = await Bun.file(args.path).text();
-        contents = contents.replace(
-          /\/\/ We need to conditionally perform devtools[\s\S]*?^}\n/m,
-          "",
-        );
-        return { contents, loader: "js" };
-      },
-    );
+    // Ink reconciler: Strip the devtools TLA block
+    build.onLoad({ filter: /ink\/build\/reconciler\.js$/ }, async (args) => {
+      let contents = await Bun.file(args.path).text();
+      contents = contents.replace(
+        /\/\/ We need to conditionally perform devtools[\s\S]*?^}\n/m,
+        "",
+      );
+      return { contents, loader: "js" };
+    });
   },
 };
 
@@ -70,11 +53,12 @@ const result = await Bun.build({
   target: "bun",
   outdir: "./dist",
   naming: "cli.js",
-  plugins: [textFilePlugin, tlaFixPlugin],
+  plugins: [tlaFixPlugin],
 });
 
 if (!result.success) {
   for (const log of result.logs) {
+    // eslint-disable-next-line no-console -- Build script CLI output
     console.error(log);
   }
   process.exit(1);

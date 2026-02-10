@@ -24,7 +24,7 @@ describe("TaskRow", () => {
 
   it("renders running state with spinner icon", () => {
     const { lastFrame } = render(
-      <TaskRow taskKey="migrate" task={makeTask()} isSelected={false} isRunning={true} />,
+      <TaskRow taskKey="migrate" task={makeTask()} isSelected={false} isRunning />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("◐");
@@ -32,7 +32,13 @@ describe("TaskRow", () => {
 
   it("renders success state with checkmark icon", () => {
     const { lastFrame } = render(
-      <TaskRow taskKey="migrate" task={makeTask()} isSelected={false} isRunning={false} result="success" />,
+      <TaskRow
+        taskKey="migrate"
+        task={makeTask()}
+        isSelected={false}
+        isRunning={false}
+        result="success"
+      />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("✔");
@@ -40,7 +46,13 @@ describe("TaskRow", () => {
 
   it("renders error state with cross icon", () => {
     const { lastFrame } = render(
-      <TaskRow taskKey="migrate" task={makeTask()} isSelected={false} isRunning={false} result="error" />,
+      <TaskRow
+        taskKey="migrate"
+        task={makeTask()}
+        isSelected={false}
+        isRunning={false}
+        result="error"
+      />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("✖");
@@ -48,7 +60,7 @@ describe("TaskRow", () => {
 
   it("shows selection indicator when selected", () => {
     const { lastFrame } = render(
-      <TaskRow taskKey="migrate" task={makeTask()} isSelected={true} isRunning={false} />,
+      <TaskRow taskKey="migrate" task={makeTask()} isSelected isRunning={false} />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain(">");
@@ -73,7 +85,7 @@ describe("TaskRow", () => {
   });
 
   it("does not render description separator when description is absent", () => {
-    const task = makeTask({ description: undefined });
+    const task = makeTask();
     const { lastFrame } = render(
       <TaskRow taskKey="migrate" task={task} isSelected={false} isRunning={false} />,
     );

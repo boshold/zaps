@@ -1,10 +1,9 @@
-import type { ReactNode } from "react";
-import { createContext, useContext } from "react";
-
 // eslint-disable-next-line import/no-relative-parent-imports -- Hooks need config types
 import type { ResolvedConfig } from "../config/types.js";
 // eslint-disable-next-line import/no-relative-parent-imports -- Hooks need service manager type
 import type { ServiceManager } from "../lib/service/manager.js";
+import type { ReactNode } from "react";
+import { createContext, useContext } from "react";
 
 type PaneMap = Record<string, string>;
 
@@ -27,11 +26,7 @@ export function AppProvider({
   paneMap: PaneMap;
   children: ReactNode;
 }) {
-  return (
-    <AppContext.Provider value={{ manager, config, paneMap }}>
-      {children}
-    </AppContext.Provider>
-  );
+  return <AppContext.Provider value={{ manager, config, paneMap }}>{children}</AppContext.Provider>;
 }
 
 export function useZaps(): AppContextValue {

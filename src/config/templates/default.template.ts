@@ -1,4 +1,4 @@
-import type { ZapsLib } from "{{ZAPS_PATH}}";
+const defaultTemplate = `import type { ZapsLib } from "{{ZAPS_PATH}}";
 
 export function config(z: ZapsLib) {
   return z.defineProject({
@@ -11,3 +11,6 @@ export function config(z: ZapsLib) {
     },
   });
 }
+`;
+
+export default defaultTemplate;

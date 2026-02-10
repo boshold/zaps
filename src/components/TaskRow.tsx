@@ -2,7 +2,7 @@
 import type { TaskConfig } from "../config/types.js";
 import { Box, Text } from "ink";
 
-export interface TaskRowProps {
+interface TaskRowProps {
   taskKey: string;
   task: TaskConfig;
   isSelected: boolean;
@@ -10,9 +10,21 @@ export interface TaskRowProps {
   isRunning: boolean;
 }
 
+function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
+  if (isRunning) {
+    return { icon: "◐", color: "yellow" } as const;
+  }
+  if (result === "success") {
+    return { icon: "✔", color: "green" } as const;
+  }
+  if (result === "error") {
+    return { icon: "✖", color: "red" } as const;
+  }
+  return { icon: "○", color: "gray" } as const;
+}
+
 export function TaskRow({ task, isSelected, result, isRunning }: TaskRowProps) {
-  const icon = isRunning ? "◐" : result === "success" ? "✔" : result === "error" ? "✖" : "○";
-  const color = isRunning ? "yellow" : result === "success" ? "green" : result === "error" ? "red" : "gray";
+  const { icon, color } = getIconAndColor(isRunning, result);
 
   return (
     <Box>
@@ -23,3 +35,5 @@ export function TaskRow({ task, isSelected, result, isRunning }: TaskRowProps) {
     </Box>
   );
 }
+
+export type { TaskRowProps };

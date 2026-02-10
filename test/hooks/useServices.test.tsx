@@ -1,16 +1,18 @@
+/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
 import { EventEmitter } from "node:events";
+
+import type { ServiceManager } from "../../src/lib/service/manager.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ServiceStatus } from "../../src/lib/service/types.js";
-import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { useServices } from "../../src/hooks/useServices.js";
 
 // Minimal act()
-function act(fn: () => void): Promise<void> {
+async function act(fn: () => void): Promise<void> {
+  fn();
   return new Promise((resolve) => {
-    fn();
     setTimeout(resolve, 0);
   });
 }
@@ -49,17 +51,14 @@ function makeStatus(name: string, state: ServiceStatus["state"] = "stopped"): Se
 
 describe("useServices", () => {
   it("returns current statuses on initial render", () => {
-    const manager = createMockManager([
-      makeStatus("db", "ready"),
-      makeStatus("api", "starting"),
-    ]);
+    const manager = createMockManager([makeStatus("db", "ready"), makeStatus("api", "starting")]);
 
-    function Wrapper() {
+    function TestWrapper() {
       const statuses = useServices(manager);
       return <Text>{statuses.map((s) => `${s.name}:${s.state}`).join(",")}</Text>;
     }
 
-    const { lastFrame } = render(<Wrapper />);
+    const { lastFrame } = render(<TestWrapper />);
     expect(lastFrame()).toContain("db:ready");
     expect(lastFrame()).toContain("api:starting");
   });
@@ -68,12 +67,12 @@ describe("useServices", () => {
     const initial = [makeStatus("db", "stopped"), makeStatus("api", "stopped")];
     const manager = createMockManager(initial);
 
-    function Wrapper() {
+    function TestWrapper() {
       const statuses = useServices(manager);
       return <Text>{statuses.map((s) => `${s.name}:${s.state}`).join(",")}</Text>;
     }
 
-    const { lastFrame } = render(<Wrapper />);
+    const { lastFrame } = render(<TestWrapper />);
     expect(lastFrame()).toContain("db:stopped");
 
     // Update the underlying statuses and emit event
@@ -91,12 +90,12 @@ describe("useServices", () => {
   it("cleans up event listener on unmount", () => {
     const manager = createMockManager([makeStatus("db")]);
 
-    function Wrapper() {
+    function TestWrapper() {
       const statuses = useServices(manager);
       return <Text>{statuses.length.toString()}</Text>;
     }
 
-    const { unmount } = render(<Wrapper />);
+    const { unmount } = render(<TestWrapper />);
     expect(manager.listenerCount("stateChange")).toBe(1);
 
     unmount();

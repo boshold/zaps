@@ -15,7 +15,7 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
 
   const displayLines = autoScroll
     ? lines.slice(-visibleLines)
-    : lines.slice(-(visibleLines + offset), offset > 0 ? -offset : undefined);
+    : lines.slice(-(visibleLines + offset), offset > 0 ? -offset : lines.length);
 
   return (
     <Box flexDirection="column" padding={1}>
@@ -27,7 +27,7 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>[↑/↓] scroll  [esc] back</Text>
+        <Text dimColor>[↑/↓] scroll [esc] back</Text>
       </Box>
     </Box>
   );

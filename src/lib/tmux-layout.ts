@@ -33,24 +33,23 @@ async function walkLayout(
     const dir = direction === "rows" ? "v" : "h";
 
     // Parse sizes: explicit sizes kept, implicit get equal share of remainder
-    const explicitTotal = children.reduce((sum, child) => {
-      return sum + (child.size ? Number.parseInt(child.size, 10) : 0);
-    }, 0);
+    const explicitTotal = children.reduce(
+      (sum, child) => sum + (child.size ? Number.parseInt(child.size, 10) : 0),
+      0,
+    );
     const implicitCount = children.filter((child) => !child.size).length;
-    const implicitSize = implicitCount > 0
-      ? Math.floor((100 - explicitTotal) / implicitCount)
-      : 0;
+    const implicitSize = implicitCount > 0 ? Math.floor((100 - explicitTotal) / implicitCount) : 0;
 
-    const sizes = children.map((child) => {
-      return child.size ? Number.parseInt(child.size, 10) : implicitSize;
-    });
+    const sizes = children.map((child) =>
+      child.size ? Number.parseInt(child.size, 10) : implicitSize,
+    );
 
     // First child inherits the current pane
     const paneIds: string[] = [currentPaneId];
 
     // Children 2..N: split from the current pane (must be sequential)
-    // tmux -p is relative to the current physical pane size, so we track
-    // how much of the logical 100% remains after each split.
+    // Tmux -p is relative to the current physical pane size, so we track
+    // How much of the logical 100% remains after each split.
     let currentPaneSize = 100;
 
     for (let i = 1; i < children.length; i += 1) {

@@ -1,3 +1,5 @@
+/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
+/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
@@ -14,7 +16,7 @@ import { capturePane } from "../../src/lib/tmux.js";
 const mockCapturePane = capturePane as ReturnType<typeof vi.fn>;
 
 // Flush React/Ink reconciler
-function act(fn: () => void): Promise<void> {
+async function act(fn: () => void): Promise<void> {
   fn();
   return new Promise((resolve) => {
     setTimeout(resolve, 50);
@@ -50,11 +52,15 @@ describe("useLogs", () => {
     expect(lastFrame()).toContain("autoScroll:true");
     expect(lastFrame()).toContain("offset:0");
 
-    await act(() => { hookRef!.scrollUp(); });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
     expect(lastFrame()).toContain("autoScroll:false");
     expect(lastFrame()).toContain("offset:1");
 
-    await act(() => { hookRef!.scrollUp(); });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
     expect(lastFrame()).toContain("offset:2");
   });
 
@@ -74,18 +80,26 @@ describe("useLogs", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Scroll up twice
-    await act(() => { hookRef!.scrollUp(); });
-    await act(() => { hookRef!.scrollUp(); });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
     expect(lastFrame()).toContain("offset:2");
     expect(lastFrame()).toContain("autoScroll:false");
 
     // Scroll down once
-    await act(() => { hookRef!.scrollDown(); });
+    await act(() => {
+      hookRef!.scrollDown();
+    });
     expect(lastFrame()).toContain("offset:1");
     expect(lastFrame()).toContain("autoScroll:false");
 
     // Scroll down to 0 -> autoScroll re-enabled
-    await act(() => { hookRef!.scrollDown(); });
+    await act(() => {
+      hookRef!.scrollDown();
+    });
     expect(lastFrame()).toContain("offset:0");
     expect(lastFrame()).toContain("autoScroll:true");
   });
@@ -106,12 +120,18 @@ describe("useLogs", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Scroll up
-    await act(() => { hookRef!.scrollUp(); });
-    await act(() => { hookRef!.scrollUp(); });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
+    await act(() => {
+      hookRef!.scrollUp();
+    });
     expect(lastFrame()).toContain("offset:2");
 
     // Reset
-    await act(() => { hookRef!.resetScroll(); });
+    await act(() => {
+      hookRef!.resetScroll();
+    });
     expect(lastFrame()).toContain("offset:0");
     expect(lastFrame()).toContain("autoScroll:true");
   });

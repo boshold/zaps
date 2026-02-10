@@ -10,8 +10,10 @@
     "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "postinstall": "pnpm build",
     "test": "vitest run",
+    "typecheck": "tsc --noEmit",
     "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
-    "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware"
+    "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware",
+    "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm test"
   },
   "dependencies": {
     "chalk": "^5.4.1",

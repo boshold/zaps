@@ -2,8 +2,7 @@ import fs from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
-// Inlined at build time by the textFilePlugin in scripts/build.ts
-import defaultTemplate from "./templates/default.template.txt";
+import defaultTemplate from "./templates/default.template.js";
 
 const CONFIG_FILENAMES = [".local.zaps.mts", ".local.zaps.ts", ".zaps.mts", ".zaps.ts"];
 

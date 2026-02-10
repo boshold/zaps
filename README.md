@@ -158,19 +158,19 @@ export function config(z: ZapsLib) {
 
 ### Options
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `start` | `string \| () => string` | — | Command to start the service |
-| `run` | `string \| () => string` | — | Alias for `start` |
-| `stop` | `string` | — | Custom stop command (default: Ctrl-C) |
-| `ready` | `ReadyConfig` | — | How to detect the service is ready |
-| `dependsOn` | `string[]` | `[]` | Services that must be ready first |
-| `env` | `Record<string, string> \| (ctx) => Record` | — | Environment variables |
-| `cwd` | `string` | — | Working directory |
-| `url` | `string \| (ctx) => string` | — | URL for browser open (`o` key) |
-| `autostart` | `boolean` | `true` | Start automatically on launch |
-| `detached` | `boolean` | `false` | Run outside tmux (no pane) |
-| `restart` | `{ maxRetries?, backoff? }` | — | Auto-restart on crash |
+| Option      | Type                                        | Default | Description                           |
+| ----------- | ------------------------------------------- | ------- | ------------------------------------- |
+| `start`     | `string \| () => string`                    | —       | Command to start the service          |
+| `run`       | `string \| () => string`                    | —       | Alias for `start`                     |
+| `stop`      | `string`                                    | —       | Custom stop command (default: Ctrl-C) |
+| `ready`     | `ReadyConfig`                               | —       | How to detect the service is ready    |
+| `dependsOn` | `string[]`                                  | `[]`    | Services that must be ready first     |
+| `env`       | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                 |
+| `cwd`       | `string`                                    | —       | Working directory                     |
+| `url`       | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)        |
+| `autostart` | `boolean`                                   | `true`  | Start automatically on launch         |
+| `detached`  | `boolean`                                   | `false` | Run outside tmux (no pane)            |
+| `restart`   | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                 |
 
 ### Ready Detection
 
@@ -179,15 +179,23 @@ Three strategies for detecting when a service is ready:
 **Port** — wait for a TCP port to start listening:
 
 ```typescript
-ready: { port: 3000 }
-ready: { port: () => parseInt(process.env.PORT) }
+ready: {
+  port: 3000;
+}
+ready: {
+  port: () => parseInt(process.env.PORT);
+}
 ```
 
 **Output** — match against pane output:
 
 ```typescript
-ready: { output: /listening on port \d+/ }
-ready: { output: (line) => line.includes("ready") }
+ready: {
+  output: /listening on port \d+/;
+}
+ready: {
+  output: (line) => line.includes("ready");
+}
 ```
 
 **Function** — custom async check:
@@ -196,7 +204,7 @@ ready: { output: (line) => line.includes("ready") }
 ready: async () => {
   const res = await fetch("http://localhost:3000/health");
   return res.ok;
-}
+};
 ```
 
 Ready checks poll every 500ms with a 60s timeout.
@@ -243,7 +251,7 @@ Access other services' ports and project directory at runtime:
 env: (ctx) => ({
   DATABASE_URL: `postgres://localhost:${ctx.services.db.port}/mydb`,
   PROJECT_DIR: ctx.projectDir,
-})
+});
 ```
 
 ## Tasks
@@ -302,31 +310,31 @@ If no layout is specified, `@tui` gets the main pane and each service gets a bac
 
 ### Dashboard
 
-| Key | Action |
-| --- | --- |
-| `Up/Down` | Navigate services |
-| `r` | Restart selected service |
-| `s` | Start/stop selected service |
-| `l` | View logs for selected service |
-| `o` | Open service URL in browser |
-| `t` | Switch to tasks view |
-| `a` | Restart all services |
-| `q` | Stop all and quit |
+| Key       | Action                         |
+| --------- | ------------------------------ |
+| `Up/Down` | Navigate services              |
+| `r`       | Restart selected service       |
+| `s`       | Start/stop selected service    |
+| `l`       | View logs for selected service |
+| `o`       | Open service URL in browser    |
+| `t`       | Switch to tasks view           |
+| `a`       | Restart all services           |
+| `q`       | Stop all and quit              |
 
 ### Log View
 
-| Key | Action |
-| --- | --- |
-| `Up/Down` | Scroll logs |
-| `Esc` | Back to dashboard |
+| Key       | Action            |
+| --------- | ----------------- |
+| `Up/Down` | Scroll logs       |
+| `Esc`     | Back to dashboard |
 
 ### Tasks View
 
-| Key | Action |
-| --- | --- |
-| `Up/Down` | Navigate tasks |
-| `Enter` | Run selected task |
-| `Esc` | Back to dashboard |
+| Key       | Action            |
+| --------- | ----------------- |
+| `Up/Down` | Navigate tasks    |
+| `Enter`   | Run selected task |
+| `Esc`     | Back to dashboard |
 
 ## Service States
 
@@ -340,12 +348,12 @@ stopped ──> starting ──> ready ──> stopping ──> stopped
             starting (retry)
 ```
 
-| State | Indicator |
-| --- | --- |
-| `ready` | Green `●` |
+| State                                  | Indicator      |
+| -------------------------------------- | -------------- |
+| `ready`                                | Green `●`      |
 | `starting` / `stopping` / `restarting` | Yellow spinner |
-| `error` | Red `✖` |
-| `stopped` | Gray `○` |
+| `error`                                | Red `✖`        |
+| `stopped`                              | Gray `○`       |
 
 ## Hooks
 

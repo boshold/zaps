@@ -163,10 +163,7 @@ describe("createLayout", () => {
 
     const layout = {
       direction: "rows" as const,
-      children: [
-        { pane: "@tui", size: "60%" },
-        { pane: "api" },
-      ],
+      children: [{ pane: "@tui", size: "60%" }, { pane: "api" }],
     };
 
     const result = await createLayout("%0", layout, services);
@@ -175,7 +172,7 @@ describe("createLayout", () => {
     expect(result["api"]).toBe("%1");
 
     // Implicit child gets remainder: 100 - 60 = 40
-    // currentPaneSize = 100, tmux = round(40/100*100) = 40
+    // CurrentPaneSize = 100, tmux = round(40/100*100) = 40
     expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 40);
   });
 });

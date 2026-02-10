@@ -1,11 +1,12 @@
 // eslint-disable-next-line import/no-relative-parent-imports -- Components need config types
 import type { TaskConfig } from "../config/types.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need exec helper
-import { execCommand } from "../lib/exec.js";
-// eslint-disable-next-line import/no-relative-parent-imports -- Components need app context
-import { useZaps } from "../hooks/useZaps.js";
 import { Box, Text } from "ink";
 import { useEffect, useRef, useState } from "react";
+
+// eslint-disable-next-line import/no-relative-parent-imports -- Components need app context
+import { useZaps } from "../hooks/useZaps.js";
+// eslint-disable-next-line import/no-relative-parent-imports -- Components need exec helper
+import { execCommand } from "../lib/exec.js";
 
 import { Header } from "./Header.js";
 import { TaskRow } from "./TaskRow.js";
@@ -134,7 +135,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
         </Box>
       )}
       <Box marginTop={1}>
-        <Text dimColor>[↑/↓] select  [enter] run  [esc] back</Text>
+        <Text dimColor>[↑/↓] select [enter] run [esc] back</Text>
       </Box>
     </Box>
   );

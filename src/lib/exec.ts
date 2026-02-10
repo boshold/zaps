@@ -6,7 +6,7 @@ export interface ExecOptions {
   onLine: (line: string) => void;
 }
 
-export function execCommand(cmd: string, opts: ExecOptions): Promise<void> {
+export async function execCommand(cmd: string, opts: ExecOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn("sh", ["-c", cmd], { cwd: opts.cwd });
 

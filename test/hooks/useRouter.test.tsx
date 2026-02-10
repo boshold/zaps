@@ -1,8 +1,18 @@
+/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
+/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { useRouter } from "../../src/hooks/useRouter.js";
+
+// Minimal act() for Ink — triggers React batch update
+async function act(fn: () => void): Promise<void> {
+  fn();
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
+}
 
 // Helper: renders hook in a minimal component and returns getters/actions
 function renderRouter() {
@@ -104,11 +114,3 @@ describe("useRouter", () => {
     expect(lastFrame()).toContain("view:tasks");
   });
 });
-
-// Minimal act() for Ink — triggers React batch update
-function act(fn: () => void): Promise<void> {
-  return new Promise((resolve) => {
-    fn();
-    setTimeout(resolve, 0);
-  });
-}
