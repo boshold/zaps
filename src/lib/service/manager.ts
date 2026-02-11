@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
-import type { ReadyDeps, ServiceStatus } from "./types.js";
+import type { ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { reverseTopoSort, topoSort } from "./graph.js";
@@ -20,6 +20,32 @@ function resolveCommand(config: ServiceConfig): string {
     return cmd();
   }
   return cmd ?? "";
+}
+
+async function resolveUrl(
+  serviceConfig: ServiceConfig,
+  ports: number[],
+  ctx: ServiceContext,
+): Promise<string | undefined> {
+  if (serviceConfig.url) {
+    return typeof serviceConfig.url === "function" ? serviceConfig.url(ctx) : serviceConfig.url;
+  }
+
+  // Auto-probe detected ports
+  for (const port of ports) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- Sequential probe, first wins
+      await fetch(`http://localhost:${port}`, {
+        method: "HEAD",
+        signal: AbortSignal.timeout(1000),
+      });
+      return `http://localhost:${port}`;
+    } catch {
+      // Port doesn't respond to HTTP
+    }
+  }
+
+  return undefined; // eslint-disable-line no-undefined -- Explicit absence
 }
 
 async function fireHook(
@@ -187,6 +213,7 @@ export class ServiceManager extends EventEmitter {
       status.state = transition(status.state, "ready");
       status.ports = ports;
       status.readySince = Date.now();
+      status.url = await resolveUrl(serviceConfig, ports, ctx);
       this.emit("stateChange", name, status);
 
       await fireHook(hooks?.onServiceStart, name);
@@ -267,6 +294,7 @@ export class ServiceManager extends EventEmitter {
     // Transition: stopping -> stopped
     status.state = transition(status.state, "stopped");
     delete status.readySince;
+    delete status.url;
     this.emit("stateChange", name, status);
 
     await fireHook(hooks?.onServiceStop, name);

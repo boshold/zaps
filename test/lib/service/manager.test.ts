@@ -755,6 +755,140 @@ describe("crash recovery", () => {
 });
 
 // =============================================================================
+// URL resolution
+// =============================================================================
+
+describe("url resolution", () => {
+  it("uses explicit string url from config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", url: "https://my-app.dev" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("svc").url).toBe("https://my-app.dev");
+  });
+
+  it("uses url function from config with service context", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: {
+        start: "start-api",
+        dependsOn: ["db"],
+        url: (ctx) => `http://localhost:${ctx.services.db?.port ?? 0}`,
+      },
+    });
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn(async (target: string) => {
+      if (target === "%db") {
+        return [5432];
+      }
+      return [3000];
+    });
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    const dbPromise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await dbPromise;
+
+    const apiPromise = mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    await apiPromise;
+
+    expect(mgr.getStatus("api").url).toBe("http://localhost:5432");
+  });
+
+  it("auto-probes HTTP when no url in config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://localhost:3000",
+      expect.objectContaining({ method: "HEAD" }),
+    );
+    expect(mgr.getStatus("svc").url).toBe("http://localhost:3000");
+
+    fetchSpy.mockRestore();
+  });
+
+  it("sets url to undefined when probe fails", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Connection refused"));
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("svc").url).toBeUndefined();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("clears url on stop", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", url: "http://localhost:3000" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(mgr.getStatus("svc").url).toBe("http://localhost:3000");
+
+    processRunning = true;
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    expect(mgr.getStatus("svc").url).toBeUndefined();
+  });
+});
+
+// =============================================================================
 // GetStatus / getAllStatuses
 // =============================================================================
 

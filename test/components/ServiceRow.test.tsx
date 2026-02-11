@@ -83,4 +83,31 @@ describe("ServiceRow", () => {
     const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
     expect(lastFrame()).toContain("http://localhost:3000");
   });
+
+  it("shows action hints when selected", () => {
+    const status = makeStatus();
+    const { lastFrame } = render(<ServiceRow status={status} isSelected />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[r]estart");
+    expect(frame).toContain("[s]top");
+    expect(frame).toContain("[l]ogs");
+  });
+
+  it("hides action hints when not selected", () => {
+    const status = makeStatus();
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("[r]estart");
+  });
+
+  it("shows [o]pen only when url is set", () => {
+    const withUrl = makeStatus({ url: "http://localhost:3000" });
+    const withoutUrl = makeStatus();
+
+    const { lastFrame: f1 } = render(<ServiceRow status={withUrl} isSelected />);
+    expect(f1()).toContain("[o]pen");
+
+    const { lastFrame: f2 } = render(<ServiceRow status={withoutUrl} isSelected />);
+    expect(f2()).not.toContain("[o]pen");
+  });
 });
