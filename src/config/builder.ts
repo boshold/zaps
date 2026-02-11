@@ -1,6 +1,6 @@
-import type { ProjectConfig, ZapsLib } from "./types.js";
+import type { Library, ProjectConfig } from "./types.js";
 
-export function createZapsLib(): ZapsLib {
+export function createZapsLib(): Library {
   return {
     defineProject(config: ProjectConfig): ProjectConfig {
       return config;

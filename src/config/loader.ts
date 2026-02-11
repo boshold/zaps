@@ -83,11 +83,6 @@ function validateLayout(project: ProjectConfig): void {
 }
 
 function validate(project: ProjectConfig): void {
-  // Name must be non-empty
-  if (!project.name || typeof project.name !== "string") {
-    throw new Error("Project name must be a non-empty string");
-  }
-
   // Services must be non-empty
   if (
     !project.services ||
@@ -114,13 +109,16 @@ export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
     throw new Error("Config file must export a 'config' function or default export");
   }
 
+  const projectDir = path.dirname(configPath);
   const project: ProjectConfig = configFn(createZapsLib());
+  const name = project.name || path.basename(projectDir);
+  const resolved = { ...project, name };
 
-  validate(project);
+  validate(resolved);
 
   return {
-    project,
+    project: resolved,
     configPath,
-    projectDir: path.dirname(configPath),
+    projectDir,
   };
 }

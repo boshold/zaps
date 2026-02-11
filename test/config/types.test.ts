@@ -160,6 +160,11 @@ describe("type guards", () => {
       expect(isReadyPort(ready)).toBe(true);
     });
 
+    it("returns true for port config with true (any-port)", () => {
+      const ready: ReadyConfig = { port: true };
+      expect(isReadyPort(ready)).toBe(true);
+    });
+
     it("returns false for output config", () => {
       const ready: ReadyConfig = { output: /ready/ };
       expect(isReadyPort(ready)).toBe(false);

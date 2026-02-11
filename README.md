@@ -63,11 +63,10 @@ ZAPS looks for config files walking up from the current directory. Filenames che
 ### Minimal Config
 
 ```typescript
-import type { ZapsLib } from "zaps";
+import type { Library } from "zaps";
 
-export function config(z: ZapsLib) {
-  return z.defineProject({
-    name: "my-app",
+export function config({ defineProject }: Library) {
+  return defineProject({
     services: {
       api: {
         start: "npm run dev",
@@ -81,10 +80,10 @@ export function config(z: ZapsLib) {
 ### Full Config Reference
 
 ```typescript
-import type { ZapsLib } from "zaps";
+import type { Library } from "zaps";
 
-export function config(z: ZapsLib) {
-  return z.defineProject({
+export function config({ defineProject }: Library) {
+  return defineProject({
     name: "my-app",
 
     services: {

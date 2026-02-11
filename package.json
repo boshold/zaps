@@ -5,6 +5,7 @@
     "zaps": "./dist/zaps"
   },
   "type": "module",
+  "types": "./dist/config/index.d.ts",
   "imports": {
     "#src/*": "./src/*"
   },

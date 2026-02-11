@@ -7,7 +7,7 @@ export interface ReadyOutput {
   output: RegExp | ((line: string) => boolean);
 }
 export interface ReadyPort {
-  port: number | (() => number);
+  port: number | true | (() => number);
 }
 export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort;
 
@@ -70,21 +70,21 @@ export interface HooksConfig {
 
 // === Project ===
 export interface ProjectConfig {
-  name: string;
+  name?: string;
   services: Record<string, ServiceConfig>;
   tasks?: Record<string, TaskConfig>;
   layout?: LayoutNode;
   hooks?: HooksConfig;
 }
 
-// === ZapsLib ===
-export interface ZapsLib {
-  defineProject(config: ProjectConfig): ProjectConfig;
+// === Library ===
+export interface Library {
+  defineProject(this: void, config: ProjectConfig): ProjectConfig;
 }
 
 // === Resolved ===
 export interface ResolvedConfig {
-  project: ProjectConfig;
+  project: ProjectConfig & { name: string };
   configPath: string;
   projectDir: string;
 }

@@ -1,7 +1,7 @@
-import type { ZapsLib } from ".";
+import type { Library } from ".";
 
-export function config(z: ZapsLib) {
-  return z.defineProject({
+export function config({ defineProject }: Library) {
+  return defineProject({
     name: "zaps",
     services: {
       app: {

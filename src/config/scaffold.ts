@@ -15,12 +15,10 @@ async function getZapsPath(): Promise<string> {
 /**
  * Generate config template with placeholders replaced.
  */
-export async function generateTemplate(projectName?: string): Promise<string> {
+export async function generateTemplate(): Promise<string> {
   const template = defaultTemplate;
   const zapsPath = await getZapsPath();
-  return template
-    .replace(/\{\{PROJECT_NAME\}\}/g, projectName ?? "my-project")
-    .replace(/\{\{ZAPS_PATH\}\}/g, zapsPath);
+  return template.replace(/\{\{ZAPS_PATH\}\}/g, zapsPath);
 }
 
 /**
@@ -28,7 +26,7 @@ export async function generateTemplate(projectName?: string): Promise<string> {
  * Throws if any config variant already exists.
  * Returns the written file path.
  */
-export async function scaffoldConfig(dir: string, projectName?: string): Promise<string> {
+export async function scaffoldConfig(dir: string): Promise<string> {
   // Check if any config already exists
   for (const filename of CONFIG_FILENAMES) {
     const candidate = path.join(dir, filename);
@@ -37,7 +35,7 @@ export async function scaffoldConfig(dir: string, projectName?: string): Promise
     }
   }
 
-  const content = await generateTemplate(projectName);
+  const content = await generateTemplate();
   const outPath = path.join(dir, ".zaps.mts");
   await writeFile(outPath, content, "utf8");
   return outPath;

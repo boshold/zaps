@@ -61,6 +61,24 @@ describe("loadConfig", () => {
     expect(result.project.name).toBe("default-export");
   });
 
+  it("defaults name to directory basename when omitted", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+    expect(result.project.name).toBe(path.basename(tmpDir));
+  });
+
   it("throws when no export found", async () => {
     const configPath = writeConfig(".zaps.ts", `export const notAConfig = 42;`);
 

@@ -35,7 +35,7 @@ export interface ReadyOutput {
 }
 
 export interface ReadyPort {
-  port: number | (() => number);
+  port: number | true | (() => number);
 }
 
 export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort;

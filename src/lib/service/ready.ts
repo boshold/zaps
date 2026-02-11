@@ -45,11 +45,18 @@ export async function waitForReady(
   }
 
   if (isReadyPort(config)) {
-    const expectedPort = typeof config.port === "function" ? config.port() : config.port;
-    await poll(async () => {
-      const ports = await deps.detectPorts(paneTarget);
-      return ports.includes(expectedPort);
-    }, signal);
+    if (config.port === true) {
+      await poll(async () => {
+        const ports = await deps.detectPorts(paneTarget);
+        return ports.length > 0;
+      }, signal);
+    } else {
+      const expectedPort = typeof config.port === "function" ? config.port() : config.port;
+      await poll(async () => {
+        const ports = await deps.detectPorts(paneTarget);
+        return ports.includes(expectedPort);
+      }, signal);
+    }
     return;
   }
 

@@ -53,6 +53,28 @@ describe("waitForReady", () => {
     expect(callCount).toBeGreaterThanOrEqual(3);
   });
 
+  it("resolves on port: true when any port is detected", async () => {
+    let callCount = 0;
+    mockDetectPorts.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount >= 2) {
+        return [54_321];
+      }
+      return [];
+    });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { port: true };
+
+    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(500);
+
+    await promise;
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
   it("throws timeout error on port mode when port never appears", async () => {
     mockDetectPorts.mockResolvedValue([]);
 

@@ -186,7 +186,7 @@ program
       process.stderr.write(`Config already exists: ${existing}\n`);
       process.exit(1);
     }
-    const written = await scaffoldConfig(cwd, path.basename(cwd));
+    const written = await scaffoldConfig(cwd);
     process.stdout.write(`Created ${written}\n`);
   });
 
