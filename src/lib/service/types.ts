@@ -9,6 +9,7 @@ export interface ServiceStatus {
   pid?: number;
   retryCount: number;
   lastError?: string;
+  readySince?: number;
 }
 
 // === Service Context (local mirror of config/types ServiceContext) ===

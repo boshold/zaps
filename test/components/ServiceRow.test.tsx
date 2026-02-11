@@ -24,7 +24,6 @@ describe("ServiceRow", () => {
   it("does not show selected indicator when isSelected=false", () => {
     const status = makeStatus();
     const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
-    // Should have a space instead of >
     expect(lastFrame()).not.toMatch(/>/);
   });
 
@@ -34,10 +33,17 @@ describe("ServiceRow", () => {
     expect(lastFrame()).toContain(":3000");
   });
 
-  it("shows --- when no ports", () => {
+  it("shows multiple ports", () => {
+    const status = makeStatus({ ports: [3000, 3001] });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toContain(":3000");
+    expect(lastFrame()).toContain(":3001");
+  });
+
+  it("shows ---- when no ports", () => {
     const status = makeStatus({ ports: [] });
     const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
-    expect(lastFrame()).toContain(":---");
+    expect(lastFrame()).toContain(":----");
   });
 
   it("shows service name", () => {
@@ -46,10 +52,35 @@ describe("ServiceRow", () => {
     expect(lastFrame()).toContain("my-service");
   });
 
-  it("shows restart and stop shortcuts", () => {
-    const status = makeStatus();
+  it("shows error sub-row when selected and has lastError", () => {
+    const status = makeStatus({ state: "error", lastError: "SMTP connection refused" });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("│ Error: SMTP connection refused");
+  });
+
+  it("hides error sub-row when not selected", () => {
+    const status = makeStatus({ state: "error", lastError: "SMTP connection refused" });
     const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
-    expect(lastFrame()).toContain("[r]");
-    expect(lastFrame()).toContain("[s]");
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("│ Error:");
+  });
+
+  it("shows retry count when retryCount > 0", () => {
+    const status = makeStatus({ state: "starting", retryCount: 2 });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toContain("retry 2");
+  });
+
+  it("shows state label for non-ready states", () => {
+    const status = makeStatus({ state: "starting" });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toContain("starting");
+  });
+
+  it("shows url when available", () => {
+    const status = makeStatus({ url: "http://localhost:3000" });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toContain("http://localhost:3000");
   });
 });

@@ -143,7 +143,9 @@ program
 
     const { render } = await import("ink");
     const { App } = await import("./components/App.js");
-    const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />);
+    const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />, {
+      patchConsole: false,
+    });
 
     await waitUntilExit();
 

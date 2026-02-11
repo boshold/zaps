@@ -1,7 +1,7 @@
 import type { TaskConfig } from "#src/config/types.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { execCommand } from "#src/lib/exec.js";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
@@ -14,6 +14,8 @@ export interface TasksViewProps {
 
 export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
   const { config } = useZaps();
+  const { stdout } = useStdout();
+  const termCols = stdout?.columns ?? 80;
   const tasks = Object.entries(config.project.tasks ?? {});
   const [runningTask, setRunningTask] = useState<string | null>(null);
   const [taskOutput, setTaskOutput] = useState<string[]>([]);
@@ -108,9 +110,9 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
   }
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Header projectName="Tasks" />
-      <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" padding={1} height="100%">
+      <Header projectName="Tasks" statuses={[]} width={termCols} />
+      <Box flexDirection="column" flexGrow={1} marginTop={1}>
         {tasks.map(([key, task], i) => (
           <TaskRow
             key={key}
@@ -123,7 +125,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
         ))}
       </Box>
       {taskOutput.length > 0 && (
-        <Box flexDirection="column" marginTop={1} borderStyle="single">
+        <Box flexDirection="column" flexGrow={1} marginTop={1} borderStyle="single">
           {taskOutput.slice(-10).map((line, i) => (
             // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
             <Text key={i}>{line}</Text>

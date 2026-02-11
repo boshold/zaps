@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { LogView } from "../../src/components/LogView.js";
 
+// Ink-testing-library provides a mock stdout without rows,
+// So LogView falls back to 24. visibleLines = 24 - 4 = 20.
+const VISIBLE_LINES = 20;
+
 describe("LogView", () => {
   it("renders captured lines", () => {
     const lines = ["line 1", "line 2", "line 3"];
@@ -21,35 +25,15 @@ describe("LogView", () => {
     expect(frame).toContain("my-service");
   });
 
-  it("shows correct number of visible lines based on terminal height", () => {
-    // Override stdout.rows for this test
-    const original = process.stdout.rows;
-    Object.defineProperty(process.stdout, "rows", { value: 10, writable: true });
-
-    // VisibleLines = 10 - 4 = 6
-    const lines = Array.from({ length: 20 }, (_, i) => `line-${i}`);
+  it("auto-scroll shows latest lines within visible limit", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line-${i}`);
     const { lastFrame } = render(<LogView serviceName="api" lines={lines} autoScroll offset={0} />);
     const frame = lastFrame() ?? "";
 
-    // With autoScroll, should show last 6 lines (line-14 through line-19)
-    expect(frame).toContain("line-19");
-    expect(frame).toContain("line-14");
-    expect(frame).not.toContain("line-13");
-
-    Object.defineProperty(process.stdout, "rows", { value: original, writable: true });
-  });
-
-  it("auto-scroll shows latest lines", () => {
-    const original = process.stdout.rows;
-    Object.defineProperty(process.stdout, "rows", { value: 10, writable: true });
-
-    const lines = Array.from({ length: 20 }, (_, i) => `log-${i}`);
-    const { lastFrame } = render(<LogView serviceName="api" lines={lines} autoScroll offset={0} />);
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("log-19");
-    expect(frame).not.toContain("log-0");
-
-    Object.defineProperty(process.stdout, "rows", { value: original, writable: true });
+    // Should show last VISIBLE_LINES lines
+    expect(frame).toContain(`line-${30 - 1}`);
+    expect(frame).toContain(`line-${30 - VISIBLE_LINES}`);
+    expect(frame).not.toContain(`line-${30 - VISIBLE_LINES - 1}`);
   });
 
   it("renders scroll help bar", () => {
@@ -60,21 +44,15 @@ describe("LogView", () => {
   });
 
   it("uses offset for manual scroll positioning", () => {
-    const original = process.stdout.rows;
-    Object.defineProperty(process.stdout, "rows", { value: 10, writable: true });
-
-    // VisibleLines = 6
-    const lines = Array.from({ length: 20 }, (_, i) => `line-${i}`);
-    // AutoScroll off, offset=3 should show lines further back
+    const lines = Array.from({ length: 30 }, (_, i) => `line-${i}`);
+    const offset = 3;
     const { lastFrame } = render(
-      <LogView serviceName="api" lines={lines} autoScroll={false} offset={3} />,
+      <LogView serviceName="api" lines={lines} autoScroll={false} offset={offset} />,
     );
     const frame = lastFrame() ?? "";
-    // Slice(-(6+3), -3) = slice(-9, -3) = lines 11..16
-    expect(frame).toContain("line-11");
-    expect(frame).toContain("line-16");
-    expect(frame).not.toContain("line-19");
-
-    Object.defineProperty(process.stdout, "rows", { value: original, writable: true });
+    // Slice(-(20+3), -3) = slice(-23, -3) = lines 7..26
+    expect(frame).toContain("line-7");
+    expect(frame).toContain("line-26");
+    expect(frame).not.toContain("line-29");
   });
 });

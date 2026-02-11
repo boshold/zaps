@@ -114,7 +114,24 @@ describe("Dashboard", () => {
     );
 
     const frame = lastFrame() ?? "";
-    // The second row (api) should have the > indicator
     expect(frame).toContain(">");
+  });
+
+  it("renders column headers", () => {
+    const statuses = [makeStatus("db")];
+    const config = makeConfig();
+    const manager = createMockManager(statuses);
+
+    const { lastFrame } = render(
+      <AppProvider manager={manager} config={config} paneMap={{}}>
+        <Dashboard statuses={statuses} selectedIndex={0} />
+      </AppProvider>,
+    );
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("STATUS");
+    expect(frame).toContain("NAME");
+    expect(frame).toContain("PORTS");
+    expect(frame).toContain("URL");
   });
 });

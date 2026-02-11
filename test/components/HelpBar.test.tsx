@@ -6,8 +6,13 @@ import { HelpBar } from "../../src/components/HelpBar.js";
 describe("HelpBar", () => {
   it("renders shortcut hints", () => {
     const { lastFrame } = render(<HelpBar />);
-    expect(lastFrame()).toContain("[t]asks");
-    expect(lastFrame()).toContain("[a]ll restart");
-    expect(lastFrame()).toContain("[q]uit");
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[r]estart");
+    expect(frame).toContain("[s]top/start");
+    expect(frame).toContain("[l]ogs");
+    expect(frame).toContain("[o]pen");
+    expect(frame).toContain("[t]asks");
+    expect(frame).toContain("[a]ll restart");
+    expect(frame).toContain("[q]uit");
   });
 });

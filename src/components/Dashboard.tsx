@@ -1,10 +1,11 @@
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { Box } from "ink";
+import { Box, useStdout } from "ink";
 
+import { ColumnHeaders } from "./ColumnHeaders.js";
 import { Header } from "./Header.js";
 import { HelpBar } from "./HelpBar.js";
-import { ServiceRow } from "./ServiceRow.js";
+import { ServiceList } from "./ServiceList.js";
 
 interface DashboardProps {
   statuses: ServiceStatus[];
@@ -13,16 +14,18 @@ interface DashboardProps {
 
 export function Dashboard({ statuses, selectedIndex }: DashboardProps) {
   const { config } = useZaps();
+  const { stdout } = useStdout();
+  const rows = stdout?.rows ?? 24;
+  const cols = Math.min(stdout?.columns ?? 100, 100);
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Header projectName={config.project.name} />
-      <Box flexDirection="column" marginTop={1}>
-        {statuses.map((s, i) => (
-          <ServiceRow key={s.name} status={s} isSelected={i === selectedIndex} />
-        ))}
+    <Box height={rows} alignItems="center" justifyContent="center">
+      <Box flexDirection="column" width={cols}>
+        <Header projectName={config.project.name} statuses={statuses} width={cols} />
+        <ColumnHeaders />
+        <ServiceList statuses={statuses} selectedIndex={selectedIndex} />
+        <HelpBar />
       </Box>
-      <HelpBar />
     </Box>
   );
 }

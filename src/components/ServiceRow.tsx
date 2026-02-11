@@ -1,19 +1,60 @@
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { Box, Text } from "ink";
 
-import { StatusIndicator } from "./StatusIndicator.js";
+import { ErrorSubRow } from "./ErrorSubRow.js";
+import { StatusCell } from "./StatusCell.js";
 
-export function ServiceRow({ status, isSelected }: { status: ServiceStatus; isSelected: boolean }) {
-  const portStr = status.ports.length > 0 ? `:${status.ports[0]}` : ":---";
+interface ServiceRowProps {
+  status: ServiceStatus;
+  isSelected: boolean;
+}
+
+function formatPorts(ports: number[]): string {
+  if (ports.length === 0) {
+    return ":----";
+  }
+  return ports.map((p) => `:${p}`).join(" ");
+}
+
+function formatUptime(readySince: number | undefined): string {
+  if (typeof readySince !== "number") {
+    return "ready";
+  }
+  const diff = Math.floor((Date.now() - readySince) / 1000);
+  if (diff < 60) {
+    return `Up ${diff}s`;
+  }
+  if (diff < 3600) {
+    return `Up ${Math.floor(diff / 60)}m`;
+  }
+  const hours = Math.floor(diff / 3600);
+  const mins = Math.floor((diff % 3600) / 60);
+  return mins > 0 ? `Up ${hours}h ${mins}m` : `Up ${hours}h`;
+}
+
+function stateLabel(status: ServiceStatus): string {
+  if (status.state === "ready") {
+    return formatUptime(status.readySince);
+  }
+  return status.state;
+}
+
+export function ServiceRow({ status, isSelected }: ServiceRowProps) {
+  const portsStr = formatPorts(status.ports);
 
   return (
-    <Box>
-      <Text>{isSelected ? ">" : " "} </Text>
-      <StatusIndicator state={status.state} />
-      <Text> </Text>
-      <Text bold={isSelected}>{status.name.padEnd(16)}</Text>
-      <Text dimColor>{portStr.padEnd(8)}</Text>
-      <Text dimColor> [r] [s]</Text>
+    <Box flexDirection="column">
+      <Box>
+        <Text>{isSelected ? "> " : "  "}</Text>
+        <StatusCell status={status} />
+        <Text> </Text>
+        <Text bold={isSelected}>{status.name.padEnd(18)}</Text>
+        <Text>{stateLabel(status).padEnd(14)}</Text>
+        <Text dimColor>{portsStr.padEnd(20)}</Text>
+        {status.url && <Text dimColor>{status.url}</Text>}
+        {!status.url && status.retryCount > 0 && <Text dimColor>retry {status.retryCount}</Text>}
+      </Box>
+      {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
     </Box>
   );
 }

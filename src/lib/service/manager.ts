@@ -186,6 +186,7 @@ export class ServiceManager extends EventEmitter {
       // Update status
       status.state = transition(status.state, "ready");
       status.ports = ports;
+      status.readySince = Date.now();
       this.emit("stateChange", name, status);
 
       await fireHook(hooks?.onServiceStart, name);
@@ -200,6 +201,7 @@ export class ServiceManager extends EventEmitter {
       }
       status.state = transition(status.state, "error");
       status.lastError = error instanceof Error ? error.message : String(error);
+      delete status.readySince;
       this.emit("stateChange", name, status);
     }
   }
@@ -264,6 +266,7 @@ export class ServiceManager extends EventEmitter {
 
     // Transition: stopping -> stopped
     status.state = transition(status.state, "stopped");
+    delete status.readySince;
     this.emit("stateChange", name, status);
 
     await fireHook(hooks?.onServiceStop, name);
@@ -338,6 +341,7 @@ export class ServiceManager extends EventEmitter {
         if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
           status.state = transition(status.state, "restarting");
           status.retryCount += 1;
+          delete status.readySince;
           this.emit("stateChange", name, status);
 
           const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
@@ -350,6 +354,7 @@ export class ServiceManager extends EventEmitter {
         } else {
           status.state = transition(status.state, "error");
           status.lastError = "Process exited unexpectedly";
+          delete status.readySince;
           this.emit("stateChange", name, status);
         }
         return;

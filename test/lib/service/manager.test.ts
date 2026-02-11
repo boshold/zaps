@@ -315,6 +315,45 @@ describe("startService", () => {
     ]);
   });
 
+  it("sets readySince on ready and clears on stop", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () => {
+      if (processRunning) {
+        return [1000, 2000];
+      }
+      return [1000];
+    });
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    // Start
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(mgr.getStatus("svc").readySince).toBeTypeOf("number");
+
+    // Stop
+    processRunning = true;
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    expect(mgr.getStatus("svc").readySince).toBeUndefined();
+  });
+
   it("throws when dependency is not ready", async () => {
     const config = makeConfig({
       db: { start: "start-db" },

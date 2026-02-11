@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 
 import { Header } from "./Header.js";
 
@@ -10,7 +10,9 @@ export interface LogViewProps {
 }
 
 export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps) {
-  const termHeight = process.stdout.rows ?? 24;
+  const { stdout } = useStdout();
+  const termHeight = stdout?.rows ?? 24;
+  const termCols = stdout?.columns ?? 80;
   const visibleLines = termHeight - 4; // Header + help bar + padding
 
   const displayLines = autoScroll
@@ -18,9 +20,9 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
     : lines.slice(-(visibleLines + offset), offset > 0 ? -offset : lines.length);
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Header projectName={serviceName} />
-      <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" padding={1} height="100%">
+      <Header projectName={serviceName} statuses={[]} width={termCols} />
+      <Box flexDirection="column" flexGrow={1} marginTop={1}>
         {displayLines.map((line, i) => (
           // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
           <Text key={i}>{line}</Text>
