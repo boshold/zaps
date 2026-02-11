@@ -101,7 +101,7 @@ describe("loadConfig", () => {
     );
 
     await expect(loadConfig(configPath)).rejects.toThrow(
-      "Service 'api' must have 'start' or 'run' command",
+      "Service 'api' must have 'start', 'run', or 'docker' config",
     );
   });
 

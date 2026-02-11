@@ -1,6 +1,7 @@
+import { isReady } from "#src/lib/docker.js";
 import type { ReadyConfig, ReadyDeps } from "./types.js";
 
-import { isReadyOutput, isReadyPort } from "./types.js";
+import { isReadyDocker, isReadyOutput, isReadyPort } from "./types.js";
 
 const POLL_INTERVAL = 500;
 const TIMEOUT = 60_000;
@@ -33,15 +34,34 @@ async function poll(checkFn: () => Promise<boolean>, signal: AbortSignal): Promi
 /**
  * Wait for a service to become ready based on its ReadyConfig.
  * Resolves immediately if config is undefined.
+ * Returns discovered ports (non-empty only for docker mode).
  */
 export async function waitForReady(
   config: ReadyConfig | undefined,
   paneTarget: string,
   signal: AbortSignal,
   deps: ReadyDeps,
-): Promise<void> {
+): Promise<number[]> {
   if (!config) {
-    return;
+    return [];
+  }
+
+  if (isReadyDocker(config)) {
+    if (!deps.dockerStatus) {
+      throw new Error("Docker status dependency not provided");
+    }
+    const { dockerStatus } = deps;
+    const file = config.file ?? deps.composeFile;
+    let ports: number[] = [];
+    await poll(async () => {
+      const info = await dockerStatus(config.docker, deps.cwd, file);
+      if (info && isReady(info)) {
+        ({ ports } = info);
+        return true;
+      }
+      return false;
+    }, signal);
+    return ports;
   }
 
   if (isReadyPort(config)) {
@@ -57,7 +77,7 @@ export async function waitForReady(
         return ports.includes(expectedPort);
       }, signal);
     }
-    return;
+    return [];
   }
 
   if (isReadyOutput(config)) {
@@ -69,11 +89,13 @@ export async function waitForReady(
       }
       return lines.some(config.output as (line: string) => boolean);
     }, signal);
-    return;
+    return [];
   }
 
   // Function mode
   if (typeof config === "function") {
     await poll(config, signal);
   }
+
+  return [];
 }

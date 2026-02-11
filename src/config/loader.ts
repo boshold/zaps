@@ -19,11 +19,11 @@ function collectPaneNames(node: LayoutNode): string[] {
 function validateServices(project: ProjectConfig): void {
   const serviceNames = Object.keys(project.services);
 
-  // Each service must have start or run
+  // Each service must have start, run, or docker
   for (const name of serviceNames) {
     const svc = project.services[name];
-    if (!svc.start && !svc.run) {
-      throw new Error(`Service '${name}' must have 'start' or 'run' command`);
+    if (!svc.start && !svc.run && !svc.docker) {
+      throw new Error(`Service '${name}' must have 'start', 'run', or 'docker' config`);
     }
   }
 

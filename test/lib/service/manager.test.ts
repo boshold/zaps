@@ -931,6 +931,192 @@ describe("url resolution", () => {
 });
 
 // =============================================================================
+// Docker ready detection
+// =============================================================================
+
+describe("docker ready detection", () => {
+  it("uses docker-returned ports instead of detectPorts", async () => {
+    const config = makeConfig({
+      db: { start: "docker compose up postgres", ready: { docker: "postgres" } },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    // DetectPorts would return nothing (docker daemon PIDs aren't descendants)
+    deps.detectPorts = vi.fn().mockResolvedValue([]);
+
+    // Mock getContainerInfo via module mock
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    let callCount = 0;
+    spy.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount >= 2) {
+        return { state: "running", health: "healthy", ports: [5432] };
+      }
+      return { state: "created", health: "", ports: [] };
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("db").ports).toEqual([5432]);
+    // DetectPorts should NOT have been called since docker returned ports
+    expect(deps.detectPorts).not.toHaveBeenCalled();
+
+    spy.mockRestore();
+  });
+
+  it("falls back to detectPorts when docker returns no ports", async () => {
+    const config = makeConfig({
+      db: { start: "docker compose up postgres", ready: { docker: "postgres" } },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [] });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("db").ports).toEqual([5432]);
+    expect(deps.detectPorts).toHaveBeenCalled();
+
+    spy.mockRestore();
+  });
+});
+
+// =============================================================================
+// Docker config
+// =============================================================================
+
+describe("docker config", () => {
+  it("generates command from docker config when no start/run", async () => {
+    const config = makeConfig({
+      db: {
+        docker: {
+          service: "postgres",
+          file: "local.docker-compose.yml",
+          build: true,
+          forceRecreate: true,
+          renewVolumes: true,
+        },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    // Mock getContainerInfo for docker ready
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%db",
+      "docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres",
+    );
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("db").ports).toEqual([5432]);
+
+    spy.mockRestore();
+  });
+
+  it("prefers explicit start over docker config for command", async () => {
+    const config = makeConfig({
+      db: {
+        start: "custom-start",
+        docker: { service: "postgres", file: "local.yml" },
+        ready: { docker: "postgres", file: "local.yml" },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "custom-start");
+
+    spy.mockRestore();
+  });
+
+  it("derives docker ready from docker config when no explicit ready", async () => {
+    const config = makeConfig({
+      db: {
+        docker: { service: "postgres" },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "healthy", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(spy).toHaveBeenCalled();
+    expect(mgr.getStatus("db").state).toBe("ready");
+
+    spy.mockRestore();
+  });
+
+  it("passes composeFile from docker config to readyDeps", async () => {
+    const config = makeConfig({
+      db: {
+        docker: { service: "postgres", file: "my-compose.yml" },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    // GetContainerInfo should be called with the composeFile
+    expect(spy).toHaveBeenCalledWith("postgres", undefined, "my-compose.yml");
+
+    spy.mockRestore();
+  });
+});
+
+// =============================================================================
 // GetStatus / getAllStatuses
 // =============================================================================
 

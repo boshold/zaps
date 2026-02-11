@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
-import type { ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
+import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
+import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { reverseTopoSort, topoSort } from "./graph.js";
@@ -15,11 +16,34 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function resolveCommand(config: ServiceConfig): string {
+  if (config.docker && !config.start && !config.run) {
+    return buildDockerCommand(config.docker);
+  }
   const cmd = config.start ?? config.run;
   if (typeof cmd === "function") {
     return cmd();
   }
   return cmd ?? "";
+}
+
+function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
+  if (config.ready) {
+    return config.ready;
+  }
+  if (config.docker) {
+    return { docker: config.docker.service };
+  }
+  return undefined; // eslint-disable-line no-undefined -- Explicit absence
+}
+
+function buildReadyDeps(serviceConfig: ServiceConfig, deps: ServiceManagerDeps): ReadyDeps {
+  return {
+    detectPorts: deps.detectPorts,
+    capturePane: deps.capturePane,
+    cwd: serviceConfig.cwd,
+    composeFile: serviceConfig.docker?.file,
+    dockerStatus: getContainerInfo,
+  };
 }
 
 function resolveExplicitUrl(serviceConfig: ServiceConfig, ctx: ServiceContext): string | undefined {
@@ -197,14 +221,16 @@ export class ServiceManager extends EventEmitter {
 
     // Wait for ready
     try {
-      const readyDeps: ReadyDeps = {
-        detectPorts: this.deps.detectPorts,
-        capturePane: this.deps.capturePane,
-      };
-      await waitForReady(serviceConfig.ready, paneTarget, controller.signal, readyDeps);
+      const readyDeps = buildReadyDeps(serviceConfig, this.deps);
+      const readyPorts = await waitForReady(
+        resolveReadyConfig(serviceConfig),
+        paneTarget,
+        controller.signal,
+        readyDeps,
+      );
 
-      // Detect ports
-      const ports = await this.deps.detectPorts(paneTarget);
+      // Detect ports — use docker-provided ports if available
+      const ports = readyPorts.length > 0 ? readyPorts : await this.deps.detectPorts(paneTarget);
 
       // Update status
       status.state = transition(status.state, "ready");

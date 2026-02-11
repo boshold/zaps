@@ -9,7 +9,23 @@ export interface ReadyOutput {
 export interface ReadyPort {
   port: number | true | (() => number);
 }
-export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort;
+export interface ReadyDocker {
+  docker: string;
+  file?: string;
+}
+
+// === Docker Config ===
+export interface DockerConfig {
+  service: string;
+  file?: string;
+  build?: boolean;
+  forceRecreate?: boolean;
+  renewVolumes?: boolean;
+  removeOrphans?: boolean;
+  pull?: "always" | "missing" | "never";
+  noDeps?: boolean;
+}
+export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker;
 
 // === Service Context ===
 export interface ServiceContext {
@@ -30,6 +46,7 @@ export interface ServiceConfig {
   run?: Command; // Alias for start — `start` takes precedence if both set
   stop?: Command;
   detached?: boolean; // Default false
+  docker?: DockerConfig;
   ready?: ReadyConfig;
   dependsOn?: string[];
   env?: Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
@@ -106,4 +123,8 @@ export function isReadyPort(r: ReadyConfig): r is ReadyPort {
 
 export function isReadyOutput(r: ReadyConfig): r is ReadyOutput {
   return typeof r === "object" && "output" in r;
+}
+
+export function isReadyDocker(r: ReadyConfig): r is ReadyDocker {
+  return typeof r === "object" && "docker" in r;
 }

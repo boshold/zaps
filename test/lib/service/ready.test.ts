@@ -23,10 +23,10 @@ afterEach(() => {
 });
 
 describe("waitForReady", () => {
-  it("resolves immediately when config is undefined", async () => {
+  it("resolves immediately when config is undefined and returns empty ports", async () => {
     const controller = new AbortController();
-    await waitForReady(undefined, "%0", controller.signal, createDeps());
-    // No assertions needed -- just checking it resolves
+    const ports = await waitForReady(undefined, "%0", controller.signal, createDeps());
+    expect(ports).toEqual([]);
   });
 
   it("resolves on port mode when port is detected on 3rd call", async () => {
@@ -205,5 +205,172 @@ describe("waitForReady", () => {
 
     await promise;
     expect(callCount).toBeGreaterThanOrEqual(4);
+  });
+
+  it("resolves docker mode and returns ports when container is ready", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    let callCount = 0;
+    mockDockerStatus.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount >= 2) {
+        return { state: "running", health: "healthy", ports: [5432] };
+      }
+      return { state: "created", health: "", ports: [] };
+    });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      cwd: "/project",
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+
+    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(500);
+
+    const ports = await promise;
+    expect(ports).toEqual([5432]);
+    expect(mockDockerStatus).toHaveBeenCalledWith("postgres", "/project", undefined);
+  });
+
+  it("resolves docker mode with no healthcheck (empty health)", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue({ state: "running", health: "", ports: [3306] });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "mysql" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    await vi.advanceTimersByTimeAsync(500);
+
+    const ports = await promise;
+    expect(ports).toEqual([3306]);
+  });
+
+  it("times out docker mode when container never becomes ready", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue({ state: "running", health: "starting", ports: [] });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const guarded = promise.catch(() => {
+      /* Intentional no-op */
+    });
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    await guarded;
+
+    await expect(promise).rejects.toThrow("Ready check timed out after 60s");
+  });
+
+  it("aborts docker mode when signal is aborted", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue(null);
+
+    const controller = new AbortController();
+    controller.abort();
+
+    const config: ReadyConfig = { docker: "postgres" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      dockerStatus: mockDockerStatus,
+    };
+
+    await expect(waitForReady(config, "%0", controller.signal, deps)).rejects.toThrow(
+      "Ready check aborted",
+    );
+  });
+
+  it("passes config.file to dockerStatus", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres", file: "custom.yml" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      cwd: "/project",
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    await vi.advanceTimersByTimeAsync(500);
+    await promise;
+
+    expect(mockDockerStatus).toHaveBeenCalledWith("postgres", "/project", "custom.yml");
+  });
+
+  it("falls back to deps.composeFile when config.file is unset", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      cwd: "/project",
+      composeFile: "fallback.yml",
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    await vi.advanceTimersByTimeAsync(500);
+    await promise;
+
+    expect(mockDockerStatus).toHaveBeenCalledWith("postgres", "/project", "fallback.yml");
+  });
+
+  it("config.file takes precedence over deps.composeFile", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres", file: "override.yml" };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      composeFile: "fallback.yml",
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    await vi.advanceTimersByTimeAsync(500);
+    await promise;
+
+    expect(mockDockerStatus).toHaveBeenCalledWith("postgres", undefined, "override.yml");
+  });
+
+  it("throws when dockerStatus dep is missing for docker mode", async () => {
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: "postgres" };
+
+    await expect(waitForReady(config, "%0", controller.signal, createDeps())).rejects.toThrow(
+      "Docker status dependency not provided",
+    );
+  });
+
+  it("existing modes return empty ports array", async () => {
+    mockDetectPorts.mockResolvedValue([3000]);
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { port: 3000 };
+
+    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    await vi.advanceTimersByTimeAsync(500);
+
+    const ports = await promise;
+    expect(ports).toEqual([]);
   });
 });
