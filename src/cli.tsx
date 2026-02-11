@@ -162,6 +162,11 @@ program
         });
       }
     }
+
+    // Kill TUI pane last — terminates our process
+    await killPane(paneMap["@tui"]).catch(() => {
+      /* Pane may already be gone */
+    });
   });
 
 program

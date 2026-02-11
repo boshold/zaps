@@ -22,16 +22,14 @@ function resolveCommand(config: ServiceConfig): string {
   return cmd ?? "";
 }
 
-async function resolveUrl(
-  serviceConfig: ServiceConfig,
-  ports: number[],
-  ctx: ServiceContext,
-): Promise<string | undefined> {
+function resolveExplicitUrl(serviceConfig: ServiceConfig, ctx: ServiceContext): string | undefined {
   if (serviceConfig.url) {
     return typeof serviceConfig.url === "function" ? serviceConfig.url(ctx) : serviceConfig.url;
   }
+  return undefined; // eslint-disable-line no-undefined -- Explicit absence
+}
 
-  // Auto-probe detected ports
+async function probeHttpPort(ports: number[]): Promise<string | undefined> {
   for (const port of ports) {
     try {
       // eslint-disable-next-line no-await-in-loop -- Sequential probe, first wins
@@ -44,7 +42,6 @@ async function resolveUrl(
       // Port doesn't respond to HTTP
     }
   }
-
   return undefined; // eslint-disable-line no-undefined -- Explicit absence
 }
 
@@ -213,7 +210,17 @@ export class ServiceManager extends EventEmitter {
       status.state = transition(status.state, "ready");
       status.ports = ports;
       status.readySince = Date.now();
-      status.url = await resolveUrl(serviceConfig, ports, ctx);
+
+      const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
+      if (explicitUrl) {
+        status.url = explicitUrl;
+      } else {
+        status.url = await probeHttpPort(ports);
+        if (!status.url && ports.length > 0) {
+          // eslint-disable-next-line no-void -- Fire-and-forget URL monitor
+          void this.monitorUrl(name, ports);
+        }
+      }
       this.emit("stateChange", name, status);
 
       await fireHook(hooks?.onServiceStart, name);
@@ -385,6 +392,32 @@ export class ServiceManager extends EventEmitter {
           delete status.readySince;
           this.emit("stateChange", name, status);
         }
+        return;
+      }
+    }
+  }
+
+  /**
+   * Monitor a service for URL availability after initial probe fails.
+   */
+  private async monitorUrl(name: string, ports: number[]): Promise<void> {
+    const status = this.statuses.get(name);
+    if (!status) {
+      return;
+    }
+
+    while (status.state === "ready" && !status.url) {
+      // eslint-disable-next-line no-await-in-loop -- Sequential polling
+      await sleep(2000);
+      if (status.state !== "ready" || status.url) {
+        return;
+      }
+
+      // eslint-disable-next-line no-await-in-loop -- Sequential polling
+      const result = await probeHttpPort(ports);
+      if (result) {
+        status.url = result;
+        this.emit("stateChange", name, status);
         return;
       }
     }

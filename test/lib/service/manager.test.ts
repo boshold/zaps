@@ -832,6 +832,48 @@ describe("url resolution", () => {
     fetchSpy.mockRestore();
   });
 
+  it("retries probe and resolves url after delay", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    let probeSucceeds = false;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      if (!probeSucceeds) {
+        throw new Error("Connection refused");
+      }
+      return new Response();
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    // Track stateChange events to detect when monitorUrl emits
+    const urlEvents: (string | undefined)[] = [];
+    mgr.on("stateChange", (_name: string, status: ServiceStatus) => {
+      urlEvents.push(status.url);
+    });
+
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(500);
+    await promise;
+
+    // Initial probe failed — url undefined, monitorUrl running in background
+    expect(mgr.getStatus("svc").url).toBeUndefined();
+
+    // Enable probe success, advance past monitorUrl sleep (2s)
+    probeSucceeds = true;
+    await vi.advanceTimersByTimeAsync(2500);
+
+    // Retry probe succeeds
+    expect(mgr.getStatus("svc").url).toBe("http://localhost:3000");
+
+    fetchSpy.mockRestore();
+  });
+
   it("sets url to undefined when probe fails", async () => {
     const config = makeConfig({
       svc: { start: "start-svc" },
