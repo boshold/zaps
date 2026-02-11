@@ -13,6 +13,7 @@ export interface ReadyDocker {
   docker: string;
   file?: string;
 }
+export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker;
 
 // === Docker Config ===
 export interface DockerConfig {
@@ -25,7 +26,6 @@ export interface DockerConfig {
   pull?: "always" | "missing" | "never";
   noDeps?: boolean;
 }
-export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker;
 
 // === Service Context ===
 export interface ServiceContext {
@@ -40,17 +40,20 @@ export interface ServiceContext {
   projectDir: string;
 }
 
+// === Env Config ===
+export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+
 // === Service ===
 export interface ServiceConfig {
   start?: Command;
-  run?: Command; // Alias for start — `start` takes precedence if both set
+  run?: Command;
   stop?: Command;
-  detached?: boolean; // Default false
+  detached?: boolean;
   docker?: DockerConfig;
   ready?: ReadyConfig;
   dependsOn?: string[];
-  env?: Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
-  autostart?: boolean; // Default true
+  env?: EnvConfig;
+  autostart?: boolean;
   url?: string | ((ctx: ServiceContext) => string);
   cwd?: string;
   restart?: { maxRetries?: number; backoff?: number };
@@ -63,7 +66,7 @@ export interface TaskConfig {
   commands: Command | Command[];
   cwd?: string;
   dependsOn?: string[];
-  env?: Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+  env?: EnvConfig;
   shortcut?: string;
 }
 

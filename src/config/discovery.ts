@@ -1,7 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const CONFIG_FILENAMES = [".local.zaps.mts", ".local.zaps.ts", ".zaps.mts", ".zaps.ts"];
+const CONFIG_FILENAMES = [
+  ".local.zaps.mts",
+  "local.zaps.mts",
+  ".local.zaps.ts",
+  "local.zaps.ts",
+  ".zaps.mts",
+  ".zaps.ts",
+];
 
 /**
  * Walk up from startDir to filesystem root (or optional root boundary),

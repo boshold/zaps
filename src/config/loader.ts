@@ -16,16 +16,8 @@ function collectPaneNames(node: LayoutNode): string[] {
   return [];
 }
 
-function validateServices(project: ProjectConfig): void {
+function validateSemantics(project: ProjectConfig): void {
   const serviceNames = Object.keys(project.services);
-
-  // Each service must have start, run, or docker
-  for (const name of serviceNames) {
-    const svc = project.services[name];
-    if (!svc.start && !svc.run && !svc.docker) {
-      throw new Error(`Service '${name}' must have 'start', 'run', or 'docker' config`);
-    }
-  }
 
   // Validate service dependsOn refs
   for (const name of serviceNames) {
@@ -42,59 +34,36 @@ function validateServices(project: ProjectConfig): void {
   if (cycle) {
     throw new Error(`Circular dependency detected: ${cycle.join(" \u2192 ")}`);
   }
-}
 
-function validateTasks(project: ProjectConfig): void {
-  if (!project.tasks) {
-    return;
-  }
-
-  const taskNames = Object.keys(project.tasks);
-  for (const name of taskNames) {
-    const deps = project.tasks[name].dependsOn ?? [];
-    for (const dep of deps) {
-      if (!project.tasks[dep]) {
-        throw new Error(`Task '${name}' references unknown dependency '${dep}'`);
+  // Validate task dependsOn refs
+  if (project.tasks) {
+    const taskNames = Object.keys(project.tasks);
+    for (const name of taskNames) {
+      const deps = project.tasks[name].dependsOn ?? [];
+      for (const dep of deps) {
+        if (!project.tasks[dep]) {
+          throw new Error(`Task '${name}' references unknown dependency '${dep}'`);
+        }
       }
     }
   }
-}
 
-function validateLayout(project: ProjectConfig): void {
-  if (!project.layout) {
-    return;
-  }
+  // Validate layout pane refs
+  if (project.layout) {
+    const paneNames = collectPaneNames(project.layout);
 
-  const paneNames = collectPaneNames(project.layout);
+    for (const pane of paneNames) {
+      if (pane !== "@tui" && !project.services[pane]) {
+        throw new Error(`Layout references unknown pane '${pane}'`);
+      }
+    }
 
-  // Check for unknown panes
-  for (const pane of paneNames) {
-    if (pane !== "@tui" && !project.services[pane]) {
-      throw new Error(`Layout references unknown pane '${pane}'`);
+    for (const pane of paneNames) {
+      if (pane !== "@tui" && project.services[pane]?.detached) {
+        throw new Error(`Detached service '${pane}' must not appear in layout`);
+      }
     }
   }
-
-  // Detached services must not appear in layout
-  for (const pane of paneNames) {
-    if (pane !== "@tui" && project.services[pane]?.detached) {
-      throw new Error(`Detached service '${pane}' must not appear in layout`);
-    }
-  }
-}
-
-function validate(project: ProjectConfig): void {
-  // Services must be non-empty
-  if (
-    !project.services ||
-    typeof project.services !== "object" ||
-    Object.keys(project.services).length === 0
-  ) {
-    throw new Error("Project must have at least one service");
-  }
-
-  validateServices(project);
-  validateTasks(project);
-  validateLayout(project);
 }
 
 /**
@@ -114,7 +83,7 @@ export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
   const name = project.name || path.basename(projectDir);
   const resolved = { ...project, name };
 
-  validate(resolved);
+  validateSemantics(resolved);
 
   return {
     project: resolved,

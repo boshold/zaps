@@ -68,4 +68,24 @@ describe("discoverConfig", () => {
 
     expect(discoverConfig(tmpDir)).toBe(path.join(tmpDir, ".local.zaps.mts"));
   });
+
+  it("finds local.zaps.mts (no leading dot)", () => {
+    fs.writeFileSync(path.join(tmpDir, "local.zaps.mts"), "export default {}");
+
+    expect(discoverConfig(tmpDir)).toBe(path.join(tmpDir, "local.zaps.mts"));
+  });
+
+  it("local.zaps.mts wins over .zaps.mts", () => {
+    fs.writeFileSync(path.join(tmpDir, "local.zaps.mts"), "");
+    fs.writeFileSync(path.join(tmpDir, ".zaps.mts"), "");
+
+    expect(discoverConfig(tmpDir)).toBe(path.join(tmpDir, "local.zaps.mts"));
+  });
+
+  it(".local.zaps.mts wins over local.zaps.mts", () => {
+    fs.writeFileSync(path.join(tmpDir, ".local.zaps.mts"), "");
+    fs.writeFileSync(path.join(tmpDir, "local.zaps.mts"), "");
+
+    expect(discoverConfig(tmpDir)).toBe(path.join(tmpDir, ".local.zaps.mts"));
+  });
 });
