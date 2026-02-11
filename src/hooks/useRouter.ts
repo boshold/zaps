@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-export type View = "dashboard" | "tasks" | "logs";
+export type View = "dashboard" | "tasks" | "logs" | "task-chord";
 
 export function useRouter() {
   const [view, setView] = useState<View>("dashboard");
@@ -19,5 +19,9 @@ export function useRouter() {
     setView("tasks");
   }
 
-  return { view, logTarget, goToLogs, goToDashboard, goToTasks };
+  function goToTaskChord() {
+    setView("task-chord");
+  }
+
+  return { view, logTarget, goToLogs, goToDashboard, goToTasks, goToTaskChord };
 }

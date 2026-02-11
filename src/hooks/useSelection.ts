@@ -16,5 +16,5 @@ export function useSelection(itemCount: number) {
     setIndex((i) => Math.min(itemCount - 1, i + 1));
   }
 
-  return { index, moveUp, moveDown };
+  return { index, setIndex, moveUp, moveDown };
 }

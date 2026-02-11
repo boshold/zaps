@@ -46,6 +46,8 @@ export interface TaskConfig {
   commands: Command | Command[];
   cwd?: string;
   dependsOn?: string[];
+  env?: Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+  shortcut?: string;
 }
 
 // === Layout ===

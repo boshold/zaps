@@ -113,4 +113,41 @@ describe("useRouter", () => {
     });
     expect(lastFrame()).toContain("view:tasks");
   });
+
+  it("goToTaskChord sets view to task-chord", async () => {
+    let hookRef: ReturnType<typeof useRouter> | null = null;
+
+    function Wrapper() {
+      hookRef = useRouter();
+      return <Text>view:{hookRef.view}</Text>;
+    }
+
+    const { lastFrame } = render(<Wrapper />);
+
+    await act(() => {
+      hookRef!.goToTaskChord();
+    });
+    expect(lastFrame()).toContain("view:task-chord");
+  });
+
+  it("goToDashboard from task-chord resets view", async () => {
+    let hookRef: ReturnType<typeof useRouter> | null = null;
+
+    function Wrapper() {
+      hookRef = useRouter();
+      return <Text>view:{hookRef.view}</Text>;
+    }
+
+    const { lastFrame } = render(<Wrapper />);
+
+    await act(() => {
+      hookRef!.goToTaskChord();
+    });
+    expect(lastFrame()).toContain("view:task-chord");
+
+    await act(() => {
+      hookRef!.goToDashboard();
+    });
+    expect(lastFrame()).toContain("view:dashboard");
+  });
 });

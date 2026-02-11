@@ -62,6 +62,32 @@ describe("execCommand", () => {
     expect(lines).not.toContain("after");
   });
 
+  it("passes env vars to spawned process", async () => {
+    const lines: string[] = [];
+    await execCommand("echo $TEST_VAR", {
+      cwd: "/tmp",
+      env: { TEST_VAR: "hello-from-env" },
+      onLine: (line) => {
+        lines.push(line);
+      },
+    });
+    expect(lines).toContain("hello-from-env");
+  });
+
+  it("merges env with process.env", async () => {
+    const lines: string[] = [];
+    await execCommand("echo $HOME", {
+      cwd: "/tmp",
+      env: { CUSTOM: "val" },
+      onLine: (line) => {
+        lines.push(line);
+      },
+    });
+    // HOME should still be available from process.env
+    expect(lines.length).toBeGreaterThan(0);
+    expect(lines[0]).not.toBe("");
+  });
+
   it("handles dependsOn pattern: runs deps first via sequential calls", async () => {
     // Simulate running two tasks sequentially
     const lines: string[] = [];

@@ -9,6 +9,7 @@ import { useServiceActions } from "#src/hooks/useServiceActions.js";
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
 import { useRef, useState } from "react";
@@ -53,6 +54,8 @@ function handleDashboardInput(
     restartAll: () => Promise<void>;
     goToLogs: (name: string) => void;
     goToTasks: () => void;
+    goToTaskChord: () => void;
+    hasTaskShortcuts: boolean;
   },
 ) {
   if (key.upArrow) {
@@ -82,7 +85,11 @@ function handleDashboardInput(
     openInBrowser(ctx.statuses[ctx.index]);
   }
   if (input === "t") {
-    ctx.goToTasks();
+    if (ctx.hasTaskShortcuts) {
+      ctx.goToTaskChord();
+    } else {
+      ctx.goToTasks();
+    }
   }
   if (input === "a" && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
@@ -131,16 +138,55 @@ function handleTasksInput(
   }
 }
 
+function handleTaskChordInput(
+  input: string,
+  key: Key,
+  ctx: {
+    taskShortcuts: { shortcut: string; name: string }[];
+    taskEntries: [string, { name: string }][];
+    setIndex: (i: number) => void;
+    setRunTrigger: React.Dispatch<React.SetStateAction<number>>;
+    goToTasks: () => void;
+    goToDashboard: () => void;
+  },
+) {
+  if (key.escape) {
+    ctx.goToDashboard();
+    return;
+  }
+  if (key.return) {
+    ctx.goToTasks();
+    return;
+  }
+
+  // Match input against task shortcuts
+  const matched = ctx.taskShortcuts.find((t) => t.shortcut === input);
+  if (matched) {
+    // Find the index of this task in taskEntries by matching the shortcut's name
+    const idx = ctx.taskEntries.findIndex(([, task]) => task.name === matched.name);
+    if (idx !== -1) {
+      ctx.setIndex(idx);
+      ctx.setRunTrigger((n) => n + 1);
+      ctx.goToTasks();
+      return;
+    }
+  }
+
+  // Unmatched key → go to tasks list
+  ctx.goToTasks();
+}
+
 export function Router() {
-  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
+  const { view, logTarget, goToLogs, goToDashboard, goToTasks, goToTaskChord } = useRouter();
   const { manager, paneMap, config } = useZaps();
   const statuses = useServices(manager);
   const { restart, toggle, restartAll } = useServiceActions(manager);
 
   // Selection count depends on view: services for dashboard, tasks for tasks view
   const taskEntries = Object.entries(config.project.tasks ?? {});
-  const itemCount = view === "tasks" ? taskEntries.length : statuses.length;
-  const { index, moveUp, moveDown } = useSelection(itemCount);
+  const itemCount =
+    view === "tasks" || view === "task-chord" ? taskEntries.length : statuses.length;
+  const { index, setIndex, moveUp, moveDown } = useSelection(itemCount);
 
   const { exit } = useInkApp();
   const busyRef = useRef(false);
@@ -157,6 +203,10 @@ export function Router() {
 
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
+
+  // Precompute task shortcuts for chord mode
+  const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
+  const hasTaskShortcuts = taskShortcuts.length > 0;
 
   useInput((input, key) => {
     // Global keys
@@ -188,6 +238,8 @@ export function Router() {
         restartAll,
         goToLogs,
         goToTasks,
+        goToTaskChord,
+        hasTaskShortcuts,
       });
     }
 
@@ -197,6 +249,17 @@ export function Router() {
 
     if (view === "tasks") {
       handleTasksInput(key, { goToDashboard, moveUp, moveDown, setRunTrigger });
+    }
+
+    if (view === "task-chord") {
+      handleTaskChordInput(input, key, {
+        taskShortcuts,
+        taskEntries,
+        setIndex,
+        setRunTrigger,
+        goToTasks,
+        goToDashboard,
+      });
     }
   });
 
@@ -214,5 +277,5 @@ export function Router() {
   if (view === "tasks") {
     return <TasksView selectedIndex={index} runTrigger={runTrigger} />;
   }
-  return <Dashboard statuses={statuses} selectedIndex={index} />;
+  return <Dashboard statuses={statuses} selectedIndex={index} chordMode={view === "task-chord"} />;
 }

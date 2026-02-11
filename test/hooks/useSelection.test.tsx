@@ -125,6 +125,15 @@ describe("useSelection", () => {
     expect(lastFrame()).toContain("index:1");
   });
 
+  it("setIndex sets index directly", async () => {
+    const { lastFrame, hookRef } = renderSelection(5);
+
+    await act(() => {
+      hookRef().setIndex(3);
+    });
+    expect(lastFrame()).toContain("index:3");
+  });
+
   it("handles itemCount of 0 gracefully", () => {
     function TestWrapper() {
       const { index } = useSelection(0);
