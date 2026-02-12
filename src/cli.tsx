@@ -93,8 +93,8 @@ program
     const tuiPaneId = paneMap["@tui"];
 
     // Launch inner process in @tui pane
-    // Exec replaces the shell → pane closes automatically when Node exits
-    await sendKeys(tuiPaneId, `exec ${resolveCommand()} ui --start`);
+    // Shell runs command, then `exit` closes the pane after process finishes
+    await sendKeys(tuiPaneId, `${resolveCommand()} ui --start; exit`);
   });
 
 program
