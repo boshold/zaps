@@ -12,7 +12,7 @@ vi.mock("node:child_process", () => ({
 import { spawn } from "node:child_process";
 
 import {
-  listSessions,
+  listZapsSessions,
   hasSession,
   sendKeys,
   newSession,
@@ -53,19 +53,23 @@ beforeEach(() => {
   mockSpawn.mockReset();
 });
 
-describe("listSessions", () => {
-  it("returns session names", async () => {
-    mockSpawn.mockReturnValue(createMockProc("foo\nbar\nbaz"));
-    const sessions = await listSessions();
-    expect(sessions).toEqual(["foo", "bar", "baz"]);
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["list-sessions", "-F", "#{session_name}"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+describe("listZapsSessions", () => {
+  it("returns only sessions with ZAPS_PANE_MAP", async () => {
+    mockSpawn
+      .mockReturnValueOnce(createMockProc("foo\nbar\nbaz"))
+      .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%0","web":"%1"}'))
+      .mockReturnValueOnce(createMockProc("", 1, "unknown variable"))
+      .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%2"}'));
+    const sessions = await listZapsSessions();
+    expect(sessions).toEqual([
+      { session: "foo", panes: 2 },
+      { session: "baz", panes: 1 },
+    ]);
   });
 
   it("returns empty array on failure", async () => {
     mockSpawn.mockReturnValue(createMockProc("", 1, "no server running"));
-    const sessions = await listSessions();
+    const sessions = await listZapsSessions();
     expect(sessions).toEqual([]);
   });
 });

@@ -15,7 +15,7 @@ import {
   currentPaneId,
   currentSession,
   killPane,
-  listSessions,
+  listZapsSessions,
   panePid,
   sendCtrlC,
   sendKeys,
@@ -171,15 +171,15 @@ program
 
 program
   .command("sessions")
-  .description("List tmux sessions")
+  .description("List running zaps instances")
   .action(async () => {
-    const sessions = await listSessions();
+    const sessions = await listZapsSessions();
     if (sessions.length === 0) {
-      process.stdout.write("No tmux sessions found.\n");
+      process.stdout.write("No running zaps instances found.\n");
       return;
     }
-    for (const session of sessions) {
-      process.stdout.write(`${session}\n`);
+    for (const { session, panes } of sessions) {
+      process.stdout.write(`${session} (${panes} panes)\n`);
     }
   });
 

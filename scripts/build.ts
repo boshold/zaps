@@ -82,7 +82,23 @@ code = code
 await Bun.write("dist/cli.js", code);
 
 // Step 3 – compile to self-contained bytecode binary
-await $`bun build dist/cli.js --compile --bytecode --outfile dist/zaps`;
+const targetArg = process.argv.find((a) => a.startsWith("--target="));
+const target = targetArg?.split("=")[1];
+
+const compileArgs = [
+  "bun",
+  "build",
+  "dist/cli.js",
+  "--compile",
+  "--bytecode",
+  "--outfile",
+  "dist/zaps",
+];
+if (target) {
+  compileArgs.push(`--target=${target}`);
+}
+
+await $`${compileArgs}`;
 
 // Cleanup intermediate
 await $`rm dist/cli.js`;

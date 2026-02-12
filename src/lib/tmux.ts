@@ -25,10 +25,22 @@ export async function currentSession(): Promise<string> {
   return run(["display-message", "-p", "#{session_name}"]);
 }
 
-export async function listSessions(): Promise<string[]> {
+export async function listZapsSessions(): Promise<{ session: string; panes: number }[]> {
   try {
     const out = await run(["list-sessions", "-F", "#{session_name}"]);
-    return out ? out.split("\n") : [];
+    const sessions = out ? out.split("\n") : [];
+    const results: { session: string; panes: number }[] = [];
+    for (const session of sessions) {
+      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
+      const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
+      if (paneMapRaw) {
+        const parsed: unknown = JSON.parse(paneMapRaw);
+        const panes =
+          typeof parsed === "object" && parsed !== null ? Object.keys(parsed).length : 0;
+        results.push({ session, panes });
+      }
+    }
+    return results;
   } catch {
     return [];
   }
