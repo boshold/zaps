@@ -1,8 +1,37 @@
-# ZAPS
+<div align='center'>
+   <p>
+     
+![ZAPS](https://github.com/user-attachments/assets/a20356a5-8dd4-4ab8-a6ba-ef5daaa98108)
 
-**Zero Ass Pain Setup** — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.
+   <p>
+      <a href="https://github.com/kpalatzky/nvim.dotfiles/blob/master/LICENSE">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=cba6f7&labelColor=b4befe">
+            <img src="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=8839ef" alt="MIT License"/>
+         </picture>
+      </a>
+      <a href="https://github.com/neovim/neovim#is-also-awesome">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D0.10.0-a6e3a1?logo=neovim&label=neovim&labelColor=74c7ec&logoColor=313244">
+            <img alt="Neovim 0.10 is required" src="https://img.shields.io/badge/%3E%3D0.10.0-40a02b?logo=neovim&label=neovim&labelColor=1e66f5">
+         </picture>
+       </a>
+      <a href="https://github.com/neovim/neovim#0.11-is-also-awesome">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/0.11.0-a6e3a1?logo=neovim&label=neovim&labelColor=74c7ec&logoColor=313244">
+            <img alt="Neovim 0.11 is supported" src="https://img.shields.io/badge/0.11.0-40a02b?logo=neovim&label=neovim&labelColor=1e66f5">
+         </picture>
+       </a>
+   </p>
+   <hr>
+   <p>
+      <h3>⚡ Make your project setup painless ⚡</h3>
+      <div>Zero Ass Pain Setup — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.</div>
+      <div>Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.</div>
+   </p>
+</div>
 
-Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.
+
 
 ## Prerequisites
 
