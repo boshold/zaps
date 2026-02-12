@@ -25,8 +25,6 @@
    </p>
 </div>
 
-
-
 ## Prerequisites
 
 - [tmux](https://github.com/tmux/tmux/wiki#-is-awesome)

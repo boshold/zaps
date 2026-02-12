@@ -54,17 +54,36 @@ beforeEach(() => {
 });
 
 describe("listZapsSessions", () => {
-  it("returns only sessions with ZAPS_PANE_MAP", async () => {
+  it("returns only sessions with ZAPS_PANE_MAP and live panes", async () => {
     mockSpawn
+      // List-sessions
       .mockReturnValueOnce(createMockProc("foo\nbar\nbaz"))
+      // Show-environment foo → has pane map
       .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%0","web":"%1"}'))
+      // List-panes foo → panes alive
+      .mockReturnValueOnce(createMockProc("%0:100:120:40\n%1:200:60:20"))
+      // Show-environment bar → no pane map
       .mockReturnValueOnce(createMockProc("", 1, "unknown variable"))
-      .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%2"}'));
+      // Show-environment baz → has pane map
+      .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%2"}'))
+      // List-panes baz → pane alive
+      .mockReturnValueOnce(createMockProc("%2:300:80:30"));
     const sessions = await listZapsSessions();
     expect(sessions).toEqual([
       { session: "foo", panes: 2 },
       { session: "baz", panes: 1 },
     ]);
+  });
+
+  it("excludes sessions where panes are dead", async () => {
+    mockSpawn
+      .mockReturnValueOnce(createMockProc("stale"))
+      // Show-environment → has pane map
+      .mockReturnValueOnce(createMockProc('ZAPS_PANE_MAP={"@tui":"%0","web":"%1"}'))
+      // List-panes → none of the mapped panes exist
+      .mockReturnValueOnce(createMockProc("%5:100:120:40"));
+    const sessions = await listZapsSessions();
+    expect(sessions).toEqual([]);
   });
 
   it("returns empty array on failure", async () => {

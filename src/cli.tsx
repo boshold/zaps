@@ -17,6 +17,7 @@ import {
   killPane,
   listZapsSessions,
   panePid,
+  removeEnv,
   sendCtrlC,
   sendKeys,
   setEnv,
@@ -92,7 +93,8 @@ program
     const tuiPaneId = paneMap["@tui"];
 
     // Launch inner process in @tui pane
-    await sendKeys(tuiPaneId, `${resolveCommand()} ui --start`);
+    // Exec replaces the shell → pane closes automatically when Node exits
+    await sendKeys(tuiPaneId, `exec ${resolveCommand()} ui --start`);
   });
 
 program
@@ -152,21 +154,18 @@ program
     // Cleanup — stopAll is idempotent, and it fires onStop hook internally
     await manager.stopAll();
 
-    // Kill spawned panes, but preserve the origin pane
+    // Kill spawned panes, but preserve the origin pane and @tui pane
     const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
+    const tuiPaneId = paneMap["@tui"];
     for (const paneId of Object.values(paneMap)) {
-      if (paneId !== originPane) {
+      if (paneId !== originPane && paneId !== tuiPaneId) {
         // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         await killPane(paneId).catch(() => {
           /* Pane may already be gone */
         });
       }
     }
-
-    // Kill TUI pane last — terminates our process
-    await killPane(paneMap["@tui"]).catch(() => {
-      /* Pane may already be gone */
-    });
+    // TUI pane closes automatically on process exit (launched via exec)
   });
 
 program
@@ -234,6 +233,13 @@ program
         killed += 1;
       }
     }
+
+    await removeEnv(sessionName, "ZAPS_PANE_MAP").catch(() => {
+      /* Session may already be gone */
+    });
+    await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {
+      /* Session may already be gone */
+    });
 
     process.stdout.write(`Killed ${killed} pane(s).\n`);
   });

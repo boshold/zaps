@@ -35,9 +35,17 @@ export async function listZapsSessions(): Promise<{ session: string; panes: numb
       const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
       if (paneMapRaw) {
         const parsed: unknown = JSON.parse(paneMapRaw);
-        const panes =
-          typeof parsed === "object" && parsed !== null ? Object.keys(parsed).length : 0;
-        results.push({ session, panes });
+        if (typeof parsed === "object" && parsed !== null) {
+          const keys = Object.keys(parsed);
+          const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
+          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
+          const livePanes = await listPanes(session).catch(() => [] as PaneInfo[]);
+          const liveIds = new Set(livePanes.map((p) => p.id));
+          const hasLive = values.some((id) => liveIds.has(id));
+          if (hasLive) {
+            results.push({ session, panes: keys.length });
+          }
+        }
       }
     }
     return results;
@@ -103,6 +111,10 @@ export async function sendCtrlC(target: string): Promise<void> {
 
 export async function setEnv(session: string, key: string, value: string): Promise<void> {
   await run(["set-environment", "-t", session, key, value]);
+}
+
+export async function removeEnv(session: string, key: string): Promise<void> {
+  await run(["set-environment", "-u", "-t", session, key]);
 }
 
 export async function showEnv(session: string, key: string): Promise<string | null> {
