@@ -57,6 +57,8 @@ export interface ServiceConfig {
   url?: string | ((ctx: ServiceContext) => string);
   cwd?: string;
   restart?: { maxRetries?: number; backoff?: number };
+  onReady?: () => void | Promise<void>;
+  onStop?: () => void | Promise<void>;
 }
 
 // === Tasks ===
@@ -102,6 +104,20 @@ export interface ProjectConfig {
 // === Library ===
 export interface Library {
   defineProject(this: void, config: ProjectConfig): ProjectConfig;
+  runTask(this: void, key: string): Promise<void>;
+  startService(this: void, name: string): Promise<void>;
+  restartService(this: void, name: string): Promise<void>;
+  stopService(this: void, name: string): Promise<void>;
+  isServiceRunning(this: void, name: string): boolean;
+}
+
+// === Library Actions ===
+export interface LibraryActions {
+  runTask: (key: string) => Promise<void>;
+  startService: (name: string) => Promise<void>;
+  restartService: (name: string) => Promise<void>;
+  stopService: (name: string) => Promise<void>;
+  isServiceRunning: (name: string) => boolean;
 }
 
 // === Resolved ===
@@ -109,6 +125,7 @@ export interface ResolvedConfig {
   project: ProjectConfig & { name: string };
   configPath: string;
   projectDir: string;
+  bindActions?: (actions: LibraryActions) => void;
 }
 
 // === Type Guards ===

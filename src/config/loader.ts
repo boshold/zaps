@@ -79,7 +79,8 @@ export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
   }
 
   const projectDir = path.dirname(configPath);
-  const project: ProjectConfig = configFn(createZapsLib());
+  const { lib, bindActions } = createZapsLib();
+  const project: ProjectConfig = configFn(lib);
   const name = project.name || path.basename(projectDir);
   const resolved = { ...project, name };
 
@@ -89,5 +90,6 @@ export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
     project: resolved,
     configPath,
     projectDir,
+    bindActions,
   };
 }

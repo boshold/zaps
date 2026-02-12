@@ -12,7 +12,6 @@
   "scripts": {
     "dev": "tsx src/cli.tsx",
     "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
-    "postinstall": "pnpm build",
     "test": "vitest run",
     "test:integration": "vitest run -c test/integration/vitest.config.ts",
     "typecheck": "tsc --noEmit",
@@ -30,6 +29,7 @@
   "devDependencies": {
     "@types/node": "^25.2.3",
     "@types/react": "^19.0.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "ink-testing-library": "^4.0.0",
     "oxfmt": "^0.31.0",
     "oxlint": "^1.46.0",

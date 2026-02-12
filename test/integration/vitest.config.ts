@@ -8,5 +8,10 @@ export default defineConfig({
     hookTimeout: 30_000,
     pool: "forks",
     fileParallelism: false,
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary", "json"],
+      include: ["src/**"],
+    },
   },
 });

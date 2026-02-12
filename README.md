@@ -1,38 +1,29 @@
 # ZAPS
 
-**Zero Ass Pain Setup** — a terminal session manager that orchestrates your dev services inside tmux with an interactive TUI.
+**Zero Ass Pain Setup** — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.
 
-Define your services, dependencies, tasks, and layout in a single `.zaps.mts` config file. ZAPS handles the rest: tmux session creation, pane layout, service lifecycle management, crash detection with auto-restart, and a keyboard-driven dashboard.
+Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.
 
 ## Prerequisites
 
 - [tmux](https://github.com/tmux/tmux)
-- [Node.js](https://nodejs.org/) >= 18
-- Linux or macOS
-
-## Installation
-
-```bash
-npm install -g zaps
-```
 
 ## Quick Start
 
 ```bash
-# Initialize a config file in your project
-zaps init
-
+# Inside a tmux session:
+zaps init          # Scaffold .zaps.mts config
 # Edit .zaps.mts to define your services
-
-# Launch
-zaps
+zaps               # Launch
 ```
+
+> ZAPS must be run from inside a tmux session.
 
 ## Commands
 
-### `zaps` / `zaps ui`
+### `zaps` / `zaps dev`
 
-Launch the TUI dashboard. Creates a tmux session, builds the pane layout, starts services, and attaches.
+Launch the dev session. Builds the pane layout from the current tmux pane, starts services, and renders the TUI dashboard.
 
 ### `zaps init`
 
@@ -44,21 +35,20 @@ List active tmux sessions.
 
 ### `zaps down`
 
-Stop all services and kill the tmux session.
-
-```bash
-zaps down              # Auto-detect from config
-zaps down -n myproject # Specify project name
-```
+Stop all services and kill spawned panes in the current tmux session.
 
 ## Configuration
 
-ZAPS looks for config files walking up from the current directory. Filenames checked (in order):
+### Config Discovery
 
-1. `.local.zaps.mts` — local overrides (gitignored)
-2. `.local.zaps.ts`
-3. `.zaps.mts` — primary config
-4. `.zaps.ts`
+ZAPS walks up from the current directory looking for these filenames (first match wins):
+
+1. `.local.zaps.mts` — local override (gitignore this)
+2. `local.zaps.mts`
+3. `.local.zaps.ts`
+4. `local.zaps.ts`
+5. `.zaps.mts` — primary config
+6. `.zaps.ts`
 
 ### Minimal Config
 
@@ -88,9 +78,17 @@ export function config({ defineProject }: Library) {
 
     services: {
       db: {
-        start: "docker compose up postgres",
-        ready: { port: 5432 },
-        restart: { maxRetries: 3, backoff: 1000 },
+        docker: {
+          service: "postgres",
+          file: "./docker-compose.yml",
+          build: true,
+          forceRecreate: false,
+          renewVolumes: false,
+          removeOrphans: true,
+          pull: "missing",
+          noDeps: false,
+        },
+        restart: { maxRetries: 5, backoff: 2000 },
       },
 
       api: {
@@ -104,7 +102,7 @@ export function config({ defineProject }: Library) {
 
       web: {
         start: "npm run dev:web",
-        ready: { port: 3000 },
+        ready: { port: true },
         dependsOn: ["api"],
         url: (ctx) => `http://localhost:${ctx.services.web.port}`,
       },
@@ -119,12 +117,14 @@ export function config({ defineProject }: Library) {
     tasks: {
       migrate: {
         name: "Run migrations",
-        commands: "npm run db:migrate",
+        description: "Apply pending database migrations",
+        commands: "npx prisma migrate deploy",
         cwd: "./packages/api",
+        shortcut: "m",
       },
       seed: {
         name: "Seed database",
-        commands: ["npm run db:seed", "npm run db:fixtures"],
+        commands: ["npx prisma db seed", "npx prisma db fixtures"],
         dependsOn: ["migrate"],
       },
     },
@@ -161,7 +161,8 @@ export function config({ defineProject }: Library) {
 | ----------- | ------------------------------------------- | ------- | ------------------------------------- |
 | `start`     | `string \| () => string`                    | —       | Command to start the service          |
 | `run`       | `string \| () => string`                    | —       | Alias for `start`                     |
-| `stop`      | `string`                                    | —       | Custom stop command (default: Ctrl-C) |
+| `stop`      | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C) |
+| `docker`    | `DockerConfig`                              | —       | Docker Compose service config         |
 | `ready`     | `ReadyConfig`                               | —       | How to detect the service is ready    |
 | `dependsOn` | `string[]`                                  | `[]`    | Services that must be ready first     |
 | `env`       | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                 |
@@ -173,17 +174,20 @@ export function config({ defineProject }: Library) {
 
 ### Ready Detection
 
-Three strategies for detecting when a service is ready:
+Four strategies for detecting when a service is ready:
 
-**Port** — wait for a TCP port to start listening:
+**Port** — wait for a TCP port:
 
 ```typescript
 ready: {
   port: 3000;
-}
+} // specific port
 ready: {
-  port: () => parseInt(process.env.PORT);
-}
+  port: true;
+} // any port
+ready: {
+  port: () => getPort();
+} // dynamic port
 ```
 
 **Output** — match against pane output:
@@ -197,6 +201,13 @@ ready: {
 }
 ```
 
+**Docker** — wait for container running + healthy:
+
+```typescript
+ready: { docker: "postgres" }
+ready: { docker: "postgres", file: "./docker-compose.yml" }
+```
+
 **Function** — custom async check:
 
 ```typescript
@@ -208,14 +219,31 @@ ready: async () => {
 
 Ready checks poll every 500ms with a 60s timeout.
 
+### Docker Integration
+
+When a service has `docker` config and no `start`/`run`, ZAPS auto-generates a `docker compose up` command.
+
+If no `ready` config is provided, ZAPS defaults to checking the docker container state (running + healthy).
+
+| Option          | Type                               | Default | Description                            |
+| --------------- | ---------------------------------- | ------- | -------------------------------------- |
+| `service`       | `string`                           | —       | Docker Compose service name (required) |
+| `file`          | `string`                           | —       | Path to compose file                   |
+| `build`         | `boolean`                          | —       | `--build` flag                         |
+| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                |
+| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)           |
+| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                |
+| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                      |
+| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                       |
+
 ### Dependencies
 
-Services start in topological order. Dependencies within the same level start in parallel:
+Services start in topological order. Services at the same level start in parallel:
 
 ```typescript
 services: {
   db: { start: "..." },           // Level 0 — starts first
-  cache: { start: "..." },        // Level 0 — starts in parallel with db
+  cache: { start: "..." },        // Level 0 — parallel with db
   api: {
     start: "...",
     dependsOn: ["db", "cache"],   // Level 1 — waits for both
@@ -240,22 +268,39 @@ restart: {
 }
 ```
 
-Backoff doubles per retry: 2s, 4s, 8s, 16s, 32s.
+Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls every 2s.
 
 ### Dynamic Environment
 
-Access other services' ports and project directory at runtime:
+Access other services' runtime info via `ServiceContext`:
 
 ```typescript
 env: (ctx) => ({
   DATABASE_URL: `postgres://localhost:${ctx.services.db.port}/mydb`,
+  API_PORTS: ctx.services.api.ports.join(","),
   PROJECT_DIR: ctx.projectDir,
 });
 ```
 
+`ServiceContext` shape:
+
+```typescript
+{
+  services: Record<
+    string,
+    {
+      port: number | undefined; // first detected port
+      ports: number[]; // all detected ports
+      cwd: string | undefined;
+    }
+  >;
+  projectDir: string;
+}
+```
+
 ## Tasks
 
-One-off commands that can be run from the TUI:
+One-off commands runnable from the TUI:
 
 ```typescript
 tasks: {
@@ -264,6 +309,9 @@ tasks: {
     description: "Apply pending database migrations",
     commands: "npx prisma migrate deploy",
     cwd: "./packages/api",
+    dependsOn: ["seed"],
+    env: { NODE_ENV: "production" },
+    shortcut: "m",
   },
   "reset-db": {
     name: "Reset database",
@@ -271,16 +319,21 @@ tasks: {
       "npx prisma migrate reset --force",
       "npx prisma db seed",
     ],
-    dependsOn: ["migrate"],
   },
 }
 ```
 
 Task dependencies are resolved and executed before the task itself.
 
+### Shortcuts
+
+Tasks can define a `shortcut` key for quick execution via chord mode. If no shortcut is specified, ZAPS auto-assigns the first unique character from the task key.
+
+Press `t` on the dashboard to enter chord mode. Then press a shortcut key to immediately run that task. Any unmatched key or `Enter` opens the full tasks list instead.
+
 ## Layout
 
-Define a custom tmux pane layout. The `@tui` pane is required — it hosts the ZAPS dashboard.
+Define a custom tmux pane layout. The `@tui` pane is **required** — it hosts the ZAPS dashboard.
 
 ```typescript
 layout: {
@@ -300,7 +353,7 @@ layout: {
 
 - `direction`: `"rows"` (vertical split) or `"columns"` (horizontal split)
 - `size`: percentage of parent (defaults to equal split)
-- Services not included in the layout get their own background tmux window
+- Services not in the layout get their own background tmux window
 - Detached services must **not** appear in the layout
 
 If no layout is specified, `@tui` gets the main pane and each service gets a background window.
@@ -316,16 +369,13 @@ If no layout is specified, `@tui` gets the main pane and each service gets a bac
 | `s`       | Start/stop selected service    |
 | `l`       | View logs for selected service |
 | `o`       | Open service URL in browser    |
-| `t`       | Switch to tasks view           |
+| `t`       | Tasks (chord mode or list)     |
 | `a`       | Restart all services           |
 | `q`       | Stop all and quit              |
 
-### Log View
+### Chord Mode
 
-| Key       | Action            |
-| --------- | ----------------- |
-| `Up/Down` | Scroll logs       |
-| `Esc`     | Back to dashboard |
+Shown when any task has a shortcut. Press a shortcut key to run it, `Esc` to cancel, `Enter` or any unmatched key to open the tasks list.
 
 ### Tasks View
 
@@ -333,6 +383,13 @@ If no layout is specified, `@tui` gets the main pane and each service gets a bac
 | --------- | ----------------- |
 | `Up/Down` | Navigate tasks    |
 | `Enter`   | Run selected task |
+| `Esc`     | Back to dashboard |
+
+### Log View
+
+| Key       | Action            |
+| --------- | ----------------- |
+| `Up/Down` | Scroll logs       |
 | `Esc`     | Back to dashboard |
 
 ## Service States
@@ -366,15 +423,6 @@ hooks: {
   onServiceStop: async (name) => { /* individual service stopped */ },
 }
 ```
-
-## How It Works
-
-ZAPS uses a two-process architecture:
-
-1. **Outer process** — creates the tmux session, builds the pane layout, launches the inner process in the `@tui` pane, then attaches to the session
-2. **Inner process** — runs inside tmux, manages service lifecycle, renders the TUI dashboard
-
-Services are started by sending commands to their tmux panes via `send-keys`. Port detection uses `ss` (Linux) or `lsof` (macOS) against the process tree. Crash monitoring polls every 2s checking if child processes are still alive.
 
 ## License
 

@@ -1,4 +1,4 @@
-import type { ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
+import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
 import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -1157,5 +1157,150 @@ describe("getStatus / getAllStatuses", () => {
 
     expect(statuses).toHaveLength(2);
     expect(statuses.map((s) => s.name).toSorted()).toEqual(["api", "db"]);
+  });
+});
+
+// =============================================================================
+// Per-service hooks (onReady / onStop)
+// =============================================================================
+
+describe("per-service hooks", () => {
+  it("fires onReady after service becomes ready", async () => {
+    const onReady = vi.fn();
+    const config = makeConfig({
+      svc: { start: "start-svc", onReady },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+    expect(onReady).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires onStop after service stops", async () => {
+    const onStop = vi.fn();
+    const config = makeConfig({
+      svc: { start: "start-svc", onStop },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    processRunning = true;
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    expect(onStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("catches onReady errors without failing the service", async () => {
+    const onReady = vi.fn().mockRejectedValue(new Error("hook failed"));
+    const config = makeConfig({
+      svc: { start: "start-svc", onReady },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    // Service should still be ready despite hook error
+    expect(mgr.getStatus("svc").state).toBe("ready");
+    expect(mgr.getStatus("svc").lastError).toContain("onReady hook failed");
+  });
+
+  it("catches onStop errors without failing the stop", async () => {
+    const onStop = vi.fn().mockRejectedValue(new Error("hook failed"));
+    const config = makeConfig({
+      svc: { start: "start-svc", onStop },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps);
+
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    processRunning = true;
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    // Service should still be stopped despite hook error
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+    expect(mgr.getStatus("svc").lastError).toContain("onStop hook failed");
+  });
+});
+
+// =============================================================================
+// BindActions
+// =============================================================================
+
+describe("bindActions", () => {
+  it("calls bindActions with working service methods", async () => {
+    let capturedActions: LibraryActions | undefined;
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: { start: "start-api" },
+    });
+    config.bindActions = (actions) => {
+      capturedActions = actions;
+    };
+
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const _mgr = new ServiceManager(config, paneMap, deps);
+
+    expect(capturedActions).toBeDefined();
+    const actions = capturedActions!;
+
+    // IsServiceRunning should return false for stopped service
+    expect(actions.isServiceRunning("db")).toBe(false);
+
+    // Start service via actions
+    const startPromise = actions.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    // IsServiceRunning should return true for ready service
+    expect(actions.isServiceRunning("db")).toBe(true);
+    expect(actions.isServiceRunning("api")).toBe(false);
   });
 });

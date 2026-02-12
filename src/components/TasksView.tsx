@@ -1,9 +1,6 @@
-import type { TaskConfig } from "#src/config/types.js";
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
-import { execCommand } from "#src/lib/exec.js";
-import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
+import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import { Box, Text, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
@@ -45,66 +42,6 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     void runTask(taskKey);
   }, [runTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- Only trigger on runTrigger
 
-  async function runWithDeps(
-    key: string,
-    allTasks: Record<string, TaskConfig>,
-    visited: Set<string>,
-    projectDir: string,
-    currentStatuses: ServiceStatus[],
-  ): Promise<boolean> {
-    if (visited.has(key)) {
-      return taskResultsRef.current[key] === "success";
-    }
-    visited.add(key);
-
-    const t = allTasks[key];
-    if (!t) {
-      throw new Error(`Unknown task dependency: ${key}`);
-    }
-
-    // Run deps first
-    if (t.dependsOn) {
-      for (const dep of t.dependsOn) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential dependency execution
-        if (!(await runWithDeps(dep, allTasks, visited, projectDir, currentStatuses))) {
-          return false;
-        }
-      }
-    }
-
-    if (taskResultsRef.current[key] === "success") {
-      return true;
-    }
-
-    // Resolve env
-    const statusMap = new Map(currentStatuses.map((s) => [s.name, s]));
-    const ctx = buildServiceContext(statusMap, projectDir);
-    const resolvedEnv = resolveEnv(t.env, ctx);
-
-    // Run commands
-    const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
-    for (const cmd of commands) {
-      const resolved = typeof cmd === "function" ? cmd() : cmd;
-      try {
-        // eslint-disable-next-line no-await-in-loop -- Sequential command execution
-        await execCommand(resolved, {
-          cwd: t.cwd ?? projectDir,
-          ...(Object.keys(resolvedEnv).length > 0 && { env: resolvedEnv }),
-          onLine: (line) => {
-            setTaskOutput((prev) => [...prev, line]);
-          },
-        });
-      } catch {
-        taskResultsRef.current[key] = "error";
-        setTaskResults((prev) => ({ ...prev, [key]: "error" }));
-        return false;
-      }
-    }
-    taskResultsRef.current[key] = "success";
-    setTaskResults((prev) => ({ ...prev, [key]: "success" }));
-    return true;
-  }
-
   async function runTask(taskKey: string) {
     if (runningRef.current) {
       return; // Prevent concurrent task execution
@@ -114,8 +51,28 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     setTaskOutput([]);
 
     const allTasks = config.project.tasks ?? {};
+    const statusMap = new Map(statuses.map((s) => [s.name, s]));
     const visited = new Set<string>();
-    await runWithDeps(taskKey, allTasks, visited, config.projectDir, statuses);
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps(
+      taskKey,
+      {
+        tasks: allTasks,
+        statuses: statusMap,
+        projectDir: config.projectDir,
+        onProgress: (key, result) => {
+          taskResultsRef.current[key] = result;
+          setTaskResults((prev) => ({ ...prev, [key]: result }));
+        },
+        onLine: (_key, line) => {
+          setTaskOutput((prev) => [...prev, line]);
+        },
+      },
+      visited,
+      results,
+    );
+
     setRunningTask(null);
     runningRef.current = false;
   }

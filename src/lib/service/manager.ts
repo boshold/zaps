@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
+import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
@@ -111,6 +112,35 @@ export class ServiceManager extends EventEmitter {
     for (const name of Object.keys(config.project.services)) {
       this.statuses.set(name, createServiceStatus(name));
     }
+
+    // Bind library actions so lib methods work inside hooks
+    config.bindActions?.({
+      runTask: async (key) => {
+        const tasks = config.project.tasks ?? {};
+        if (!tasks[key]) {
+          throw new Error(`Unknown task: ${key}`);
+        }
+        const visited = new Set<string>();
+        const results = new Map<string, "success" | "error">();
+        const ok = await runTaskWithDeps(
+          key,
+          {
+            tasks,
+            statuses: this.statuses,
+            projectDir: config.projectDir,
+          },
+          visited,
+          results,
+        );
+        if (!ok) {
+          throw new Error(`Task '${key}' failed`);
+        }
+      },
+      startService: async (name) => this.startService(name),
+      restartService: async (name) => this.restartService(name),
+      stopService: async (name) => this.stopService(name),
+      isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
+    });
   }
 
   /**
@@ -251,6 +281,14 @@ export class ServiceManager extends EventEmitter {
 
       await fireHook(hooks?.onServiceStart, name);
 
+      try {
+        await serviceConfig.onReady?.();
+      } catch (error) {
+        // Log but don't fail the service start
+        status.lastError = `onReady hook failed: ${error instanceof Error ? error.message : String(error)}`;
+        this.emit("stateChange", name, status);
+      }
+
       // Start crash monitor in background
       // eslint-disable-next-line no-void -- Fire-and-forget promise
       void this.monitorCrash(name);
@@ -270,6 +308,7 @@ export class ServiceManager extends EventEmitter {
    * Stop a single service.
    */
   async stopService(name: string): Promise<void> {
+    const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
     const { hooks } = this.config.project;
@@ -331,6 +370,14 @@ export class ServiceManager extends EventEmitter {
     this.emit("stateChange", name, status);
 
     await fireHook(hooks?.onServiceStop, name);
+
+    try {
+      await serviceConfig.onStop?.();
+    } catch (error) {
+      // Log but don't fail the service stop
+      status.lastError = `onStop hook failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.emit("stateChange", name, status);
+    }
   }
 
   /**
