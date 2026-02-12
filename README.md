@@ -1,12 +1,35 @@
-# ZAPS
+<div align='center'>
+   <p>
+     
+![ZAPS](https://github.com/user-attachments/assets/a20356a5-8dd4-4ab8-a6ba-ef5daaa98108)
 
-**Zero Ass Pain Setup** — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.
+   <p>
+      <a href="https://github.com/kboshold/zaps/blob/master/LICENSE">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=cba6f7&labelColor=b4befe">
+            <img src="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=8839ef" alt="MIT License"/>
+         </picture>
+      </a>
+      <a href="https://github.com/tmux/tmux/wiki#-is-awesome">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5a-a6e3a1?logo=tmux&label=tmux&labelColor=313244&logoColor=a6e3a1">
+            <img alt="Tmux >= 3.5a" src="https://img.shields.io/badge/%3E%3D3.5a-40a02b?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=40a02b">
+         </picture>
+       </a>
+   </p>
+   <hr>
+   <p>
+      <h3>⚡ Make your project setup painless ⚡</h3>
+      <div>Zero Ass Pain Setup — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.</div>
+      <div>Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.</div>
+   </p>
+</div>
 
-Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.
+
 
 ## Prerequisites
 
-- [tmux](https://github.com/tmux/tmux)
+- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome)
 
 ## Quick Start
 
