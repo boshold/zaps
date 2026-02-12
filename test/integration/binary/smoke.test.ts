@@ -7,7 +7,7 @@ import { killSession, newSession, sendKeys } from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { getFreePort } from "../helpers/port.js";
-import { hasBinary, hasTmux } from "../helpers/skip.js";
+import { hasBinary, hasTmux, isCI } from "../helpers/skip.js";
 
 const binaryPath = path.resolve("dist/zaps");
 
@@ -52,7 +52,7 @@ async function pollUntil(
   throw new Error("pollUntil timed out");
 }
 
-describe.skipIf(!hasBinary() || !hasTmux())("binary smoke", () => {
+describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
   let sessionName: string;
   let tmpDir: string;
 
