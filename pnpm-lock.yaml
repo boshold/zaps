@@ -20,6 +20,9 @@ importers:
       react:
         specifier: ^19.0.0
         version: 19.2.4
+      yoga-layout:
+        specifier: ^3.2.1
+        version: 3.2.1
       zod:
         specifier: ^4.3.6
         version: 4.3.6
