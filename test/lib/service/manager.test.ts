@@ -1288,8 +1288,10 @@ describe("bindActions", () => {
 
     const _mgr = new ServiceManager(config, paneMap, deps);
 
-    expect(capturedActions).toBeDefined();
-    const actions = capturedActions!;
+    if (!capturedActions) {
+      throw new Error("bindActions was not called");
+    }
+    const actions = capturedActions;
 
     // IsServiceRunning should return false for stopped service
     expect(actions.isServiceRunning("db")).toBe(false);
