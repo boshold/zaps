@@ -2,7 +2,7 @@
   "name": "zaps",
   "version": "0.1.0",
   "bin": {
-    "zaps": "./dist/zaps"
+    "zaps": "./bin/zaps"
   },
   "type": "module",
   "types": "./dist/config/index.d.ts",
@@ -11,7 +11,8 @@
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
-    "build": "bun run scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "build": "tsx scripts/build.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
+    "build:native": "bun run scripts/build-native.ts && tsc -p tsconfig.build.json --emitDeclarationOnly",
     "test": "vitest run",
     "test:integration": "vitest run -c test/integration/vitest.config.ts",
     "typecheck": "tsc --noEmit",
@@ -25,6 +26,7 @@
     "ink": "^6.7.0",
     "open": "^11.0.0",
     "react": "^19.0.0",
+    "tsx": "^4.19.0",
     "yoga-layout": "^3.2.1",
     "zod": "^4.3.6"
   },
@@ -32,15 +34,20 @@
     "@types/node": "^25.2.3",
     "@types/react": "^19.0.0",
     "@vitest/coverage-v8": "^3.2.4",
+    "esbuild": "^0.25.0",
     "ink-testing-library": "^4.0.0",
     "oxfmt": "^0.31.0",
     "oxlint": "^1.46.0",
     "oxlint-tsgolint": "^0.12.0",
     "react-devtools-core": "^7.0.1",
     "testcontainers": "^11.11.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
-  "packageManager": "pnpm@10.28.0"
+  "packageManager": "pnpm@10.28.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
 }

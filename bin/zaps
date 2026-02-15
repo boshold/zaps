@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+PKG_DIR="$SCRIPT_DIR/.."
+NATIVE="$PKG_DIR/dist/zaps"
+BUNDLE="$PKG_DIR/dist/cli.mjs"
+
+export ZAPS_COMMAND="zaps"
+
+if [ -x "$NATIVE" ]; then
+  export ZAPS_RUNTIME="native"
+  exec "$NATIVE" "$@"
+elif [ -f "$BUNDLE" ]; then
+  export ZAPS_RUNTIME="bundle"
+  exec node "$BUNDLE" "$@"
+else
+  export ZAPS_RUNTIME="tsx"
+  exec node --import tsx/esm "$PKG_DIR/src/cli.tsx" "$@"
+fi

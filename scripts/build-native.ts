@@ -1,0 +1,104 @@
+/**
+ * Build script: bundle with Bun.build() API → compile with --bytecode.
+ *
+ * Three issues prevent direct bytecode compilation:
+ * 1. yoga-layout — TLA `await loadYoga()` at module scope
+ * 2. ink reconciler — TLA `await import('./devtools.js')` guarded by DEV
+ * 3. import.meta.* — JSC bytecode compiler doesn't support import.meta
+ *    (Bun issues #14954, #18778)
+ *
+ * (1) and (2) are fixed with build plugins. (3) is fixed by post-processing
+ * the bundle to replace import.meta.require → require and import.meta.url →
+ * a __filename-based equivalent.
+ */
+import { $ } from "bun";
+import type { BunPlugin } from "bun";
+
+const tlaFixPlugin: BunPlugin = {
+  name: "tla-fix",
+  setup(build) {
+    // Yoga-layout: Force all imports to resolve to the hoisted copy so the
+    // Bundler produces a single module instance (pnpm may create two paths).
+    build.onResolve({ filter: /^yoga-layout$/ }, () => ({
+      path: require.resolve("yoga-layout"),
+    }));
+
+    // Yoga-layout: Replace TLA `await loadYoga()` with async IIFE + Proxy
+    build.onLoad({ filter: /yoga-layout\/dist\/src\/index\.js$/ }, () => ({
+      contents: `
+import loadYoga from '../binaries/yoga-wasm-base64-esm.js';
+import wrapAssembly from "./wrapAssembly.js";
+
+const _ref = [null];
+const _ready = (async () => { _ref[0] = wrapAssembly(await loadYoga()); })();
+
+export default new Proxy({}, {
+  get(_, p) {
+    if (p === "__yogaReady") return _ready;
+    if (!_ref[0]) throw new Error("Yoga not ready — await __yogaReady first");
+    return _ref[0][p];
+  },
+  set(_, p, v) { _ref[0][p] = v; return true; },
+});
+export * from "./generated/YGEnums.js";
+`,
+      loader: "js",
+    }));
+
+    // Ink reconciler: Strip the devtools TLA block
+    build.onLoad({ filter: /ink\/build\/reconciler\.js$/ }, async (args) => {
+      let contents = await Bun.file(args.path).text();
+      contents = contents.replace(
+        /\/\/ We need to conditionally perform devtools[\s\S]*?^}\n/m,
+        "",
+      );
+      return { contents, loader: "js" };
+    });
+  },
+};
+
+// Step 1 – bundle to single ESM file (TLA-free thanks to plugins)
+const result = await Bun.build({
+  entrypoints: ["./src/cli.tsx"],
+  target: "bun",
+  outdir: "./dist",
+  naming: "cli.js",
+  plugins: [tlaFixPlugin],
+});
+
+if (!result.success) {
+  for (const log of result.logs) {
+    console.error(log); // eslint-disable-line no-console -- Build script output
+  }
+  process.exit(1);
+}
+
+// Step 2 – replace import.meta.* for bytecode compatibility
+// JSC's bytecode compiler rejects import.meta (Bun #14954, #18778)
+let code = await Bun.file("dist/cli.js").text();
+code = code
+  .replace("var __require = import.meta.require;", "var __require = require;")
+  .replaceAll("import.meta.url", "require('url').pathToFileURL(__filename).href");
+await Bun.write("dist/cli.js", code);
+
+// Step 3 – compile to self-contained bytecode binary
+const targetArg = process.argv.find((a) => a.startsWith("--target="));
+const target = targetArg?.split("=")[1];
+
+const compileArgs = [
+  "bun",
+  "build",
+  "dist/cli.js",
+  "--compile",
+  "--bytecode",
+  "--outfile",
+  "dist/zaps",
+];
+if (target) {
+  compileArgs.push(`--target=${target}`);
+}
+
+await $`${compileArgs}`;
+
+// Cleanup intermediate
+await $`rm dist/cli.js`;

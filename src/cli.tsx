@@ -38,6 +38,10 @@ function isPaneMap(value: unknown): value is Record<string, string> {
 }
 
 function resolveCommand(): string {
+  const zapsCommand = getEnv("ZAPS_COMMAND");
+  if (zapsCommand) {
+    return zapsCommand;
+  }
   // Compiled bun binary: argv[1] is virtual /$bunfs/ path
   if (process.argv[1]?.startsWith("/$bunfs/")) {
     return path.basename(process.execPath);
@@ -46,7 +50,15 @@ function resolveCommand(): string {
   return process.argv.slice(0, 2).join(" ");
 }
 
-program.name("zaps").version("0.1.0").description("Terminal session manager");
+function resolveRuntime(): string {
+  const env = getEnv("ZAPS_RUNTIME");
+  if (env) {return env;}
+  // Compiled bun binary invoked directly (no bash wrapper)
+  if (process.argv[1]?.startsWith("/$bunfs/")) {return "native";}
+  return "source";
+}
+
+program.name("zaps").version(`0.1.0 (${resolveRuntime()})`).description("Terminal session manager");
 
 /**
  * Build real ServiceManagerDeps from the actual tmux/port modules.
