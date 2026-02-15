@@ -36,7 +36,7 @@ jobs:
           cache: pnpm
       - uses: oven-sh/setup-bun@v2
       - run: pnpm install --frozen-lockfile
-      - run: bun run scripts/build.ts --target=${{ matrix.target }}
+      - run: bun run scripts/build-native.ts --target=${{ matrix.target }}
       - run: mv dist/zaps dist/${{ matrix.name }}
       - uses: actions/upload-artifact@v4
         with:
