@@ -91,7 +91,6 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: chmod +x dist/zaps
       - run: tmux -V
       - run: docker info
       - run: pnpm test:integration -- --coverage
