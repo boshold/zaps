@@ -72,7 +72,7 @@ describe("config types", () => {
     const config: ProjectConfig = {
       name: "test",
       services: {
-        app: { run: "npm start", autostart: false },
+        app: { run: "npm start", flags: { start: false } },
       },
     };
     expect(config.services.app.run).toBe("npm start");

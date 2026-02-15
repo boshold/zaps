@@ -19,10 +19,10 @@ async function walkLayout(
   node: LayoutNode,
   currentPaneId: string,
   paneMap: PaneMap,
-): Promise<void> {
+): Promise<string> {
   if (isLayoutLeaf(node)) {
     paneMap[node.pane] = currentPaneId;
-    return;
+    return node.focus ? node.pane : "";
   }
 
   if (isLayoutSplit(node)) {
@@ -59,17 +59,34 @@ async function walkLayout(
     }
 
     // Recurse into each child (must be sequential for tmux ordering)
+    let focusPane = "";
     for (let i = 0; i < children.length; i += 1) {
       // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-      await walkLayout(children[i], paneIds[i], paneMap);
+      const result = await walkLayout(children[i], paneIds[i], paneMap);
+      if (result) {
+        focusPane = result;
+      }
     }
+    return focusPane;
   }
+
+  return "";
 }
 
 /**
  * Validate a layout tree against available service names.
  * Throws on unknown panes, duplicates, or missing @tui.
  */
+function collectFocusedPanes(node: LayoutNode): string[] {
+  if (isLayoutLeaf(node)) {
+    return node.focus ? [node.pane] : [];
+  }
+  if (isLayoutSplit(node)) {
+    return node.children.flatMap(collectFocusedPanes);
+  }
+  return [];
+}
+
 export function validateLayout(layout: LayoutNode, serviceNames: string[]): void {
   const paneNames = collectPaneNames(layout);
   const seen = new Set<string>();
@@ -87,6 +104,11 @@ export function validateLayout(layout: LayoutNode, serviceNames: string[]): void
   if (!seen.has("@tui")) {
     throw new Error("Layout must include '@tui' pane");
   }
+
+  const focused = collectFocusedPanes(layout);
+  if (focused.length > 1) {
+    throw new Error(`Only one pane can have focus, found: ${focused.join(", ")}`);
+  }
 }
 
 /**
@@ -97,7 +119,7 @@ export async function createLayout(
   startPaneId: string,
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
-): Promise<PaneMap> {
+): Promise<{ paneMap: PaneMap; focusPane: string }> {
   const paneMap: PaneMap = {};
   const serviceNames = Object.keys(services);
 
@@ -113,11 +135,11 @@ export async function createLayout(
       }
     }
 
-    return paneMap;
+    return { paneMap, focusPane: paneMap["@tui"] };
   }
 
   // Case 2: Layout tree provided
-  await walkLayout(layout, startPaneId, paneMap);
+  const focusName = await walkLayout(layout, startPaneId, paneMap);
 
   // Services not in layout get split panes (skip detached)
   for (const name of serviceNames) {
@@ -128,5 +150,5 @@ export async function createLayout(
     }
   }
 
-  return paneMap;
+  return { paneMap, focusPane: (focusName && paneMap[focusName]) || paneMap["@tui"] };
 }

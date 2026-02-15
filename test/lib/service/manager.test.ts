@@ -111,7 +111,7 @@ describe("startAll", () => {
   it("skips services with autostart: false", async () => {
     const config = makeConfig({
       db: { start: "start-db" },
-      worker: { start: "start-worker", autostart: false },
+      worker: { start: "start-worker", flags: { start: false } },
     });
     const paneMap = makePaneMap(["db", "worker"]);
     const deps = createMockDeps();

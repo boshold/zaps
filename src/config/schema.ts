@@ -1,4 +1,4 @@
-import type { LayoutSplit, ServiceContext } from "./types.js";
+import type { LayoutSplit, ServiceContext, TaskRunContext } from "./types.js";
 import { z } from "zod";
 
 // === Commands ===
@@ -58,6 +58,12 @@ const urlConfigSchema = z.union([
   z.custom<(ctx: ServiceContext) => string>((v) => typeof v === "function"),
 ]);
 
+// === Service Flags ===
+const flagsSchema = z.object({
+  start: z.optional(z.boolean()),
+  open: z.optional(z.boolean()),
+});
+
 // === Service Config ===
 const serviceConfigBaseSchema = z.object({
   start: z.optional(commandSchema),
@@ -68,7 +74,7 @@ const serviceConfigBaseSchema = z.object({
   ready: z.optional(readyConfigSchema),
   dependsOn: z.optional(z.array(z.string())),
   env: z.optional(envConfigSchema),
-  autostart: z.optional(z.boolean()),
+  flags: z.optional(flagsSchema),
   url: z.optional(urlConfigSchema),
   cwd: z.optional(z.string()),
   restart: z.optional(
@@ -103,20 +109,43 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
 });
 
 // === Tasks ===
-const taskConfigSchema = z.object({
-  name: z.string(),
-  description: z.optional(z.string()),
-  commands: z.union([commandSchema, z.array(commandSchema)]),
-  cwd: z.optional(z.string()),
-  dependsOn: z.optional(z.array(z.string())),
-  env: z.optional(envConfigSchema),
-  shortcut: z.optional(z.string()),
-});
+const taskRunFnSchema = z.custom<(ctx: TaskRunContext) => Promise<void>>(
+  (v) => typeof v === "function",
+);
+
+const taskConfigSchema = z
+  .object({
+    name: z.string(),
+    description: z.optional(z.string()),
+    commands: z.optional(z.union([commandSchema, z.array(commandSchema)])),
+    run: z.optional(taskRunFnSchema),
+    cwd: z.optional(z.string()),
+    dependsOn: z.optional(z.array(z.string())),
+    env: z.optional(envConfigSchema),
+    shortcut: z.optional(z.string()),
+  })
+  .superRefine((val, ctx) => {
+    if (val.commands && val.run) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Task must have either 'commands' or 'run', not both",
+        input: val,
+      });
+    }
+    if (!val.commands && !val.run) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Task must have either 'commands' or 'run'",
+        input: val,
+      });
+    }
+  });
 
 // === Layout ===
 const layoutLeafSchema = z.object({
   pane: z.string(),
   size: z.optional(z.string()),
+  focus: z.optional(z.boolean()),
 });
 
 const layoutSplitSchema: z.ZodType<LayoutSplit> = z.object({

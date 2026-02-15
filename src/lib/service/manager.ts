@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
+import { openInBrowser } from "#src/lib/open.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
@@ -79,17 +80,16 @@ async function fireHook(
   }
 }
 
-export interface ServiceManagerEvents {
-  stateChange: (name: string, status: ServiceStatus) => void;
-}
-
-export interface ServiceManagerDeps {
-  sendKeys: (target: string, keys: string) => Promise<void>;
-  sendCtrlC: (target: string) => Promise<void>;
-  panePid: (target: string) => Promise<number>;
-  detectPorts: (paneTarget: string) => Promise<number[]>;
-  capturePane: (target: string, lines: number) => Promise<string>;
-  getDescendantPids: (rootPid: number) => Promise<number[]>;
+async function tryAutoOpen(
+  serviceConfig: ServiceConfig,
+  name: string,
+  url: string | undefined,
+  autoOpened: Set<string>,
+): Promise<void> {
+  if (serviceConfig.flags?.open && url && !autoOpened.has(name)) {
+    autoOpened.add(name);
+    await openInBrowser(url);
+  }
 }
 
 export class ServiceManager extends EventEmitter {
@@ -99,6 +99,7 @@ export class ServiceManager extends EventEmitter {
   private paneMap: PaneMap;
   private shuttingDown = false;
   private deps: ServiceManagerDeps;
+  private autoOpened = new Set<string>();
 
   constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps) {
     super();
@@ -152,7 +153,7 @@ export class ServiceManager extends EventEmitter {
     // Filter to autostart services
     const autostartServices: Record<string, { dependsOn?: string[] }> = {};
     for (const [name, svc] of Object.entries(services)) {
-      if (svc.autostart !== false) {
+      if (svc.flags?.start !== false) {
         autostartServices[name] = { dependsOn: svc.dependsOn };
       }
     }
@@ -214,7 +215,6 @@ export class ServiceManager extends EventEmitter {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
-    const { hooks } = this.config.project;
 
     if (!serviceConfig || !paneTarget || !status) {
       throw new Error(`Unknown service: ${name}`);
@@ -267,31 +267,7 @@ export class ServiceManager extends EventEmitter {
       status.ports = ports;
       status.readySince = Date.now();
 
-      const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
-      if (explicitUrl) {
-        status.url = explicitUrl;
-      } else {
-        status.url = await probeHttpPort(ports);
-        if (!status.url && ports.length > 0) {
-          // eslint-disable-next-line no-void -- Fire-and-forget URL monitor
-          void this.monitorUrl(name, ports);
-        }
-      }
-      this.emit("stateChange", name, status);
-
-      await fireHook(hooks?.onServiceStart, name);
-
-      try {
-        await serviceConfig.onReady?.();
-      } catch (error) {
-        // Log but don't fail the service start
-        status.lastError = `onReady hook failed: ${error instanceof Error ? error.message : String(error)}`;
-        this.emit("stateChange", name, status);
-      }
-
-      // Start crash monitor in background
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void this.monitorCrash(name);
+      await this.onServiceReady(name, serviceConfig, status, ports, ctx);
     } catch (error) {
       // If aborted during stop, don't transition to error
       if (controller.signal.aborted) {
@@ -302,6 +278,44 @@ export class ServiceManager extends EventEmitter {
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
+  }
+
+  private async onServiceReady(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    ports: number[],
+    ctx: ServiceContext,
+  ): Promise<void> {
+    const { hooks } = this.config.project;
+
+    const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
+    if (explicitUrl) {
+      status.url = explicitUrl;
+    } else {
+      status.url = await probeHttpPort(ports);
+      if (!status.url && ports.length > 0) {
+        // eslint-disable-next-line no-void -- Fire-and-forget URL monitor
+        void this.monitorUrl(name, ports);
+      }
+    }
+
+    await tryAutoOpen(serviceConfig, name, status.url, this.autoOpened);
+    this.emit("stateChange", name, status);
+
+    await fireHook(hooks?.onServiceStart, name);
+
+    try {
+      await serviceConfig.onReady?.();
+    } catch (error) {
+      // Log but don't fail the service start
+      status.lastError = `onReady hook failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.emit("stateChange", name, status);
+    }
+
+    // Start crash monitor in background
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void this.monitorCrash(name);
   }
 
   /**
@@ -490,9 +504,24 @@ export class ServiceManager extends EventEmitter {
       const result = await probeHttpPort(ports);
       if (result) {
         status.url = result;
+        // eslint-disable-next-line no-await-in-loop -- Sequential polling
+        await tryAutoOpen(this.config.project.services[name], name, result, this.autoOpened);
         this.emit("stateChange", name, status);
         return;
       }
     }
   }
+}
+
+export interface ServiceManagerEvents {
+  stateChange: (name: string, status: ServiceStatus) => void;
+}
+
+export interface ServiceManagerDeps {
+  sendKeys: (target: string, keys: string) => Promise<void>;
+  sendCtrlC: (target: string) => Promise<void>;
+  panePid: (target: string) => Promise<number>;
+  detectPorts: (paneTarget: string) => Promise<number[]>;
+  capturePane: (target: string, lines: number) => Promise<string>;
+  getDescendantPids: (rootPid: number) => Promise<number[]>;
 }

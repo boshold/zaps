@@ -30,11 +30,11 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    const result = await createLayout("%0", undefined, services);
+    const { paneMap } = await createLayout("%0", undefined, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["db"]).toBe("%1");
-    expect(result["api"]).toBe("%2");
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["db"]).toBe("%1");
+    expect(paneMap["api"]).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -44,11 +44,11 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    const result = await createLayout("%0", undefined, services);
+    const { paneMap } = await createLayout("%0", undefined, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["api"]).toBe("%1");
-    expect(result["db"]).toBeUndefined();
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap["db"]).toBeUndefined();
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
   });
 
@@ -65,10 +65,10 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["api"]).toBe("%1");
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["api"]).toBe("%1");
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
     // Direction "rows" maps to "v"
     expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 50);
@@ -95,13 +95,13 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services);
 
-    expect(result["@tui"]).toBe("%0");
+    expect(paneMap["@tui"]).toBe("%0");
     // First split creates %1 for the right column
-    expect(result["api"]).toBe("%1");
+    expect(paneMap["api"]).toBe("%1");
     // Second split creates %2 for frontend within the right column
-    expect(result["frontend"]).toBe("%2");
+    expect(paneMap["frontend"]).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -120,11 +120,11 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["api"]).toBe("%1");
-    expect(result["web"]).toBe("%2");
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap["web"]).toBe("%2");
 
     // Child 1 (api): currentPaneSize = 100, tmux = round(30/100*100) = 30
     expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 30);
@@ -146,11 +146,11 @@ describe("createLayout", () => {
       ],
     };
 
-    const result = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["api"]).toBe("%1");
-    expect(result["worker"]).toBe("%2");
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap["worker"]).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -164,14 +164,61 @@ describe("createLayout", () => {
       children: [{ pane: "@tui", size: "60%" }, { pane: "api" }],
     };
 
-    const result = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services);
 
-    expect(result["@tui"]).toBe("%0");
-    expect(result["api"]).toBe("%1");
+    expect(paneMap["@tui"]).toBe("%0");
+    expect(paneMap["api"]).toBe("%1");
 
     // Implicit child gets remainder: 100 - 60 = 40
     // CurrentPaneSize = 100, tmux = round(40/100*100) = 40
     expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 40);
+  });
+
+  it("returns focusPane when a leaf has focus: true", async () => {
+    const services: Record<string, ServiceConfig> = {
+      api: { start: "npm start" },
+    };
+
+    const layout = {
+      direction: "rows" as const,
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%", focus: true },
+      ],
+    };
+
+    const { paneMap, focusPane } = await createLayout("%0", layout, services);
+
+    expect(paneMap["api"]).toBe("%1");
+    expect(focusPane).toBe("%1");
+  });
+
+  it("defaults focusPane to @tui when no leaf has focus", async () => {
+    const services: Record<string, ServiceConfig> = {
+      api: { start: "npm start" },
+    };
+
+    const layout = {
+      direction: "rows" as const,
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%" },
+      ],
+    };
+
+    const { paneMap, focusPane } = await createLayout("%0", layout, services);
+
+    expect(focusPane).toBe(paneMap["@tui"]);
+  });
+
+  it("no layout: focusPane defaults to @tui", async () => {
+    const services: Record<string, ServiceConfig> = {
+      api: { start: "npm start" },
+    };
+
+    const { paneMap, focusPane } = await createLayout("%0", undefined, services);
+
+    expect(focusPane).toBe(paneMap["@tui"]);
   });
 });
 
@@ -209,6 +256,29 @@ describe("validateLayout", () => {
     const layout = {
       direction: "columns" as const,
       children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(() => validateLayout(layout, ["api"])).not.toThrow();
+  });
+
+  it("throws when multiple panes have focus", () => {
+    const layout = {
+      direction: "columns" as const,
+      children: [
+        { pane: "@tui", focus: true },
+        { pane: "api", focus: true },
+      ],
+    };
+
+    expect(() => validateLayout(layout, ["api"])).toThrow(
+      "Only one pane can have focus, found: @tui, api",
+    );
+  });
+
+  it("allows single focus pane", () => {
+    const layout = {
+      direction: "columns" as const,
+      children: [{ pane: "@tui" }, { pane: "api", focus: true }],
     };
 
     expect(() => validateLayout(layout, ["api"])).not.toThrow();

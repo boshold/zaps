@@ -1,11 +1,12 @@
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import { Box, Text, useStdout } from "ink";
+import { Box, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
-import { TaskRow } from "./TaskRow.js";
+import { TaskListPanel } from "./TaskListPanel.js";
+import { TaskOutputPanel } from "./TaskOutputPanel.js";
 
 export interface TasksViewProps {
   selectedIndex: number;
@@ -77,31 +78,24 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
     runningRef.current = false;
   }
 
+  const termHeight = stdout?.rows ?? 24;
+  const visibleLines = termHeight - 6; // Header + help bar + padding + borders
+
   return (
     <Box flexDirection="column" padding={1} height="100%">
       <Header projectName="Tasks" statuses={[]} width={termCols} />
-      <Box flexDirection="column" flexGrow={1} marginTop={1}>
-        {tasks.map(([key, task], i) => (
-          <TaskRow
-            key={key}
-            taskKey={key}
-            task={task}
-            isSelected={i === selectedIndex}
-            result={taskResults[key]}
-            isRunning={runningTask === key}
-          />
-        ))}
-      </Box>
-      {taskOutput.length > 0 && (
-        <Box flexDirection="column" flexGrow={1} marginTop={1} borderStyle="single">
-          {taskOutput.slice(-10).map((line, i) => (
-            // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
-            <Text key={i}>{line}</Text>
-          ))}
-        </Box>
-      )}
-      <Box marginTop={1}>
-        <Text dimColor>[↑/↓] select [enter] run [esc] back</Text>
+      <Box flexDirection="row" flexGrow={1} marginTop={1}>
+        <TaskListPanel
+          tasks={tasks}
+          selectedIndex={selectedIndex}
+          taskResults={taskResults}
+          runningTask={runningTask}
+        />
+        <TaskOutputPanel
+          lines={taskOutput}
+          visibleLines={visibleLines}
+          width={Math.floor(termCols * 0.6) - 4}
+        />
       </Box>
     </Box>
   );

@@ -43,6 +43,12 @@ export interface ServiceContext {
 // === Env Config ===
 export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
 
+// === Service Flags ===
+export interface ServiceFlags {
+  start?: boolean;
+  open?: boolean;
+}
+
 // === Service ===
 export interface ServiceConfig {
   start?: Command;
@@ -53,7 +59,7 @@ export interface ServiceConfig {
   ready?: ReadyConfig;
   dependsOn?: string[];
   env?: EnvConfig;
-  autostart?: boolean;
+  flags?: ServiceFlags;
   url?: string | ((ctx: ServiceContext) => string);
   cwd?: string;
   restart?: { maxRetries?: number; backoff?: number };
@@ -61,11 +67,26 @@ export interface ServiceConfig {
   onStop?: () => void | Promise<void>;
 }
 
+// === Task Run Context ===
+export interface ExecResult {
+  success: boolean;
+  exitCode: number;
+  output: string[];
+}
+
+export interface TaskRunContext {
+  exec(cmd: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult>;
+  stdout: { write(text: string): void };
+  services: ServiceContext;
+  projectDir: string;
+}
+
 // === Tasks ===
 export interface TaskConfig {
   name: string;
   description?: string;
-  commands: Command | Command[];
+  commands?: Command | Command[];
+  run?: (ctx: TaskRunContext) => Promise<void>;
   cwd?: string;
   dependsOn?: string[];
   env?: EnvConfig;
@@ -76,6 +97,7 @@ export interface TaskConfig {
 export interface LayoutLeaf {
   pane: string;
   size?: string;
+  focus?: boolean;
 }
 export interface LayoutSplit {
   direction: "rows" | "columns";

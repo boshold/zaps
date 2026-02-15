@@ -1,13 +1,12 @@
 /* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
 /* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
-import { execFile } from "node:child_process";
-
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
+import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type { Key } from "ink";
@@ -17,28 +16,6 @@ import { useRef, useState } from "react";
 import { Dashboard } from "./Dashboard.js";
 import { LogView } from "./LogView.js";
 import { TasksView } from "./TasksView.js";
-
-function openInBrowser(status: ServiceStatus) {
-  if (!status.url) {
-    return;
-  }
-
-  const { url } = status;
-
-  // HTTP HEAD to verify reachable (2s timeout)
-  fetch(url, {
-    method: "HEAD",
-    signal: AbortSignal.timeout(2000),
-  })
-    .then(() => {
-      const cmd = process.platform === "darwin" ? "open" : "xdg-open";
-      execFile(cmd, [url]);
-      return null;
-    })
-    .catch(() => {
-      // Not reachable — silently ignore
-    });
-}
 
 function handleDashboardInput(
   input: string,
@@ -81,8 +58,10 @@ function handleDashboardInput(
   if (input === "l" && ctx.statuses[ctx.index]) {
     ctx.goToLogs(ctx.statuses[ctx.index].name);
   }
-  if (input === "o" && ctx.statuses[ctx.index]) {
-    openInBrowser(ctx.statuses[ctx.index]);
+  const selectedUrl = ctx.statuses[ctx.index]?.url;
+  if (input === "o" && selectedUrl) {
+    // eslint-disable-next-line no-void -- Fire-and-forget browser open
+    void openInBrowser(selectedUrl);
   }
   if (input === "t") {
     if (ctx.hasTaskShortcuts) {

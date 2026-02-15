@@ -18,6 +18,7 @@ import {
   listZapsSessions,
   panePid,
   removeEnv,
+  selectPane,
   sendCtrlC,
   sendKeys,
   setEnv,
@@ -84,7 +85,14 @@ program
     const sessionName = await currentSession();
 
     // Build pane layout starting from current pane
-    const paneMap = await createLayout(originPane, config.project.layout, config.project.services);
+    const { paneMap, focusPane } = await createLayout(
+      originPane,
+      config.project.layout,
+      config.project.services,
+    );
+
+    // Focus the designated pane (defaults to @tui)
+    await selectPane(focusPane);
 
     // Serialize pane map and origin pane to tmux env
     await setEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));

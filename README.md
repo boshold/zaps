@@ -131,7 +131,7 @@ export function config({ defineProject }: Library) {
       worker: {
         run: "npm run worker",
         detached: true,
-        autostart: false,
+        flags: { start: false },
       },
     },
 
@@ -178,20 +178,20 @@ export function config({ defineProject }: Library) {
 
 ### Options
 
-| Option      | Type                                        | Default | Description                           |
-| ----------- | ------------------------------------------- | ------- | ------------------------------------- |
-| `start`     | `string \| () => string`                    | —       | Command to start the service          |
-| `run`       | `string \| () => string`                    | —       | Alias for `start`                     |
-| `stop`      | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C) |
-| `docker`    | `DockerConfig`                              | —       | Docker Compose service config         |
-| `ready`     | `ReadyConfig`                               | —       | How to detect the service is ready    |
-| `dependsOn` | `string[]`                                  | `[]`    | Services that must be ready first     |
-| `env`       | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                 |
-| `cwd`       | `string`                                    | —       | Working directory                     |
-| `url`       | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)        |
-| `autostart` | `boolean`                                   | `true`  | Start automatically on launch         |
-| `detached`  | `boolean`                                   | `false` | Run outside tmux (no pane)            |
-| `restart`   | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                 |
+| Option      | Type                                        | Default | Description                                                                      |
+| ----------- | ------------------------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `start`     | `string \| () => string`                    | —       | Command to start the service                                                     |
+| `run`       | `string \| () => string`                    | —       | Alias for `start`                                                                |
+| `stop`      | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                            |
+| `docker`    | `DockerConfig`                              | —       | Docker Compose service config                                                    |
+| `ready`     | `ReadyConfig`                               | —       | How to detect the service is ready                                               |
+| `dependsOn` | `string[]`                                  | `[]`    | Services that must be ready first                                                |
+| `env`       | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                            |
+| `cwd`       | `string`                                    | —       | Working directory                                                                |
+| `url`       | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                   |
+| `flags`     | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
+| `detached`  | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
+| `restart`   | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
 
 ### Ready Detection
 
@@ -346,6 +346,48 @@ tasks: {
 
 Task dependencies are resolved and executed before the task itself.
 
+### Programmatic Tasks
+
+Use `run` instead of `commands` for full programmatic control:
+
+```typescript
+tasks: {
+  "check-health": {
+    name: "Health check",
+    run: async ({ exec, stdout, services, projectDir }) => {
+      const { success, output } = await exec("curl -sf http://localhost:3000/health");
+      stdout.write(success ? "API healthy" : "API down");
+
+      const result = await exec("npm test", { cwd: "./packages/api" });
+      if (!result.success) throw new Error("Tests failed");
+    },
+  },
+}
+```
+
+`TaskRunContext` shape:
+
+```typescript
+{
+  exec(cmd: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<ExecResult>;
+  stdout: { write(text: string): void };
+  services: ServiceContext;  // same as dynamic env context
+  projectDir: string;
+}
+```
+
+`ExecResult` shape:
+
+```typescript
+{
+  success: boolean;
+  exitCode: number;
+  output: string[];
+}
+```
+
+> `commands` and `run` are mutually exclusive — a task must use one or the other.
+
 ### Shortcuts
 
 Tasks can define a `shortcut` key for quick execution via chord mode. If no shortcut is specified, ZAPS auto-assigns the first unique character from the task key.
@@ -374,6 +416,7 @@ layout: {
 
 - `direction`: `"rows"` (vertical split) or `"columns"` (horizontal split)
 - `size`: percentage of parent (defaults to equal split)
+- `focus`: set to `true` on one leaf pane to auto-focus it after layout creation (at most one)
 - Services not in the layout get their own background tmux window
 - Detached services must **not** appear in the layout
 
