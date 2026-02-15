@@ -7,5 +7,4 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
-  banner: { js: "#!/usr/bin/env node" },
 });

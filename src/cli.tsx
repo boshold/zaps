@@ -52,9 +52,13 @@ function resolveCommand(): string {
 
 function resolveRuntime(): string {
   const env = getEnv("ZAPS_RUNTIME");
-  if (env) {return env;}
+  if (env) {
+    return env;
+  }
   // Compiled bun binary invoked directly (no bash wrapper)
-  if (process.argv[1]?.startsWith("/$bunfs/")) {return "native";}
+  if (process.argv[1]?.startsWith("/$bunfs/")) {
+    return "native";
+  }
   return "source";
 }
 
