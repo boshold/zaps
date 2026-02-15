@@ -57,4 +57,7 @@ jobs:
       - run: chmod +x artifacts/*
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create ${{ inputs.tag || github.ref_name }} artifacts/* --generate-notes
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
+          gh release create "$TAG" artifacts/* --generate-notes
