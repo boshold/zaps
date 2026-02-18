@@ -18,6 +18,7 @@ import {
   listZapsSessions,
   panePid,
   removeEnv,
+  renameWindow,
   selectPane,
   sendCtrlC,
   sendKeys,
@@ -75,6 +76,7 @@ function buildDeps(): ServiceManagerDeps {
     detectPorts,
     capturePane,
     getDescendantPids,
+    renameWindow,
   };
 }
 
@@ -151,7 +153,7 @@ program
     const paneMap = parsed;
     const deps = buildDeps();
     const { ServiceManager } = await import("./lib/service/manager.js");
-    const manager = new ServiceManager(config, paneMap, deps);
+    const manager = new ServiceManager(config, paneMap, deps, sessionName);
 
     // Start services (only when launched via `zaps dev`)
     if (opts.start) {

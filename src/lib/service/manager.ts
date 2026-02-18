@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
+import { probePort } from "#src/lib/probe.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
@@ -48,25 +49,15 @@ function buildReadyDeps(serviceConfig: ServiceConfig, deps: ServiceManagerDeps):
   };
 }
 
-function resolveExplicitUrl(serviceConfig: ServiceConfig, ctx: ServiceContext): string | undefined {
+function resolveExplicitUrl(
+  serviceConfig: ServiceConfig,
+  ctx: ServiceContext,
+): string | false | undefined {
+  if (serviceConfig.url === false) {
+    return false;
+  }
   if (serviceConfig.url) {
     return typeof serviceConfig.url === "function" ? serviceConfig.url(ctx) : serviceConfig.url;
-  }
-  return undefined; // eslint-disable-line no-undefined -- Explicit absence
-}
-
-async function probeHttpPort(ports: number[]): Promise<string | undefined> {
-  for (const port of ports) {
-    try {
-      // eslint-disable-next-line no-await-in-loop -- Sequential probe, first wins
-      await fetch(`http://localhost:${port}`, {
-        method: "HEAD",
-        signal: AbortSignal.timeout(1000),
-      });
-      return `http://localhost:${port}`;
-    } catch {
-      // Port doesn't respond to HTTP
-    }
   }
   return undefined; // eslint-disable-line no-undefined -- Explicit absence
 }
@@ -97,15 +88,17 @@ export class ServiceManager extends EventEmitter {
   private abortControllers: Map<string, AbortController>;
   private config: ResolvedConfig;
   private paneMap: PaneMap;
+  private session: string;
   private shuttingDown = false;
   private deps: ServiceManagerDeps;
   private autoOpened = new Set<string>();
 
-  constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps) {
+  constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps, session: string) {
     super();
     this.config = config;
     this.paneMap = paneMap;
     this.deps = deps;
+    this.session = session;
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
@@ -113,6 +106,10 @@ export class ServiceManager extends EventEmitter {
     for (const name of Object.keys(config.project.services)) {
       this.statuses.set(name, createServiceStatus(name));
     }
+
+    this.on("stateChange", () => {
+      this.updateWindowTitle();
+    });
 
     // Bind library actions so lib methods work inside hooks
     config.bindActions?.({
@@ -290,10 +287,12 @@ export class ServiceManager extends EventEmitter {
     const { hooks } = this.config.project;
 
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
-    if (explicitUrl) {
+    if (explicitUrl === false || serviceConfig.docker) {
+      // Url: false OR docker service — skip probing
+    } else if (explicitUrl) {
       status.url = explicitUrl;
     } else {
-      status.url = await probeHttpPort(ports);
+      status.url = await probePort(ports);
       if (!status.url && ports.length > 0) {
         // eslint-disable-next-line no-void -- Fire-and-forget URL monitor
         void this.monitorUrl(name, ports);
@@ -493,15 +492,20 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    while (status.state === "ready" && !status.url) {
+    const MAX_RETRIES = 5;
+    let retries = 0;
+
+    while (status.state === "ready" && !status.url && retries < MAX_RETRIES) {
       // eslint-disable-next-line no-await-in-loop -- Sequential polling
       await sleep(2000);
       if (status.state !== "ready" || status.url) {
         return;
       }
 
+      retries += 1;
+
       // eslint-disable-next-line no-await-in-loop -- Sequential polling
-      const result = await probeHttpPort(ports);
+      const result = await probePort(ports);
       if (result) {
         status.url = result;
         // eslint-disable-next-line no-await-in-loop -- Sequential polling
@@ -510,6 +514,33 @@ export class ServiceManager extends EventEmitter {
         return;
       }
     }
+  }
+  private updateWindowTitle(): void {
+    const counts: Record<string, number> = {};
+    for (const status of this.statuses.values()) {
+      counts[status.state] = (counts[status.state] ?? 0) + 1;
+    }
+
+    const symbols: [string, string][] = [
+      ["error", "✖"],
+      ["starting", "◐"],
+      ["restarting", "◐"],
+      ["stopping", "◐"],
+      ["ready", "●"],
+      ["stopped", "○"],
+    ];
+
+    const parts: string[] = [];
+    for (const [state, symbol] of symbols) {
+      const count = counts[state] ?? 0;
+      if (count > 0) {
+        parts.push(`${symbol}${count}`);
+      }
+    }
+
+    const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
+    // eslint-disable-next-line no-void -- Fire-and-forget window rename
+    void this.deps.renameWindow(this.session, title);
   }
 }
 
@@ -524,4 +555,5 @@ export interface ServiceManagerDeps {
   detectPorts: (paneTarget: string) => Promise<number[]>;
   capturePane: (target: string, lines: number) => Promise<string>;
   getDescendantPids: (rootPid: number) => Promise<number[]>;
+  renameWindow: (target: string, name: string) => Promise<void>;
 }

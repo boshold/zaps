@@ -60,7 +60,7 @@ export interface ServiceConfig {
   dependsOn?: string[];
   env?: EnvConfig;
   flags?: ServiceFlags;
-  url?: string | ((ctx: ServiceContext) => string);
+  url?: string | false | ((ctx: ServiceContext) => string);
   cwd?: string;
   restart?: { maxRetries?: number; backoff?: number };
   onReady?: () => void | Promise<void>;

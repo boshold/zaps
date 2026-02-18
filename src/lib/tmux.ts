@@ -130,6 +130,10 @@ export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
 
+export async function renameWindow(target: string, name: string): Promise<void> {
+  await run(["rename-window", "-t", target, name]);
+}
+
 export interface PaneInfo {
   id: string;
   pid: number;

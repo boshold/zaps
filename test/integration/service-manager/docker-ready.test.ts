@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import { capturePane, panePid, sendCtrlC, sendKeys } from "#src/lib/tmux.js";
+import { capturePane, panePid, renameWindow, sendCtrlC, sendKeys } from "#src/lib/tmux.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -13,7 +13,15 @@ import { composeDown, writeComposeFile } from "../helpers/docker.js";
 import { hasDocker, hasTmux } from "../helpers/skip.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
 
-const deps = { sendKeys, sendCtrlC, panePid, detectPorts, capturePane, getDescendantPids };
+const deps = {
+  sendKeys,
+  sendCtrlC,
+  panePid,
+  detectPorts,
+  capturePane,
+  getDescendantPids,
+  renameWindow,
+};
 
 describe.skipIf(!hasTmux() || !hasDocker())("docker-ready integration", () => {
   let session: TestSession;
@@ -51,7 +59,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker-ready integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps);
+    mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startService("redis");
 
     expect(mgr.getStatus("redis").state).toBe("ready");

@@ -5,6 +5,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ServiceManager } from "../../../src/lib/service/manager.js";
 
+vi.mock("../../../src/lib/probe.js", () => ({
+  probePort: vi.fn().mockResolvedValue(undefined),
+}));
+
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Dynamic mock import
+const { probePort } = (await import("../../../src/lib/probe.js")) as {
+  probePort: ReturnType<typeof vi.fn>;
+};
+
 // --- Mock deps factory ---
 
 function createMockDeps(): ServiceManagerDeps {
@@ -16,6 +25,7 @@ function createMockDeps(): ServiceManagerDeps {
     capturePane: vi.fn<ServiceManagerDeps["capturePane"]>().mockResolvedValue(""),
     // Default: only root PID (no children) = process exited
     getDescendantPids: vi.fn<ServiceManagerDeps["getDescendantPids"]>().mockResolvedValue([1000]),
+    renameWindow: vi.fn<ServiceManagerDeps["renameWindow"]>().mockResolvedValue(),
   };
 }
 
@@ -90,7 +100,7 @@ describe("startAll", () => {
     // Descendants > 1 means process is running (for crash monitor)
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startAll();
 
     // Advance timers to let ready checks complete
@@ -117,7 +127,7 @@ describe("startAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -170,7 +180,7 @@ describe("stopAll", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // First start them
     const startPromise = mgr.startAll();
@@ -207,7 +217,7 @@ describe("stopAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const startPromise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -253,7 +263,7 @@ describe("startService", () => {
     });
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start db first
     const dbPromise = mgr.startService("db");
@@ -282,7 +292,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -298,7 +308,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const events: { name: string; state: string }[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -333,7 +343,7 @@ describe("startService", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start
     const startPromise = mgr.startService("svc");
@@ -362,7 +372,7 @@ describe("startService", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Try to start api without db being ready
     await expect(mgr.startService("api")).rejects.toThrow(
@@ -378,7 +388,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -394,7 +404,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -428,7 +438,7 @@ describe("stopService", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start first
     const startPromise = mgr.startService("svc");
@@ -464,7 +474,7 @@ describe("stopService", () => {
     // Process never exits gracefully
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start first
     const startPromise = mgr.startService("svc");
@@ -493,7 +503,7 @@ describe("stopService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start
     const startPromise = mgr.startService("svc");
@@ -544,7 +554,7 @@ describe("restartService", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start first
     const startPromise = mgr.startService("svc");
@@ -586,7 +596,7 @@ describe("restartService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start
     const startPromise = mgr.startService("svc");
@@ -641,7 +651,7 @@ describe("crash recovery", () => {
       return [1000, 2000]; // Running
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start service
     const startPromise = mgr.startService("svc");
@@ -683,7 +693,7 @@ describe("crash recovery", () => {
       return [1000, 2000]; // Running
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Start service
     const startPromise = mgr.startService("svc");
@@ -729,7 +739,7 @@ describe("crash recovery", () => {
       return [1000, 2000];
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -767,7 +777,7 @@ describe("url resolution", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -794,7 +804,7 @@ describe("url resolution", () => {
     });
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const dbPromise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
@@ -816,20 +826,15 @@ describe("url resolution", () => {
     deps.detectPorts = vi.fn().mockResolvedValue([3000]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+    probePort.mockResolvedValueOnce("http://localhost:3000");
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "http://localhost:3000",
-      expect.objectContaining({ method: "HEAD" }),
-    );
+    expect(probePort).toHaveBeenCalledWith([3000]);
     expect(mgr.getStatus("svc").url).toBe("http://localhost:3000");
-
-    fetchSpy.mockRestore();
   });
 
   it("retries probe and resolves url after delay", async () => {
@@ -841,15 +846,10 @@ describe("url resolution", () => {
     deps.detectPorts = vi.fn().mockResolvedValue([3000]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    let probeSucceeds = false;
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
-      if (!probeSucceeds) {
-        throw new Error("Connection refused");
-      }
-      return new Response();
-    });
+    // First call (onServiceReady) fails, second call (monitorUrl) succeeds
+    probePort.mockResolvedValueOnce(undefined).mockResolvedValueOnce("http://localhost:3000");
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     // Track stateChange events to detect when monitorUrl emits
     const urlEvents: (string | undefined)[] = [];
@@ -864,14 +864,11 @@ describe("url resolution", () => {
     // Initial probe failed — url undefined, monitorUrl running in background
     expect(mgr.getStatus("svc").url).toBeUndefined();
 
-    // Enable probe success, advance past monitorUrl sleep (2s)
-    probeSucceeds = true;
+    // Advance past monitorUrl sleep (2s)
     await vi.advanceTimersByTimeAsync(2500);
 
     // Retry probe succeeds
     expect(mgr.getStatus("svc").url).toBe("http://localhost:3000");
-
-    fetchSpy.mockRestore();
   });
 
   it("sets url to undefined when probe fails", async () => {
@@ -883,18 +880,86 @@ describe("url resolution", () => {
     deps.detectPorts = vi.fn().mockResolvedValue([5432]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const fetchSpy = vi
-      .spyOn(globalThis, "fetch")
-      .mockRejectedValue(new Error("Connection refused"));
+    probePort.mockResolvedValue(undefined);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
     expect(mgr.getStatus("svc").url).toBeUndefined();
+  });
 
-    fetchSpy.mockRestore();
+  it("skips probing for docker services", async () => {
+    const config = makeConfig({
+      db: {
+        docker: { service: "postgres" },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("db").url).toBeUndefined();
+    expect(probePort).not.toHaveBeenCalled();
+
+    spy.mockRestore();
+  });
+
+  it("skips probing when url: false", async () => {
+    const config = makeConfig({
+      db: { start: "start-db", url: false },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("db").url).toBeUndefined();
+    expect(probePort).not.toHaveBeenCalled();
+  });
+
+  it("caps monitorUrl retries at 5", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    // Always fail
+    probePort.mockResolvedValue(undefined);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(500);
+    await promise;
+
+    // Initial probe (1) + 5 monitor retries = 6 total calls
+    // Advance 5 * 2s + buffer
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    // 1 initial + 5 retries = 6
+    expect(probePort).toHaveBeenCalledTimes(6);
+    expect(mgr.getStatus("svc").url).toBeUndefined();
   });
 
   it("clears url on stop", async () => {
@@ -910,7 +975,7 @@ describe("url resolution", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -957,7 +1022,7 @@ describe("docker ready detection", () => {
       return { state: "created", health: "", ports: [] };
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -984,7 +1049,7 @@ describe("docker ready detection", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -1024,7 +1089,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1055,7 +1120,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1079,7 +1144,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "healthy", ports: [5432] });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1104,7 +1169,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1126,7 +1191,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const status = mgr.getStatus("svc");
 
     expect(status.name).toBe("svc");
@@ -1140,7 +1205,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     expect(() => mgr.getStatus("unknown")).toThrow("Unknown service: unknown");
   });
 
@@ -1152,7 +1217,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const statuses = mgr.getAllStatuses();
 
     expect(statuses).toHaveLength(2);
@@ -1174,7 +1239,7 @@ describe("per-service hooks", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1197,7 +1262,7 @@ describe("per-service hooks", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1223,7 +1288,7 @@ describe("per-service hooks", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1247,7 +1312,7 @@ describe("per-service hooks", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1286,7 +1351,7 @@ describe("bindActions", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const _mgr = new ServiceManager(config, paneMap, deps);
+    const _mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
     if (!capturedActions) {
       throw new Error("bindActions was not called");

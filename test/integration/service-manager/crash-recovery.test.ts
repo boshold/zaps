@@ -1,7 +1,7 @@
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { capturePane, panePid, sendCtrlC, sendKeys } from "#src/lib/tmux.js";
+import { capturePane, panePid, renameWindow, sendCtrlC, sendKeys } from "#src/lib/tmux.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -11,7 +11,15 @@ import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
 
-const deps = { sendKeys, sendCtrlC, panePid, detectPorts, capturePane, getDescendantPids };
+const deps = {
+  sendKeys,
+  sendCtrlC,
+  panePid,
+  detectPorts,
+  capturePane,
+  getDescendantPids,
+  renameWindow,
+};
 
 async function waitForState(
   mgr: ServiceManager,
@@ -66,7 +74,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps);
+    mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
@@ -91,7 +99,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps);
+    mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 

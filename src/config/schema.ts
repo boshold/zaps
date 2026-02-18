@@ -55,6 +55,7 @@ const envConfigSchema = z.union([
 // === URL Config ===
 const urlConfigSchema = z.union([
   z.string(),
+  z.literal(false),
   z.custom<(ctx: ServiceContext) => string>((v) => typeof v === "function"),
 ]);
 
