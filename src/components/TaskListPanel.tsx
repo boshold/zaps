@@ -1,7 +1,9 @@
 import type { TaskConfig } from "#src/config/types.js";
+import { relativeTime } from "#src/lib/relativeTime.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import { Box, Text } from "ink";
 
+import type { TaskRunRecord } from "./Router.js";
 import { TaskRow } from "./TaskRow.js";
 
 interface TaskListPanelProps {
@@ -10,6 +12,7 @@ interface TaskListPanelProps {
   taskResults: Record<string, "success" | "error">;
   runningTask: string | null;
   taskShortcuts: TaskShortcut[];
+  taskHistory: TaskRunRecord[];
 }
 
 export function TaskListPanel({
@@ -18,6 +21,7 @@ export function TaskListPanel({
   taskResults,
   runningTask,
   taskShortcuts,
+  taskHistory,
 }: TaskListPanelProps) {
   const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
 

@@ -48,9 +48,11 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
 
     if (t.popup) {
       const popupCfg = typeof t.popup === "object" ? t.popup : {};
+      const joined = resolvedCommands.join(" && ");
+      const wrapped = `${joined}; echo; echo 'Press Enter to close...'; read`;
       await displayPopup({
         cwd: ctx.taskCwd,
-        command: resolvedCommands.join(" && "),
+        command: wrapped,
         title: t.name,
         width: popupCfg.width ?? "80%",
         height: popupCfg.height ?? "80%",

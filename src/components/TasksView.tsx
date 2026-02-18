@@ -6,6 +6,7 @@ import { Box, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
+import type { TaskRunRecord } from "./Router.js";
 import { TaskListPanel } from "./TaskListPanel.js";
 import { TaskOutputPanel } from "./TaskOutputPanel.js";
 
@@ -13,9 +14,17 @@ export interface TasksViewProps {
   selectedIndex: number;
   runTrigger: number;
   taskShortcuts: TaskShortcut[];
+  taskHistory: TaskRunRecord[];
+  onTaskComplete: (record: TaskRunRecord) => void;
 }
 
-export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksViewProps) {
+export function TasksView({
+  selectedIndex,
+  runTrigger,
+  taskShortcuts,
+  taskHistory,
+  onTaskComplete,
+}: TasksViewProps) {
   const { config, manager } = useZaps();
   const statuses = useServices(manager);
   const { stdout } = useStdout();
@@ -67,6 +76,12 @@ export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksVie
         onProgress: (key, result) => {
           taskResultsRef.current[key] = result;
           setTaskResults((prev) => ({ ...prev, [key]: result }));
+          onTaskComplete({
+            taskKey: key,
+            taskName: allTasks[key]?.name ?? key,
+            result,
+            timestamp: Date.now(),
+          });
         },
         onLine: (_key, line) => {
           setTaskOutput((prev) => [...prev, line]);
@@ -93,6 +108,7 @@ export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksVie
           taskResults={taskResults}
           runningTask={runningTask}
           taskShortcuts={taskShortcuts}
+          taskHistory={taskHistory}
         />
         <TaskOutputPanel lines={taskOutput} visibleLines={visibleLines} />
       </Box>

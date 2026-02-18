@@ -17,6 +17,15 @@ import { Dashboard } from "./Dashboard.js";
 import { LogView } from "./LogView.js";
 import { TasksView } from "./TasksView.js";
 
+export interface TaskRunRecord {
+  taskKey: string;
+  taskName: string;
+  result: "success" | "error";
+  timestamp: number;
+}
+
+const MAX_HISTORY = 50;
+
 function handleDashboardInput(
   input: string,
   key: Key,
@@ -155,6 +164,13 @@ export function Router() {
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
 
+  // Task run history — shared between Dashboard and TasksView
+  const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>([]);
+
+  function onTaskComplete(record: TaskRunRecord) {
+    setTaskHistory((prev) => [record, ...prev].slice(0, MAX_HISTORY));
+  }
+
   // Precompute task shortcuts
   const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
 
@@ -225,8 +241,14 @@ export function Router() {
   }
   if (view === "tasks") {
     return (
-      <TasksView selectedIndex={index} runTrigger={runTrigger} taskShortcuts={taskShortcuts} />
+      <TasksView
+        selectedIndex={index}
+        runTrigger={runTrigger}
+        taskShortcuts={taskShortcuts}
+        taskHistory={taskHistory}
+        onTaskComplete={onTaskComplete}
+      />
     );
   }
-  return <Dashboard statuses={statuses} selectedIndex={index} />;
+  return <Dashboard statuses={statuses} selectedIndex={index} taskHistory={taskHistory} />;
 }
