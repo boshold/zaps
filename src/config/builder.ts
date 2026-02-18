@@ -1,3 +1,4 @@
+import { openInBrowser } from "#src/lib/open.js";
 import type { Library, LibraryActions, ProjectConfig } from "./types.js";
 import { z } from "zod";
 
@@ -60,6 +61,9 @@ export function createZapsLib(): ZapsLib {
           throw new Error("isServiceRunning is not available outside of service hooks");
         }
         return actions.isServiceRunning(name);
+      },
+      async openInBrowser(url: string): Promise<void> {
+        await openInBrowser(url);
       },
     },
     bindActions(a) {

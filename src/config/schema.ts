@@ -86,6 +86,9 @@ const serviceConfigBaseSchema = z.object({
   ),
   onReady: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStop: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
+  onOutput: z.optional(
+    z.custom<(line: string) => void | Promise<void>>((v) => typeof v === "function"),
+  ),
 });
 
 const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine((val, ctx) => {

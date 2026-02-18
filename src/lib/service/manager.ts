@@ -14,6 +14,33 @@ import { createServiceStatus, transition } from "./state.js";
 
 type PaneMap = Record<string, string>;
 
+/**
+ * Find new lines between two pane captures using line-overlap diffing.
+ * Finds the tail of `prev` that matches the head of `current`, returns lines after the overlap.
+ */
+function diffOutput(prev: string[], current: string[]): string[] {
+  if (prev.length === 0) {
+    return current;
+  }
+
+  // Try to find the longest tail of prev matching head of current
+  for (let overlap = Math.min(prev.length, current.length); overlap > 0; overlap -= 1) {
+    let match = true;
+    for (let i = 0; i < overlap; i += 1) {
+      if (prev[prev.length - overlap + i] !== current[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return current.slice(overlap);
+    }
+  }
+
+  // No overlap found — return all current lines
+  return current;
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -143,6 +170,7 @@ export class ServiceManager extends EventEmitter {
       restartService: async (name) => this.restartService(name),
       stopService: async (name) => this.stopService(name),
       isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
+      openInBrowser: async (url) => openInBrowser(url),
     });
   }
 
@@ -323,6 +351,12 @@ export class ServiceManager extends EventEmitter {
     // Start crash monitor in background
     // eslint-disable-next-line no-void -- Fire-and-forget promise
     void this.monitorCrash(name);
+
+    // Start output monitor if onOutput is configured
+    if (serviceConfig.onOutput) {
+      // eslint-disable-next-line no-void -- Fire-and-forget promise
+      void this.monitorOutput(name);
+    }
   }
 
   /**
@@ -523,6 +557,47 @@ export class ServiceManager extends EventEmitter {
       }
     }
   }
+  /**
+   * Monitor service output and call onOutput for each new line.
+   */
+  private async monitorOutput(name: string): Promise<void> {
+    const status = this.statuses.get(name);
+    const serviceConfig = this.config.project.services[name];
+    const paneTarget = this.paneMap[name];
+    if (!status || !serviceConfig?.onOutput || !paneTarget) {
+      return;
+    }
+
+    // Capture initial baseline
+    const baseline = await this.deps.capturePane(paneTarget, 500);
+    let prevLines = baseline.split("\n");
+
+    while (status.state === "ready") {
+      // eslint-disable-next-line no-await-in-loop -- Sequential polling
+      await sleep(1000);
+      if (status.state !== "ready") {
+        return;
+      }
+
+      // eslint-disable-next-line no-await-in-loop -- Sequential polling
+      const capture = await this.deps.capturePane(paneTarget, 500);
+      const currentLines = capture.split("\n");
+      const newLines = diffOutput(prevLines, currentLines);
+      prevLines = currentLines;
+
+      for (const line of newLines) {
+        if (line.trim() !== "") {
+          try {
+            // eslint-disable-next-line no-await-in-loop -- Sequential callback invocation
+            await serviceConfig.onOutput(line);
+          } catch {
+            // Swallow errors — onOutput must not crash the service
+          }
+        }
+      }
+    }
+  }
+
   private updateWindowTitle(): void {
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
@@ -567,3 +642,5 @@ export interface ServiceManagerDeps {
   renameWindow: (target: string, name: string) => Promise<void>;
   getWindowName: (target: string) => Promise<string>;
 }
+
+export { diffOutput };

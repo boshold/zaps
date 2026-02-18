@@ -63,6 +63,7 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
+      openInBrowser: vi.fn(),
     });
 
     await lib.runTask("my-task");
@@ -86,6 +87,7 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
+      openInBrowser: vi.fn(),
     });
 
     await lib.startService("db");
@@ -109,6 +111,7 @@ describe("createZapsLib", () => {
       restartService,
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
+      openInBrowser: vi.fn(),
     });
 
     await lib.restartService("api");
@@ -132,6 +135,7 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService,
       isServiceRunning: vi.fn(),
+      openInBrowser: vi.fn(),
     });
 
     await lib.stopService("worker");
@@ -155,6 +159,7 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning,
+      openInBrowser: vi.fn(),
     });
 
     const result = lib.isServiceRunning("db");

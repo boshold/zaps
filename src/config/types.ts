@@ -65,6 +65,7 @@ export interface ServiceConfig {
   restart?: { maxRetries?: number; backoff?: number };
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
+  onOutput?: (line: string) => void | Promise<void>;
 }
 
 // === Task Run Context ===
@@ -132,6 +133,7 @@ export interface Library {
   restartService(this: void, name: string): Promise<void>;
   stopService(this: void, name: string): Promise<void>;
   isServiceRunning(this: void, name: string): boolean;
+  openInBrowser(this: void, url: string): Promise<void>;
 }
 
 // === Library Actions ===
@@ -141,6 +143,7 @@ export interface LibraryActions {
   restartService: (name: string) => Promise<void>;
   stopService: (name: string) => Promise<void>;
   isServiceRunning: (name: string) => boolean;
+  openInBrowser: (url: string) => Promise<void>;
 }
 
 // === Resolved ===

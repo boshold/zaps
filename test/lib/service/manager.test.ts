@@ -3,7 +3,7 @@ import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ServiceManager } from "../../../src/lib/service/manager.js";
+import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 
 vi.mock("../../../src/lib/probe.js", () => ({
   probePort: vi.fn().mockResolvedValue(undefined),
@@ -1442,5 +1442,130 @@ describe("bindActions", () => {
     // IsServiceRunning should return true for ready service
     expect(actions.isServiceRunning("db")).toBe(true);
     expect(actions.isServiceRunning("api")).toBe(false);
+  });
+});
+
+// =============================================================================
+// DiffOutput
+// =============================================================================
+
+describe("diffOutput", () => {
+  it("returns all current lines when prev is empty", () => {
+    expect(diffOutput([], ["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("returns new lines after overlap", () => {
+    expect(diffOutput(["a", "b", "c"], ["b", "c", "d", "e"])).toEqual(["d", "e"]);
+  });
+
+  it("returns all current lines when no overlap found", () => {
+    expect(diffOutput(["x", "y"], ["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("returns empty array when captures are identical", () => {
+    expect(diffOutput(["a", "b"], ["a", "b"])).toEqual([]);
+  });
+});
+
+// =============================================================================
+// OnOutput monitoring
+// =============================================================================
+
+describe("onOutput monitoring", () => {
+  it("calls onOutput with new lines as they appear", async () => {
+    const lines: string[] = [];
+    const config = makeConfig({
+      svc: {
+        start: "start-svc",
+        onOutput: (line) => {
+          lines.push(line);
+        },
+      },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    let captureContent = "initial output";
+    deps.capturePane = vi.fn(async () => captureContent);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    // Simulate new output appearing
+    captureContent = "initial output\nnew line 1\nnew line 2";
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(lines).toEqual(["new line 1", "new line 2"]);
+  });
+
+  it("does not crash service when onOutput throws", async () => {
+    const config = makeConfig({
+      svc: {
+        start: "start-svc",
+        onOutput: () => {
+          throw new Error("callback error");
+        },
+      },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    let captureContent = "line1";
+    deps.capturePane = vi.fn(async () => captureContent);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    // New output triggers throwing callback
+    captureContent = "line1\nnew line";
+    await vi.advanceTimersByTimeAsync(1500);
+
+    // Service should still be ready
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
+  it("stops monitoring when service stops", async () => {
+    const lines: string[] = [];
+    const config = makeConfig({
+      svc: {
+        start: "start-svc",
+        onOutput: (line) => {
+          lines.push(line);
+        },
+      },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
+
+    let captureContent = "initial";
+    deps.capturePane = vi.fn(async () => captureContent);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    // Stop the service
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    // New output after stop should not trigger callback
+    captureContent = "initial\nafter stop";
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(lines).toEqual([]);
   });
 });
