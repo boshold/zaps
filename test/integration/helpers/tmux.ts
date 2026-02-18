@@ -28,7 +28,7 @@ export async function buildTestPaneMap(
   initialPaneId: string,
   serviceNames: string[],
 ): Promise<Record<string, string>> {
-  const paneMap: Record<string, string> = {};
+  const paneMap: Record<string, string> = { "@tui": initialPaneId };
   for (const name of serviceNames) {
     // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
     const paneId = await splitPane(initialPaneId, "v");
