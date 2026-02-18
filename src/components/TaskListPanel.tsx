@@ -1,4 +1,5 @@
 import type { TaskConfig } from "#src/config/types.js";
+import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import { Box, Text } from "ink";
 
 import { TaskRow } from "./TaskRow.js";
@@ -8,6 +9,7 @@ interface TaskListPanelProps {
   selectedIndex: number;
   taskResults: Record<string, "success" | "error">;
   runningTask: string | null;
+  taskShortcuts: TaskShortcut[];
 }
 
 export function TaskListPanel({
@@ -15,7 +17,10 @@ export function TaskListPanel({
   selectedIndex,
   taskResults,
   runningTask,
+  taskShortcuts,
 }: TaskListPanelProps) {
+  const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
+
   return (
     <Box flexDirection="column" width="40%">
       <Box flexDirection="column" flexGrow={1}>
@@ -27,11 +32,12 @@ export function TaskListPanel({
             isSelected={i === selectedIndex}
             result={taskResults[key]}
             isRunning={runningTask === key}
+            shortcut={shortcutMap.get(task.name)}
           />
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>[↑/↓] select [enter] run [esc] back</Text>
+        <Text dimColor>[↑/↓] select [enter] run [key] shortcut [esc] back</Text>
       </Box>
     </Box>
   );

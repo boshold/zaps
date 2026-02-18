@@ -44,7 +44,7 @@ describe("TasksView", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <TasksView selectedIndex={0} runTrigger={0} />
+        <TasksView selectedIndex={0} runTrigger={0} taskShortcuts={[]} />
       </AppProvider>,
     );
     const frame = lastFrame() ?? "";
@@ -61,7 +61,7 @@ describe("TasksView", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <TasksView selectedIndex={1} runTrigger={0} />
+        <TasksView selectedIndex={1} runTrigger={0} taskShortcuts={[]} />
       </AppProvider>,
     );
     const frame = lastFrame() ?? "";
@@ -76,7 +76,7 @@ describe("TasksView", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <TasksView selectedIndex={0} runTrigger={0} />
+        <TasksView selectedIndex={0} runTrigger={0} taskShortcuts={[]} />
       </AppProvider>,
     );
     const frame = lastFrame() ?? "";
@@ -91,7 +91,7 @@ describe("TasksView", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <TasksView selectedIndex={0} runTrigger={0} />
+        <TasksView selectedIndex={0} runTrigger={0} taskShortcuts={[]} />
       </AppProvider>,
     );
     const frame = lastFrame() ?? "";
@@ -105,7 +105,7 @@ describe("TasksView", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <TasksView selectedIndex={0} runTrigger={0} />
+        <TasksView selectedIndex={0} runTrigger={0} taskShortcuts={[]} />
       </AppProvider>,
     );
     const frame = lastFrame() ?? "";

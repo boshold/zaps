@@ -1,6 +1,7 @@
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import { Box, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
@@ -11,9 +12,10 @@ import { TaskOutputPanel } from "./TaskOutputPanel.js";
 export interface TasksViewProps {
   selectedIndex: number;
   runTrigger: number;
+  taskShortcuts: TaskShortcut[];
 }
 
-export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
+export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksViewProps) {
   const { config, manager } = useZaps();
   const statuses = useServices(manager);
   const { stdout } = useStdout();
@@ -90,6 +92,7 @@ export function TasksView({ selectedIndex, runTrigger }: TasksViewProps) {
           selectedIndex={selectedIndex}
           taskResults={taskResults}
           runningTask={runningTask}
+          taskShortcuts={taskShortcuts}
         />
         <TaskOutputPanel
           lines={taskOutput}

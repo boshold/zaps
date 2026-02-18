@@ -7,6 +7,7 @@ interface TaskRowProps {
   isSelected: boolean;
   result?: "success" | "error";
   isRunning: boolean;
+  shortcut?: string;
 }
 
 function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
@@ -22,13 +23,14 @@ function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
   return { icon: "○", color: "gray" } as const;
 }
 
-export function TaskRow({ task, isSelected, result, isRunning }: TaskRowProps) {
+export function TaskRow({ task, isSelected, result, isRunning, shortcut }: TaskRowProps) {
   const { icon, color } = getIconAndColor(isRunning, result);
 
   return (
     <Box>
       <Text>{isSelected ? ">" : " "} </Text>
       <Text color={color}>{icon}</Text>
+      {shortcut && <Text dimColor> [{shortcut}]</Text>}
       <Text> {task.name}</Text>
       {task.description && <Text dimColor> — {task.description}</Text>}
     </Box>

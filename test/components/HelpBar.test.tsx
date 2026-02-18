@@ -20,27 +20,6 @@ describe("HelpBar", () => {
     expect(frame).not.toContain("[l]ogs");
     expect(frame).not.toContain("[o]pen");
   });
-
-  it("renders chord overlay when chordMode is true", () => {
-    const shortcuts = [
-      { shortcut: "p", name: "Prisma Push" },
-      { shortcut: "i", name: "Prisma Import" },
-    ];
-    const { lastFrame } = render(<HelpBar chordMode taskShortcuts={shortcuts} />);
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[p] Prisma Push");
-    expect(frame).toContain("[i] Prisma Import");
-    expect(frame).toContain("[enter] all tasks");
-    expect(frame).toContain("[esc] back");
-  });
-
-  it("does not render global hints in chord mode", () => {
-    const shortcuts = [{ shortcut: "p", name: "Push" }];
-    const { lastFrame } = render(<HelpBar chordMode taskShortcuts={shortcuts} />);
-    const frame = lastFrame() ?? "";
-    expect(frame).not.toContain("[t]asks");
-    expect(frame).not.toContain("[q]uit");
-  });
 });
 
 describe("getTaskShortcuts", () => {

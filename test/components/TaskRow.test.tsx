@@ -92,4 +92,26 @@ describe("TaskRow", () => {
     const frame = lastFrame() ?? "";
     expect(frame).not.toContain("—");
   });
+
+  it("renders shortcut badge when shortcut is provided", () => {
+    const { lastFrame } = render(
+      <TaskRow
+        taskKey="migrate"
+        task={makeTask()}
+        isSelected={false}
+        isRunning={false}
+        shortcut="m"
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[m]");
+  });
+
+  it("does not render shortcut badge when shortcut is absent", () => {
+    const { lastFrame } = render(
+      <TaskRow taskKey="migrate" task={makeTask()} isSelected={false} isRunning={false} />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toMatch(/\[\w\]/);
+  });
 });

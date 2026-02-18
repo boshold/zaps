@@ -200,7 +200,7 @@ describe("Keyboard routing — Dashboard", () => {
 });
 
 describe("Keyboard routing — View switching", () => {
-  it("t enters chord mode when tasks have shortcuts", async () => {
+  it("t goes directly to tasks view with shortcuts inline", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -213,61 +213,12 @@ describe("Keyboard routing — View switching", () => {
 
     await act(() => {
       stdin.write("t");
-    });
-
-    const frame = lastFrame() ?? "";
-    // Chord overlay shows task shortcut hints
-    expect(frame).toContain("[m] Run migrations");
-    expect(frame).toContain("[enter] all tasks");
-  });
-
-  it("t then Enter switches to tasks view", async () => {
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-    const manager = createMockManager(statuses);
-    const config = makeConfig("test", {
-      migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
-    });
-
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
-
-    // Enter chord mode
-    await act(() => {
-      stdin.write("t");
-    });
-    // Press Enter to go to tasks list
-    await act(() => {
-      stdin.write("\r");
     });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Tasks");
+    expect(frame).toContain("[m]");
     expect(frame).toContain("Run migrations");
-  });
-
-  it("Esc from chord mode returns to dashboard", async () => {
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-    const manager = createMockManager(statuses);
-    const config = makeConfig("test", {
-      migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
-    });
-
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
-
-    // Enter chord mode
-    await act(() => {
-      stdin.write("t");
-    });
-    expect(lastFrame()).toContain("[m] Run migrations");
-
-    // Esc returns to dashboard
-    await act(() => {
-      stdin.write(ESCAPE);
-    });
-    expect(lastFrame()).toContain("[t]asks");
   });
 
   it("Esc from tasks returns to dashboard", async () => {
@@ -281,12 +232,8 @@ describe("Keyboard routing — View switching", () => {
 
     const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
 
-    // Go through chord mode to tasks
     await act(() => {
       stdin.write("t");
-    });
-    await act(() => {
-      stdin.write("\r");
     });
     expect(lastFrame()).toContain("Tasks");
 
