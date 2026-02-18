@@ -48,7 +48,7 @@ function makeConfig(
 }
 
 function makePaneMap(names: string[]): Record<string, string> {
-  const map: Record<string, string> = {};
+  const map: Record<string, string> = { "@tui": "%tui" };
   for (const name of names) {
     map[name] = `%${name}`;
   }
@@ -1338,6 +1338,78 @@ describe("per-service hooks", () => {
 // =============================================================================
 
 describe("bindActions", () => {
+  it("emits taskComplete when runTask succeeds", async () => {
+    let capturedActions: LibraryActions | undefined;
+    const config = makeConfig({
+      db: { start: "start-db" },
+    });
+    config.project.tasks = {
+      migrate: {
+        name: "Run migrations",
+        run: async () => {
+          /* Noop */
+        },
+      },
+    };
+    config.bindActions = (actions) => {
+      capturedActions = actions;
+    };
+
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    if (!capturedActions) {
+      throw new Error("bindActions was not called");
+    }
+
+    const events: { taskKey: string; taskName: string; result: string }[] = [];
+    mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
+      events.push({ taskKey, taskName, result });
+    });
+
+    await capturedActions.runTask("migrate");
+
+    expect(events).toEqual([{ taskKey: "migrate", taskName: "Run migrations", result: "success" }]);
+  });
+
+  it("emits taskComplete with error when runTask fails", async () => {
+    let capturedActions: LibraryActions | undefined;
+    const config = makeConfig({
+      db: { start: "start-db" },
+    });
+    config.project.tasks = {
+      broken: {
+        name: "Broken task",
+        run: async () => {
+          throw new Error("task failed");
+        },
+      },
+    };
+    config.bindActions = (actions) => {
+      capturedActions = actions;
+    };
+
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    if (!capturedActions) {
+      throw new Error("bindActions was not called");
+    }
+
+    const events: { taskKey: string; taskName: string; result: string }[] = [];
+    mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
+      events.push({ taskKey, taskName, result });
+    });
+
+    await expect(capturedActions.runTask("broken")).rejects.toThrow("Task 'broken' failed");
+
+    expect(events).toEqual([{ taskKey: "broken", taskName: "Broken task", result: "error" }]);
+  });
+
   it("calls bindActions with working service methods", async () => {
     let capturedActions: LibraryActions | undefined;
     const config = makeConfig({

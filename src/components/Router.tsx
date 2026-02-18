@@ -12,7 +12,7 @@ import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./Dashboard.js";
 import { LogView } from "./LogView.js";
@@ -164,6 +164,17 @@ export function Router() {
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => [record, ...prev].slice(0, MAX_HISTORY));
   }
+
+  // Subscribe to hook-triggered task completions from ServiceManager
+  useEffect(() => {
+    function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
+      onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
+    }
+    manager.on("taskComplete", handleTaskComplete);
+    return () => {
+      manager.off("taskComplete", handleTaskComplete);
+    };
+  }, [manager]);
 
   // Precompute task shortcuts
   const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});

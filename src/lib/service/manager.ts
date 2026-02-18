@@ -100,7 +100,7 @@ export class ServiceManager extends EventEmitter {
     this.paneMap = paneMap;
     this.deps = deps;
     this.session = session;
-    this.originalWindowTitle = deps.getWindowName(session);
+    this.originalWindowTitle = deps.getWindowName(this.paneMap["@tui"]);
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
@@ -128,6 +128,9 @@ export class ServiceManager extends EventEmitter {
             tasks,
             statuses: this.statuses,
             projectDir: config.projectDir,
+            onProgress: (taskKey, result) => {
+              this.emit("taskComplete", taskKey, tasks[taskKey]?.name ?? taskKey, result);
+            },
           },
           visited,
           results,
@@ -204,7 +207,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     await fireHook(hooks?.onStop);
-    await this.deps.renameWindow(this.session, await this.originalWindowTitle).catch(() => {
+    await this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle).catch(() => {
       // Session may already be gone
     });
     this.shuttingDown = false;
@@ -545,12 +548,13 @@ export class ServiceManager extends EventEmitter {
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
     // eslint-disable-next-line no-void -- Fire-and-forget window rename
-    void this.deps.renameWindow(this.session, title);
+    void this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 }
 
 export interface ServiceManagerEvents {
   stateChange: (name: string, status: ServiceStatus) => void;
+  taskComplete: (taskKey: string, taskName: string, result: "success" | "error") => void;
 }
 
 export interface ServiceManagerDeps {
