@@ -96,7 +96,7 @@ describe("TasksView", () => {
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[enter] run");
-    expect(frame).toContain("[esc] back");
+    expect(frame).toContain("[q/esc] back");
   });
 
   it("renders empty when no tasks defined", () => {

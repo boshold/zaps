@@ -26,6 +26,7 @@ function createMockDeps(): ServiceManagerDeps {
     // Default: only root PID (no children) = process exited
     getDescendantPids: vi.fn<ServiceManagerDeps["getDescendantPids"]>().mockResolvedValue([1000]),
     renameWindow: vi.fn<ServiceManagerDeps["renameWindow"]>().mockResolvedValue(),
+    getWindowName: vi.fn<ServiceManagerDeps["getWindowName"]>().mockResolvedValue("bash"),
   };
 }
 

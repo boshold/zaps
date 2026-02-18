@@ -7,26 +7,26 @@ function sanitizeLine(line: string): string {
   return line.replace(ANSI_RE, "").replace(/[^\x20-\x7E]/g, " ");
 }
 
-function truncateLine(line: string, maxWidth: number): string {
-  const clean = sanitizeLine(line);
-  if (clean.length <= maxWidth) {
-    return clean;
-  }
-  return clean.slice(0, maxWidth);
-}
-
 interface TaskOutputPanelProps {
   lines: string[];
   visibleLines: number;
-  width: number;
 }
 
-export function TaskOutputPanel({ lines, visibleLines, width }: TaskOutputPanelProps) {
+export function TaskOutputPanel({ lines, visibleLines }: TaskOutputPanelProps) {
   return (
-    <Box flexDirection="column" width="60%" borderStyle="single" borderColor="gray" paddingX={1}>
+    <Box
+      flexDirection="column"
+      flexGrow={1}
+      borderStyle="single"
+      borderColor="gray"
+      paddingX={1}
+      overflow="hidden"
+    >
       {lines.slice(-visibleLines).map((line, i) => (
         // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
-        <Text key={i}>{truncateLine(line, width)}</Text>
+        <Text key={i} wrap="truncate">
+          {sanitizeLine(line)}
+        </Text>
       ))}
     </Box>
   );

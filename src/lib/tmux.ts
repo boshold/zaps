@@ -130,8 +130,51 @@ export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
 
+export async function getWindowName(target: string): Promise<string> {
+  return run(["display-message", "-p", "-t", target, "#{window_name}"]);
+}
+
 export async function renameWindow(target: string, name: string): Promise<void> {
   await run(["rename-window", "-t", target, name]);
+}
+
+export interface DisplayPopupOptions {
+  cwd: string;
+  command: string;
+  title?: string;
+  width?: string;
+  height?: string;
+  env?: Record<string, string>;
+}
+
+export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const args = ["display-popup", "-EE", "-d", opts.cwd];
+    if (opts.width) {
+      args.push("-w", opts.width);
+    }
+    if (opts.height) {
+      args.push("-h", opts.height);
+    }
+    if (opts.title) {
+      args.push("-T", opts.title);
+    }
+    if (opts.env) {
+      for (const [k, v] of Object.entries(opts.env)) {
+        args.push("-e", `${k}=${v}`);
+      }
+    }
+    args.push("--", opts.command);
+
+    const proc = spawn("tmux", args, { stdio: "ignore" });
+    proc.on("close", (code: number | null) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`Popup command failed with code ${code}`));
+      }
+    });
+  });
 }
 
 export interface PaneInfo {

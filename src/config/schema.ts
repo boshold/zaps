@@ -120,6 +120,12 @@ const taskConfigSchema = z
     description: z.optional(z.string()),
     commands: z.optional(z.union([commandSchema, z.array(commandSchema)])),
     run: z.optional(taskRunFnSchema),
+    popup: z.optional(
+      z.union([
+        z.boolean(),
+        z.object({ width: z.optional(z.string()), height: z.optional(z.string()) }),
+      ]),
+    ),
     cwd: z.optional(z.string()),
     dependsOn: z.optional(z.array(z.string())),
     env: z.optional(envConfigSchema),
@@ -137,6 +143,13 @@ const taskConfigSchema = z
       ctx.addIssue({
         code: "custom",
         message: "Task must have either 'commands' or 'run'",
+        input: val,
+      });
+    }
+    if (val.popup && val.run) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Task 'popup' can only be used with 'commands', not 'run'",
         input: val,
       });
     }

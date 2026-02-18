@@ -14,6 +14,7 @@ import {
   capturePane,
   currentPaneId,
   currentSession,
+  getWindowName,
   killPane,
   listZapsSessions,
   panePid,
@@ -77,6 +78,7 @@ function buildDeps(): ServiceManagerDeps {
     capturePane,
     getDescendantPids,
     renameWindow,
+    getWindowName,
   };
 }
 

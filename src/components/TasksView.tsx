@@ -85,7 +85,7 @@ export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksVie
 
   return (
     <Box flexDirection="column" padding={1} height="100%">
-      <Header projectName="Tasks" statuses={[]} width={termCols} />
+      <Header projectName="Tasks" statuses={[]} width={termCols - 2} />
       <Box flexDirection="row" flexGrow={1} marginTop={1}>
         <TaskListPanel
           tasks={tasks}
@@ -94,11 +94,7 @@ export function TasksView({ selectedIndex, runTrigger, taskShortcuts }: TasksVie
           runningTask={runningTask}
           taskShortcuts={taskShortcuts}
         />
-        <TaskOutputPanel
-          lines={taskOutput}
-          visibleLines={visibleLines}
-          width={Math.floor(termCols * 0.6) - 4}
-        />
+        <TaskOutputPanel lines={taskOutput} visibleLines={visibleLines} />
       </Box>
     </Box>
   );

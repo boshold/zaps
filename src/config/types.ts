@@ -87,6 +87,7 @@ export interface TaskConfig {
   description?: string;
   commands?: Command | Command[];
   run?: (ctx: TaskRunContext) => Promise<void>;
+  popup?: boolean | { width?: string; height?: string };
   cwd?: string;
   dependsOn?: string[];
   env?: EnvConfig;

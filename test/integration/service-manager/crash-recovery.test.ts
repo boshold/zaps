@@ -1,7 +1,14 @@
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { capturePane, panePid, renameWindow, sendCtrlC, sendKeys } from "#src/lib/tmux.js";
+import {
+  capturePane,
+  getWindowName,
+  panePid,
+  renameWindow,
+  sendCtrlC,
+  sendKeys,
+} from "#src/lib/tmux.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -19,6 +26,7 @@ const deps = {
   capturePane,
   getDescendantPids,
   renameWindow,
+  getWindowName,
 };
 
 async function waitForState(

@@ -2,14 +2,74 @@ import type { TaskConfig } from "#src/config/types.js";
 import { execCommand, execCommandWithResult } from "#src/lib/exec.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { displayPopup } from "#src/lib/tmux.js";
 
-export interface TaskRunnerDeps {
+interface TaskRunnerDeps {
   tasks: Record<string, TaskConfig>;
   statuses: Map<string, ServiceStatus>;
   projectDir: string;
   onProgress?: (key: string, result: "success" | "error") => void;
   onLine?: (key: string, line: string) => void;
 }
+
+interface ExecuteContext {
+  taskCwd: string;
+  resolvedEnv: Record<string, string>;
+  envSpread: { env?: Record<string, string> };
+  emitLine: (line: string) => void;
+  serviceCtx: ReturnType<typeof buildServiceContext>;
+  projectDir: string;
+}
+
+async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
+  if (t.run) {
+    await t.run({
+      async exec(cmd, opts) {
+        return execCommandWithResult(cmd, {
+          cwd: opts?.cwd ?? ctx.taskCwd,
+          env: opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
+          onLine: ctx.emitLine,
+        });
+      },
+      stdout: {
+        write(text) {
+          const lines = text.endsWith("\n") ? text.slice(0, -1) : text;
+          for (const line of lines.split("\n")) {
+            ctx.emitLine(line);
+          }
+        },
+      },
+      services: ctx.serviceCtx,
+      projectDir: ctx.projectDir,
+    });
+  } else if (t.commands) {
+    const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
+    const resolvedCommands = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
+
+    if (t.popup) {
+      const popupCfg = typeof t.popup === "object" ? t.popup : {};
+      await displayPopup({
+        cwd: ctx.taskCwd,
+        command: resolvedCommands.join(" && "),
+        title: t.name,
+        width: popupCfg.width ?? "80%",
+        height: popupCfg.height ?? "80%",
+        ...(Object.keys(ctx.resolvedEnv).length > 0 ? { env: ctx.resolvedEnv } : {}),
+      });
+    } else {
+      for (const resolved of resolvedCommands) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential command execution
+        await execCommand(resolved, {
+          cwd: ctx.taskCwd,
+          ...ctx.envSpread,
+          onLine: ctx.emitLine,
+        });
+      }
+    }
+  }
+}
+
+export type { TaskRunnerDeps };
 
 export async function runTaskWithDeps(
   key: string,
@@ -49,40 +109,14 @@ export async function runTaskWithDeps(
   const emitLine = (line: string) => deps.onLine?.(key, line);
 
   try {
-    if (t.run) {
-      // Programmatic run path
-      await t.run({
-        async exec(cmd, opts) {
-          return execCommandWithResult(cmd, {
-            cwd: opts?.cwd ?? taskCwd,
-            env: opts?.env ? { ...resolvedEnv, ...opts.env } : resolvedEnv,
-            onLine: emitLine,
-          });
-        },
-        stdout: {
-          write(text) {
-            const lines = text.endsWith("\n") ? text.slice(0, -1) : text;
-            for (const line of lines.split("\n")) {
-              emitLine(line);
-            }
-          },
-        },
-        services: serviceCtx,
-        projectDir: deps.projectDir,
-      });
-    } else if (t.commands) {
-      // Commands path
-      const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
-      for (const cmd of commands) {
-        const resolved = typeof cmd === "function" ? cmd() : cmd;
-        // eslint-disable-next-line no-await-in-loop -- Sequential command execution
-        await execCommand(resolved, {
-          cwd: taskCwd,
-          ...envSpread,
-          onLine: emitLine,
-        });
-      }
-    }
+    await executeTask(t, {
+      taskCwd,
+      resolvedEnv,
+      envSpread,
+      emitLine,
+      serviceCtx,
+      projectDir: deps.projectDir,
+    });
   } catch {
     results.set(key, "error");
     deps.onProgress?.(key, "error");

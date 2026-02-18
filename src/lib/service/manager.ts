@@ -92,6 +92,7 @@ export class ServiceManager extends EventEmitter {
   private shuttingDown = false;
   private deps: ServiceManagerDeps;
   private autoOpened = new Set<string>();
+  private originalWindowTitle: Promise<string>;
 
   constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps, session: string) {
     super();
@@ -99,6 +100,7 @@ export class ServiceManager extends EventEmitter {
     this.paneMap = paneMap;
     this.deps = deps;
     this.session = session;
+    this.originalWindowTitle = deps.getWindowName(session);
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
@@ -202,6 +204,9 @@ export class ServiceManager extends EventEmitter {
     }
 
     await fireHook(hooks?.onStop);
+    await this.deps.renameWindow(this.session, await this.originalWindowTitle).catch(() => {
+      // Session may already be gone
+    });
     this.shuttingDown = false;
   }
 
@@ -556,4 +561,5 @@ export interface ServiceManagerDeps {
   capturePane: (target: string, lines: number) => Promise<string>;
   getDescendantPids: (rootPid: number) => Promise<number[]>;
   renameWindow: (target: string, name: string) => Promise<void>;
+  getWindowName: (target: string) => Promise<string>;
 }

@@ -33,10 +33,10 @@ function handleDashboardInput(
     goToTasks: () => void;
   },
 ) {
-  if (key.upArrow) {
+  if (key.upArrow || input === "k") {
     ctx.moveUp();
   }
-  if (key.downArrow) {
+  if (key.downArrow || input === "j") {
     ctx.moveDown();
   }
   if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
@@ -74,16 +74,17 @@ function handleDashboardInput(
 }
 
 function handleLogsInput(
+  input: string,
   key: Key,
   ctx: { goToDashboard: () => void; scrollUp: () => void; scrollDown: () => void },
 ) {
   if (key.escape) {
     ctx.goToDashboard();
   }
-  if (key.upArrow) {
+  if (key.upArrow || input === "k") {
     ctx.scrollUp();
   }
-  if (key.downArrow) {
+  if (key.downArrow || input === "j") {
     ctx.scrollDown();
   }
 }
@@ -104,11 +105,13 @@ function handleTasksInput(
   if (key.escape) {
     ctx.goToDashboard();
   }
-  if (key.upArrow) {
+  if (key.upArrow || input === "k") {
     ctx.moveUp();
+    return;
   }
-  if (key.downArrow) {
+  if (key.downArrow || input === "j") {
     ctx.moveDown();
+    return;
   }
   if (key.return) {
     ctx.setRunTrigger((n) => n + 1);
@@ -156,20 +159,24 @@ export function Router() {
   const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
 
   useInput((input, key) => {
-    // Global keys
+    // Q: quit on dashboard, go back on sub-views
     if (input === "q") {
-      if (busyRef.current) {
-        return;
+      if (view === "dashboard") {
+        if (busyRef.current) {
+          return;
+        }
+        busyRef.current = true;
+        manager
+          .stopAll()
+          .catch(() => {
+            /* Graceful shutdown */
+          })
+          .finally(() => {
+            exit();
+          });
+      } else {
+        goToDashboard();
       }
-      busyRef.current = true;
-      manager
-        .stopAll()
-        .catch(() => {
-          /* Graceful shutdown */
-        })
-        .finally(() => {
-          exit();
-        });
       return;
     }
 
@@ -189,7 +196,7 @@ export function Router() {
     }
 
     if (view === "logs") {
-      handleLogsInput(key, { goToDashboard, scrollUp, scrollDown });
+      handleLogsInput(input, key, { goToDashboard, scrollUp, scrollDown });
     }
 
     if (view === "tasks") {

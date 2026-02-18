@@ -26,6 +26,7 @@ import {
   setEnv,
   selectPane,
   listPanes,
+  displayPopup,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -46,6 +47,12 @@ function createMockProc(stdout: string, exitCode = 0, stderr = ""): ChildProcess
     proc.emit("close", exitCode);
   }, 0);
 
+  return proc;
+}
+
+function createSilentMockProc(exitCode = 0): ChildProcess {
+  const proc = new EventEmitter() as unknown as ChildProcess;
+  setTimeout(() => proc.emit("close", exitCode), 0);
   return proc;
 }
 
@@ -281,5 +288,57 @@ describe("listPanes", () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     const panes = await listPanes("empty-sess");
     expect(panes).toEqual([]);
+  });
+});
+
+describe("displayPopup", () => {
+  it("spawns tmux display-popup with correct args", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc(0));
+    await displayPopup({
+      cwd: "/project",
+      command: "npm test",
+      title: "Test",
+      width: "80%",
+      height: "80%",
+    });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      [
+        "display-popup",
+        "-EE",
+        "-d",
+        "/project",
+        "-w",
+        "80%",
+        "-h",
+        "80%",
+        "-T",
+        "Test",
+        "--",
+        "npm test",
+      ],
+      { stdio: "ignore" },
+    );
+  });
+
+  it("passes env vars as -e flags", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc(0));
+    await displayPopup({
+      cwd: "/project",
+      command: "run",
+      env: { FOO: "bar", BAZ: "qux" },
+    });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-popup", "-EE", "-d", "/project", "-e", "FOO=bar", "-e", "BAZ=qux", "--", "run"],
+      { stdio: "ignore" },
+    );
+  });
+
+  it("rejects on non-zero exit code", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc(1));
+    await expect(displayPopup({ cwd: "/project", command: "fail" })).rejects.toThrow(
+      "Popup command failed with code 1",
+    );
   });
 });

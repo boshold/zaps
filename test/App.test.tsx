@@ -267,7 +267,7 @@ describe("Keyboard routing — View switching", () => {
     const frame = lastFrame() ?? "";
     // LogView shows service name in header
     expect(frame).toContain("api");
-    expect(frame).toContain("[esc] back");
+    expect(frame).toContain("[q/esc] back");
   });
 
   it("Esc from logs returns to dashboard", async () => {
@@ -285,7 +285,7 @@ describe("Keyboard routing — View switching", () => {
     await act(() => {
       stdin.write("l");
     });
-    expect(lastFrame()).toContain("[esc] back");
+    expect(lastFrame()).toContain("[q/esc] back");
 
     // Go back
     await act(() => {

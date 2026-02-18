@@ -22,7 +22,7 @@ export function TaskListPanel({
   const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
 
   return (
-    <Box flexDirection="column" width="40%">
+    <Box flexDirection="column" flexShrink={0} marginRight={1}>
       <Box flexDirection="column" flexGrow={1}>
         {tasks.map(([key, task], i) => (
           <TaskRow
@@ -37,7 +37,7 @@ export function TaskListPanel({
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>[↑/↓] select [enter] run [key] shortcut [esc] back</Text>
+        <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [q/esc] back</Text>
       </Box>
     </Box>
   );

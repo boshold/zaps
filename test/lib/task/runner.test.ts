@@ -9,12 +9,18 @@ vi.mock("#src/lib/exec.js", () => ({
   }),
 }));
 
+vi.mock("#src/lib/tmux.js", () => ({
+  displayPopup: vi.fn().mockResolvedValue(undefined),
+}));
+
 import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 
 import { execCommand } from "../../../src/lib/exec.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
+import { displayPopup } from "../../../src/lib/tmux.js";
 
 const mockExecCommand = vi.mocked(execCommand);
+const mockDisplayPopup = vi.mocked(displayPopup);
 
 function makeDeps(
   tasks: Record<string, TaskConfig>,
@@ -30,6 +36,7 @@ function makeDeps(
 
 beforeEach(() => {
   mockExecCommand.mockClear();
+  mockDisplayPopup.mockClear();
   mockExecCommand.mockImplementation(async (_cmd: string, opts) => {
     opts.onLine("output-line");
   });
@@ -200,5 +207,70 @@ describe("runTaskWithDeps", () => {
       "build",
       expect.objectContaining({ cwd: "/custom" }),
     );
+  });
+
+  it("runs popup task via displayPopup with defaults", async () => {
+    const deps = makeDeps({
+      test: { name: "Test", commands: "npm test", popup: true },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    const ok = await runTaskWithDeps("test", deps, visited, results);
+
+    expect(ok).toBe(true);
+    expect(mockExecCommand).not.toHaveBeenCalled();
+    expect(mockDisplayPopup).toHaveBeenCalledWith({
+      cwd: "/test",
+      command: "npm test",
+      title: "Test",
+      width: "80%",
+      height: "80%",
+    });
+  });
+
+  it("runs popup task with custom dimensions", async () => {
+    const deps = makeDeps({
+      test: { name: "Test", commands: "npm test", popup: { width: "50%", height: "60%" } },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("test", deps, visited, results);
+
+    expect(mockDisplayPopup).toHaveBeenCalledWith(
+      expect.objectContaining({ width: "50%", height: "60%" }),
+    );
+  });
+
+  it("joins multiple commands with && for popup", async () => {
+    const deps = makeDeps({
+      deploy: { name: "Deploy", commands: ["build", "push"], popup: true },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("deploy", deps, visited, results);
+
+    expect(mockDisplayPopup).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "build && push" }),
+    );
+  });
+
+  it("reports error when popup task fails", async () => {
+    mockDisplayPopup.mockRejectedValueOnce(new Error("Popup command failed with code 1"));
+    const onProgress = vi.fn();
+    const deps = makeDeps(
+      { test: { name: "Test", commands: "fail", popup: true } },
+      { onProgress },
+    );
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    const ok = await runTaskWithDeps("test", deps, visited, results);
+
+    expect(ok).toBe(false);
+    expect(results.get("test")).toBe("error");
+    expect(onProgress).toHaveBeenCalledWith("test", "error");
   });
 });
