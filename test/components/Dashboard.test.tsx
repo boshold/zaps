@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
 import type { ResolvedConfig } from "../../src/config/types.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
@@ -61,7 +62,7 @@ describe("Dashboard", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} />
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
       </AppProvider>,
     );
 
@@ -80,7 +81,7 @@ describe("Dashboard", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} />
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
       </AppProvider>,
     );
 
@@ -94,7 +95,7 @@ describe("Dashboard", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} />
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
       </AppProvider>,
     );
 
@@ -109,7 +110,7 @@ describe("Dashboard", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={1} />
+        <Dashboard statuses={statuses} selectedIndex={1} taskHistory={[]} />
       </AppProvider>,
     );
 
@@ -124,7 +125,7 @@ describe("Dashboard", () => {
 
     const { lastFrame } = render(
       <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} />
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
       </AppProvider>,
     );
 
@@ -133,5 +134,48 @@ describe("Dashboard", () => {
     expect(frame).toContain("NAME");
     expect(frame).toContain("PORTS");
     expect(frame).toContain("URL");
+  });
+
+  it("renders recent tasks when history provided", () => {
+    const statuses = [makeStatus("db")];
+    const config = makeConfig();
+    const manager = createMockManager(statuses);
+    const taskHistory: TaskRunRecord[] = [
+      {
+        taskKey: "migrate",
+        taskName: "Prisma Migrate",
+        result: "success",
+        timestamp: Date.now() - 120_000,
+      },
+      { taskKey: "build", taskName: "Build", result: "error", timestamp: Date.now() - 300_000 },
+    ];
+
+    const { lastFrame } = render(
+      <AppProvider manager={manager} config={config} paneMap={{}}>
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={taskHistory} />
+      </AppProvider>,
+    );
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Recent Tasks");
+    expect(frame).toContain("Prisma Migrate");
+    expect(frame).toContain("Build");
+    expect(frame).toContain("✔");
+    expect(frame).toContain("✖");
+  });
+
+  it("hides recent tasks when history is empty", () => {
+    const statuses = [makeStatus("db")];
+    const config = makeConfig();
+    const manager = createMockManager(statuses);
+
+    const { lastFrame } = render(
+      <AppProvider manager={manager} config={config} paneMap={{}}>
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
+      </AppProvider>,
+    );
+
+    const frame = lastFrame() ?? "";
+    expect(frame).not.toContain("Recent Tasks");
   });
 });

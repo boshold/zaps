@@ -2,11 +2,11 @@ import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, useStdout } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
-import type { TaskRunRecord } from "./Router.js";
 import { TaskListPanel } from "./TaskListPanel.js";
 import { TaskOutputPanel } from "./TaskOutputPanel.js";
 

@@ -222,7 +222,7 @@ describe("runTaskWithDeps", () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(mockDisplayPopup).toHaveBeenCalledWith({
       cwd: "/test",
-      command: "npm test",
+      command: "npm test; echo; echo 'Press Enter to close...'; read",
       title: "Test",
       width: "80%",
       height: "80%",
@@ -253,7 +253,9 @@ describe("runTaskWithDeps", () => {
     await runTaskWithDeps("deploy", deps, visited, results);
 
     expect(mockDisplayPopup).toHaveBeenCalledWith(
-      expect.objectContaining({ command: "build && push" }),
+      expect.objectContaining({
+        command: "build && push; echo; echo 'Press Enter to close...'; read",
+      }),
     );
   });
 

@@ -9,6 +9,7 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
 import { useRef, useState } from "react";
@@ -16,13 +17,6 @@ import { useRef, useState } from "react";
 import { Dashboard } from "./Dashboard.js";
 import { LogView } from "./LogView.js";
 import { TasksView } from "./TasksView.js";
-
-export interface TaskRunRecord {
-  taskKey: string;
-  taskName: string;
-  result: "success" | "error";
-  timestamp: number;
-}
 
 const MAX_HISTORY = 50;
 

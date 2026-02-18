@@ -1,9 +1,9 @@
 import type { TaskConfig } from "#src/config/types.js";
-import { relativeTime } from "#src/lib/relativeTime.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, Text } from "ink";
 
-import type { TaskRunRecord } from "./Router.js";
+import { TaskHistorySection } from "./TaskHistorySection.js";
 import { TaskRow } from "./TaskRow.js";
 
 interface TaskListPanelProps {
@@ -40,6 +40,7 @@ export function TaskListPanel({
           />
         ))}
       </Box>
+      <TaskHistorySection title="History" history={taskHistory} limit={10} />
       <Box marginTop={1}>
         <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [q/esc] back</Text>
       </Box>
