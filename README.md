@@ -126,6 +126,9 @@ export function config({ defineProject }: Library) {
         ready: { port: true },
         dependsOn: ["api"],
         url: (ctx) => `http://localhost:${ctx.services.web.port}`,
+        onOutput: (line) => {
+          if (/error/i.test(line)) notifySlack(line);
+        },
       },
 
       worker: {
@@ -147,6 +150,7 @@ export function config({ defineProject }: Library) {
         name: "Seed database",
         commands: ["npx prisma db seed", "npx prisma db fixtures"],
         dependsOn: ["migrate"],
+        popup: true,
       },
     },
 
@@ -192,6 +196,9 @@ export function config({ defineProject }: Library) {
 | `flags`     | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
 | `detached`  | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
 | `restart`   | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
+| `onReady`   | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
+| `onStop`    | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
+| `onOutput`  | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
 
 ### Ready Detection
 
@@ -341,8 +348,27 @@ tasks: {
       "npx prisma db seed",
     ],
   },
+  "interactive-migrate": {
+    name: "Interactive migration",
+    commands: "npx prisma migrate dev",
+    popup: { width: "80%", height: "80%" },
+  },
 }
 ```
+
+### Task Options
+
+| Option        | Type                                             | Default | Description                                                     |
+| ------------- | ------------------------------------------------ | ------- | --------------------------------------------------------------- |
+| `name`        | `string`                                         | —       | Display name in the TUI                                         |
+| `description` | `string`                                         | —       | Description shown in tasks view                                 |
+| `commands`    | `string \| string[]`                             | —       | Shell command(s) to run                                         |
+| `run`         | `(ctx: TaskRunContext) => void \| Promise<void>` | —       | Programmatic task function (mutually exclusive with `commands`) |
+| `cwd`         | `string`                                         | —       | Working directory                                               |
+| `env`         | `Record<string, string>`                         | —       | Environment variables                                           |
+| `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                       |
+| `shortcut`    | `string`                                         | —       | Key for chord mode quick execution                              |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run in tmux popup window (commands only)                        |
 
 Task dependencies are resolved and executed before the task itself.
 
@@ -426,16 +452,16 @@ If no layout is specified, `@tui` gets the main pane and each service gets a bac
 
 ### Dashboard
 
-| Key       | Action                         |
-| --------- | ------------------------------ |
-| `Up/Down` | Navigate services              |
-| `r`       | Restart selected service       |
-| `s`       | Start/stop selected service    |
-| `l`       | View logs for selected service |
-| `o`       | Open service URL in browser    |
-| `t`       | Tasks (chord mode or list)     |
-| `a`       | Restart all services           |
-| `q`       | Stop all and quit              |
+| Key           | Action                         |
+| ------------- | ------------------------------ |
+| `Up/Down/j/k` | Navigate services              |
+| `r`           | Restart selected service       |
+| `s`           | Start/stop selected service    |
+| `l`           | View logs for selected service |
+| `o`           | Open service URL in browser    |
+| `t`           | Tasks (chord mode or list)     |
+| `a`           | Restart all services           |
+| `q`           | Stop all and quit              |
 
 ### Chord Mode
 
@@ -443,18 +469,21 @@ Shown when any task has a shortcut. Press a shortcut key to run it, `Esc` to can
 
 ### Tasks View
 
-| Key       | Action            |
-| --------- | ----------------- |
-| `Up/Down` | Navigate tasks    |
-| `Enter`   | Run selected task |
-| `Esc`     | Back to dashboard |
+| Key           | Action                   |
+| ------------- | ------------------------ |
+| `Up/Down/j/k` | Navigate tasks           |
+| `Enter`       | Run selected task        |
+| `[key]`       | Run task by shortcut key |
+| `Esc`         | Back to dashboard        |
+
+The tasks view shows the last 10 task runs with a result icon and relative timestamp. The dashboard footer also displays the 3 most recent task runs.
 
 ### Log View
 
-| Key       | Action            |
-| --------- | ----------------- |
-| `Up/Down` | Scroll logs       |
-| `Esc`     | Back to dashboard |
+| Key           | Action            |
+| ------------- | ----------------- |
+| `Up/Down/j/k` | Scroll logs       |
+| `Esc`         | Back to dashboard |
 
 ## Service States
 
@@ -477,7 +506,9 @@ stopped ──> starting ──> ready ──> stopping ──> stopped
 
 ## Hooks
 
-Lifecycle hooks for custom logic:
+### Global Hooks
+
+Lifecycle hooks for custom logic at the project level:
 
 ```typescript
 hooks: {
@@ -485,6 +516,23 @@ hooks: {
   onStop: async () => { /* cleanup before exit */ },
   onServiceStart: async (name) => { /* individual service ready */ },
   onServiceStop: async (name) => { /* individual service stopped */ },
+}
+```
+
+### Per-Service Hooks
+
+Services also support their own hooks for service-specific logic:
+
+```typescript
+services: {
+  api: {
+    start: "npm run dev",
+    onReady: () => console.log("API is up"),
+    onStop: () => console.log("API stopped"),
+    onOutput: (line) => {
+      if (/error/i.test(line)) sendAlert(line);
+    },
+  },
 }
 ```
 

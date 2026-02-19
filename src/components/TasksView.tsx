@@ -99,7 +99,7 @@ export function TasksView({
   const visibleLines = termHeight - 6; // Header + help bar + padding + borders
 
   return (
-    <Box flexDirection="column" padding={1} height="100%">
+    <Box height={termHeight} flexDirection="column" padding={1}>
       <Header projectName="Tasks" statuses={[]} width={termCols - 2} />
       <Box flexDirection="row" flexGrow={1} marginTop={1}>
         <TaskListPanel
