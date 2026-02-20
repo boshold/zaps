@@ -18,6 +18,7 @@ afterEach(() => {
 
 function writeConfig(filename: string, content: string): string {
   const filePath = path.join(tmpDir, filename);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, content);
   return filePath;
 }
@@ -38,7 +39,7 @@ describe("loadConfig", () => {
     `,
     );
 
-    const result = await loadConfig(configPath);
+    const result = await loadConfig(configPath, tmpDir);
     expect(result.project.name).toBe("test-project");
     expect(result.configPath).toBe(configPath);
     expect(result.projectDir).toBe(tmpDir);
@@ -61,6 +62,112 @@ describe("loadConfig", () => {
     expect(result.project.name).toBe("default-export");
   });
 
+  it("defaults projectDir to invokeDir", async () => {
+    const invokeDir = path.join(tmpDir, "subproject");
+    fs.mkdirSync(invokeDir, { recursive: true });
+
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, invokeDir);
+    expect(result.projectDir).toBe(invokeDir);
+  });
+
+  it("resolves cwd string relative to configDir", async () => {
+    const subDir = path.join(tmpDir, "sub");
+    fs.mkdirSync(subDir, { recursive: true });
+
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          cwd: "./sub",
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, "/some/invoke/dir");
+    expect(result.projectDir).toBe(subDir);
+  });
+
+  it("uses absolute cwd string as-is", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          cwd: "/absolute/path",
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.projectDir).toBe("/absolute/path");
+  });
+
+  it("resolves cwd function", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          cwd: ({ invokeDir }) => invokeDir,
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const invokeDir = path.join(tmpDir, "project");
+    fs.mkdirSync(invokeDir, { recursive: true });
+
+    const result = await loadConfig(configPath, invokeDir);
+    expect(result.projectDir).toBe(invokeDir);
+  });
+
+  it("resolves relative cwd function result relative to configDir", async () => {
+    const subDir = path.join(tmpDir, "rel");
+    fs.mkdirSync(subDir, { recursive: true });
+
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          cwd: () => "./rel",
+          services: {
+            api: { start: "npm run dev" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, "/some/dir");
+    expect(result.projectDir).toBe(subDir);
+  });
+
   it("defaults name to directory basename when omitted", async () => {
     const configPath = writeConfig(
       ".zaps.ts",
@@ -75,7 +182,7 @@ describe("loadConfig", () => {
     `,
     );
 
-    const result = await loadConfig(configPath);
+    const result = await loadConfig(configPath, tmpDir);
     expect(result.project.name).toBe(path.basename(tmpDir));
   });
 

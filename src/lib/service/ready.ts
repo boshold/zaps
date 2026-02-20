@@ -1,7 +1,7 @@
 import { isReady } from "#src/lib/docker.js";
 import type { ReadyConfig, ReadyDeps } from "./types.js";
 
-import { isReadyDocker, isReadyOutput, isReadyPort } from "./types.js";
+import { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "./types.js";
 
 const POLL_INTERVAL = 500;
 const TIMEOUT = 60_000;
@@ -75,6 +75,57 @@ export async function waitForReady(
       await poll(async () => {
         const ports = await deps.detectPorts(paneTarget);
         return ports.includes(expectedPort);
+      }, signal);
+    }
+    return [];
+  }
+
+  if (isReadyHttp(config)) {
+    const normalized = typeof config.http === "string" ? { url: config.http } : config.http;
+    const { url } = normalized;
+    const hasStatus = typeof normalized.status === "number";
+    const isPath = url.startsWith("/");
+
+    const checkResponse = (res: Response) => (hasStatus ? res.status === normalized.status : true);
+
+    if (isPath) {
+      // Wait for port first (like port: true)
+      let detectedPort = 0;
+      await poll(async () => {
+        const [port] = await deps.detectPorts(paneTarget);
+        if (typeof port === "number") {
+          detectedPort = port;
+          return true;
+        }
+        return false;
+      }, signal);
+
+      // Then probe HTTP endpoint
+      await poll(async () => {
+        try {
+          const res = await fetch(`http://localhost:${String(detectedPort)}${url}`, {
+            method: "GET",
+            signal: AbortSignal.timeout(1000),
+            redirect: "manual",
+          });
+          return checkResponse(res);
+        } catch {
+          return false;
+        }
+      }, signal);
+    } else {
+      // Full URL — probe directly
+      await poll(async () => {
+        try {
+          const res = await fetch(url, {
+            method: "GET",
+            signal: AbortSignal.timeout(1000),
+            redirect: "manual",
+          });
+          return checkResponse(res);
+        } catch {
+          return false;
+        }
       }, signal);
     }
     return [];

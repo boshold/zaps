@@ -92,7 +92,8 @@ program
       process.exit(1);
     }
 
-    const config = await loadConfig(configPath);
+    const invokeDir = process.cwd();
+    const config = await loadConfig(configPath, invokeDir);
 
     // Must be inside tmux
     if (!getEnv("TMUX")) {
@@ -114,9 +115,10 @@ program
     // Focus the designated pane (defaults to @tui)
     await selectPane(focusPane);
 
-    // Serialize pane map and origin pane to tmux env
+    // Serialize pane map, origin pane, and invoke dir to tmux env
     await setEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));
     await setEnv(sessionName, "ZAPS_ORIGIN_PANE", originPane);
+    await setEnv(sessionName, "ZAPS_INVOKE_DIR", invokeDir);
 
     const tuiPaneId = paneMap["@tui"];
 
@@ -136,9 +138,12 @@ program
       process.exit(1);
     }
 
-    const config = await loadConfig(configPath);
-
     const sessionName = await currentSession();
+
+    // Read invoke dir from tmux environment (set by `zaps dev`)
+    const invokeDir = await showEnv(sessionName, "ZAPS_INVOKE_DIR");
+
+    const config = await loadConfig(configPath, invokeDir || process.cwd());
 
     // Read pane map from tmux environment
     const paneMapRaw = await showEnv(sessionName, "ZAPS_PANE_MAP");
@@ -266,6 +271,9 @@ program
       /* Session may already be gone */
     });
     await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {
+      /* Session may already be gone */
+    });
+    await removeEnv(sessionName, "ZAPS_INVOKE_DIR").catch(() => {
       /* Session may already be gone */
     });
 

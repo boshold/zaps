@@ -361,6 +361,153 @@ describe("waitForReady", () => {
     );
   });
 
+  describe("http mode", () => {
+    const mockFetch = vi.fn<typeof globalThis.fetch>();
+
+    beforeEach(() => {
+      vi.stubGlobal("fetch", mockFetch);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("path mode: waits for port then probes endpoint", async () => {
+      let portCalls = 0;
+      mockDetectPorts.mockImplementation(async () => {
+        portCalls += 1;
+        return portCalls >= 2 ? [3000] : [];
+      });
+
+      let fetchCalls = 0;
+      mockFetch.mockImplementation(async () => {
+        fetchCalls += 1;
+        if (fetchCalls >= 2) {
+          return new Response("ok", { status: 200 });
+        }
+        throw new Error("ECONNREFUSED");
+      });
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: "/health" };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+
+      // Port detection phase
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+      // HTTP probing phase
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      const ports = await promise;
+      expect(ports).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3000/health",
+        expect.objectContaining({ method: "GET", redirect: "manual" }),
+      );
+    });
+
+    it("full URL mode: probes directly without port detection", async () => {
+      mockFetch.mockResolvedValue(new Response("ok", { status: 200 }));
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: "http://localhost:4000/health" };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      await vi.advanceTimersByTimeAsync(500);
+
+      const ports = await promise;
+      expect(ports).toEqual([]);
+      expect(mockDetectPorts).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:4000/health",
+        expect.objectContaining({ method: "GET", redirect: "manual" }),
+      );
+    });
+
+    it("status check: succeeds only when status matches", async () => {
+      let fetchCalls = 0;
+      mockFetch.mockImplementation(async () => {
+        fetchCalls += 1;
+        if (fetchCalls >= 3) {
+          return new Response("ok", { status: 200 });
+        }
+        return new Response("not ready", { status: 503 });
+      });
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: { url: "http://localhost:3000/health", status: 200 } };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      await promise;
+      expect(fetchCalls).toBeGreaterThanOrEqual(3);
+    });
+
+    it("without status: any response counts as ready", async () => {
+      mockFetch.mockResolvedValue(new Response("error", { status: 500 }));
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: "http://localhost:3000/health" };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      await vi.advanceTimersByTimeAsync(500);
+
+      await promise;
+    });
+
+    it("times out when endpoint never responds", async () => {
+      mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: "http://localhost:3000/health" };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const guarded = promise.catch(() => {
+        /* Intentional no-op */
+      });
+
+      await vi.advanceTimersByTimeAsync(61_000);
+      await guarded;
+
+      await expect(promise).rejects.toThrow("Ready check timed out after 60s");
+    });
+
+    it("aborts when signal is aborted", async () => {
+      const controller = new AbortController();
+      controller.abort();
+
+      const config: ReadyConfig = { http: "http://localhost:3000/health" };
+
+      await expect(waitForReady(config, "%0", controller.signal, createDeps())).rejects.toThrow(
+        "Ready check aborted",
+      );
+    });
+
+    it("object form with path uses port detection", async () => {
+      mockDetectPorts.mockResolvedValue([8080]);
+      mockFetch.mockResolvedValue(new Response("ok", { status: 200 }));
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: { url: "/api/health", status: 200 } };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      await vi.advanceTimersByTimeAsync(500);
+      await vi.advanceTimersByTimeAsync(500);
+
+      await promise;
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:8080/api/health",
+        expect.objectContaining({ method: "GET" }),
+      );
+    });
+  });
+
   it("existing modes return empty ports array", async () => {
     mockDetectPorts.mockResolvedValue([3000]);
 

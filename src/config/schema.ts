@@ -1,4 +1,4 @@
-import type { LayoutSplit, ServiceContext, TaskRunContext } from "./types.js";
+import type { CwdContext, LayoutSplit, ServiceContext, TaskRunContext } from "./types.js";
 import { z } from "zod";
 
 // === Commands ===
@@ -27,11 +27,22 @@ const readyDockerSchema = z.object({
   file: z.optional(z.string()),
 });
 
+const readyHttpSchema = z.object({
+  http: z.union([
+    z.string(),
+    z.object({
+      url: z.string(),
+      status: z.optional(z.number()),
+    }),
+  ]),
+});
+
 const readyConfigSchema = z.union([
   readyFnSchema,
   readyOutputSchema,
   readyPortSchema,
   readyDockerSchema,
+  readyHttpSchema,
 ]);
 
 // === Docker Config ===
@@ -187,9 +198,16 @@ const hooksConfigSchema = z.object({
   ),
 });
 
+// === Cwd Config ===
+const cwdConfigSchema = z.union([
+  z.string(),
+  z.custom<(ctx: CwdContext) => string>((v) => typeof v === "function"),
+]);
+
 // === Project Config ===
 export const projectConfigSchema = z.object({
   name: z.optional(z.string()),
+  cwd: z.optional(cwdConfigSchema),
   services: servicesSchema,
   tasks: z.optional(z.record(z.string(), taskConfigSchema)),
   layout: z.optional(layoutNodeSchema),

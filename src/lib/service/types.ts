@@ -6,11 +6,12 @@ export type {
   ReadyConfig,
   ReadyDocker,
   ReadyFn,
+  ReadyHttp,
   ReadyOutput,
   ReadyPort,
   ServiceContext,
 } from "#src/config/types.js";
-export { isReadyDocker, isReadyOutput, isReadyPort } from "#src/config/types.js";
+export { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "#src/config/types.js";
 
 // === Service State ===
 export type ServiceState = "stopped" | "starting" | "ready" | "stopping" | "error" | "restarting";

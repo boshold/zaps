@@ -96,6 +96,7 @@ import type { Library } from "zaps";
 export function config({ defineProject }: Library) {
   return defineProject({
     name: "my-app",
+    cwd: "./packages/app",
 
     services: {
       db: {
@@ -178,6 +179,37 @@ export function config({ defineProject }: Library) {
 }
 ```
 
+## Project Options
+
+| Option | Type                                    | Default    | Description               |
+| ------ | --------------------------------------- | ---------- | ------------------------- |
+| `name` | `string`                                | dir name   | Project name shown in TUI |
+| `cwd`  | `string \| (ctx: CwdContext) => string` | invoke dir | Project working directory |
+
+### `cwd`
+
+By default, `projectDir` is the directory where `zaps` was invoked. Use `cwd` to override this — useful when sharing a config across multiple projects:
+
+```
+workspace/
+  customer/
+    .zaps.mts          ← shared config
+    customer-1/        ← run `zaps` here
+    customer-2/        ← or here
+```
+
+**String** — resolved relative to the config file's directory:
+
+```typescript
+cwd: "./customer-1";
+```
+
+**Function** — receives `{ configDir, invokeDir }` for dynamic resolution:
+
+```typescript
+cwd: ({ invokeDir }) => invokeDir; // already the default
+```
+
 ## Services
 
 ### Options
@@ -202,7 +234,7 @@ export function config({ defineProject }: Library) {
 
 ### Ready Detection
 
-Four strategies for detecting when a service is ready:
+Five strategies for detecting when a service is ready:
 
 **Port** — wait for a TCP port:
 
@@ -228,6 +260,16 @@ ready: {
   output: (line) => line.includes("ready");
 }
 ```
+
+**HTTP** — poll an HTTP endpoint:
+
+```typescript
+ready: { http: "/health" }                              // path — auto-detects port, then probes
+ready: { http: "http://localhost:3000/health" }          // full URL — probes directly
+ready: { http: { url: "/api/health", status: 200 } }    // require specific status code
+```
+
+When the URL starts with `/`, ZAPS first waits for a port (like `port: true`) then probes `http://localhost:{port}{path}`. A full URL is probed directly. If `status` is omitted, any HTTP response counts as ready.
 
 **Docker** — wait for container running + healthy:
 

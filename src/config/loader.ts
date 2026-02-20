@@ -66,10 +66,25 @@ function validateSemantics(project: ProjectConfig): void {
   }
 }
 
+function resolveProjectDir(
+  cwd: ProjectConfig["cwd"],
+  configDir: string,
+  invokeDir: string,
+): string {
+  if (typeof cwd === "string") {
+    return path.isAbsolute(cwd) ? cwd : path.resolve(configDir, cwd);
+  }
+  if (typeof cwd === "function") {
+    const result = cwd({ configDir, invokeDir });
+    return path.isAbsolute(result) ? result : path.resolve(configDir, result);
+  }
+  return invokeDir;
+}
+
 /**
  * Dynamically import and validate a zaps config file.
  */
-export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
+export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
   const absolutePath = new URL(configPath, `file://${process.cwd()}/`).href;
   const mod = await import(absolutePath);
 
@@ -78,9 +93,13 @@ export async function loadConfig(configPath: string): Promise<ResolvedConfig> {
     throw new Error("Config file must export a 'config' function or default export");
   }
 
-  const projectDir = path.dirname(configPath);
+  const configDir = path.dirname(configPath);
+  const resolvedInvokeDir = invokeDir ?? process.cwd();
   const { lib, bindActions } = createZapsLib();
   const project: ProjectConfig = configFn(lib);
+
+  const projectDir = resolveProjectDir(project.cwd, configDir, resolvedInvokeDir);
+
   const name = project.name || path.basename(projectDir);
   const resolved = { ...project, name };
 

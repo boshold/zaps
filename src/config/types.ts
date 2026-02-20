@@ -13,7 +13,10 @@ export interface ReadyDocker {
   docker: string;
   file?: string;
 }
-export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker;
+export interface ReadyHttp {
+  http: string | { url: string; status?: number };
+}
+export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker | ReadyHttp;
 
 // === Docker Config ===
 export interface DockerConfig {
@@ -116,9 +119,16 @@ export interface HooksConfig {
   onServiceStop?: (serviceName: string) => void | Promise<void>;
 }
 
+// === Cwd Context ===
+export interface CwdContext {
+  configDir: string;
+  invokeDir: string;
+}
+
 // === Project ===
 export interface ProjectConfig {
   name?: string;
+  cwd?: string | ((ctx: CwdContext) => string);
   services: Record<string, ServiceConfig>;
   tasks?: Record<string, TaskConfig>;
   layout?: LayoutNode;
@@ -173,4 +183,8 @@ export function isReadyOutput(r: ReadyConfig): r is ReadyOutput {
 
 export function isReadyDocker(r: ReadyConfig): r is ReadyDocker {
   return typeof r === "object" && "docker" in r;
+}
+
+export function isReadyHttp(r: ReadyConfig): r is ReadyHttp {
+  return typeof r === "object" && "http" in r;
 }
