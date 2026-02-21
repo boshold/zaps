@@ -227,15 +227,6 @@ export class ServiceManager extends EventEmitter {
     }
     this.shuttingDown = true;
 
-    // Restore automatic-rename first — rename-window disables it, and we want
-    // To guarantee restoration even if service stopping fails below.
-    const autoRename = await this.originalAutoRename;
-    if (autoRename === "on") {
-      await this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on").catch(() => {
-        // Session may already be gone
-      });
-    }
-
     const { services, hooks } = this.config.project;
     const levels = reverseTopoSort(services);
 
@@ -259,6 +250,15 @@ export class ServiceManager extends EventEmitter {
     await this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle).catch(() => {
       // Session may already be gone
     });
+
+    // Restore automatic-rename AFTER renameWindow — rename-window implicitly
+    // Disables automatic-rename, so setting it before would be undone.
+    const autoRename = await this.originalAutoRename;
+    if (autoRename === "on") {
+      await this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on").catch(() => {
+        // Session may already be gone
+      });
+    }
     this.shuttingDown = false;
   }
 
@@ -626,6 +626,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   private updateWindowTitle(): void {
+    if (this.shuttingDown) {return;}
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
       counts[status.state] = (counts[status.state] ?? 0) + 1;
