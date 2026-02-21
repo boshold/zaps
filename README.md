@@ -209,6 +209,24 @@ cwd: "./customer-1";
 cwd: ({ invokeDir }) => invokeDir; // already the default
 ```
 
+### Node Built-ins
+
+The `Library` object includes a `node` namespace with common Node.js modules (`path`, `fs`, `process`, `url`, `os`, `child_process`) so configs don't need raw `import` statements:
+
+```typescript
+export function config({ defineProject, node }: Library) {
+  return defineProject({
+    cwd: ({ configDir }) => node.path.join(configDir, "backend"),
+    services: {
+      api: {
+        start: "npm run dev",
+        env: { HOME: node.process.env.HOME ?? "" },
+      },
+    },
+  });
+}
+```
+
 ## Services
 
 ### Options

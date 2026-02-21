@@ -1,3 +1,10 @@
+import type child_process from "node:child_process";
+import type fs from "node:fs";
+import type os from "node:os";
+import type path from "node:path";
+import type nodeProcess from "node:process";
+import type url from "node:url";
+
 // === Commands ===
 export type Command = string | (() => string);
 
@@ -135,6 +142,16 @@ export interface ProjectConfig {
   hooks?: HooksConfig;
 }
 
+// === Node Modules ===
+export interface NodeModules {
+  path: typeof path;
+  fs: typeof fs;
+  process: typeof nodeProcess;
+  url: typeof url;
+  os: typeof os;
+  child_process: typeof child_process;
+}
+
 // === Library ===
 export interface Library {
   defineProject(this: void, config: ProjectConfig): ProjectConfig;
@@ -144,6 +161,7 @@ export interface Library {
   stopService(this: void, name: string): Promise<void>;
   isServiceRunning(this: void, name: string): boolean;
   openInBrowser(this: void, url: string): Promise<void>;
+  node: NodeModules;
 }
 
 // === Library Actions ===

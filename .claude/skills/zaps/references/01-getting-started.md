@@ -101,17 +101,34 @@ export function config({ defineProject }: Library) {
 
 The `Library` object passed to `config()` provides `defineProject` for config creation and runtime action methods usable inside hooks:
 
-| Method             | Signature                                  | Description                                          |
-| ------------------ | ------------------------------------------ | ---------------------------------------------------- |
-| `defineProject`    | `(config: ProjectConfig) => ProjectConfig` | Validates and returns the config. Call exactly once. |
-| `runTask`          | `(key: string) => Promise<void>`           | Run a defined task by key                            |
-| `startService`     | `(name: string) => Promise<void>`          | Start a service                                      |
-| `restartService`   | `(name: string) => Promise<void>`          | Restart a service                                    |
-| `stopService`      | `(name: string) => Promise<void>`          | Stop a service                                       |
-| `isServiceRunning` | `(name: string) => boolean`                | Check if a service is running                        |
-| `openInBrowser`    | `(url: string) => Promise<void>`           | Open a URL in the default browser                    |
+| Method             | Signature                                  | Description                                                           |
+| ------------------ | ------------------------------------------ | --------------------------------------------------------------------- |
+| `defineProject`    | `(config: ProjectConfig) => ProjectConfig` | Validates and returns the config. Call exactly once.                  |
+| `runTask`          | `(key: string) => Promise<void>`           | Run a defined task by key                                             |
+| `startService`     | `(name: string) => Promise<void>`          | Start a service                                                       |
+| `restartService`   | `(name: string) => Promise<void>`          | Restart a service                                                     |
+| `stopService`      | `(name: string) => Promise<void>`          | Stop a service                                                        |
+| `isServiceRunning` | `(name: string) => boolean`                | Check if a service is running                                         |
+| `openInBrowser`    | `(url: string) => Promise<void>`           | Open a URL in the default browser                                     |
+| `node`             | `NodeModules`                              | Node built-ins: `path`, `fs`, `process`, `url`, `os`, `child_process` |
 
 Runtime methods (`runTask`, `startService`, etc.) are bound after config loading. Use them in service/project hooks, not during config definition.
+
+`node` is available immediately (not just in hooks) — use it in config expressions like `cwd`:
+
+```ts
+export function config({ defineProject, node }: Library) {
+  return defineProject({
+    cwd: ({ configDir }) => node.path.join(configDir, "backend"),
+    services: {
+      api: {
+        start: "npm run dev",
+        env: { HOME: node.process.env.HOME ?? "" },
+      },
+    },
+  });
+}
+```
 
 ```ts
 export function config({ defineProject, restartService }: Library) {

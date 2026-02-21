@@ -186,6 +186,28 @@ describe("loadConfig", () => {
     expect(result.project.name).toBe(path.basename(tmpDir));
   });
 
+  it("config can use node built-ins", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        const dir = z.node.path.join("/foo", "bar");
+        return z.defineProject({
+          name: "node-test",
+          cwd: dir,
+          services: {
+            api: { start: "npm start" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.name).toBe("node-test");
+    expect(result.projectDir).toBe("/foo/bar");
+  });
+
   it("throws when no export found", async () => {
     const configPath = writeConfig(".zaps.ts", `export const notAConfig = 42;`);
 

@@ -150,6 +150,16 @@ describe("createZapsLib", () => {
     );
   });
 
+  it("exposes node built-in modules", () => {
+    const { lib } = createZapsLib();
+    expect(typeof lib.node.path.join).toBe("function");
+    expect(typeof lib.node.fs.readFileSync).toBe("function");
+    expect(typeof lib.node.process.cwd).toBe("function");
+    expect(typeof lib.node.url.pathToFileURL).toBe("function");
+    expect(typeof lib.node.os.homedir).toBe("function");
+    expect(typeof lib.node.child_process.exec).toBe("function");
+  });
+
   it("isServiceRunning delegates after binding", () => {
     const { lib, bindActions } = createZapsLib();
     const isServiceRunning = vi.fn().mockReturnValue(true);

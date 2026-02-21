@@ -19,17 +19,17 @@ Activate this skill when the user:
 
 **Read the relevant reference file(s) before answering or writing config.**
 
-| File                               | Topic                                                             |
-| ---------------------------------- | ----------------------------------------------------------------- |
-| `references/01-getting-started.md` | Config discovery, file structure, Library API, scaffolding        |
-| `references/02-services.md`        | ServiceConfig: start/run/stop, cwd, detached, flags, url, restart |
-| `references/03-ready-detection.md` | 5 mechanisms: port, output, docker, http, custom function         |
-| `references/04-docker.md`          | DockerConfig for docker-compose integration                       |
-| `references/05-environment.md`     | Static/dynamic env, ServiceContext                                |
-| `references/06-dependencies.md`    | dependsOn, topological sort, startup/stop order                   |
-| `references/07-tasks.md`           | TaskConfig: commands vs run, popup, shortcuts, TaskRunContext     |
-| `references/08-layout.md`          | LayoutNode tree: rows/columns, @tui pane, size/focus              |
-| `references/09-hooks.md`           | Project + per-service hooks, library actions                      |
+| File                               | Topic                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `references/01-getting-started.md` | Config discovery, file structure, Library API (incl. `node`), scaffolding |
+| `references/02-services.md`        | ServiceConfig: start/run/stop, cwd, detached, flags, url, restart         |
+| `references/03-ready-detection.md` | 5 mechanisms: port, output, docker, http, custom function                 |
+| `references/04-docker.md`          | DockerConfig for docker-compose integration                               |
+| `references/05-environment.md`     | Static/dynamic env, ServiceContext                                        |
+| `references/06-dependencies.md`    | dependsOn, topological sort, startup/stop order                           |
+| `references/07-tasks.md`           | TaskConfig: commands vs run, popup, shortcuts, TaskRunContext             |
+| `references/08-layout.md`          | LayoutNode tree: rows/columns, @tui pane, size/focus                      |
+| `references/09-hooks.md`           | Project + per-service hooks, library actions                              |
 
 ## Config Skeleton
 
