@@ -120,6 +120,7 @@ export class ServiceManager extends EventEmitter {
   private deps: ServiceManagerDeps;
   private autoOpened = new Set<string>();
   private originalWindowTitle: Promise<string>;
+  private originalAutoRename: Promise<string | null>;
 
   constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps, session: string) {
     super();
@@ -128,6 +129,14 @@ export class ServiceManager extends EventEmitter {
     this.deps = deps;
     this.session = session;
     this.originalWindowTitle = deps.getWindowName(this.paneMap["@tui"]);
+    const tuiPane = paneMap["@tui"];
+    this.originalAutoRename = (async () => {
+      try {
+        return await deps.getWindowOption(tuiPane, "automatic-rename");
+      } catch {
+        return null;
+      }
+    })();
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
@@ -218,6 +227,15 @@ export class ServiceManager extends EventEmitter {
     }
     this.shuttingDown = true;
 
+    // Restore automatic-rename first — rename-window disables it, and we want
+    // To guarantee restoration even if service stopping fails below.
+    const autoRename = await this.originalAutoRename;
+    if (autoRename === "on") {
+      await this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on").catch(() => {
+        // Session may already be gone
+      });
+    }
+
     const { services, hooks } = this.config.project;
     const levels = reverseTopoSort(services);
 
@@ -254,6 +272,11 @@ export class ServiceManager extends EventEmitter {
 
     if (!serviceConfig || !paneTarget || !status) {
       throw new Error(`Unknown service: ${name}`);
+    }
+
+    // Guard: skip if already starting or ready (prevents double-start races)
+    if (status.state === "starting" || status.state === "ready") {
+      return;
     }
 
     // Check dependencies are ready
@@ -645,6 +668,8 @@ export interface ServiceManagerDeps {
   getDescendantPids: (rootPid: number) => Promise<number[]>;
   renameWindow: (target: string, name: string) => Promise<void>;
   getWindowName: (target: string) => Promise<string>;
+  getWindowOption: (target: string, option: string) => Promise<string>;
+  setWindowOption: (target: string, option: string, value: string) => Promise<void>;
 }
 
 export { diffOutput };

@@ -64,7 +64,8 @@ export async function hasSession(name: string): Promise<boolean> {
 }
 
 export async function sendKeys(target: string, keys: string): Promise<void> {
-  await run(["send-keys", "-t", target, keys, "Enter"]);
+  await run(["send-keys", "-t", target, "-l", keys]);
+  await run(["send-keys", "-t", target, "Enter"]);
 }
 
 export async function newSession(name: string): Promise<string> {
@@ -136,6 +137,18 @@ export async function getWindowName(target: string): Promise<string> {
 
 export async function renameWindow(target: string, name: string): Promise<void> {
   await run(["rename-window", "-t", target, name]);
+}
+
+export async function getWindowOption(target: string, option: string): Promise<string> {
+  return run(["show-window-option", "-v", "-t", target, option]);
+}
+
+export async function setWindowOption(
+  target: string,
+  option: string,
+  value: string,
+): Promise<void> {
+  await run(["set-window-option", "-t", target, option, value]);
 }
 
 export interface DisplayPopupOptions {

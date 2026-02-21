@@ -3,10 +3,12 @@ import { ServiceManager } from "#src/lib/service/manager.js";
 import {
   capturePane,
   getWindowName,
+  getWindowOption,
   panePid,
   renameWindow,
   sendCtrlC,
   sendKeys,
+  setWindowOption,
 } from "#src/lib/tmux.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,6 +28,8 @@ const deps = {
   getDescendantPids,
   renameWindow,
   getWindowName,
+  getWindowOption,
+  setWindowOption,
 };
 
 describe.skipIf(!hasTmux())("start-stop integration", () => {

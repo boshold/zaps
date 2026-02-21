@@ -27,6 +27,8 @@ import {
   selectPane,
   listPanes,
   displayPopup,
+  getWindowOption,
+  setWindowOption,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -116,10 +118,19 @@ describe("hasSession", () => {
 });
 
 describe("sendKeys", () => {
-  it("sends keys with Enter", async () => {
-    mockSpawn.mockReturnValue(createMockProc(""));
+  it("sends literal keys then Enter", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc("")).mockReturnValueOnce(createMockProc(""));
     await sendKeys("%1", "ls -la");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["send-keys", "-t", "%1", "ls -la", "Enter"], {
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn).toHaveBeenNthCalledWith(
+      1,
+      "tmux",
+      ["send-keys", "-t", "%1", "-l", "ls -la"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["send-keys", "-t", "%1", "Enter"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -339,6 +350,31 @@ describe("displayPopup", () => {
     mockSpawn.mockReturnValue(createSilentMockProc(1));
     await expect(displayPopup({ cwd: "/project", command: "fail" })).rejects.toThrow(
       "Popup command failed with code 1",
+    );
+  });
+});
+
+describe("getWindowOption", () => {
+  it("returns the option value", async () => {
+    mockSpawn.mockReturnValue(createMockProc("on"));
+    const value = await getWindowOption("%0", "automatic-rename");
+    expect(value).toBe("on");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["show-window-option", "-v", "-t", "%0", "automatic-rename"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("setWindowOption", () => {
+  it("sets the option value", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await setWindowOption("%0", "automatic-rename", "on");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["set-window-option", "-t", "%0", "automatic-rename", "on"],
+      { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
 });

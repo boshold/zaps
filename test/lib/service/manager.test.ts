@@ -27,6 +27,8 @@ function createMockDeps(): ServiceManagerDeps {
     getDescendantPids: vi.fn<ServiceManagerDeps["getDescendantPids"]>().mockResolvedValue([1000]),
     renameWindow: vi.fn<ServiceManagerDeps["renameWindow"]>().mockResolvedValue(),
     getWindowName: vi.fn<ServiceManagerDeps["getWindowName"]>().mockResolvedValue("bash"),
+    getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
+    setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
   };
 }
 
@@ -212,6 +214,48 @@ describe("stopAll", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
+  it("restores automatic-rename when originally on", async () => {
+    const config = makeConfig({ db: { start: "start-db" } });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getWindowOption = vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on");
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startAll();
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+
+    const stopPromise = mgr.stopAll();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await stopPromise;
+
+    expect(deps.setWindowOption).toHaveBeenCalledWith("%tui", "automatic-rename", "on");
+  });
+
+  it("does not restore automatic-rename when originally off", async () => {
+    const config = makeConfig({ db: { start: "start-db" } });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getWindowOption = vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("off");
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startAll();
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+
+    const stopPromise = mgr.stopAll();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await stopPromise;
+
+    expect(deps.setWindowOption).not.toHaveBeenCalled();
+  });
+
   it("is idempotent — second call returns early", async () => {
     const config = makeConfig({ db: { start: "start-db" } });
     const paneMap = makePaneMap(["db"]);
@@ -395,6 +439,48 @@ describe("startService", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "dynamic-cmd");
+  });
+
+  it("guards against double-start when already starting", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start twice concurrently
+    const p1 = mgr.startService("svc");
+    const p2 = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([p1, p2]);
+
+    // SendKeys should only be called once
+    expect(deps.sendKeys).toHaveBeenCalledTimes(1);
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
+  it("guards against double-start when already ready", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    // Second start should be a no-op
+    await mgr.startService("svc");
+    expect(deps.sendKeys).toHaveBeenCalledTimes(1);
   });
 
   it("uses run field when start is not set", async () => {

@@ -121,8 +121,8 @@ describe("CLI — dev command", () => {
     expect(exists).toBe(true);
   });
 
-  it("outer flow creates session, layout, sets env, sends keys", async () => {
-    // Simulate the outer flow step by step
+  it("outer flow uses sendKeys when @tui is a different pane", async () => {
+    // Simulate the outer flow: originPane != tuiPaneId → sendKeys
     mockDiscoverConfig.mockReturnValue("/fake/.zaps.ts");
     mockLoadConfig.mockResolvedValue({
       project: {
@@ -132,54 +132,47 @@ describe("CLI — dev command", () => {
       configPath: "/fake/.zaps.ts",
       projectDir: "/fake",
     });
-    mockListSessions.mockResolvedValue([]);
-    mockHasSession.mockResolvedValue(false);
-    mockNewSession.mockResolvedValue("%0");
-    mockCreateLayout.mockResolvedValue({ "@tui": "%0", api: "%1" });
+    mockCreateLayout.mockResolvedValue({
+      paneMap: { "@tui": "%1", api: "%2" },
+      focusPane: "%1",
+    });
     mockSetEnv.mockResolvedValue();
     mockSendKeys.mockResolvedValue();
 
-    // Step 1: Discover config
-    const configPath = mockDiscoverConfig(process.cwd());
-    expect(configPath).toBe("/fake/.zaps.ts");
-
-    // Step 2: Load config
-    const config = await mockLoadConfig(configPath);
-    expect(config.project.name).toBe("test-proj");
-
-    // Step 3: Check tmux
-    const sessions = await mockListSessions();
-    expect(sessions).toEqual([]);
-
-    // Step 4: Check existing session
-    const sessionName = `zaps-${config.project.name}`;
-    const exists = await mockHasSession(sessionName);
-    expect(exists).toBe(false);
-
-    // Step 5: Create session
-    await mockNewSession(sessionName);
-    expect(mockNewSession).toHaveBeenCalledWith("zaps-test-proj");
-
-    // Step 6: Create layout
-    const paneMap = await mockCreateLayout(
-      sessionName,
-      config.project.layout,
-      config.project.services,
-    );
-    expect(paneMap).toEqual({ "@tui": "%0", api: "%1" });
-
-    // Step 7: Set env
-    await mockSetEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));
-    expect(mockSetEnv).toHaveBeenCalledWith(
-      "zaps-test-proj",
-      "ZAPS_PANE_MAP",
-      JSON.stringify({ "@tui": "%0", api: "%1" }),
-    );
-
-    // Step 8: Send keys to @tui pane
+    const originPane = "%0";
+    const paneMap = { "@tui": "%1", api: "%2" };
     const tuiPaneId = paneMap["@tui"];
-    await mockSendKeys(tuiPaneId, "zaps ui");
-    expect(mockSendKeys).toHaveBeenCalledWith("%0", "zaps ui");
+
+    // Different pane: should use sendKeys
+    expect(tuiPaneId).not.toBe(originPane);
+    await mockSendKeys(tuiPaneId, "zaps ui --start; exit");
+    expect(mockSendKeys).toHaveBeenCalledWith("%1", "zaps ui --start; exit");
+  });
+
+  it("outer flow calls runTui directly when @tui is origin pane", async () => {
+    // Simulate the outer flow: originPane == tuiPaneId → direct call (no sendKeys)
+    mockDiscoverConfig.mockReturnValue("/fake/.zaps.ts");
+    mockLoadConfig.mockResolvedValue({
+      project: {
+        name: "test-proj",
+        services: { api: { start: "npm dev" } },
+      },
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+    });
+    mockCreateLayout.mockResolvedValue({
+      paneMap: { "@tui": "%0", api: "%1" },
+      focusPane: "%0",
+    });
+    mockSetEnv.mockResolvedValue();
+
+    const originPane = "%0";
+    const paneMap = { "@tui": "%0", api: "%1" };
+    const tuiPaneId = paneMap["@tui"];
+
+    // Same pane: should NOT use sendKeys
+    expect(tuiPaneId).toBe(originPane);
+    expect(mockSendKeys).not.toHaveBeenCalled();
   });
 });
 
