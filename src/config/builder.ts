@@ -1,14 +1,8 @@
-import child_process from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import nodeProcess from "node:process";
-import url from "node:url";
-
 import { openInBrowser } from "#src/lib/open.js";
 import type { Library, LibraryActions, ProjectConfig } from "./types.js";
 import { z } from "zod";
 
+import { nodeModules } from "./node.js";
 import { projectConfigSchema } from "./schema.js";
 
 export interface ZapsLib {
@@ -72,7 +66,7 @@ export function createZapsLib(): ZapsLib {
       async openInBrowser(url: string): Promise<void> {
         await openInBrowser(url);
       },
-      node: { path, fs, process: nodeProcess, url, os, child_process },
+      node: nodeModules,
     },
     bindActions(a) {
       actions = a;

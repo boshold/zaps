@@ -103,3 +103,16 @@ await $`${compileArgs}`;
 
 // Cleanup intermediate
 await $`rm dist/cli.js`;
+
+// Emit declarations
+const { execSync } = await import("node:child_process");
+execSync("tsc -p tsconfig.build.json --emitDeclarationOnly", { stdio: "inherit" });
+
+// Tsc strips /// <reference types="node" /> — prepend it so consumers
+// Without their own @types/node can resolve node:* imports
+const nodeDts = "./dist/config/node.d.ts";
+const dtsContent = await Bun.file(nodeDts).text();
+const directive = '/// <reference types="node" />\n';
+if (!dtsContent.startsWith(directive)) {
+  await Bun.write(nodeDts, directive + dtsContent);
+}

@@ -1,9 +1,5 @@
-import type child_process from "node:child_process";
-import type fs from "node:fs";
-import type os from "node:os";
-import type path from "node:path";
-import type nodeProcess from "node:process";
-import type url from "node:url";
+import type { NodeModules } from "./node.js";
+export type { NodeModules } from "./node.js";
 
 // === Commands ===
 export type Command = string | (() => string);
@@ -140,16 +136,6 @@ export interface ProjectConfig {
   tasks?: Record<string, TaskConfig>;
   layout?: LayoutNode;
   hooks?: HooksConfig;
-}
-
-// === Node Modules ===
-export interface NodeModules {
-  path: typeof path;
-  fs: typeof fs;
-  process: typeof nodeProcess;
-  url: typeof url;
-  os: typeof os;
-  child_process: typeof child_process;
 }
 
 // === Library ===
