@@ -64,6 +64,7 @@ const result = await Bun.build({
   outdir: "./dist",
   naming: "cli.js",
   plugins: [tlaFixPlugin],
+  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
 });
 
 if (!result.success) {

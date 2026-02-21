@@ -8,21 +8,24 @@
 type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
 ```
 
-| Form | Description |
-|---|---|
-| `Record<string, string>` | Static key-value pairs, resolved immediately |
+| Form                              | Description                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------- |
+| `Record<string, string>`          | Static key-value pairs, resolved immediately                                 |
 | `(ctx) => Record<string, string>` | Dynamic function, called at service start time with current `ServiceContext` |
 
 ## ServiceContext Shape
 
 ```ts
 interface ServiceContext {
-  services: Record<string, {
-    port: number | undefined;     // First detected port (shorthand)
-    ports: number[];              // All detected ports
-    cwd: string | undefined;      // Always `undefined` in current implementation
-  }>;
-  projectDir: string;             // Resolved project root
+  services: Record<
+    string,
+    {
+      port: number | undefined; // First detected port (shorthand)
+      ports: number[]; // All detected ports
+      cwd: string | undefined; // Always `undefined` in current implementation
+    }
+  >;
+  projectDir: string; // Resolved project root
 }
 ```
 

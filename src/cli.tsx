@@ -27,6 +27,8 @@ import {
   showEnv,
 } from "./lib/tmux.js";
 
+declare const __BUILD_TIME__: string;
+
 function isPaneMap(value: unknown): value is Record<string, string> {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -64,7 +66,12 @@ function resolveRuntime(): string {
   return "source";
 }
 
-program.name("zaps").version(`0.1.0 (${resolveRuntime()})`).description("Terminal session manager");
+program
+  .name("zaps")
+  .version(
+    `0.1.0 (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}`,
+  )
+  .description("Terminal session manager");
 
 /**
  * Build real ServiceManagerDeps from the actual tmux/port modules.
@@ -123,8 +130,9 @@ program
     const tuiPaneId = paneMap["@tui"];
 
     // Launch inner process in @tui pane
-    // Shell runs command, then `exit` closes the pane after process finishes
-    await sendKeys(tuiPaneId, `${resolveCommand()} ui --start; exit`);
+    // Only append `; exit` for split panes — keep the user's origin pane alive
+    const suffix = tuiPaneId === originPane ? "" : "; exit";
+    await sendKeys(tuiPaneId, `${resolveCommand()} ui --start${suffix}`);
   });
 
 program
@@ -162,12 +170,6 @@ program
     const { ServiceManager } = await import("./lib/service/manager.js");
     const manager = new ServiceManager(config, paneMap, deps, sessionName);
 
-    // Start services (only when launched via `zaps dev`)
-    if (opts.start) {
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void manager.startAll();
-    }
-
     // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
     // Ensure yoga-wasm is loaded before Ink creates layout nodes.
     // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
@@ -176,13 +178,22 @@ program
     // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Build plugin exposes __yogaReady on Proxy
     await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
 
+    // Enter alternate screen buffer (like vim/htop) so TUI output doesn't linger after exit
+    process.stdout.write("\x1b[?1049h");
+
     const { render } = await import("ink");
     const { App } = await import("./components/App.js");
-    const { waitUntilExit } = render(<App manager={manager} config={config} paneMap={paneMap} />, {
-      patchConsole: false,
-    });
+    const { waitUntilExit } = render(
+      <App manager={manager} config={config} paneMap={paneMap} autoStart={Boolean(opts.start)} />,
+      {
+        patchConsole: false,
+      },
+    );
 
     await waitUntilExit();
+
+    // Leave alternate screen buffer — restores original terminal content
+    process.stdout.write("\x1b[?1049l");
 
     // Cleanup — stopAll is idempotent, and it fires onStop hook internally
     await manager.stopAll();

@@ -95,6 +95,7 @@ const serviceConfigBaseSchema = z.object({
       backoff: z.optional(z.number()),
     }),
   ),
+  onBeforeStart: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onReady: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStop: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onOutput: z.optional(
@@ -188,14 +189,9 @@ const layoutNodeSchema = z.union([layoutLeafSchema, layoutSplitSchema]);
 
 // === Hooks ===
 const hooksConfigSchema = z.object({
+  onBeforeStart: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStart: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStop: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
-  onServiceStart: z.optional(
-    z.custom<(serviceName: string) => void | Promise<void>>((v) => typeof v === "function"),
-  ),
-  onServiceStop: z.optional(
-    z.custom<(serviceName: string) => void | Promise<void>>((v) => typeof v === "function"),
-  ),
 });
 
 // === Cwd Config ===

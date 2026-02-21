@@ -1,6 +1,6 @@
 export interface TaskRunRecord {
   taskKey: string;
   taskName: string;
-  result: "success" | "error";
+  result: "success" | "error" | "running";
   timestamp: number;
 }

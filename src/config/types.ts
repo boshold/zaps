@@ -66,6 +66,7 @@ export interface ServiceConfig {
   url?: string | false | ((ctx: ServiceContext) => string);
   cwd?: string;
   restart?: { maxRetries?: number; backoff?: number };
+  onBeforeStart?: () => void | Promise<void>;
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onOutput?: (line: string) => void | Promise<void>;
@@ -113,10 +114,9 @@ export type LayoutNode = LayoutLeaf | LayoutSplit;
 
 // === Hooks ===
 export interface HooksConfig {
+  onBeforeStart?: () => void | Promise<void>;
   onStart?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
-  onServiceStart?: (serviceName: string) => void | Promise<void>;
-  onServiceStop?: (serviceName: string) => void | Promise<void>;
 }
 
 // === Cwd Context ===

@@ -147,6 +147,7 @@ export class ServiceManager extends EventEmitter {
         if (!tasks[key]) {
           throw new Error(`Unknown task: ${key}`);
         }
+        this.emit("taskStart", key, tasks[key]?.name ?? key);
         const visited = new Set<string>();
         const results = new Map<string, "success" | "error">();
         const ok = await runTaskWithDeps(
@@ -179,6 +180,8 @@ export class ServiceManager extends EventEmitter {
    */
   async startAll(): Promise<void> {
     const { services, hooks } = this.config.project;
+
+    await fireHook(hooks?.onBeforeStart);
 
     // Filter to autostart services
     const autostartServices: Record<string, { dependsOn?: string[] }> = {};
@@ -270,6 +273,14 @@ export class ServiceManager extends EventEmitter {
     status.state = transition(status.state, "starting");
     this.emit("stateChange", name, status);
 
+    // Fire per-service onBeforeStart hook
+    try {
+      await serviceConfig.onBeforeStart?.();
+    } catch (error) {
+      status.lastError = `onBeforeStart hook failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.emit("stateChange", name, status);
+    }
+
     // Resolve env
     const ctx = buildServiceContext(this.statuses, this.config.projectDir);
     const env = resolveEnv(serviceConfig.env, ctx);
@@ -320,8 +331,6 @@ export class ServiceManager extends EventEmitter {
     ports: number[],
     ctx: ServiceContext,
   ): Promise<void> {
-    const { hooks } = this.config.project;
-
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
     if (explicitUrl === false || serviceConfig.docker) {
       // Url: false OR docker service — skip probing
@@ -337,8 +346,6 @@ export class ServiceManager extends EventEmitter {
 
     await tryAutoOpen(serviceConfig, name, status.url, this.autoOpened);
     this.emit("stateChange", name, status);
-
-    await fireHook(hooks?.onServiceStart, name);
 
     try {
       await serviceConfig.onReady?.();
@@ -366,7 +373,6 @@ export class ServiceManager extends EventEmitter {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
-    const { hooks } = this.config.project;
 
     if (!paneTarget || !status) {
       throw new Error(`Unknown service: ${name}`);
@@ -423,8 +429,6 @@ export class ServiceManager extends EventEmitter {
     delete status.readySince;
     delete status.url;
     this.emit("stateChange", name, status);
-
-    await fireHook(hooks?.onServiceStop, name);
 
     try {
       await serviceConfig.onStop?.();

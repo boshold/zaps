@@ -67,6 +67,13 @@ export function TasksView({
     const visited = new Set<string>();
     const results = new Map<string, "success" | "error">();
 
+    onTaskComplete({
+      taskKey,
+      taskName: allTasks[taskKey]?.name ?? taskKey,
+      result: "running",
+      timestamp: Date.now(),
+    });
+
     await runTaskWithDeps(
       taskKey,
       {

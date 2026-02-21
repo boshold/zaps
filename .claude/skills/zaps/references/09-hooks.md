@@ -4,19 +4,17 @@
 
 Defined on `ProjectConfig.hooks`:
 
-| Hook | Signature | When |
-|---|---|---|
-| `onStart` | `() => void \| Promise<void>` | All autostart services are ready |
-| `onStop` | `() => void \| Promise<void>` | All services have stopped |
-| `onServiceStart` | `(name: string) => void \| Promise<void>` | A service reaches ready state |
-| `onServiceStop` | `(name: string) => void \| Promise<void>` | A service stops |
+| Hook            | Signature                     | When                             |
+| --------------- | ----------------------------- | -------------------------------- |
+| `onBeforeStart` | `() => void \| Promise<void>` | Before any service starts        |
+| `onStart`       | `() => void \| Promise<void>` | All autostart services are ready |
+| `onStop`        | `() => void \| Promise<void>` | All services have stopped        |
 
 ```ts
 hooks: {
+  onBeforeStart: () => console.log("Setting up"),
   onStart: () => console.log("All services ready"),
   onStop: () => console.log("Shutting down"),
-  onServiceStart: (name) => console.log(`${name} started`),
-  onServiceStop: (name) => console.log(`${name} stopped`),
 }
 ```
 
@@ -24,17 +22,19 @@ hooks: {
 
 Defined directly on `ServiceConfig`:
 
-| Hook | Signature | When |
-|---|---|---|
-| `onReady` | `() => void \| Promise<void>` | Service reaches ready state |
-| `onStop` | `() => void \| Promise<void>` | Service stops |
-| `onOutput` | `(line: string) => void \| Promise<void>` | New output line detected in tmux pane |
+| Hook            | Signature                                 | When                                  |
+| --------------- | ----------------------------------------- | ------------------------------------- |
+| `onBeforeStart` | `() => void \| Promise<void>`             | Before service command is sent        |
+| `onReady`       | `() => void \| Promise<void>`             | Service reaches ready state           |
+| `onStop`        | `() => void \| Promise<void>`             | Service stops                         |
+| `onOutput`      | `(line: string) => void \| Promise<void>` | New output line detected in tmux pane |
 
 ```ts
 services: {
   api: {
     start: "node server.js",
     ready: { port: 3000 },
+    onBeforeStart: () => console.log("Preparing API"),
     onReady: () => console.log("API ready"),
     onStop: () => console.log("API stopped"),
     onOutput: (line) => {
@@ -48,30 +48,31 @@ services: {
 
 **Startup** (services start in topological order by dependency levels):
 
-1. Service becomes ready
-2. Project `hooks.onServiceStart(name)` fires
-3. Per-service `onReady()` fires
-4. After **all** autostart services are ready -> project `hooks.onStart()` fires
+1. Global `hooks.onBeforeStart()` fires (once)
+2. Per-service `onBeforeStart()` fires
+3. Service command is sent to pane
+4. Service becomes ready
+5. Per-service `onReady()` fires
+6. After **all** autostart services are ready -> global `hooks.onStart()` fires
 
 **Shutdown** (services stop in reverse topological order):
 
 1. Service stops
-2. Project `hooks.onServiceStop(name)` fires
-3. Per-service `onStop()` fires
-4. After **all** services stopped -> project `hooks.onStop()` fires
+2. Per-service `onStop()` fires
+3. After **all** services stopped -> global `hooks.onStop()` fires
 
 ## Library Actions in Hooks
 
 The `Library` object destructured in `config()` provides runtime actions usable inside hooks:
 
-| Method | Signature | Description |
-|---|---|---|
-| `runTask` | `(key: string) => Promise<void>` | Run a defined task by key |
-| `startService` | `(name: string) => Promise<void>` | Start a service |
-| `restartService` | `(name: string) => Promise<void>` | Restart a service |
-| `stopService` | `(name: string) => Promise<void>` | Stop a service |
-| `isServiceRunning` | `(name: string) => boolean` | Check if a service is running |
-| `openInBrowser` | `(url: string) => Promise<void>` | Open URL in default browser |
+| Method             | Signature                         | Description                   |
+| ------------------ | --------------------------------- | ----------------------------- |
+| `runTask`          | `(key: string) => Promise<void>`  | Run a defined task by key     |
+| `startService`     | `(name: string) => Promise<void>` | Start a service               |
+| `restartService`   | `(name: string) => Promise<void>` | Restart a service             |
+| `stopService`      | `(name: string) => Promise<void>` | Stop a service                |
+| `isServiceRunning` | `(name: string) => boolean`       | Check if a service is running |
+| `openInBrowser`    | `(url: string) => Promise<void>`  | Open URL in default browser   |
 
 ```ts
 export function config({ defineProject, runTask, startService, openInBrowser }: Library) {
@@ -126,7 +127,13 @@ services: {
 ## Cross-Service Orchestration Example
 
 ```ts
-export function config({ defineProject, runTask, restartService, isServiceRunning, openInBrowser }: Library) {
+export function config({
+  defineProject,
+  runTask,
+  restartService,
+  isServiceRunning,
+  openInBrowser,
+}: Library) {
   return defineProject({
     services: {
       db: {
@@ -155,8 +162,6 @@ export function config({ defineProject, runTask, restartService, isServiceRunnin
     },
     hooks: {
       onStart: () => openInBrowser("http://localhost:3000"),
-      onServiceStart: (name) => console.log(`[zaps] ${name} started`),
-      onServiceStop: (name) => console.log(`[zaps] ${name} stopped`),
     },
   });
 }

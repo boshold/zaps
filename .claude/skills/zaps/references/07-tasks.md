@@ -2,17 +2,17 @@
 
 ## Options
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `name` | `string` | — | Display name shown in TUI |
-| `description` | `string` | — | Optional description |
-| `commands` | `Command \| Command[]` | — | Shell command(s) to execute |
-| `run` | `(ctx: TaskRunContext) => Promise<void>` | — | Programmatic task function |
-| `popup` | `boolean \| { width?: string; height?: string }` | — | Run commands in a tmux popup |
-| `shortcut` | `string` | — | Single key to trigger the task from TUI |
-| `dependsOn` | `string[]` | — | Task keys that must complete first |
-| `cwd` | `string` | — | Working directory for the task |
-| `env` | `EnvConfig` | — | Environment variables |
+| Field         | Type                                             | Default | Description                             |
+| ------------- | ------------------------------------------------ | ------- | --------------------------------------- |
+| `name`        | `string`                                         | —       | Display name shown in TUI               |
+| `description` | `string`                                         | —       | Optional description                    |
+| `commands`    | `Command \| Command[]`                           | —       | Shell command(s) to execute             |
+| `run`         | `(ctx: TaskRunContext) => Promise<void>`         | —       | Programmatic task function              |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run commands in a tmux popup            |
+| `shortcut`    | `string`                                         | —       | Single key to trigger the task from TUI |
+| `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first      |
+| `cwd`         | `string`                                         | —       | Working directory for the task          |
+| `env`         | `EnvConfig`                                      | —       | Environment variables                   |
 
 **Required**: Every task must have exactly one of `commands` or `run` — not both.
 
@@ -29,28 +29,25 @@ These are **mutually exclusive**. Validation rejects configs with both.
 
 ```ts
 // Single string
-commands: "npm run seed"
+commands: "npm run seed";
 
 // Function (resolved at run time)
-commands: () => `node seed.js --env=${process.env.NODE_ENV}`
+commands: () => `node seed.js --env=${process.env.NODE_ENV}`;
 
 // Array — executed sequentially, stops on failure
-commands: [
-  "node -e \"console.log('migrating...')\"",
-  "node -e \"console.log('done!')\"",
-]
+commands: ["node -e \"console.log('migrating...')\"", "node -e \"console.log('done!')\""];
 ```
 
 ## Programmatic Tasks — TaskRunContext
 
 Tasks with `run` receive a context object:
 
-| Property | Type | Description |
-|---|---|---|
-| `exec` | `(cmd, opts?) => Promise<ExecResult>` | Execute a shell command |
-| `stdout` | `{ write(text: string): void }` | Write directly to task output |
-| `services` | `ServiceContext` | Access running services |
-| `projectDir` | `string` | Resolved project directory |
+| Property     | Type                                  | Description                   |
+| ------------ | ------------------------------------- | ----------------------------- |
+| `exec`       | `(cmd, opts?) => Promise<ExecResult>` | Execute a shell command       |
+| `stdout`     | `{ write(text: string): void }`       | Write directly to task output |
+| `services`   | `ServiceContext`                      | Access running services       |
+| `projectDir` | `string`                              | Resolved project directory    |
 
 `exec` options: `{ cwd?: string; env?: Record<string, string> }`
 
@@ -76,9 +73,9 @@ tasks: {
 
 `popup` runs commands in a tmux popup window instead of inline. **Only works with `commands`** — validation rejects `popup` with `run`.
 
-| Value | Behavior |
-|---|---|
-| `true` | Popup with default dimensions (80% x 80%) |
+| Value               | Behavior                                  |
+| ------------------- | ----------------------------------------- |
+| `true`              | Popup with default dimensions (80% x 80%) |
 | `{ width, height }` | Custom dimensions (e.g. `"60%"`, `"40%"`) |
 
 After all commands finish, the popup shows "Press Enter to close..." before dismissing.

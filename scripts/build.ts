@@ -7,4 +7,5 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
+  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
 });

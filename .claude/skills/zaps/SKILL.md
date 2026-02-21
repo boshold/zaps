@@ -1,8 +1,14 @@
+---
+name: zaps
+description: Use when working on ZAPS config files (.zaps.mts/.zaps.ts/local.zaps.ts) - provides service definitions, ready detection, docker integration, tasks, layout, hooks, dependencies, and environment configuration.
+---
+
 # ZAPS Configuration Skill
 
 ## Trigger
 
 Activate this skill when the user:
+
 - Asks to create or edit a `.zaps.mts` or `.zaps.ts` config file
 - Asks about ZAPS configuration options or patterns
 - Wants to add services, tasks, layout, hooks, or docker to a ZAPS project
@@ -13,17 +19,17 @@ Activate this skill when the user:
 
 **Read the relevant reference file(s) before answering or writing config.**
 
-| File | Topic |
-|------|-------|
-| `references/01-getting-started.md` | Config discovery, file structure, Library API, scaffolding |
-| `references/02-services.md` | ServiceConfig: start/run/stop, cwd, detached, flags, url, restart |
-| `references/03-ready-detection.md` | 5 mechanisms: port, output, docker, http, custom function |
-| `references/04-docker.md` | DockerConfig for docker-compose integration |
-| `references/05-environment.md` | Static/dynamic env, ServiceContext |
-| `references/06-dependencies.md` | dependsOn, topological sort, startup/stop order |
-| `references/07-tasks.md` | TaskConfig: commands vs run, popup, shortcuts, TaskRunContext |
-| `references/08-layout.md` | LayoutNode tree: rows/columns, @tui pane, size/focus |
-| `references/09-hooks.md` | Project + per-service hooks, library actions |
+| File                               | Topic                                                             |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `references/01-getting-started.md` | Config discovery, file structure, Library API, scaffolding        |
+| `references/02-services.md`        | ServiceConfig: start/run/stop, cwd, detached, flags, url, restart |
+| `references/03-ready-detection.md` | 5 mechanisms: port, output, docker, http, custom function         |
+| `references/04-docker.md`          | DockerConfig for docker-compose integration                       |
+| `references/05-environment.md`     | Static/dynamic env, ServiceContext                                |
+| `references/06-dependencies.md`    | dependsOn, topological sort, startup/stop order                   |
+| `references/07-tasks.md`           | TaskConfig: commands vs run, popup, shortcuts, TaskRunContext     |
+| `references/08-layout.md`          | LayoutNode tree: rows/columns, @tui pane, size/focus              |
+| `references/09-hooks.md`           | Project + per-service hooks, library actions                      |
 
 ## Config Skeleton
 
@@ -55,6 +61,7 @@ export function config({ defineProject }: Library) {
 ## Quick Reference
 
 ### Basic service with port ready
+
 ```ts
 services: {
   api: {
@@ -66,6 +73,7 @@ services: {
 ```
 
 ### Service with dependencies
+
 ```ts
 services: {
   db: {
@@ -80,6 +88,7 @@ services: {
 ```
 
 ### Docker service
+
 ```ts
 services: {
   redis: {
@@ -90,6 +99,7 @@ services: {
 ```
 
 ### Task with shortcut
+
 ```ts
 tasks: {
   seed: {
@@ -101,6 +111,7 @@ tasks: {
 ```
 
 ### Custom layout
+
 ```ts
 layout: {
   direction: "columns",
@@ -118,10 +129,13 @@ layout: {
 ```
 
 ### Hook that triggers a task
+
 ```ts
 export function config({ defineProject, runTask }: Library) {
   return defineProject({
-    services: { /* ... */ },
+    services: {
+      /* ... */
+    },
     hooks: {
       onStart: () => runTask("setup"),
     },

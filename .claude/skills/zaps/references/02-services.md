@@ -2,23 +2,23 @@
 
 ## Options
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `start` | `string \| () => string` | — | Long-running process command (server) |
-| `run` | `string \| () => string` | — | One-shot command |
-| `stop` | `string \| () => string` | — | Custom stop command |
-| `cwd` | `string` | — | Working directory for the service |
-| `detached` | `boolean` | `false` | Run outside tmux layout (hidden pane) |
-| `docker` | `DockerConfig` | — | Docker Compose config (see docker reference) |
-| `ready` | `ReadyConfig` | — | Ready detection (see ready reference) |
-| `dependsOn` | `string[]` | — | Services that must be ready first |
-| `env` | `EnvConfig` | — | Environment variables |
-| `flags` | `ServiceFlags` | — | `{ start?: boolean, open?: boolean }` |
-| `url` | `string \| false \| (ctx) => string` | auto-detect | URL for the service |
-| `restart` | `{ maxRetries?, backoff? }` | — | Restart policy with exponential backoff |
-| `onReady` | `() => void \| Promise<void>` | — | Hook: service reached ready state |
-| `onStop` | `() => void \| Promise<void>` | — | Hook: service stopped |
-| `onOutput` | `(line: string) => void \| Promise<void>` | — | Hook: new output line from tmux pane |
+| Field       | Type                                      | Default     | Description                                  |
+| ----------- | ----------------------------------------- | ----------- | -------------------------------------------- |
+| `start`     | `string \| () => string`                  | —           | Long-running process command (server)        |
+| `run`       | `string \| () => string`                  | —           | One-shot command                             |
+| `stop`      | `string \| () => string`                  | —           | Custom stop command                          |
+| `cwd`       | `string`                                  | —           | Working directory for the service            |
+| `detached`  | `boolean`                                 | `false`     | Run outside tmux layout (hidden pane)        |
+| `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference) |
+| `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)        |
+| `dependsOn` | `string[]`                                | —           | Services that must be ready first            |
+| `env`       | `EnvConfig`                               | —           | Environment variables                        |
+| `flags`     | `ServiceFlags`                            | —           | `{ start?: boolean, open?: boolean }`        |
+| `url`       | `string \| false \| (ctx) => string`      | auto-detect | URL for the service                          |
+| `restart`   | `{ maxRetries?, backoff? }`               | —           | Restart policy with exponential backoff      |
+| `onReady`   | `() => void \| Promise<void>`             | —           | Hook: service reached ready state            |
+| `onStop`    | `() => void \| Promise<void>`             | —           | Hook: service stopped                        |
+| `onOutput`  | `(line: string) => void \| Promise<void>` | —           | Hook: new output line from tmux pane         |
 
 **Required**: Every service must have at least one of `start`, `run`, or `docker`.
 
@@ -32,10 +32,10 @@ Priority order:
 
 ```ts
 // String command
-start: "npm run dev"
+start: "npm run dev";
 
 // Function command (resolved at start time)
-start: () => `node server.js --port=${getPort()}`
+start: () => `node server.js --port=${getPort()}`;
 ```
 
 ### start vs run
@@ -71,32 +71,32 @@ flags: {
 
 ## URL Resolution
 
-| Value | Behavior |
-|---|---|
-| *(omitted)* | Auto-detected from listening ports |
-| `string` | Explicit URL |
-| `false` | Disable URL detection entirely |
-| `(ctx) => string` | Dynamic URL from `ServiceContext` |
+| Value             | Behavior                           |
+| ----------------- | ---------------------------------- |
+| _(omitted)_       | Auto-detected from listening ports |
+| `string`          | Explicit URL                       |
+| `false`           | Disable URL detection entirely     |
+| `(ctx) => string` | Dynamic URL from `ServiceContext`  |
 
 ```ts
 // Explicit
-url: "http://localhost:3000"
+url: "http://localhost:3000";
 
 // Disabled
-url: false
+url: false;
 
 // Dynamic
-url: (ctx) => `http://localhost:${ctx.port}/admin`
+url: (ctx) => `http://localhost:${ctx.port}/admin`;
 ```
 
 ## Restart Policy
 
 Crashed services restart with exponential backoff.
 
-| Option | Default | Description |
-|---|---|---|
-| `maxRetries` | `3` | Maximum restart attempts |
-| `backoff` | `1000` | Initial backoff in ms, doubles each retry |
+| Option       | Default | Description                               |
+| ------------ | ------- | ----------------------------------------- |
+| `maxRetries` | `3`     | Maximum restart attempts                  |
+| `backoff`    | `1000`  | Initial backoff in ms, doubles each retry |
 
 Backoff sequence (default): 1s, 2s, 4s, then gives up.
 

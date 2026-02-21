@@ -10,12 +10,13 @@ interface AppProps {
   manager: ServiceManager;
   config: ResolvedConfig;
   paneMap: PaneMap;
+  autoStart?: boolean;
 }
 
-export function App({ manager, config, paneMap }: AppProps) {
+export function App({ manager, config, paneMap, autoStart }: AppProps) {
   return (
     <AppProvider manager={manager} config={config} paneMap={paneMap}>
-      <Router />
+      <Router autoStart={autoStart} />
     </AppProvider>
   );
 }

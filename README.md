@@ -170,10 +170,9 @@ export function config({ defineProject }: Library) {
     },
 
     hooks: {
+      onBeforeStart: () => console.log("Running setup"),
       onStart: () => console.log("All services started"),
       onStop: () => console.log("Shutting down"),
-      onServiceStart: (name) => console.log(`${name} is ready`),
-      onServiceStop: (name) => console.log(`${name} stopped`),
     },
   });
 }
@@ -214,23 +213,24 @@ cwd: ({ invokeDir }) => invokeDir; // already the default
 
 ### Options
 
-| Option      | Type                                        | Default | Description                                                                      |
-| ----------- | ------------------------------------------- | ------- | -------------------------------------------------------------------------------- |
-| `start`     | `string \| () => string`                    | —       | Command to start the service                                                     |
-| `run`       | `string \| () => string`                    | —       | Alias for `start`                                                                |
-| `stop`      | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                            |
-| `docker`    | `DockerConfig`                              | —       | Docker Compose service config                                                    |
-| `ready`     | `ReadyConfig`                               | —       | How to detect the service is ready                                               |
-| `dependsOn` | `string[]`                                  | `[]`    | Services that must be ready first                                                |
-| `env`       | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                            |
-| `cwd`       | `string`                                    | —       | Working directory                                                                |
-| `url`       | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                   |
-| `flags`     | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
-| `detached`  | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
-| `restart`   | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
-| `onReady`   | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
-| `onStop`    | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
-| `onOutput`  | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
+| Option          | Type                                        | Default | Description                                                                      |
+| --------------- | ------------------------------------------- | ------- | -------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                    | —       | Command to start the service                                                     |
+| `run`           | `string \| () => string`                    | —       | Alias for `start`                                                                |
+| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                            |
+| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                    |
+| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                               |
+| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                |
+| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                            |
+| `cwd`           | `string`                                    | —       | Working directory                                                                |
+| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                   |
+| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
+| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
+| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
+| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                  |
+| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
+| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
+| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
 
 ### Ready Detection
 
@@ -554,10 +554,9 @@ Lifecycle hooks for custom logic at the project level:
 
 ```typescript
 hooks: {
+  onBeforeStart: async () => { /* runs once before any service starts */ },
   onStart: async () => { /* all services started */ },
   onStop: async () => { /* cleanup before exit */ },
-  onServiceStart: async (name) => { /* individual service ready */ },
-  onServiceStop: async (name) => { /* individual service stopped */ },
 }
 ```
 
@@ -569,6 +568,7 @@ Services also support their own hooks for service-specific logic:
 services: {
   api: {
     start: "npm run dev",
+    onBeforeStart: () => console.log("Setting up API"),
     onReady: () => console.log("API is up"),
     onStop: () => console.log("API stopped"),
     onOutput: (line) => {

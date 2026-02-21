@@ -131,7 +131,7 @@ function handleTasksInput(
   }
 }
 
-export function Router() {
+export function Router({ autoStart }: { autoStart?: boolean }) {
   const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
   const { manager, paneMap, config } = useZaps();
   const statuses = useServices(manager);
@@ -162,19 +162,46 @@ export function Router() {
   const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>([]);
 
   function onTaskComplete(record: TaskRunRecord) {
-    setTaskHistory((prev) => [record, ...prev].slice(0, MAX_HISTORY));
+    setTaskHistory((prev) => {
+      if (record.result === "running") {
+        return [record, ...prev].slice(0, MAX_HISTORY);
+      }
+      // Replace matching running entry, or prepend if not found
+      const runningIdx = prev.findIndex(
+        (r) => r.taskKey === record.taskKey && r.result === "running",
+      );
+      if (runningIdx !== -1) {
+        const next = [...prev];
+        next[runningIdx] = record;
+        return next;
+      }
+      return [record, ...prev].slice(0, MAX_HISTORY);
+    });
   }
 
-  // Subscribe to hook-triggered task completions from ServiceManager
+  // Subscribe to hook-triggered task start/completions from ServiceManager
   useEffect(() => {
+    function handleTaskStart(taskKey: string, taskName: string) {
+      onTaskComplete({ taskKey, taskName, result: "running", timestamp: Date.now() });
+    }
     function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
       onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
     }
+    manager.on("taskStart", handleTaskStart);
     manager.on("taskComplete", handleTaskComplete);
     return () => {
+      manager.off("taskStart", handleTaskStart);
       manager.off("taskComplete", handleTaskComplete);
     };
   }, [manager]);
+
+  // Trigger startAll after event listeners are attached (declared after subscription useEffect)
+  useEffect(() => {
+    if (autoStart) {
+      // eslint-disable-next-line no-void -- Fire-and-forget promise
+      void manager.startAll();
+    }
+  }, [autoStart, manager]);
 
   // Precompute task shortcuts
   const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});

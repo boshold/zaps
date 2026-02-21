@@ -496,30 +496,6 @@ describe("stopService", () => {
 
     killSpy.mockRestore();
   });
-
-  it("calls hooks.onServiceStop", async () => {
-    const onServiceStop = vi.fn();
-    const config = makeConfig({ svc: { start: "start-svc" } }, { onServiceStop });
-    const paneMap = makePaneMap(["svc"]);
-    const deps = createMockDeps();
-    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
-
-    // Start
-    const startPromise = mgr.startService("svc");
-    await vi.advanceTimersByTimeAsync(2000);
-    await startPromise;
-
-    // Make process exit cleanly
-    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
-
-    const stopPromise = mgr.stopService("svc");
-    await vi.advanceTimersByTimeAsync(6000);
-    await stopPromise;
-
-    expect(onServiceStop).toHaveBeenCalledWith("svc");
-  });
 });
 
 // =============================================================================
@@ -1231,6 +1207,48 @@ describe("getStatus / getAllStatuses", () => {
 // =============================================================================
 
 describe("per-service hooks", () => {
+  it("fires onBeforeStart before command is sent", async () => {
+    const callOrder: string[] = [];
+    const onBeforeStart = vi.fn(() => {
+      callOrder.push("onBeforeStart");
+    });
+    const config = makeConfig({
+      svc: { start: "start-svc", onBeforeStart },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.sendKeys = vi.fn(async () => {
+      callOrder.push("sendKeys");
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(onBeforeStart).toHaveBeenCalledTimes(1);
+    expect(callOrder.indexOf("onBeforeStart")).toBeLessThan(callOrder.indexOf("sendKeys"));
+  });
+
+  it("catches onBeforeStart errors without failing the service", async () => {
+    const onBeforeStart = vi.fn().mockRejectedValue(new Error("hook failed"));
+    const config = makeConfig({
+      svc: { start: "start-svc", onBeforeStart },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+    expect(mgr.getStatus("svc").lastError).toContain("onBeforeStart hook failed");
+  });
+
   it("fires onReady after service becomes ready", async () => {
     const onReady = vi.fn();
     const config = makeConfig({
@@ -1364,6 +1382,10 @@ describe("bindActions", () => {
       throw new Error("bindActions was not called");
     }
 
+    const startEvents: { taskKey: string; taskName: string }[] = [];
+    mgr.on("taskStart", (taskKey: string, taskName: string) => {
+      startEvents.push({ taskKey, taskName });
+    });
     const events: { taskKey: string; taskName: string; result: string }[] = [];
     mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
       events.push({ taskKey, taskName, result });
@@ -1371,6 +1393,7 @@ describe("bindActions", () => {
 
     await capturedActions.runTask("migrate");
 
+    expect(startEvents).toEqual([{ taskKey: "migrate", taskName: "Run migrations" }]);
     expect(events).toEqual([{ taskKey: "migrate", taskName: "Run migrations", result: "success" }]);
   });
 
@@ -1400,6 +1423,10 @@ describe("bindActions", () => {
       throw new Error("bindActions was not called");
     }
 
+    const startEvents: { taskKey: string; taskName: string }[] = [];
+    mgr.on("taskStart", (taskKey: string, taskName: string) => {
+      startEvents.push({ taskKey, taskName });
+    });
     const events: { taskKey: string; taskName: string; result: string }[] = [];
     mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
       events.push({ taskKey, taskName, result });
@@ -1407,6 +1434,7 @@ describe("bindActions", () => {
 
     await expect(capturedActions.runTask("broken")).rejects.toThrow("Task 'broken' failed");
 
+    expect(startEvents).toEqual([{ taskKey: "broken", taskName: "Broken task" }]);
     expect(events).toEqual([{ taskKey: "broken", taskName: "Broken task", result: "error" }]);
   });
 

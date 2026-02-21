@@ -26,11 +26,11 @@ Kahn's algorithm groups services into **levels** — services within the same le
 
 Given the example above:
 
-| Level | Services | Behavior |
-|---|---|---|
-| 0 | `db` | No deps, starts first |
-| 1 | `api` | Waits for `db` to be **ready** |
-| 2 | `frontend` | Waits for `api` to be **ready** |
+| Level | Services   | Behavior                        |
+| ----- | ---------- | ------------------------------- |
+| 0     | `db`       | No deps, starts first           |
+| 1     | `api`      | Waits for `db` to be **ready**  |
+| 2     | `frontend` | Waits for `api` to be **ready** |
 
 Services with independent dependency chains start in parallel:
 

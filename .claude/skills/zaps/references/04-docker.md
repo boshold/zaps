@@ -4,16 +4,16 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 
 ## DockerConfig Options
 
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `service` | `string` | **required** | Docker Compose service name |
-| `file` | `string` | `undefined` | Custom compose file (`-f`) |
-| `build` | `boolean` | `false` | Build images before starting (`--build`) |
-| `forceRecreate` | `boolean` | `false` | Recreate containers (`--force-recreate`) |
-| `renewVolumes` | `boolean` | `false` | Recreate anonymous volumes (`-V`) |
-| `removeOrphans` | `boolean` | `false` | Remove orphan containers (`--remove-orphans`) |
-| `pull` | `"always" \| "missing" \| "never"` | `undefined` | Image pull policy (`--pull`) |
-| `noDeps` | `boolean` | `false` | Skip dependency services (`--no-deps`) |
+| Option          | Type                               | Default      | Description                                   |
+| --------------- | ---------------------------------- | ------------ | --------------------------------------------- |
+| `service`       | `string`                           | **required** | Docker Compose service name                   |
+| `file`          | `string`                           | `undefined`  | Custom compose file (`-f`)                    |
+| `build`         | `boolean`                          | `false`      | Build images before starting (`--build`)      |
+| `forceRecreate` | `boolean`                          | `false`      | Recreate containers (`--force-recreate`)      |
+| `renewVolumes`  | `boolean`                          | `false`      | Recreate anonymous volumes (`-V`)             |
+| `removeOrphans` | `boolean`                          | `false`      | Remove orphan containers (`--remove-orphans`) |
+| `pull`          | `"always" \| "missing" \| "never"` | `undefined`  | Image pull policy (`--pull`)                  |
+| `noDeps`        | `boolean`                          | `false`      | Skip dependency services (`--no-deps`)        |
 
 ## Command Generation
 
@@ -46,7 +46,9 @@ If a service has `docker` config but **no explicit `ready`**, ZAPS auto-uses doc
 
 ```ts
 // Internally resolved as:
-ready: { docker: config.docker.service }
+ready: {
+  docker: config.docker.service;
+}
 ```
 
 The `file` from `DockerConfig` is passed through to the status check automatically.
@@ -56,6 +58,7 @@ The `file` from `DockerConfig` is passed through to the status check automatical
 Docker ready detection polls `docker compose ps --format json <service>` every 500ms (60s timeout).
 
 A container is **ready** when both conditions are met:
+
 - `State === "running"`
 - `Health === ""` (no healthcheck defined) OR `Health === "healthy"`
 
