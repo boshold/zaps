@@ -26,6 +26,7 @@ export interface ServiceStatus {
   retryCount: number;
   lastError?: string;
   readySince?: number;
+  isDocker?: boolean;
 }
 
 // === Dependency injection interfaces ===

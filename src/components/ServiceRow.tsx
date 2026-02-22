@@ -55,7 +55,10 @@ export function ServiceRow({ status, isSelected }: ServiceRowProps) {
           {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(24)}
         </Text>
         <Text dimColor>
-          {(isSelected ? `[r]estart [s]top [l]ogs${status.url ? " [o]pen" : ""}` : "").padEnd(28)}
+          {(isSelected
+            ? `[r]estart [s]top [l]ogs${status.url ? " [o]pen" : ""}${status.isDocker ? " [R]ebuild" : ""}`
+            : ""
+          ).padEnd(28)}
         </Text>
       </Box>
       {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}

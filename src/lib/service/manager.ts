@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 
-import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
+import type { DockerConfig, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
@@ -141,8 +141,12 @@ export class ServiceManager extends EventEmitter {
     this.abortControllers = new Map<string, AbortController>();
 
     // Initialize statuses for all services
-    for (const name of Object.keys(config.project.services)) {
-      this.statuses.set(name, createServiceStatus(name));
+    for (const [name, svc] of Object.entries(config.project.services)) {
+      const status = createServiceStatus(name);
+      if (svc.docker) {
+        status.isDocker = true;
+      }
+      this.statuses.set(name, status);
     }
 
     this.on("stateChange", () => {
@@ -247,17 +251,20 @@ export class ServiceManager extends EventEmitter {
     }
 
     await fireHook(hooks?.onStop);
-    await this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle).catch(() => {
-      // Session may already be gone
-    });
 
-    // Restore automatic-rename AFTER renameWindow — rename-window implicitly
-    // Disables automatic-rename, so setting it before would be undone.
     const autoRename = await this.originalAutoRename;
     if (autoRename === "on") {
+      // When automatic-rename was originally on, just re-enable it — tmux
+      // Manages the title itself, so setting a static title is wrong.
       await this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on").catch(() => {
         // Session may already be gone
       });
+    } else {
+      await this.deps
+        .renameWindow(this.paneMap["@tui"], await this.originalWindowTitle)
+        .catch(() => {
+          // Session may already be gone
+        });
     }
     this.shuttingDown = false;
   }
@@ -484,6 +491,24 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Restart a docker service with temporary flag overrides.
+   */
+  async restartWithDockerOverrides(name: string, overrides: Partial<DockerConfig>): Promise<void> {
+    const serviceConfig = this.config.project.services[name];
+    if (!serviceConfig?.docker) {
+      throw new Error(`Service "${name}" is not a docker service`);
+    }
+
+    const original = { ...serviceConfig.docker };
+    Object.assign(serviceConfig.docker, overrides);
+    try {
+      await this.restartService(name);
+    } finally {
+      serviceConfig.docker = original;
+    }
+  }
+
+  /**
    * Get status for a single service.
    */
   getStatus(name: string): ServiceStatus {
@@ -626,7 +651,9 @@ export class ServiceManager extends EventEmitter {
   }
 
   private updateWindowTitle(): void {
-    if (this.shuttingDown) {return;}
+    if (this.shuttingDown) {
+      return;
+    }
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
       counts[status.state] = (counts[status.state] ?? 0) + 1;

@@ -1,3 +1,4 @@
+import type { DockerConfig } from "#src/config/types.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 
 export function useServiceActions(manager: ServiceManager) {
@@ -19,5 +20,9 @@ export function useServiceActions(manager: ServiceManager) {
     await manager.startAll();
   }
 
-  return { restart, toggle, restartAll };
+  async function rebuildDocker(name: string, overrides: Partial<DockerConfig>) {
+    await manager.restartWithDockerOverrides(name, overrides);
+  }
+
+  return { restart, toggle, restartAll, rebuildDocker };
 }

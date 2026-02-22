@@ -228,11 +228,15 @@ describe("stopAll", () => {
 
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
 
+    // Clear mocks so we only assert calls made during stopAll
+    vi.mocked(deps.renameWindow).mockClear();
+
     const stopPromise = mgr.stopAll();
     await vi.advanceTimersByTimeAsync(10_000);
     await stopPromise;
 
     expect(deps.setWindowOption).toHaveBeenCalledWith("%tui", "automatic-rename", "on");
+    expect(deps.renameWindow).not.toHaveBeenCalled();
   });
 
   it("does not restore automatic-rename when originally off", async () => {

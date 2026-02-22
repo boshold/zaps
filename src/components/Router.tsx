@@ -1,3 +1,4 @@
+import type { DockerConfig } from "#src/config/types.js";
 /* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
 /* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
 import { useLogs } from "#src/hooks/useLogs.js";
@@ -9,17 +10,20 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
+import type { DockerFlagKey } from "./DockerRebuildView.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./Dashboard.js";
+import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
 import { LogView } from "./LogView.js";
 import { TasksView } from "./TasksView.js";
 
 const MAX_HISTORY = 50;
 
+// eslint-disable-next-line complexity -- Flat key-dispatch handler, inherently branchy
 function handleDashboardInput(
   input: string,
   key: Key,
@@ -34,6 +38,7 @@ function handleDashboardInput(
     restartAll: () => Promise<void>;
     goToLogs: (name: string) => void;
     goToTasks: () => void;
+    goToDockerRebuild: (name: string) => void;
   },
 ) {
   if (key.upArrow || input === "k") {
@@ -63,6 +68,9 @@ function handleDashboardInput(
   if (input === "o" && selectedUrl) {
     // eslint-disable-next-line no-void -- Fire-and-forget browser open
     void openInBrowser(selectedUrl);
+  }
+  if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
+    ctx.goToDockerRebuild(ctx.statuses[ctx.index].name);
   }
   if (input === "t") {
     ctx.goToTasks();
@@ -131,11 +139,81 @@ function handleTasksInput(
   }
 }
 
+function buildDockerOverrides(flags: Record<DockerFlagKey, boolean>): Partial<DockerConfig> {
+  const overrides: Partial<DockerConfig> = {};
+  if (flags.build) {
+    overrides.build = true;
+  }
+  if (flags.forceRecreate) {
+    overrides.forceRecreate = true;
+  }
+  if (flags.renewVolumes) {
+    overrides.renewVolumes = true;
+  }
+  if (flags.pull) {
+    overrides.pull = "always";
+  }
+  if (flags.removeOrphans) {
+    overrides.removeOrphans = true;
+  }
+  return overrides;
+}
+
+function handleDockerRebuildInput(
+  input: string,
+  key: Key,
+  ctx: {
+    flagIndex: number;
+    setFlagIndex: React.Dispatch<React.SetStateAction<number>>;
+    dockerFlags: Record<DockerFlagKey, boolean>;
+    setDockerFlags: React.Dispatch<React.SetStateAction<Record<DockerFlagKey, boolean>>>;
+    dockerRebuildTarget: string;
+    busyRef: React.RefObject<boolean>;
+    rebuildDocker: (name: string, overrides: Partial<DockerConfig>) => Promise<void>;
+    goToDashboard: () => void;
+  },
+) {
+  if (key.escape) {
+    ctx.goToDashboard();
+    return;
+  }
+  if (key.upArrow || input === "k") {
+    ctx.setFlagIndex((i) => Math.max(0, i - 1));
+    return;
+  }
+  if (key.downArrow || input === "j") {
+    ctx.setFlagIndex((i) => Math.min(DOCKER_REBUILD_FLAGS.length - 1, i + 1));
+    return;
+  }
+  if (input === " ") {
+    const flagKey = DOCKER_REBUILD_FLAGS[ctx.flagIndex].key;
+    ctx.setDockerFlags((prev) => ({ ...prev, [flagKey]: !prev[flagKey] }));
+    return;
+  }
+  if (key.return && !ctx.busyRef.current) {
+    ctx.busyRef.current = true;
+    const overrides = buildDockerOverrides(ctx.dockerFlags);
+    ctx.goToDashboard();
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void ctx.rebuildDocker(ctx.dockerRebuildTarget, overrides).finally(() => {
+      ctx.busyRef.current = false;
+    });
+  }
+}
+
 export function Router({ autoStart }: { autoStart?: boolean }) {
-  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
+  const {
+    view,
+    logTarget,
+    dockerRebuildTarget,
+    goToLogs,
+    goToDashboard,
+    goToTasks,
+    goToDockerRebuild,
+  } = useRouter();
   const { manager, paneMap, config } = useZaps();
   const statuses = useServices(manager);
-  const { restart, toggle, restartAll } = useServiceActions(manager);
+  const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(manager);
 
   // Selection count depends on view: services for dashboard, tasks for tasks view
   const taskEntries = Object.entries(config.project.tasks ?? {});
@@ -154,6 +232,17 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     scrollUp,
     scrollDown,
   } = useLogs(logPaneTarget);
+
+  // Docker rebuild popup state
+  const defaultFlags: Record<DockerFlagKey, boolean> = {
+    build: false,
+    forceRecreate: false,
+    renewVolumes: false,
+    pull: false,
+    removeOrphans: false,
+  };
+  const [dockerFlags, setDockerFlags] = useState(defaultFlags);
+  const [dockerFlagIndex, setDockerFlagIndex] = useState(0);
 
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
@@ -240,6 +329,18 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         restartAll,
         goToLogs,
         goToTasks,
+        goToDockerRebuild: (name: string) => {
+          const { docker } = config.project.services[name];
+          setDockerFlags({
+            build: docker?.build ?? false,
+            forceRecreate: docker?.forceRecreate ?? false,
+            renewVolumes: docker?.renewVolumes ?? false,
+            pull: docker?.pull === "always",
+            removeOrphans: docker?.removeOrphans ?? false,
+          });
+          setDockerFlagIndex(0);
+          goToDockerRebuild(name);
+        },
       });
     }
 
@@ -256,6 +357,19 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         moveUp,
         moveDown,
         setRunTrigger,
+      });
+    }
+
+    if (view === "dockerRebuild" && dockerRebuildTarget) {
+      handleDockerRebuildInput(input, key, {
+        flagIndex: dockerFlagIndex,
+        setFlagIndex: setDockerFlagIndex,
+        dockerFlags,
+        setDockerFlags,
+        dockerRebuildTarget,
+        busyRef,
+        rebuildDocker,
+        goToDashboard,
       });
     }
   });
@@ -282,5 +396,16 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
       />
     );
   }
-  return <Dashboard statuses={statuses} selectedIndex={index} taskHistory={taskHistory} />;
+  return (
+    <>
+      <Dashboard statuses={statuses} selectedIndex={index} taskHistory={taskHistory} />
+      {view === "dockerRebuild" && dockerRebuildTarget && (
+        <DockerRebuildPopup
+          serviceName={dockerRebuildTarget}
+          flags={dockerFlags}
+          flagIndex={dockerFlagIndex}
+        />
+      )}
+    </>
+  );
 }
