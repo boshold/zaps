@@ -19,7 +19,7 @@
    </p>
    <hr>
    <p>
-      <h3>⚡ Make your project setup painless ⚡</h3>
+      <h3>⚡ Painless project setup ⚡</h3>
       <div>Zero Ass Pain Setup — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.</div>
       <div>Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.</div>
    </p>
