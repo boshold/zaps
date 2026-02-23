@@ -131,8 +131,36 @@ export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
 
-export async function zoomPane(target: string): Promise<void> {
-  await run(["resize-pane", "-Z", "-t", target]);
+export interface BreakOutResult {
+  originalWindowId: string;
+  savedLayout: string;
+  popoutWindowId: string;
+}
+
+export async function breakOutPane(target: string, title: string): Promise<BreakOutResult> {
+  const originalWindowId = await run(["display-message", "-p", "#{window_id}"]);
+  const savedLayout = await run(["display-message", "-p", "#{window_layout}"]);
+  const popoutWindowId = await run([
+    "break-pane",
+    "-d",
+    "-s",
+    target,
+    "-P",
+    "-F",
+    "#{window_id}",
+  ]);
+  await run(["rename-window", "-t", popoutWindowId, title]);
+  await run(["select-window", "-t", popoutWindowId]);
+  return { originalWindowId, savedLayout, popoutWindowId };
+}
+
+export async function rejoinPane(
+  popoutWindowId: string,
+  originalWindowId: string,
+  savedLayout: string,
+): Promise<void> {
+  await run(["join-pane", "-s", popoutWindowId, "-t", originalWindowId]);
+  await run(["select-layout", "-t", originalWindowId, savedLayout]);
 }
 
 export async function getWindowName(target: string): Promise<string> {
@@ -192,6 +220,16 @@ export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
       }
     });
   });
+}
+
+export async function editPaneCapture(target: string, title: string): Promise<void> {
+  const editor = process.env.EDITOR || "vim";
+  await run([
+    "new-window",
+    "-n",
+    title,
+    `sh -c 'f=$(mktemp /tmp/zaps-capture-XXXXXX) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
+  ]);
 }
 
 export interface PaneInfo {
