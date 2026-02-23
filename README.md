@@ -314,16 +314,16 @@ When a service has `docker` config and no `start`/`run`, ZAPS auto-generates a `
 
 If no `ready` config is provided, ZAPS defaults to checking the docker container state (running + healthy).
 
-| Option          | Type                               | Default | Description                            |
-| --------------- | ---------------------------------- | ------- | -------------------------------------- |
+| Option          | Type                               | Default | Description                               |
+| --------------- | ---------------------------------- | ------- | ----------------------------------------- |
 | `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required) |
-| `file`          | `string`                           | —       | Path to compose file                   |
-| `build`         | `boolean`                          | —       | `--build` flag                         |
-| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                |
-| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)           |
-| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                |
-| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                      |
-| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                       |
+| `file`          | `string`                           | —       | Path to compose file                      |
+| `build`         | `boolean`                          | —       | `--build` flag                            |
+| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                   |
+| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)              |
+| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                   |
+| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                         |
+| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                          |
 
 ### Dependencies
 

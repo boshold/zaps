@@ -118,15 +118,15 @@ ready: async () => {
 
 ## Options Reference
 
-| Option                   | Type                                  | Description                         |
-| ------------------------ | ------------------------------------- | ----------------------------------- |
-| `port`                   | `number \| true \| () => number`      | Wait for port to be listening       |
-| `output`                 | `RegExp \| (line: string) => boolean` | Match against tmux pane output      |
+| Option                   | Type                                  | Description                            |
+| ------------------------ | ------------------------------------- | -------------------------------------- |
+| `port`                   | `number \| true \| () => number`      | Wait for port to be listening          |
+| `output`                 | `RegExp \| (line: string) => boolean` | Match against tmux pane output         |
 | `docker`                 | `string \| string[]`                  | Docker Compose service name(s) to poll |
-| `docker.file`            | `string?`                             | Override compose file path          |
-| `http`                   | `string \| { url, status? }`          | HTTP endpoint to probe              |
-| `http.status`            | `number?`                             | Expected HTTP status code           |
-| `() => Promise<boolean>` | function                              | Custom polling function             |
+| `docker.file`            | `string?`                             | Override compose file path             |
+| `http`                   | `string \| { url, status? }`          | HTTP endpoint to probe                 |
+| `http.status`            | `number?`                             | Expected HTTP status code              |
+| `() => Promise<boolean>` | function                              | Custom polling function                |
 
 ## Gotchas
 

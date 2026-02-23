@@ -10,6 +10,7 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
+import { selectPane, zoomPane } from "#src/lib/tmux.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
@@ -39,6 +40,7 @@ function handleDashboardInput(
     goToLogs: (name: string) => void;
     goToTasks: () => void;
     goToDockerRebuild: (name: string) => void;
+    paneMap: Record<string, string>;
   },
 ) {
   if (key.upArrow || input === "k") {
@@ -71,6 +73,11 @@ function handleDashboardInput(
   }
   if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
     ctx.goToDockerRebuild(ctx.statuses[ctx.index].name);
+  }
+  if (input === "P" && ctx.statuses[ctx.index] && ctx.paneMap[ctx.statuses[ctx.index].name]) {
+    const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void selectPane(paneId).then(async () => zoomPane(paneId));
   }
   if (input === "t") {
     ctx.goToTasks();
@@ -329,6 +336,7 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         restartAll,
         goToLogs,
         goToTasks,
+        paneMap,
         goToDockerRebuild: (name: string) => {
           const { docker } = config.project.services[name];
           setDockerFlags({

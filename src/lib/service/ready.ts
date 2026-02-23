@@ -64,7 +64,7 @@ export async function waitForReady(
         }
         collected.push(...info.ports);
       }
-      allPorts = [...new Set(collected)].sort((a, b) => a - b);
+      allPorts = [...new Set(collected)].toSorted((a, b) => a - b);
       return true;
     }, signal);
     return allPorts;

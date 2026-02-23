@@ -164,6 +164,44 @@ describe("Dashboard", () => {
     expect(frame).toContain("✖");
   });
 
+  it("shows action hints for selected service", () => {
+    const statuses = [makeStatus("db"), makeStatus("api")];
+    const config = makeConfig();
+    const manager = createMockManager(statuses);
+
+    const { lastFrame } = render(
+      <AppProvider manager={manager} config={config} paneMap={{}}>
+        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
+      </AppProvider>,
+    );
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[r]estart");
+    expect(frame).toContain("[s]top");
+    expect(frame).toContain("[l]ogs");
+  });
+
+  it("shows [o]pen only when selected service has url", () => {
+    const withUrl = [makeStatus("db"), makeStatus("api")];
+    withUrl[0].url = "http://localhost:5432";
+    const withoutUrl = [makeStatus("db"), makeStatus("api")];
+    const config = makeConfig();
+
+    const { lastFrame: f1 } = render(
+      <AppProvider manager={createMockManager(withUrl)} config={config} paneMap={{}}>
+        <Dashboard statuses={withUrl} selectedIndex={0} taskHistory={[]} />
+      </AppProvider>,
+    );
+    expect(f1()).toContain("[o]pen");
+
+    const { lastFrame: f2 } = render(
+      <AppProvider manager={createMockManager(withoutUrl)} config={config} paneMap={{}}>
+        <Dashboard statuses={withoutUrl} selectedIndex={0} taskHistory={[]} />
+      </AppProvider>,
+    );
+    expect(f2()).not.toContain("[o]pen");
+  });
+
   it("hides recent tasks when history is empty", () => {
     const statuses = [makeStatus("db")];
     const config = makeConfig();

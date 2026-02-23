@@ -131,6 +131,10 @@ export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
 
+export async function zoomPane(target: string): Promise<void> {
+  await run(["resize-pane", "-Z", "-t", target]);
+}
+
 export async function getWindowName(target: string): Promise<string> {
   return run(["display-message", "-p", "-t", target, "#{window_name}"]);
 }
