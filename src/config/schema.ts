@@ -23,7 +23,7 @@ const readyPortSchema = z.object({
 });
 
 const readyDockerSchema = z.object({
-  docker: z.string(),
+  docker: z.union([z.string(), z.array(z.string()).nonempty()]),
   file: z.optional(z.string()),
 });
 
@@ -47,7 +47,7 @@ const readyConfigSchema = z.union([
 
 // === Docker Config ===
 const dockerConfigSchema = z.object({
-  service: z.string(),
+  service: z.union([z.string(), z.array(z.string()).nonempty()]),
   file: z.optional(z.string()),
   build: z.optional(z.boolean()),
   forceRecreate: z.optional(z.boolean()),

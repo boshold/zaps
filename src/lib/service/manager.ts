@@ -61,7 +61,7 @@ function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
     return config.ready;
   }
   if (config.docker) {
-    return { docker: config.docker.service };
+    return { docker: config.docker.service, file: config.docker.file };
   }
   return undefined; // eslint-disable-line no-undefined -- Explicit absence
 }

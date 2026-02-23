@@ -1,7 +1,7 @@
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
-import { Box, useStdout } from "ink";
+import { Box, Text, useStdout } from "ink";
 
 import { ColumnHeaders } from "./ColumnHeaders.js";
 import { Header } from "./Header.js";
@@ -28,6 +28,11 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
         <ColumnHeaders />
         <ServiceList statuses={statuses} selectedIndex={selectedIndex} />
         <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
+        <Text dimColor>
+          {statuses[selectedIndex]
+            ? `[r]estart [s]top [l]ogs${statuses[selectedIndex].url ? " [o]pen" : ""}${statuses[selectedIndex].isDocker ? " [R]ebuild" : ""}`
+            : ""}
+        </Text>
         <HelpBar />
       </Box>
     </Box>

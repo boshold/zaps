@@ -13,7 +13,7 @@ export interface ReadyPort {
   port: number | true | (() => number);
 }
 export interface ReadyDocker {
-  docker: string;
+  docker: string | string[];
   file?: string;
 }
 export interface ReadyHttp {
@@ -23,7 +23,7 @@ export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker | Read
 
 // === Docker Config ===
 export interface DockerConfig {
-  service: string;
+  service: string | string[];
   file?: string;
   build?: boolean;
   forceRecreate?: boolean;

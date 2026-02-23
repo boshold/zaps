@@ -9,7 +9,6 @@ export function ColumnHeaders() {
         {"STATUS".padEnd(10)}
         {"PORTS".padEnd(12)}
         {"URL".padEnd(24)}
-        ACTIONS
       </Text>
     </Box>
   );

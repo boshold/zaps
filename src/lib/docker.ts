@@ -151,7 +151,8 @@ function buildDockerCommand(config: DockerConfig): string {
   if (config.noDeps) {
     args.push("--no-deps");
   }
-  args.push(config.service);
+  const services = Array.isArray(config.service) ? config.service : [config.service];
+  args.push(...services);
   return args.join(" ");
 }
 

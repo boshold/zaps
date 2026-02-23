@@ -55,10 +55,10 @@ ready: {
 ### Docker
 
 ```ts
-ready: { docker: string; file?: string }
+ready: { docker: string | string[]; file?: string }
 ```
 
-Polls `docker compose ps --format json` for the named container. Ready when:
+Polls `docker compose ps --format json` for the named container(s). When an array, each service is checked individually — all must pass. Ready when:
 
 - `state === "running"` AND
 - no healthcheck (`health === ""`) OR `health === "healthy"`
@@ -69,6 +69,7 @@ Polls `docker compose ps --format json` for the named container. Ready when:
 
 ```ts
 ready: { docker: "postgres" }
+ready: { docker: ["postgres", "redis"] }
 ready: { docker: "redis", file: "docker-compose.dev.yml" }
 ```
 
@@ -121,7 +122,7 @@ ready: async () => {
 | ------------------------ | ------------------------------------- | ----------------------------------- |
 | `port`                   | `number \| true \| () => number`      | Wait for port to be listening       |
 | `output`                 | `RegExp \| (line: string) => boolean` | Match against tmux pane output      |
-| `docker`                 | `string`                              | Docker Compose service name to poll |
+| `docker`                 | `string \| string[]`                  | Docker Compose service name(s) to poll |
 | `docker.file`            | `string?`                             | Override compose file path          |
 | `http`                   | `string \| { url, status? }`          | HTTP endpoint to probe              |
 | `http.status`            | `number?`                             | Expected HTTP status code           |

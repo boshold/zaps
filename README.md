@@ -293,6 +293,7 @@ When the URL starts with `/`, ZAPS first waits for a port (like `port: true`) th
 
 ```typescript
 ready: { docker: "postgres" }
+ready: { docker: ["postgres", "redis"] }  // all must be ready
 ready: { docker: "postgres", file: "./docker-compose.yml" }
 ```
 
@@ -315,7 +316,7 @@ If no `ready` config is provided, ZAPS defaults to checking the docker container
 
 | Option          | Type                               | Default | Description                            |
 | --------------- | ---------------------------------- | ------- | -------------------------------------- |
-| `service`       | `string`                           | —       | Docker Compose service name (required) |
+| `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required) |
 | `file`          | `string`                           | —       | Path to compose file                   |
 | `build`         | `boolean`                          | —       | `--build` flag                         |
 | `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                |

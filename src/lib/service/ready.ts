@@ -52,16 +52,22 @@ export async function waitForReady(
     }
     const { dockerStatus } = deps;
     const file = config.file ?? deps.composeFile;
-    let ports: number[] = [];
+    const services = Array.isArray(config.docker) ? config.docker : [config.docker];
+    let allPorts: number[] = [];
     await poll(async () => {
-      const info = await dockerStatus(config.docker, deps.cwd, file);
-      if (info && isReady(info)) {
-        ({ ports } = info);
-        return true;
+      const collected: number[] = [];
+      for (const svc of services) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential per-service check
+        const info = await dockerStatus(svc, deps.cwd, file);
+        if (!info || !isReady(info)) {
+          return false;
+        }
+        collected.push(...info.ports);
       }
-      return false;
+      allPorts = [...new Set(collected)].sort((a, b) => a - b);
+      return true;
     }, signal);
-    return ports;
+    return allPorts;
   }
 
   if (isReadyPort(config)) {

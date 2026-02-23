@@ -6,7 +6,7 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 
 | Option          | Type                               | Default      | Description                                   |
 | --------------- | ---------------------------------- | ------------ | --------------------------------------------- |
-| `service`       | `string`                           | **required** | Docker Compose service name                   |
+| `service`       | `string \| string[]`               | **required** | Docker Compose service name(s)                |
 | `file`          | `string`                           | `undefined`  | Custom compose file (`-f`)                    |
 | `build`         | `boolean`                          | `false`      | Build images before starting (`--build`)      |
 | `forceRecreate` | `boolean`                          | `false`      | Recreate containers (`--force-recreate`)      |
@@ -20,7 +20,7 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 When `docker` is set, ZAPS builds a `docker compose up` command from the config flags:
 
 ```
-docker compose [-f <file>] up [--build] [--force-recreate] [-V] [--remove-orphans] [--pull <policy>] [--no-deps] <service>
+docker compose [-f <file>] up [--build] [--force-recreate] [-V] [--remove-orphans] [--pull <policy>] [--no-deps] <service...>
 ```
 
 Flags are appended only when their corresponding option is truthy/set.
@@ -35,8 +35,14 @@ services: {
     docker: { service: "postgres" },
     // No start/run needed — ZAPS generates: docker compose up postgres
   },
+  infra: {
+    docker: { service: ["postgres", "redis"] },
+    // Generates: docker compose up postgres redis (single pane)
+  },
 }
 ```
+
+When `service` is an array, all services run in one `docker compose up` command in a single pane.
 
 If `start` or `run` is provided, that takes precedence and the docker command is not generated.
 
@@ -47,7 +53,8 @@ If a service has `docker` config but **no explicit `ready`**, ZAPS auto-uses doc
 ```ts
 // Internally resolved as:
 ready: {
-  docker: config.docker.service;
+  docker: config.docker.service,  // string | string[]
+  file: config.docker.file,
 }
 ```
 
@@ -56,6 +63,8 @@ The `file` from `DockerConfig` is passed through to the status check automatical
 ## Container Health Checking
 
 Docker ready detection polls `docker compose ps --format json <service>` every 500ms (60s timeout).
+
+When `service` is an array, each service is polled individually per tick — **all** must be ready for the check to pass.
 
 A container is **ready** when both conditions are met:
 
@@ -66,7 +75,7 @@ Handles both JSON array and JSONL output formats from different Docker Compose v
 
 ## Port Extraction
 
-Published host ports are extracted from the container's `Publishers` array in the `docker compose ps` JSON output. Ports are deduplicated and sorted ascending. These ports populate `status.ports` for the service.
+Published host ports are extracted from the container's `Publishers` array in the `docker compose ps` JSON output. Ports are deduplicated and sorted ascending. When `service` is an array, ports from all containers are aggregated. These ports populate `status.ports` for the service.
 
 ## URL Behavior
 
@@ -94,6 +103,18 @@ services: {
 ```
 
 Auto-generates `docker compose up postgres`, auto-detects ready via container status.
+
+### Multiple Services (Single Pane)
+
+```ts
+services: {
+  infra: {
+    docker: { service: ["postgres", "redis"] },
+  },
+}
+```
+
+Generates: `docker compose up postgres redis`. Both containers must be ready.
 
 ### With Build and Pull
 
