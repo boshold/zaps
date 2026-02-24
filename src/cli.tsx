@@ -185,8 +185,22 @@ async function runTui(opts: { start?: boolean }): Promise<void> {
   // Enter alternate screen buffer (like vim/htop) so TUI output doesn't linger after exit
   process.stdout.write("\x1b[?1049h");
 
+  // Show ANSI splash while Ink loads — uses tmux pane dimensions for correct centering
+  if (opts.start) {
+    const { renderSplash } = await import("./components/logo.js");
+    const { listPanes } = await import("./lib/tmux.js");
+    const panes = await listPanes(sessionName);
+    const tuiPane = panes.find((p) => p.id === paneMap["@tui"]);
+    if (tuiPane) {
+      renderSplash({ cols: tuiPane.width, rows: tuiPane.height });
+    } else {
+      renderSplash();
+    }
+  }
+
   const { render } = await import("ink");
   const { App } = await import("./components/App.js");
+
   const { waitUntilExit } = render(
     <App manager={manager} config={config} paneMap={paneMap} autoStart={Boolean(opts.start)} />,
     {

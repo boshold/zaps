@@ -10,7 +10,7 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
-import { breakOutPane, type BreakOutResult, editPaneCapture, rejoinPane } from "#src/lib/tmux.js";
+import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
@@ -41,8 +41,6 @@ function handleDashboardInput(
     goToTasks: () => void;
     goToDockerRebuild: (name: string) => void;
     paneMap: Record<string, string>;
-    popout: (BreakOutResult & { serviceName: string }) | null;
-    setPopout: React.Dispatch<React.SetStateAction<(BreakOutResult & { serviceName: string }) | null>>;
   },
 ) {
   if (key.upArrow || input === "k") {
@@ -76,25 +74,22 @@ function handleDashboardInput(
   if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
     ctx.goToDockerRebuild(ctx.statuses[ctx.index].name);
   }
-  if (input === "P" && ctx.statuses[ctx.index]) {
-    const serviceName = ctx.statuses[ctx.index].name;
-    if (ctx.popout?.serviceName === serviceName) {
-      const { popoutWindowId, originalWindowId, savedLayout } = ctx.popout;
-      ctx.setPopout(null);
+  if (input === "z" && ctx.statuses[ctx.index]) {
+    const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
+    if (paneId) {
       // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void rejoinPane(popoutWindowId, originalWindowId, savedLayout);
-    } else if (ctx.paneMap[serviceName]) {
-      const paneId = ctx.paneMap[serviceName];
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void breakOutPane(paneId, serviceName).then((result) => {
-        ctx.setPopout({ ...result, serviceName });
-      });
+      void zoomPane(paneId);
     }
   }
-  if (input === "E" && ctx.statuses[ctx.index] && ctx.paneMap[ctx.statuses[ctx.index].name]) {
+  if (input === "E" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void editPaneCapture(paneId, ctx.statuses[ctx.index].name);
+    if (paneId) {
+      ctx.busyRef.current = true;
+      // eslint-disable-next-line no-void -- Fire-and-forget promise
+      void editPaneCapture(paneId, ctx.statuses[ctx.index].name).finally(() => {
+        ctx.busyRef.current = false;
+      });
+    }
   }
   if (input === "t") {
     ctx.goToTasks();
@@ -268,9 +263,6 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
   const [dockerFlags, setDockerFlags] = useState(defaultFlags);
   const [dockerFlagIndex, setDockerFlagIndex] = useState(0);
 
-  // Popout pane state — tracks a break-pane'd service
-  const [popout, setPopout] = useState<(BreakOutResult & { serviceName: string }) | null>(null);
-
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
 
@@ -311,12 +303,50 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     };
   }, [manager]);
 
-  // Trigger startAll after event listeners are attached (declared after subscription useEffect)
+  // Ready gate: delay rendering until services emit first stateChange + minimum splash time
+  const [ready, setReady] = useState(!autoStart);
+
+  // Auto-start services on mount when requested
   useEffect(() => {
-    if (autoStart) {
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void manager.startAll();
+    if (!autoStart) {
+      return;
     }
+
+    const MIN_SPLASH_MS = 1200;
+    const mountedAt = Date.now();
+    let stateChanged = false;
+    let timerElapsed = false;
+
+    function tryReady() {
+      if (stateChanged && timerElapsed) {
+        setReady(true);
+      }
+    }
+
+    function onFirstAction() {
+      stateChanged = true;
+      manager.off("stateChange", onFirstAction);
+      manager.off("taskStart", onFirstAction);
+      tryReady();
+    }
+
+    manager.on("stateChange", onFirstAction);
+    manager.on("taskStart", onFirstAction);
+
+    const remaining = Math.max(0, MIN_SPLASH_MS - (Date.now() - mountedAt));
+    const timer = setTimeout(() => {
+      timerElapsed = true;
+      tryReady();
+    }, remaining);
+
+    // eslint-disable-next-line no-void -- Fire-and-forget promise
+    void manager.startAll();
+
+    return () => {
+      manager.off("stateChange", onFirstAction);
+      manager.off("taskStart", onFirstAction);
+      clearTimeout(timer);
+    };
   }, [autoStart, manager]);
 
   // Precompute task shortcuts
@@ -357,8 +387,6 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         goToLogs,
         goToTasks,
         paneMap,
-        popout,
-        setPopout,
         goToDockerRebuild: (name: string) => {
           const { docker } = config.project.services[name];
           setDockerFlags({
@@ -403,6 +431,10 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
       });
     }
   });
+
+  if (!ready) {
+    return null;
+  }
 
   // Conditional render — pass state as props
   if (view === "logs" && logTarget) {

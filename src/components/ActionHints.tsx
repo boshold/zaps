@@ -6,7 +6,7 @@ export function ActionHints({ status }: { status?: ServiceStatus }) {
     <Box marginTop={1}>
       <Text dimColor>
         {status
-          ? `[r]estart [s]top [l]ogs [P]opout [E]dit${status.url ? " [o]pen" : ""}${status.isDocker ? " [R]ebuild" : ""}`
+          ? `[r]estart [s]top [l]ogs [z]oom [E]dit${status.url ? " [o]pen" : ""}${status.isDocker ? " [R]ebuild" : ""}`
           : ""}
       </Text>
     </Box>

@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 
+import { getEnv } from "./env.js";
+
 async function run(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("tmux", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -131,36 +133,9 @@ export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
 
-export interface BreakOutResult {
-  originalWindowId: string;
-  savedLayout: string;
-  popoutWindowId: string;
-}
-
-export async function breakOutPane(target: string, title: string): Promise<BreakOutResult> {
-  const originalWindowId = await run(["display-message", "-p", "#{window_id}"]);
-  const savedLayout = await run(["display-message", "-p", "#{window_layout}"]);
-  const popoutWindowId = await run([
-    "break-pane",
-    "-d",
-    "-s",
-    target,
-    "-P",
-    "-F",
-    "#{window_id}",
-  ]);
-  await run(["rename-window", "-t", popoutWindowId, title]);
-  await run(["select-window", "-t", popoutWindowId]);
-  return { originalWindowId, savedLayout, popoutWindowId };
-}
-
-export async function rejoinPane(
-  popoutWindowId: string,
-  originalWindowId: string,
-  savedLayout: string,
-): Promise<void> {
-  await run(["join-pane", "-s", popoutWindowId, "-t", originalWindowId]);
-  await run(["select-layout", "-t", originalWindowId, savedLayout]);
+export async function zoomPane(target: string): Promise<void> {
+  await run(["select-pane", "-t", target]);
+  await run(["resize-pane", "-Z", "-t", target]);
 }
 
 export async function getWindowName(target: string): Promise<string> {
@@ -184,7 +159,7 @@ export async function setWindowOption(
 }
 
 export interface DisplayPopupOptions {
-  cwd: string;
+  cwd?: string;
   command: string;
   title?: string;
   width?: string;
@@ -194,7 +169,10 @@ export interface DisplayPopupOptions {
 
 export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
   return new Promise((resolve, reject) => {
-    const args = ["display-popup", "-EE", "-d", opts.cwd];
+    const args = ["display-popup", "-EE"];
+    if (opts.cwd) {
+      args.push("-d", opts.cwd);
+    }
     if (opts.width) {
       args.push("-w", opts.width);
     }
@@ -223,13 +201,13 @@ export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
 }
 
 export async function editPaneCapture(target: string, title: string): Promise<void> {
-  const editor = process.env.EDITOR || "vim";
-  await run([
-    "new-window",
-    "-n",
+  const editor = getEnv("EDITOR") || "vim";
+  await displayPopup({
+    command: `sh -c 'f=$(mktemp /tmp/zaps-capture-XXXXXX) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
     title,
-    `sh -c 'f=$(mktemp /tmp/zaps-capture-XXXXXX) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
-  ]);
+    width: "90%",
+    height: "90%",
+  });
 }
 
 export interface PaneInfo {
