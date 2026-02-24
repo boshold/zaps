@@ -5,10 +5,10 @@ export function ColumnHeaders() {
     <Box marginTop={1}>
       <Text dimColor>
         {"    "}
-        {"NAME".padEnd(16)}
+        {"NAME".padEnd(24)}
         {"STATUS".padEnd(10)}
-        {"PORTS".padEnd(12)}
-        {"URL".padEnd(24)}
+        {"PORTS".padEnd(24)}
+        {"URL".padEnd(38)}
       </Text>
     </Box>
   );

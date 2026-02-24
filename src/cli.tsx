@@ -213,11 +213,16 @@ async function runTui(opts: { start?: boolean }): Promise<void> {
   // Leave alternate screen buffer — restores original terminal content
   process.stdout.write("\x1b[?1049l");
 
+  // Read origin pane before cleaning env (needed for pane-killing loop)
+  const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
+
+  // Remove env vars early so `zaps sessions` no longer sees this as alive
+  await removeEnv(sessionName, "ZAPS_PANE_MAP").catch(() => {});
+  await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {});
+  await removeEnv(sessionName, "ZAPS_INVOKE_DIR").catch(() => {});
+
   // Cleanup — stopAll is idempotent, and it fires onStop hook internally
   await manager.stopAll();
-
-  // Kill spawned panes, but preserve the origin pane and @tui pane
-  const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
   const tuiPaneId = paneMap["@tui"];
   for (const paneId of Object.values(paneMap)) {
     if (paneId !== originPane && paneId !== tuiPaneId) {

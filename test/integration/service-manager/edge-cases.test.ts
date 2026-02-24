@@ -33,7 +33,7 @@ const deps = {
   setWindowOption,
 };
 
-describe.skipIf(!hasTmux())("dependencies integration", () => {
+describe.skipIf(!hasTmux())("edge-cases integration", () => {
   let session: TestSession;
   let mgr: ServiceManager;
 
@@ -46,7 +46,25 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
     await session.cleanup();
   });
 
-  it("db ready before api starts (dependsOn)", async () => {
+  it("double-start is no-op", async () => {
+    session = await createTestSession();
+    const port = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+
+    const config = makeConfig({
+      svc: { start: httpServerCmd(port), ready: { port } },
+    });
+
+    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    await mgr.startService("svc");
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    // Second start should be a no-op
+    await mgr.startService("svc");
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
+  it("start with unready dependency throws", async () => {
     session = await createTestSession();
     const dbPort = await getFreePort();
     const apiPort = await getFreePort();
@@ -59,82 +77,29 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
 
     mgr = new ServiceManager(config, paneMap, deps, session.name);
 
-    const readyOrder: string[] = [];
-    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
-      if (status.state === "ready") {
-        readyOrder.push(name);
-      }
-    });
-
-    await mgr.startAll();
-
-    expect(mgr.getStatus("db").state).toBe("ready");
-    expect(mgr.getStatus("api").state).toBe("ready");
-    expect(readyOrder.indexOf("db")).toBeLessThan(readyOrder.indexOf("api"));
+    await expect(mgr.startService("api")).rejects.toThrow(/not ready/);
   });
 
-  it("three-level chain: db -> api -> fe", async () => {
+  it("stopAll idempotent", async () => {
     session = await createTestSession();
-    const dbPort = await getFreePort();
-    const apiPort = await getFreePort();
-    const fePort = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["db", "api", "fe"]);
+    const port = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
 
     const config = makeConfig({
-      db: { start: httpServerCmd(dbPort), ready: { port: dbPort } },
-      api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
-      fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
+      svc: { start: httpServerCmd(port), ready: { port } },
     });
 
     mgr = new ServiceManager(config, paneMap, deps, session.name);
-
-    const readyOrder: string[] = [];
-    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
-      if (status.state === "ready") {
-        readyOrder.push(name);
-      }
-    });
-
     await mgr.startAll();
 
-    expect(readyOrder).toEqual(["db", "api", "fe"]);
+    await mgr.stopAll();
+    // Second stopAll should not throw
+    await mgr.stopAll();
+
+    expect(mgr.getStatus("svc").state).toBe("stopped");
   });
 
-  it("diamond dependency: a→b, a→c, b→d, c→d", async () => {
-    session = await createTestSession();
-    const portA = await getFreePort();
-    const portB = await getFreePort();
-    const portC = await getFreePort();
-    const portD = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["a", "b", "c", "d"]);
-
-    const config = makeConfig({
-      d: { start: httpServerCmd(portD), ready: { port: portD } },
-      b: { start: httpServerCmd(portB), ready: { port: portB }, dependsOn: ["d"] },
-      c: { start: httpServerCmd(portC), ready: { port: portC }, dependsOn: ["d"] },
-      a: { start: httpServerCmd(portA), ready: { port: portA }, dependsOn: ["b", "c"] },
-    });
-
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
-
-    const readyOrder: string[] = [];
-    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
-      if (status.state === "ready") {
-        readyOrder.push(name);
-      }
-    });
-
-    await mgr.startAll();
-
-    // d must be first, a must be last
-    expect(readyOrder[0]).toBe("d");
-    expect(readyOrder[readyOrder.length - 1]).toBe("a");
-    // b and c should be between d and a
-    expect(readyOrder.indexOf("b")).toBeGreaterThan(0);
-    expect(readyOrder.indexOf("c")).toBeGreaterThan(0);
-  });
-
-  it("stopAll respects reverse order", async () => {
+  it("stopAll reverse order", async () => {
     session = await createTestSession();
     const dbPort = await getFreePort();
     const apiPort = await getFreePort();
@@ -159,7 +124,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
     await mgr.startAll();
     await mgr.stopAll();
 
-    // fe depends on api depends on db → stop fe first, then api, then db
+    // fe should stop before api, api before db
     expect(stopOrder.indexOf("fe")).toBeLessThan(stopOrder.indexOf("api"));
     expect(stopOrder.indexOf("api")).toBeLessThan(stopOrder.indexOf("db"));
   });

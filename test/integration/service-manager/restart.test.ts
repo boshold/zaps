@@ -15,7 +15,7 @@ import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
-import { crashingCmd } from "../helpers/fixtures.js";
+import { crashingCmd, httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
@@ -33,7 +33,7 @@ const deps = {
   setWindowOption,
 };
 
-async function waitForState(
+function waitForState(
   mgr: ServiceManager,
   name: string,
   target: string,
@@ -60,7 +60,7 @@ async function waitForState(
   });
 }
 
-describe.skipIf(!hasTmux())("crash-recovery integration", () => {
+describe.skipIf(!hasTmux())("restart integration", () => {
   let session: TestSession;
   let mgr: ServiceManager;
 
@@ -73,7 +73,25 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
     await session.cleanup();
   });
 
-  it("auto-restarts crashed service and increments retryCount", async () => {
+  it("restart running service", async () => {
+    session = await createTestSession();
+    const port = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["web"]);
+
+    const config = makeConfig({
+      web: { start: httpServerCmd(port), ready: { port } },
+    });
+
+    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    await mgr.startService("web");
+    expect(mgr.getStatus("web").state).toBe("ready");
+
+    await mgr.restartService("web");
+    expect(mgr.getStatus("web").state).toBe("ready");
+    expect(mgr.getStatus("web").ports).toContain(port);
+  });
+
+  it("restart resets retryCount", async () => {
     session = await createTestSession();
     const port = await getFreePort();
     const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
@@ -82,7 +100,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       svc: {
         start: crashingCmd(port, 3000),
         ready: { port },
-        restart: { maxRetries: 2, backoff: 500 },
+        restart: { maxRetries: 3, backoff: 500 },
       },
     });
 
@@ -90,61 +108,32 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
-    // Wait for crash detection + auto-restart → ready again
+    // Wait for crash + auto-restart
     await waitForState(mgr, "svc", "restarting");
     await waitForState(mgr, "svc", "ready");
-
     expect(mgr.getStatus("svc").retryCount).toBe(1);
-  });
 
-  it("crash with no restart config → immediate error", async () => {
-    session = await createTestSession();
-    const port = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
-
-    const config = makeConfig({
-      svc: {
-        start: crashingCmd(port, 2000),
-        ready: { port },
-        // No restart config
-      },
-    });
-
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
-    await mgr.startService("svc");
-    expect(mgr.getStatus("svc").state).toBe("ready");
-
-    // Should go to error directly (no restart)
-    await waitForState(mgr, "svc", "error", 30_000);
-    expect(mgr.getStatus("svc").state).toBe("error");
+    // Manual restart should reset retryCount
+    await mgr.restartService("svc");
     expect(mgr.getStatus("svc").retryCount).toBe(0);
+    expect(mgr.getStatus("svc").state).toBe("ready");
   });
 
-  it("transitions to error when retries exhausted", async () => {
+  it("restart stopped service", async () => {
     session = await createTestSession();
     const port = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["web"]);
 
-    // Crash after 2s, only 1 retry allowed, and the retry will also crash
     const config = makeConfig({
-      svc: {
-        start: crashingCmd(port, 2000),
-        ready: { port },
-        restart: { maxRetries: 1, backoff: 500 },
-      },
+      web: { start: httpServerCmd(port), ready: { port } },
     });
 
     mgr = new ServiceManager(config, paneMap, deps, session.name);
-    await mgr.startService("svc");
-    expect(mgr.getStatus("svc").state).toBe("ready");
+    await mgr.startService("web");
+    await mgr.stopService("web");
+    expect(mgr.getStatus("web").state).toBe("stopped");
 
-    // First crash → restart
-    await waitForState(mgr, "svc", "restarting");
-    await waitForState(mgr, "svc", "ready");
-    expect(mgr.getStatus("svc").retryCount).toBe(1);
-
-    // Second crash → error (retries exhausted)
-    await waitForState(mgr, "svc", "error", 30_000);
-    expect(mgr.getStatus("svc").state).toBe("error");
+    await mgr.restartService("web");
+    expect(mgr.getStatus("web").state).toBe("ready");
   });
 });

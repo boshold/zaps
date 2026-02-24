@@ -48,11 +48,11 @@ export function ServiceRow({ status, isSelected }: ServiceRowProps) {
         <Text>{isSelected ? "> " : "  "}</Text>
         <StatusCell status={status} />
         <Text> </Text>
-        <Text bold={isSelected}>{status.name.padEnd(16)}</Text>
+        <Text bold={isSelected}>{status.name.padEnd(24)}</Text>
         <Text>{stateLabel(status).padEnd(10)}</Text>
-        <Text dimColor>{portsStr.padEnd(12)}</Text>
+        <Text dimColor>{portsStr.padEnd(24)}</Text>
         <Text dimColor>
-          {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(24)}
+          {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(38)}
         </Text>
       </Box>
       {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}

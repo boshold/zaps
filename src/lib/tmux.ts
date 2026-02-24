@@ -41,7 +41,7 @@ export async function listZapsSessions(): Promise<{ session: string; panes: numb
           const keys = Object.keys(parsed);
           const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
           // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-          const livePanes = await listPanes(session).catch(() => [] as PaneInfo[]);
+          const livePanes = await listPanes(session, true).catch(() => [] as PaneInfo[]);
           const liveIds = new Set(livePanes.map((p) => p.id));
           const hasLive = values.some((id) => liveIds.has(id));
           if (hasLive) {
@@ -217,14 +217,11 @@ export interface PaneInfo {
   height: number;
 }
 
-export async function listPanes(session: string): Promise<PaneInfo[]> {
-  const out = await run([
-    "list-panes",
-    "-t",
-    session,
-    "-F",
-    "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}",
-  ]);
+export async function listPanes(session: string, allWindows = false): Promise<PaneInfo[]> {
+  const args = ["list-panes"];
+  if (allWindows) args.push("-s");
+  args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
+  const out = await run(args);
   if (!out) {
     return [];
   }
