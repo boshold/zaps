@@ -24,7 +24,15 @@ import {
   capturePane,
   sendCtrlC,
   setEnv,
+  removeEnv,
+  showEnv,
   selectPane,
+  currentPaneId,
+  currentSession,
+  zoomPane,
+  getWindowName,
+  renameWindow,
+  editPaneCapture,
   listPanes,
   displayPopup,
   getWindowOption,
@@ -97,6 +105,12 @@ describe("listZapsSessions", () => {
 
   it("returns empty array on failure", async () => {
     mockSpawn.mockReturnValue(createMockProc("", 1, "no server running"));
+    const sessions = await listZapsSessions();
+    expect(sessions).toEqual([]);
+  });
+
+  it("handles empty output from list-sessions", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc(""));
     const sessions = await listZapsSessions();
     expect(sessions).toEqual([]);
   });
@@ -261,6 +275,122 @@ describe("setEnv", () => {
       ["set-environment", "-t", "my-project", "FOO", "bar"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
+  });
+});
+
+describe("removeEnv", () => {
+  it("unsets environment variable on session", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await removeEnv("my-project", "FOO");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["set-environment", "-u", "-t", "my-project", "FOO"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("showEnv", () => {
+  it("strips key prefix and returns value", async () => {
+    mockSpawn.mockReturnValue(createMockProc("MY_VAR=hello"));
+    const value = await showEnv("sess", "MY_VAR");
+    expect(value).toBe("hello");
+  });
+
+  it("returns null on error", async () => {
+    mockSpawn.mockReturnValue(createMockProc("", 1, "unknown variable"));
+    const value = await showEnv("sess", "MISSING");
+    expect(value).toBeNull();
+  });
+});
+
+describe("currentPaneId", () => {
+  it("returns the pane id", async () => {
+    mockSpawn.mockReturnValue(createMockProc("%5"));
+    const id = await currentPaneId();
+    expect(id).toBe("%5");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("currentSession", () => {
+  it("returns the session name", async () => {
+    mockSpawn.mockReturnValue(createMockProc("my-session"));
+    const name = await currentSession();
+    expect(name).toBe("my-session");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "#{session_name}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("zoomPane", () => {
+  it("calls selectPane then resize-pane -Z", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc("")).mockReturnValueOnce(createMockProc(""));
+    await zoomPane("%3");
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn).toHaveBeenNthCalledWith(1, "tmux", ["select-pane", "-t", "%3"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["resize-pane", "-Z", "-t", "%3"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+});
+
+describe("getWindowName", () => {
+  it("returns window name", async () => {
+    mockSpawn.mockReturnValue(createMockProc("bash"));
+    const name = await getWindowName("%0");
+    expect(name).toBe("bash");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "-t", "%0", "#{window_name}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("renameWindow", () => {
+  it("renames window with correct args", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await renameWindow("%0", "new-title");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["rename-window", "-t", "%0", "new-title"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+});
+
+describe("editPaneCapture", () => {
+  it("calls displayPopup with capture command using vim by default", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc(0));
+    await editPaneCapture("%1", "Capture");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      expect.arrayContaining([
+        "display-popup",
+        "-EE",
+        "-w",
+        "90%",
+        "-h",
+        "90%",
+        "-T",
+        "Capture",
+        "--",
+        expect.stringContaining("tmux capture-pane -t %1"),
+      ]),
+      { stdio: "ignore" },
+    );
+    // Should use vim or EDITOR
+    const args = mockSpawn.mock.calls[0][1] as string[];
+    const cmd = args[args.length - 1];
+    expect(cmd).toMatch(/vim|nano|EDITOR/);
   });
 });
 

@@ -196,4 +196,9 @@ describe("buildDockerCommand", () => {
       }),
     ).toBe("docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres");
   });
+
+  it("handles array of services", () => {
+    const result = buildDockerCommand({ service: ["postgres", "redis"] });
+    expect(result).toBe("docker compose up postgres redis");
+  });
 });

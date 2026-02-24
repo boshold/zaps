@@ -113,4 +113,27 @@ describe("useRouter", () => {
     });
     expect(lastFrame()).toContain("view:tasks");
   });
+
+  it("goToDockerRebuild sets view and dockerRebuildTarget", async () => {
+    let hookRef: ReturnType<typeof useRouter> | null = null;
+
+    function Wrapper() {
+      hookRef = useRouter();
+      return (
+        <>
+          <Text>view:{hookRef.view}</Text>
+          <Text>target:{hookRef.dockerRebuildTarget ?? "null"}</Text>
+        </>
+      );
+    }
+
+    const { lastFrame } = render(<Wrapper />);
+    expect(lastFrame()).toContain("target:null");
+
+    await act(() => {
+      hookRef!.goToDockerRebuild("postgres");
+    });
+    expect(lastFrame()).toContain("view:dockerRebuild");
+    expect(lastFrame()).toContain("target:postgres");
+  });
 });

@@ -65,4 +65,14 @@ describe("scaffoldConfig", () => {
     fs.writeFileSync(path.join(tmpDir, ".local.zaps.ts"), "");
     await expect(scaffoldConfig(tmpDir)).rejects.toThrow("Config file already exists");
   });
+
+  it("throws if local.zaps.mts already exists", async () => {
+    fs.writeFileSync(path.join(tmpDir, "local.zaps.mts"), "");
+    await expect(scaffoldConfig(tmpDir)).rejects.toThrow("Config file already exists");
+  });
+
+  it("throws if local.zaps.ts already exists", async () => {
+    fs.writeFileSync(path.join(tmpDir, "local.zaps.ts"), "");
+    await expect(scaffoldConfig(tmpDir)).rejects.toThrow("Config file already exists");
+  });
 });

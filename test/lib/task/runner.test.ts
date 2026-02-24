@@ -2,11 +2,16 @@ import type { TaskConfig } from "../../../src/config/types.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock execCommand
+// Mock execCommand and execCommandWithResult
 vi.mock("#src/lib/exec.js", () => ({
   execCommand: vi.fn(async (_cmd: string, opts: { onLine: (line: string) => void }) => {
     opts.onLine("output-line");
   }),
+  execCommandWithResult: vi.fn(async () => ({
+    success: true,
+    exitCode: 0,
+    output: ["mock-output"],
+  })),
 }));
 
 vi.mock("#src/lib/tmux.js", () => ({
@@ -15,11 +20,12 @@ vi.mock("#src/lib/tmux.js", () => ({
 
 import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 
-import { execCommand } from "../../../src/lib/exec.js";
+import { execCommand, execCommandWithResult } from "../../../src/lib/exec.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
 import { displayPopup } from "../../../src/lib/tmux.js";
 
 const mockExecCommand = vi.mocked(execCommand);
+const mockExecCommandWithResult = vi.mocked(execCommandWithResult);
 const mockDisplayPopup = vi.mocked(displayPopup);
 
 function makeDeps(
@@ -274,5 +280,64 @@ describe("runTaskWithDeps", () => {
     expect(ok).toBe(false);
     expect(results.get("test")).toBe("error");
     expect(onProgress).toHaveBeenCalledWith("test", "error");
+  });
+
+  it("runs task with run() function and provides TaskRunContext", async () => {
+    const runFn = vi.fn(async (ctx: import("../../../src/config/types.js").TaskRunContext) => {
+      const result = await ctx.exec("echo hello");
+      expect(result.success).toBe(true);
+      ctx.stdout.write("output line\n");
+      expect(ctx.projectDir).toBe("/test");
+      expect(ctx.services).toBeDefined();
+    });
+
+    const onLine = vi.fn();
+    const deps = makeDeps({ task: { name: "RunTask", run: runFn } }, { onLine });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    const ok = await runTaskWithDeps("task", deps, visited, results);
+
+    expect(ok).toBe(true);
+    expect(runFn).toHaveBeenCalledTimes(1);
+    expect(mockExecCommandWithResult).toHaveBeenCalled();
+    // stdout.write emits lines via onLine
+    expect(onLine).toHaveBeenCalledWith("task", "output line");
+  });
+
+  it("shared dependency runs only once across two dependent tasks", async () => {
+    const order: string[] = [];
+    mockExecCommand.mockImplementation(async (cmd: string, opts) => {
+      order.push(cmd);
+      opts.onLine("line");
+    });
+
+    const deps = makeDeps({
+      shared: { name: "Shared", commands: "shared" },
+      a: { name: "A", commands: "a", dependsOn: ["shared"] },
+      b: { name: "B", commands: "b", dependsOn: ["shared"] },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("a", deps, visited, results);
+    await runTaskWithDeps("b", deps, visited, results);
+
+    // "shared" should only run once
+    expect(order.filter((c) => c === "shared")).toHaveLength(1);
+    expect(results.get("shared")).toBe("success");
+  });
+
+  it("visited task with error result returns false", async () => {
+    const deps = makeDeps({
+      build: { name: "Build", commands: "build" },
+    });
+    const visited = new Set<string>(["build"]);
+    const results = new Map<string, "success" | "error">([["build", "error"]]);
+
+    const ok = await runTaskWithDeps("build", deps, visited, results);
+
+    expect(ok).toBe(false);
+    expect(mockExecCommand).not.toHaveBeenCalled();
   });
 });

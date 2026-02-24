@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { execCommand } from "../../src/lib/exec.js";
+import { execCommand, execCommandWithResult } from "../../src/lib/exec.js";
 
 describe("execCommand", () => {
   it("runs commands sequentially and captures stdout", async () => {
@@ -97,5 +97,59 @@ describe("execCommand", () => {
     await execCommand("echo dep-task", { cwd: "/tmp", onLine });
     await execCommand("echo main-task", { cwd: "/tmp", onLine });
     expect(lines).toEqual(["dep-task", "main-task"]);
+  });
+});
+
+describe("execCommandWithResult", () => {
+  it("returns success result on exit code 0", async () => {
+    const result = await execCommandWithResult("echo hello", { cwd: "/tmp" });
+    expect(result.success).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("hello");
+  });
+
+  it("returns failure result on non-zero exit code", async () => {
+    const result = await execCommandWithResult("exit 42", { cwd: "/tmp" });
+    expect(result.success).toBe(false);
+    expect(result.exitCode).toBe(42);
+  });
+
+  it("defaults null exit code to 1", async () => {
+    // Simulate a command that exits with code 1
+    const result = await execCommandWithResult("exit 1", { cwd: "/tmp" });
+    expect(result.success).toBe(false);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("fires onLine callback per line", async () => {
+    const lines: string[] = [];
+    await execCommandWithResult("echo line1 && echo line2", {
+      cwd: "/tmp",
+      onLine: (line) => {
+        lines.push(line);
+      },
+    });
+    expect(lines).toContain("line1");
+    expect(lines).toContain("line2");
+  });
+
+  it("passes env vars through", async () => {
+    const result = await execCommandWithResult("echo $MY_VAR", {
+      cwd: "/tmp",
+      env: { MY_VAR: "test-value" },
+    });
+    expect(result.output).toContain("test-value");
+  });
+
+  it("captures stderr output", async () => {
+    const lines: string[] = [];
+    const result = await execCommandWithResult("echo err-msg >&2", {
+      cwd: "/tmp",
+      onLine: (line) => {
+        lines.push(line);
+      },
+    });
+    expect(result.output).toContain("err-msg");
+    expect(lines).toContain("err-msg");
   });
 });

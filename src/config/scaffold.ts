@@ -4,7 +4,14 @@ import path from "node:path";
 
 import defaultTemplate from "./templates/default.template.js";
 
-const CONFIG_FILENAMES = [".local.zaps.mts", ".local.zaps.ts", ".zaps.mts", ".zaps.ts"];
+const CONFIG_FILENAMES = [
+  ".local.zaps.mts",
+  "local.zaps.mts",
+  ".local.zaps.ts",
+  "local.zaps.ts",
+  ".zaps.mts",
+  ".zaps.ts",
+];
 
 async function getZapsPath(): Promise<string> {
   // Try resolving installed zaps path

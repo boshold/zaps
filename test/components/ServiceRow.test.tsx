@@ -83,4 +83,36 @@ describe("ServiceRow", () => {
     const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
     expect(lastFrame()).toContain("http://localhost:3000");
   });
+
+  it("shows uptime in seconds when readySince is recent", () => {
+    const status = makeStatus({ readySince: Date.now() - 30_000 });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toMatch(/Up \d+s/);
+  });
+
+  it("shows uptime in minutes", () => {
+    const status = makeStatus({ readySince: Date.now() - 120_000 });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toMatch(/Up \d+m/);
+  });
+
+  it("shows uptime in hours and minutes", () => {
+    const status = makeStatus({ readySince: Date.now() - 3_700_000 });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toMatch(/Up \d+h \d+m/);
+  });
+
+  it("shows uptime in hours without minutes when exactly on the hour", () => {
+    const status = makeStatus({ readySince: Date.now() - 3_600_000 });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Up 1h");
+    expect(frame).not.toMatch(/Up 1h \d+m/);
+  });
+
+  it("shows docker indicator when isDocker is true", () => {
+    const status = makeStatus({ isDocker: true });
+    const { lastFrame } = render(<ServiceRow status={status} isSelected={false} />);
+    expect(lastFrame()).toBeTruthy();
+  });
 });

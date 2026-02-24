@@ -1687,3 +1687,88 @@ describe("onOutput monitoring", () => {
     expect(lines).toEqual([]);
   });
 });
+
+// =============================================================================
+// restartWithDockerOverrides
+// =============================================================================
+
+describe("restartWithDockerOverrides", () => {
+  it("throws for non-docker service", async () => {
+    const config = makeConfig({
+      api: { start: "node server.js" },
+    });
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await expect(mgr.restartWithDockerOverrides("api", { build: true })).rejects.toThrow(
+      'Service "api" is not a docker service',
+    );
+  });
+
+  it("applies overrides and restores original config", async () => {
+    const config = makeConfig({
+      db: {
+        docker: { service: "postgres" },
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi.spyOn(dockerModule, "getContainerInfo");
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start initially so restartService can stop first
+    const startPromise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(5000);
+    await startPromise;
+
+    // Restart with overrides — stop phase needs descendants to drop
+    let processRunning = true;
+    deps.getDescendantPids = vi.fn(async () =>
+      processRunning ? [1000, 2000] : [1000],
+    );
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const restartPromise = mgr.restartWithDockerOverrides("db", {
+      build: true,
+      forceRecreate: true,
+    });
+    // Advance enough for stop + start cycles
+    await vi.advanceTimersByTimeAsync(15_000);
+    await restartPromise;
+
+    // Original config should be restored
+    expect(config.project.services.db.docker?.build).toBeUndefined();
+    expect(config.project.services.db.docker?.forceRecreate).toBeUndefined();
+
+    spy.mockRestore();
+  });
+
+  it("restores original config even on error", async () => {
+    const config = makeConfig({
+      db: {
+        docker: { service: "postgres" },
+        dependsOn: ["missing"],
+      },
+    });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await expect(
+      mgr.restartWithDockerOverrides("db", { build: true }),
+    ).rejects.toThrow();
+
+    // Original config should still be restored
+    expect(config.project.services.db.docker?.build).toBeUndefined();
+  });
+});

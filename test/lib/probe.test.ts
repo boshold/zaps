@@ -62,5 +62,15 @@ describe("probePort", () => {
       const result = await probePort([5432, 3000]);
       expect(result).toBe("http://localhost:3000");
     });
+
+    it("returns undefined when all ports fail", async () => {
+      vi.spyOn(globalThis, "fetch")
+        .mockRejectedValueOnce(new Error("Connection refused"))
+        .mockRejectedValueOnce(new Error("Connection refused"))
+        .mockRejectedValueOnce(new Error("Connection refused"));
+
+      const result = await probePort([5432, 3000, 8080]);
+      expect(result).toBeUndefined();
+    });
   });
 });

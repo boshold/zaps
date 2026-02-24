@@ -177,4 +177,60 @@ describe("createZapsLib", () => {
     expect(isServiceRunning).toHaveBeenCalledWith("db");
     expect(result).toBe(true);
   });
+
+  it("openInBrowser works without binding (calls lib/open directly)", async () => {
+    const { lib } = createZapsLib();
+    // openInBrowser should not throw even without bindActions
+    // It calls the lib/open module directly, not through actions
+    await expect(lib.openInBrowser("http://localhost:3000")).resolves.toBeUndefined();
+  });
+
+  it("throws when task has both commands and run", () => {
+    const { lib } = createZapsLib();
+    expect(() =>
+      lib.defineProject({
+        name: "test",
+        services: { app: { start: "npm start" } },
+        tasks: {
+          build: {
+            name: "Build",
+            commands: "npm build",
+            run: async () => {},
+          },
+        },
+      }),
+    ).toThrow("Task must have either 'commands' or 'run', not both");
+  });
+
+  it("throws when task has neither commands nor run", () => {
+    const { lib } = createZapsLib();
+    expect(() =>
+      lib.defineProject({
+        name: "test",
+        services: { app: { start: "npm start" } },
+        tasks: {
+          build: {
+            name: "Build",
+          },
+        },
+      }),
+    ).toThrow("Task must have either 'commands' or 'run'");
+  });
+
+  it("throws when task has popup with run", () => {
+    const { lib } = createZapsLib();
+    expect(() =>
+      lib.defineProject({
+        name: "test",
+        services: { app: { start: "npm start" } },
+        tasks: {
+          build: {
+            name: "Build",
+            run: async () => {},
+            popup: true,
+          },
+        },
+      }),
+    ).toThrow("Task 'popup' can only be used with 'commands', not 'run'");
+  });
 });

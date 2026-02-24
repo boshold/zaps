@@ -88,4 +88,13 @@ describe("discoverConfig", () => {
 
     expect(discoverConfig(tmpDir)).toBe(path.join(tmpDir, ".local.zaps.mts"));
   });
+
+  it("returns null when walking to filesystem root without finding config", () => {
+    // Use a deep nested dir with no config and no root boundary
+    const deep = path.join(tmpDir, "a", "b", "c", "d");
+    fs.mkdirSync(deep, { recursive: true });
+
+    // With root boundary at tmpDir, returns null
+    expect(discoverConfig(deep, tmpDir)).toBeNull();
+  });
 });

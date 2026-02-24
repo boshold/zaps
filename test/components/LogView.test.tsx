@@ -55,4 +55,15 @@ describe("LogView", () => {
     expect(frame).toContain("line-26");
     expect(frame).not.toContain("line-29");
   });
+
+  it("manual scroll with offset=0 shows latest lines", () => {
+    const lines = Array.from({ length: 30 }, (_, i) => `line-${i}`);
+    const { lastFrame } = render(
+      <LogView serviceName="api" lines={lines} autoScroll={false} offset={0} />,
+    );
+    const frame = lastFrame() ?? "";
+    // offset=0 → slice(-20, lines.length) = last 20 lines
+    expect(frame).toContain("line-29");
+    expect(frame).toContain(`line-${30 - VISIBLE_LINES}`);
+  });
 });

@@ -1,7 +1,14 @@
 import type { LayoutNode, ProjectConfig, ReadyConfig } from "../../src/config/types.js";
 import { describe, expect, it } from "vitest";
 
-import { isLayoutLeaf, isLayoutSplit, isReadyOutput, isReadyPort } from "../../src/config/types.js";
+import {
+  isLayoutLeaf,
+  isLayoutSplit,
+  isReadyDocker,
+  isReadyHttp,
+  isReadyOutput,
+  isReadyPort,
+} from "../../src/config/types.js";
 
 const readyFn: ReadyConfig = async () => true;
 
@@ -195,6 +202,58 @@ describe("type guards", () => {
 
     it("returns false for function config", () => {
       expect(isReadyOutput(readyFn)).toBe(false);
+    });
+  });
+
+  describe("isReadyDocker", () => {
+    it("returns true for docker string config", () => {
+      const ready: ReadyConfig = { docker: "redis" };
+      expect(isReadyDocker(ready)).toBe(true);
+    });
+
+    it("returns true for docker array config", () => {
+      const ready: ReadyConfig = { docker: ["postgres", "redis"] };
+      expect(isReadyDocker(ready)).toBe(true);
+    });
+
+    it("returns false for port config", () => {
+      const ready: ReadyConfig = { port: 3000 };
+      expect(isReadyDocker(ready)).toBe(false);
+    });
+
+    it("returns false for output config", () => {
+      const ready: ReadyConfig = { output: /ready/ };
+      expect(isReadyDocker(ready)).toBe(false);
+    });
+
+    it("returns false for function config", () => {
+      expect(isReadyDocker(readyFn)).toBe(false);
+    });
+  });
+
+  describe("isReadyHttp", () => {
+    it("returns true for http string config", () => {
+      const ready: ReadyConfig = { http: "/health" };
+      expect(isReadyHttp(ready)).toBe(true);
+    });
+
+    it("returns true for http object config", () => {
+      const ready: ReadyConfig = { http: { url: "/", status: 200 } };
+      expect(isReadyHttp(ready)).toBe(true);
+    });
+
+    it("returns false for port config", () => {
+      const ready: ReadyConfig = { port: 3000 };
+      expect(isReadyHttp(ready)).toBe(false);
+    });
+
+    it("returns false for output config", () => {
+      const ready: ReadyConfig = { output: /ready/ };
+      expect(isReadyHttp(ready)).toBe(false);
+    });
+
+    it("returns false for function config", () => {
+      expect(isReadyHttp(readyFn)).toBe(false);
     });
   });
 });

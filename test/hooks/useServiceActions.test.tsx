@@ -110,4 +110,20 @@ describe("useServiceActions", () => {
     expect(vi.mocked(manager.stopAll)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(manager.startAll)).toHaveBeenCalledTimes(1);
   });
+
+  it("rebuildDocker calls manager.restartWithDockerOverrides", async () => {
+    const restartWithDockerOverrides = vi.fn().mockResolvedValue(null);
+    const manager = createMockManager({
+      db: makeStatus("db", "ready"),
+    });
+    (manager as unknown as Record<string, unknown>).restartWithDockerOverrides =
+      restartWithDockerOverrides;
+
+    const actions = renderActions(manager);
+    await actions.rebuildDocker("db", { build: true, forceRecreate: true });
+    expect(restartWithDockerOverrides).toHaveBeenCalledWith("db", {
+      build: true,
+      forceRecreate: true,
+    });
+  });
 });

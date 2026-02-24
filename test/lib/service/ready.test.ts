@@ -520,4 +520,62 @@ describe("waitForReady", () => {
     const ports = await promise;
     expect(ports).toEqual([]);
   });
+
+  it("docker mode with string[] checks all services and dedupes ports", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    mockDockerStatus.mockImplementation(async (svc: string) => {
+      if (svc === "postgres") {
+        return { state: "running", health: "", ports: [5432] };
+      }
+      if (svc === "redis") {
+        return { state: "running", health: "", ports: [6379, 5432] };
+      }
+      return null;
+    });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: ["postgres", "redis"] };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    await vi.advanceTimersByTimeAsync(500);
+
+    const ports = await promise;
+    expect(ports).toEqual([5432, 6379]);
+    expect(mockDockerStatus).toHaveBeenCalledWith("postgres", undefined, undefined);
+    expect(mockDockerStatus).toHaveBeenCalledWith("redis", undefined, undefined);
+  });
+
+  it("docker mode with string[] returns false if one service not ready", async () => {
+    const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
+    let callCount = 0;
+    mockDockerStatus.mockImplementation(async (svc: string) => {
+      callCount += 1;
+      if (svc === "postgres") {
+        return { state: "running", health: "", ports: [5432] };
+      }
+      // redis never ready
+      return { state: "created", health: "", ports: [] };
+    });
+
+    const controller = new AbortController();
+    const config: ReadyConfig = { docker: ["postgres", "redis"] };
+    const deps: ReadyDeps = {
+      ...createDeps(),
+      dockerStatus: mockDockerStatus,
+    };
+
+    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const guarded = promise.catch(() => {
+      /* Intentional no-op */
+    });
+
+    await vi.advanceTimersByTimeAsync(61_000);
+    await guarded;
+
+    await expect(promise).rejects.toThrow("Ready check timed out after 60s");
+  });
 });
