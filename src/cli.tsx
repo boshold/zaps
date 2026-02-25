@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import os from "node:os";
 import path from "node:path";
 
 import type { ServiceManagerDeps } from "./lib/service/manager.js";
@@ -8,6 +9,8 @@ import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { getEnv } from "./lib/env.js";
+import { ipcRequest, ipcStream } from "./lib/ipc/client.js";
+import { IpcServer } from "./lib/ipc/server.js";
 import { detectPorts, getDescendantPids } from "./lib/port.js";
 import { createLayout } from "./lib/tmux-layout.js";
 import {
@@ -174,6 +177,12 @@ async function runTui(opts: { start?: boolean }): Promise<void> {
   const { ServiceManager } = await import("./lib/service/manager.js");
   const manager = new ServiceManager(config, paneMap, deps, sessionName);
 
+  // Start IPC server
+  const socketPath = `${os.tmpdir()}/zaps-${sessionName.replaceAll("/", "-")}.sock`;
+  const ipcServer = new IpcServer(socketPath, manager, config);
+  await ipcServer.start();
+  await setEnv(sessionName, "ZAPS_IPC_SOCKET", socketPath);
+
   // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
   // Ensure yoga-wasm is loaded before Ink creates layout nodes.
   // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
@@ -216,7 +225,9 @@ async function runTui(opts: { start?: boolean }): Promise<void> {
   // Read origin pane before cleaning env (needed for pane-killing loop)
   const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
 
-  // Remove env vars early so `zaps sessions` no longer sees this as alive
+  // Stop IPC server and remove env vars early so `zaps sessions` no longer sees this as alive
+  ipcServer.stop();
+  await removeEnv(sessionName, "ZAPS_IPC_SOCKET").catch(() => {});
   await removeEnv(sessionName, "ZAPS_PANE_MAP").catch(() => {});
   await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {});
   await removeEnv(sessionName, "ZAPS_INVOKE_DIR").catch(() => {});
@@ -268,6 +279,175 @@ program
     const written = await scaffoldConfig(cwd);
     process.stdout.write(`Created ${written}\n`);
   });
+
+async function withIpc<T>(fn: (socketPath: string) => Promise<T>): Promise<T> {
+  if (!getEnv("TMUX")) {
+    process.stderr.write("Must be inside a tmux session.\n");
+    process.exit(1);
+  }
+
+  const sessionName = await currentSession();
+  const socketPath = await showEnv(sessionName, "ZAPS_IPC_SOCKET");
+  if (!socketPath) {
+    process.stderr.write("No running zaps instance found in this session.\n");
+    process.exit(1);
+  }
+
+  return fn(socketPath);
+}
+
+function formatTable(rows: string[][]): string {
+  if (rows.length === 0) return "";
+  const cols = rows[0].length;
+  const widths: number[] = Array.from({ length: cols }, () => 0);
+  for (const row of rows) {
+    for (let i = 0; i < cols; i++) {
+      widths[i] = Math.max(widths[i], row[i].length);
+    }
+  }
+  return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
+}
+
+program
+  .command("services")
+  .description("List services from running zaps instance")
+  .option("--json", "Output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    await withIpc(async (sock) => {
+      const res = await ipcRequest(sock, "services.list");
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        return;
+      }
+      const statuses = res.result as Array<{
+        name: string;
+        state: string;
+        ports: number[];
+        url?: string;
+      }>;
+      if (statuses.length === 0) {
+        process.stdout.write("No services configured.\n");
+        return;
+      }
+      const rows = [["NAME", "STATE", "PORTS", "URL"]];
+      for (const s of statuses) {
+        rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
+      }
+      process.stdout.write(`${formatTable(rows)}\n`);
+    });
+  });
+
+program
+  .command("tasks")
+  .description("List tasks from running zaps instance")
+  .option("--json", "Output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    await withIpc(async (sock) => {
+      const res = await ipcRequest(sock, "tasks.list");
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        return;
+      }
+      const tasks = res.result as Array<{ key: string; name: string; description: string | null }>;
+      if (tasks.length === 0) {
+        process.stdout.write("No tasks configured.\n");
+        return;
+      }
+      const rows = [["KEY", "NAME", "DESCRIPTION"]];
+      for (const t of tasks) {
+        rows.push([t.key, t.name, t.description ?? "-"]);
+      }
+      process.stdout.write(`${formatTable(rows)}\n`);
+    });
+  });
+
+const taskCmd = program.command("task").description("Task operations");
+
+taskCmd
+  .command("run <key>")
+  .description("Run a task on the running zaps instance")
+  .option("--json", "Output as JSON")
+  .action(async (key: string, opts: { json?: boolean }) => {
+    await withIpc(async (sock) => {
+      const res = await ipcStream(
+        sock,
+        "tasks.run",
+        { key },
+        (event, data) => {
+          if (!opts.json && event === "line") {
+            process.stdout.write(`${data as string}\n`);
+          }
+        },
+      );
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        return;
+      }
+      const result = res.result as { success: boolean };
+      if (!result.success) {
+        process.stderr.write("Task failed.\n");
+        process.exit(1);
+      }
+    });
+  });
+
+const serviceCmd = program.command("service").description("Service operations");
+
+serviceCmd
+  .command("details <name>")
+  .description("Show service details")
+  .option("--json", "Output as JSON")
+  .action(async (name: string, opts: { json?: boolean }) => {
+    await withIpc(async (sock) => {
+      const res = await ipcRequest(sock, "services.details", { name });
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        return;
+      }
+      const d = res.result as Record<string, unknown>;
+      for (const [k, v] of Object.entries(d)) {
+        const val = Array.isArray(v) ? v.join(", ") || "-" : String(v ?? "-");
+        process.stdout.write(`${k}: ${val}\n`);
+      }
+    });
+  });
+
+for (const action of ["start", "stop", "restart"] as const) {
+  serviceCmd
+    .command(`${action} <name>`)
+    .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} a service`)
+    .option("--json", "Output as JSON")
+    .action(async (name: string, opts: { json?: boolean }) => {
+      await withIpc(async (sock) => {
+        const res = await ipcRequest(sock, `services.${action}`, { name });
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        } else {
+          process.stdout.write(`Service ${name} ${action}ed.\n`);
+        }
+      });
+    });
+}
 
 program
   .command("down")

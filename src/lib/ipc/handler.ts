@@ -1,0 +1,186 @@
+import type { ResolvedConfig } from "#src/config/types.js";
+import { execCommand } from "#src/lib/exec.js";
+import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import type { Socket } from "node:net";
+
+import type { IpcRequest, IpcResponse } from "./protocol.js";
+
+type Handler = (
+  req: IpcRequest,
+  manager: ServiceManager,
+  config: ResolvedConfig,
+  socket: Socket,
+) => Promise<IpcResponse>;
+
+function ok(id: string, result: unknown): IpcResponse {
+  return { id, result };
+}
+
+function err(id: string, error: string): IpcResponse {
+  return { id, error };
+}
+
+function send(socket: Socket, msg: object): void {
+  socket.write(`${JSON.stringify(msg)}\n`);
+}
+
+const handlers: Record<string, Handler> = {
+  async ping(req) {
+    return ok(req.id, "pong");
+  },
+
+  async "services.list"(req, manager) {
+    return ok(req.id, manager.getAllStatuses());
+  },
+
+  async "services.details"(req, manager, config) {
+    const { name } = req.params as { name: string };
+    try {
+      const status = manager.getStatus(name);
+      const svcConfig = config.project.services[name];
+      return ok(req.id, {
+        ...status,
+        dependsOn: svcConfig?.dependsOn ?? [],
+        hasDocker: Boolean(svcConfig?.docker),
+      });
+    } catch {
+      return err(req.id, `Unknown service: ${name}`);
+    }
+  },
+
+  async "services.start"(req, manager) {
+    const { name } = req.params as { name: string };
+    try {
+      await manager.startService(name);
+      return ok(req.id, { started: name });
+    } catch (e) {
+      return err(req.id, e instanceof Error ? e.message : String(e));
+    }
+  },
+
+  async "services.stop"(req, manager) {
+    const { name } = req.params as { name: string };
+    try {
+      await manager.stopService(name);
+      return ok(req.id, { stopped: name });
+    } catch (e) {
+      return err(req.id, e instanceof Error ? e.message : String(e));
+    }
+  },
+
+  async "services.restart"(req, manager) {
+    const { name } = req.params as { name: string };
+    try {
+      await manager.restartService(name);
+      return ok(req.id, { restarted: name });
+    } catch (e) {
+      return err(req.id, e instanceof Error ? e.message : String(e));
+    }
+  },
+
+  async "tasks.list"(req, _manager, config) {
+    const tasks = config.project.tasks ?? {};
+    const list = Object.entries(tasks).map(([key, t]) => ({
+      key,
+      name: t.name,
+      description: t.description ?? null,
+    }));
+    return ok(req.id, list);
+  },
+
+  async "tasks.run"(req, manager, config, socket) {
+    const { key } = req.params as { key: string };
+    const tasks = config.project.tasks ?? {};
+    if (!tasks[key]) {
+      return err(req.id, `Unknown task: ${key}`);
+    }
+
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    // For popup tasks with commands, run non-interactively (skip popup)
+    const task = tasks[key];
+    const isPopup = Boolean(task.popup) && task.commands && !task.run;
+
+    let success: boolean;
+    if (isPopup) {
+      // Execute popup commands directly (non-interactively)
+      success = await runPopupTaskNonInteractive(req.id, key, config, manager, socket);
+    } else {
+      success = await runTaskWithDeps(
+        key,
+        {
+          tasks,
+          statuses: new Map(manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus])),
+          projectDir: config.projectDir,
+          onLine: (_taskKey, line) => {
+            send(socket, { id: req.id, event: "line", data: line });
+          },
+          onProgress: (taskKey, result) => {
+            send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
+          },
+        },
+        visited,
+        results,
+      );
+    }
+
+    return ok(req.id, { success });
+  },
+};
+
+async function runPopupTaskNonInteractive(
+  reqId: string,
+  key: string,
+  config: ResolvedConfig,
+  manager: ServiceManager,
+  socket: Socket,
+): Promise<boolean> {
+  const tasks = config.project.tasks ?? {};
+  const task = tasks[key];
+  if (!task?.commands) return false;
+
+  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
+  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
+
+  const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
+  const serviceCtx = buildServiceContext(statuses, config.projectDir);
+  const resolvedEnv = resolveEnv(task.env, serviceCtx);
+  const taskCwd = task.cwd ?? config.projectDir;
+
+  try {
+    for (const cmd of resolved) {
+      // eslint-disable-next-line no-await-in-loop -- Sequential command execution
+      await execCommand(cmd, {
+        cwd: taskCwd,
+        ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
+        onLine: (line) => {
+          send(socket, { id: reqId, event: "line", data: line });
+        },
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function handleRequest(
+  req: IpcRequest,
+  manager: ServiceManager,
+  config: ResolvedConfig,
+  socket: Socket,
+): Promise<IpcResponse> {
+  const handler = handlers[req.method];
+  if (!handler) {
+    return err(req.id, `Unknown method: ${req.method}`);
+  }
+  try {
+    return await handler(req, manager, config, socket);
+  } catch (e) {
+    return err(req.id, e instanceof Error ? e.message : String(e));
+  }
+}
