@@ -481,7 +481,7 @@ program
       const cwd = process.cwd();
       const match = sessions.find((s) => s.projectDir === cwd) ?? sessions[0];
       if (match) {
-        const destroyRes = await ipcRequest(sock, "session.destroy");
+        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, match.id);
         if (destroyRes.error) {
           process.stderr.write(`Error: ${destroyRes.error}\n`);
         } else {

@@ -65,7 +65,7 @@ export class DaemonClient extends EventEmitter {
   // --- Session operations ---
 
   async attach(): Promise<SessionSnapshot> {
-    const res = await ipcRequest(this.socketPath, "session.attach");
+    const res = await this.request("session.attach");
     if (res.error) {
       throw new Error(res.error);
     }
@@ -121,7 +121,7 @@ export class DaemonClient extends EventEmitter {
   // --- Internal ---
 
   private async request(method: string, params?: unknown): Promise<IpcResponse> {
-    return ipcRequest(this.socketPath, method, params);
+    return ipcRequest(this.socketPath, method, params, 30_000, this.sessionId);
   }
 
   private handleEvent(event: DaemonEvent): void {

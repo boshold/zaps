@@ -15,7 +15,7 @@ async function act(fn?: () => void): Promise<void> {
     fn();
   }
   return new Promise((resolve) => {
-    setTimeout(resolve, 50);
+    setTimeout(resolve, 100);
   });
 }
 

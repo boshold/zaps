@@ -14,9 +14,15 @@ export async function ipcRequest(
   method: string,
   params?: unknown,
   timeout = 30_000,
+  session?: string,
 ): Promise<IpcResponse> {
   const id = generateId();
-  const req: IpcRequest = { id, method, ...(params !== null && { params }) };
+  const req: IpcRequest = {
+    id,
+    method,
+    ...(params !== null && { params }),
+    ...(session && { session }),
+  };
 
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
