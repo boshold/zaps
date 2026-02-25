@@ -180,7 +180,7 @@ describe("createZapsLib", () => {
 
   it("openInBrowser works without binding (calls lib/open directly)", async () => {
     const { lib } = createZapsLib();
-    // openInBrowser should not throw even without bindActions
+    // OpenInBrowser should not throw even without bindActions
     // It calls the lib/open module directly, not through actions
     await expect(lib.openInBrowser("http://localhost:3000")).resolves.toBeUndefined();
   });
@@ -195,7 +195,9 @@ describe("createZapsLib", () => {
           build: {
             name: "Build",
             commands: "npm build",
-            run: async () => {},
+            run: async () => {
+              /* Stub */
+            },
           },
         },
       }),
@@ -226,7 +228,9 @@ describe("createZapsLib", () => {
         tasks: {
           build: {
             name: "Build",
-            run: async () => {},
+            run: async () => {
+              /* Stub */
+            },
             popup: true,
           },
         },

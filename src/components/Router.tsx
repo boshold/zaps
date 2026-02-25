@@ -220,7 +220,13 @@ function handleDockerRebuildInput(
   }
 }
 
-export function Router({ autoStart }: { autoStart?: boolean }) {
+export function Router({
+  initialStatuses,
+  autoStart,
+}: {
+  initialStatuses: ServiceStatus[];
+  autoStart?: boolean;
+}) {
   const {
     view,
     logTarget,
@@ -230,9 +236,9 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     goToTasks,
     goToDockerRebuild,
   } = useRouter();
-  const { manager, paneMap, config } = useZaps();
-  const statuses = useServices(manager);
-  const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(manager);
+  const { client, paneMap, config } = useZaps();
+  const statuses = useServices(client, initialStatuses);
+  const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Selection count depends on view: services for dashboard, tasks for tasks view
   const taskEntries = Object.entries(config.project.tasks ?? {});
@@ -242,15 +248,14 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
   const { exit } = useInkApp();
   const busyRef = useRef(false);
 
-  // Logs state — called unconditionally (hooks rule)
-  const logPaneTarget = logTarget ? (paneMap[logTarget] ?? null) : null;
+  // Logs state — now uses daemon client event stream
   const {
     lines: logLines,
     autoScroll: logAutoScroll,
     offset: logOffset,
     scrollUp,
     scrollDown,
-  } = useLogs(logPaneTarget);
+  } = useLogs(client, logTarget);
 
   // Docker rebuild popup state
   const defaultFlags: Record<DockerFlagKey, boolean> = {
@@ -287,7 +292,7 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     });
   }
 
-  // Subscribe to hook-triggered task start/completions from ServiceManager
+  // Subscribe to daemon task events
   useEffect(() => {
     function handleTaskStart(taskKey: string, taskName: string) {
       onTaskComplete({ taskKey, taskName, result: "running", timestamp: Date.now() });
@@ -295,25 +300,23 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
       onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
     }
-    manager.on("taskStart", handleTaskStart);
-    manager.on("taskComplete", handleTaskComplete);
+    client.on("task.start", handleTaskStart);
+    client.on("task.complete", handleTaskComplete);
     return () => {
-      manager.off("taskStart", handleTaskStart);
-      manager.off("taskComplete", handleTaskComplete);
+      client.off("task.start", handleTaskStart);
+      client.off("task.complete", handleTaskComplete);
     };
-  }, [manager]);
+  }, [client]);
 
-  // Ready gate: delay rendering until services emit first stateChange + minimum splash time
+  // Ready gate: delay rendering until minimum splash time
   const [ready, setReady] = useState(!autoStart);
 
-  // Auto-start services on mount when requested
   useEffect(() => {
     if (!autoStart) {
       return;
     }
 
     const MIN_SPLASH_MS = 1200;
-    const mountedAt = Date.now();
     let stateChanged = false;
     let timerElapsed = false;
 
@@ -325,52 +328,60 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
 
     function onFirstAction() {
       stateChanged = true;
-      manager.off("stateChange", onFirstAction);
-      manager.off("taskStart", onFirstAction);
+      client.off("service.stateChange", onFirstAction);
+      client.off("task.start", onFirstAction);
       tryReady();
     }
 
-    manager.on("stateChange", onFirstAction);
-    manager.on("taskStart", onFirstAction);
+    client.on("service.stateChange", onFirstAction);
+    client.on("task.start", onFirstAction);
 
-    const remaining = Math.max(0, MIN_SPLASH_MS - (Date.now() - mountedAt));
     const timer = setTimeout(() => {
       timerElapsed = true;
       tryReady();
-    }, remaining);
-
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void manager.startAll();
+    }, MIN_SPLASH_MS);
 
     return () => {
-      manager.off("stateChange", onFirstAction);
-      manager.off("taskStart", onFirstAction);
+      client.off("service.stateChange", onFirstAction);
+      client.off("task.start", onFirstAction);
       clearTimeout(timer);
     };
-  }, [autoStart, manager]);
+  }, [autoStart, client]);
 
   // Precompute task shortcuts
   const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
 
   useInput((input, key) => {
-    // Q: quit on dashboard, go back on sub-views
+    // Q: detach on dashboard (services keep running), go back on sub-views
     if (input === "q") {
       if (view === "dashboard") {
         if (busyRef.current) {
           return;
         }
         busyRef.current = true;
-        manager
-          .stopAll()
-          .catch(() => {
-            /* Graceful shutdown */
-          })
-          .finally(() => {
-            exit();
-          });
+        client.disconnect();
+        exit();
       } else {
         goToDashboard();
       }
+      return;
+    }
+
+    // Q: quit + destroy session (stop services + kill panes)
+    if (input === "Q" && view === "dashboard") {
+      if (busyRef.current) {
+        return;
+      }
+      busyRef.current = true;
+      client
+        .destroySession()
+        .catch(() => {
+          /* Graceful shutdown */
+        })
+        .finally(() => {
+          client.disconnect();
+          exit();
+        });
       return;
     }
 

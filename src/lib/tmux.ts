@@ -219,7 +219,9 @@ export interface PaneInfo {
 
 export async function listPanes(session: string, allWindows = false): Promise<PaneInfo[]> {
   const args = ["list-panes"];
-  if (allWindows) args.push("-s");
+  if (allWindows) {
+    args.push("-s");
+  }
   args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
   const out = await run(args);
   if (!out) {

@@ -1,6 +1,6 @@
-import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { TaskConfig } from "#src/config/types.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import { describe, expect, it } from "vitest";
 
 function makeStatuses(): Map<string, ServiceStatus> {
@@ -26,7 +26,9 @@ describe("tasks integration", () => {
         tasks,
         statuses: makeStatuses(),
         projectDir: "/tmp",
-        onProgress: (key, result) => { completed.push(`${key}:${result}`); },
+        onProgress: (key, result) => {
+          completed.push(`${key}:${result}`);
+        },
       },
       visited,
       results,
@@ -54,7 +56,9 @@ describe("tasks integration", () => {
         tasks,
         statuses: makeStatuses(),
         projectDir: "/tmp",
-        onProgress: (key, result) => { completed.push(`${key}:${result}`); },
+        onProgress: (key, result) => {
+          completed.push(`${key}:${result}`);
+        },
       },
       visited,
       results,
@@ -87,7 +91,9 @@ describe("tasks integration", () => {
         tasks,
         statuses: makeStatuses(),
         projectDir: "/tmp",
-        onProgress: (key) => { order.push(key); },
+        onProgress: (key) => {
+          order.push(key);
+        },
       },
       visited,
       results,
@@ -120,7 +126,9 @@ describe("tasks integration", () => {
         tasks,
         statuses: makeStatuses(),
         projectDir: "/tmp",
-        onProgress: (key, result) => { completed.push(`${key}:${result}`); },
+        onProgress: (key, result) => {
+          completed.push(`${key}:${result}`);
+        },
       },
       visited,
       results,
@@ -128,7 +136,7 @@ describe("tasks integration", () => {
 
     expect(ok).toBe(false);
     expect(completed).toContain("migrate:error");
-    // seed should never have run
+    // Seed should never have run
     expect(completed.find((c) => c.startsWith("seed:"))).toBeUndefined();
   });
 });

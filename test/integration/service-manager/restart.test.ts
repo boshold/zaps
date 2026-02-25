@@ -33,7 +33,7 @@ const deps = {
   setWindowOption,
 };
 
-function waitForState(
+async function waitForState(
   mgr: ServiceManager,
   name: string,
   target: string,

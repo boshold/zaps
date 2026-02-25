@@ -124,7 +124,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
     await mgr.startAll();
     await mgr.stopAll();
 
-    // fe should stop before api, api before db
+    // Fe should stop before api, api before db
     expect(stopOrder.indexOf("fe")).toBeLessThan(stopOrder.indexOf("api"));
     expect(stopOrder.indexOf("api")).toBeLessThan(stopOrder.indexOf("db"));
   });

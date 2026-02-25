@@ -1,17 +1,11 @@
 /* eslint-disable typescript-eslint/unbound-method -- Mock method assertions */
-/* eslint-disable typescript-eslint/no-non-null-assertion -- Promise resolve refs */
 import { EventEmitter } from "node:events";
 
+import type { DaemonClient } from "../src/client/daemon-client.js";
 import type { ResolvedConfig } from "../src/config/types.js";
-import type { ServiceManager } from "../src/lib/service/manager.js";
 import type { ServiceStatus } from "../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
-
-// Mock tmux.capturePane to avoid real tmux calls in logs view tests
-vi.mock("../src/lib/tmux.js", () => ({
-  capturePane: vi.fn().mockResolvedValue(""),
-}));
 
 import { App } from "../src/components/App.js";
 
@@ -29,7 +23,6 @@ async function act(fn?: () => void): Promise<void> {
 const ARROW_UP = "\x1B[A";
 const ARROW_DOWN = "\x1B[B";
 const ESCAPE = "\x1B";
-// Const RETURN = "\r"; // Available for future task execution tests
 
 function makeConfig(
   name = "test-project",
@@ -42,24 +35,27 @@ function makeConfig(
   };
 }
 
-function createMockManager(statuses: ServiceStatus[] = []): ServiceManager {
+function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
-  const manager = Object.assign(emitter, {
-    getAllStatuses: vi.fn(() => [...statuses]),
-    getStatus: vi.fn((name: string) => {
-      const s = statuses.find((st) => st.name === name);
-      if (!s) {
-        throw new Error(`Unknown service: ${name}`);
-      }
-      return s;
+  const client = Object.assign(emitter, {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: true,
+    session: "test",
+    attach: vi.fn().mockResolvedValue({
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+      paneMap: {},
+      statuses: [],
     }),
-    startService: vi.fn().mockResolvedValue(null),
-    stopService: vi.fn().mockResolvedValue(null),
-    restartService: vi.fn().mockResolvedValue(null),
-    startAll: vi.fn().mockResolvedValue(null),
-    stopAll: vi.fn().mockResolvedValue(null),
+    destroySession: vi.fn().mockResolvedValue(undefined),
+    listServices: vi.fn().mockResolvedValue([...statuses]),
+    startService: vi.fn().mockResolvedValue(undefined),
+    stopService: vi.fn().mockResolvedValue(undefined),
+    restartService: vi.fn().mockResolvedValue(undefined),
+    getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
-  return manager as unknown as ServiceManager;
+  return client as unknown as DaemonClient;
 }
 
 describe("App", () => {
@@ -67,10 +63,12 @@ describe("App", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig("my-app");
 
-    const { lastFrame } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     expect(lastFrame()).toContain("zaps");
     expect(lastFrame()).toContain("my-app");
@@ -80,10 +78,12 @@ describe("App", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { lastFrame } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     expect(lastFrame()).toContain("[t]asks");
     expect(lastFrame()).toContain("[q]uit");
@@ -96,10 +96,12 @@ describe("Keyboard routing — Dashboard", () => {
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
       { name: "api", state: "ready", ports: [3000], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame, stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     // Move down — api should be selected
     await act(() => {
@@ -116,80 +118,90 @@ describe("Keyboard routing — Dashboard", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("r");
     });
     await act();
 
-    expect(vi.mocked(manager.restartService)).toHaveBeenCalledWith("db");
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
   });
 
   it("s triggers toggle on selected service", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("s");
     });
     await act();
 
-    // Toggle on a ready service calls stopService
-    expect(vi.mocked(manager.stopService)).toHaveBeenCalledWith("db");
+    // Toggle tries stopService first (succeeds for running service)
+    expect(vi.mocked(client.stopService)).toHaveBeenCalledWith("db");
   });
 
   it("a calls restartAll", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("a");
     });
     await act();
 
-    expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
-    expect(vi.mocked(manager.startAll)).toHaveBeenCalled();
+    expect(vi.mocked(client.listServices)).toHaveBeenCalled();
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
   });
 
-  it("q calls stopAll + exit", async () => {
+  it("q disconnects and exits", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("q");
     });
     await act();
 
-    expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
   it("o with no url is a no-op", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
-    const { stdin, lastFrame } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin, lastFrame } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     // Should not throw
     await act(() => {
@@ -204,12 +216,14 @@ describe("Keyboard routing — View switching", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig("test", {
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
     });
 
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame, stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("t");
@@ -225,12 +239,14 @@ describe("Keyboard routing — View switching", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig("test", {
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
     });
 
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame, stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     await act(() => {
       stdin.write("t");
@@ -249,11 +265,16 @@ describe("Keyboard routing — View switching", () => {
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
       { name: "api", state: "ready", ports: [3000], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
     const { lastFrame, stdin } = render(
-      <App manager={manager} config={config} paneMap={{ db: "%0", api: "%1" }} />,
+      <App
+        client={client}
+        config={config}
+        paneMap={{ db: "%0", api: "%1" }}
+        initialStatuses={statuses}
+      />,
     );
 
     // Select api (index 1) then press l
@@ -274,11 +295,11 @@ describe("Keyboard routing — View switching", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const manager = createMockManager(statuses);
+    const client = createMockClient(statuses);
     const config = makeConfig();
 
     const { lastFrame, stdin } = render(
-      <App manager={manager} config={config} paneMap={{ db: "%0" }} />,
+      <App client={client} config={config} paneMap={{ db: "%0" }} initialStatuses={statuses} />,
     );
 
     // Go to logs
@@ -297,10 +318,12 @@ describe("Keyboard routing — View switching", () => {
 
 describe("Keyboard routing — Edge cases", () => {
   it("no services — arrow keys are no-ops", async () => {
-    const manager = createMockManager([]);
+    const client = createMockClient([]);
     const config = makeConfig();
 
-    const { lastFrame, stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { lastFrame, stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={[]} />,
+    );
 
     // Should not throw
     await act(() => {
@@ -313,10 +336,12 @@ describe("Keyboard routing — Edge cases", () => {
   });
 
   it("r/s with no services is a no-op", async () => {
-    const manager = createMockManager([]);
+    const client = createMockClient([]);
     const config = makeConfig();
 
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={[]} />,
+    );
 
     await act(() => {
       stdin.write("r");
@@ -326,9 +351,9 @@ describe("Keyboard routing — Edge cases", () => {
     });
     await act();
 
-    expect(vi.mocked(manager.restartService)).not.toHaveBeenCalled();
-    expect(vi.mocked(manager.stopService)).not.toHaveBeenCalled();
-    expect(vi.mocked(manager.startService)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.restartService)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.stopService)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.startService)).not.toHaveBeenCalled();
   });
 
   it("rapid key presses do not cause race conditions", async () => {
@@ -342,11 +367,13 @@ describe("Keyboard routing — Edge cases", () => {
       resolveRestart = resolve;
     });
 
-    const manager = createMockManager(statuses);
-    vi.mocked(manager.restartService).mockReturnValue(restartPromise);
+    const client = createMockClient(statuses);
+    vi.mocked(client.restartService).mockReturnValue(restartPromise);
 
     const config = makeConfig();
-    const { stdin } = render(<App manager={manager} config={config} paneMap={{}} />);
+    const { stdin } = render(
+      <App client={client} config={config} paneMap={{}} initialStatuses={statuses} />,
+    );
 
     // Press r twice rapidly
     await act(() => {
@@ -357,7 +384,7 @@ describe("Keyboard routing — Edge cases", () => {
     });
 
     // Should only have been called once (busyRef guards)
-    expect(vi.mocked(manager.restartService)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledTimes(1);
 
     // Resolve to clean up
     resolveRestart();

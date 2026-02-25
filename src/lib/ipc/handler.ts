@@ -1,12 +1,12 @@
+/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol: param types known by contract */
 import type { ResolvedConfig } from "#src/config/types.js";
 import { execCommand } from "#src/lib/exec.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { Socket } from "node:net";
-
 import type { IpcRequest, IpcResponse } from "./protocol.js";
+import type { Socket } from "node:net";
 
 type Handler = (
   req: IpcRequest,
@@ -56,8 +56,8 @@ const handlers: Record<string, Handler> = {
     try {
       await manager.startService(name);
       return ok(req.id, { started: name });
-    } catch (e) {
-      return err(req.id, e instanceof Error ? e.message : String(e));
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -66,8 +66,8 @@ const handlers: Record<string, Handler> = {
     try {
       await manager.stopService(name);
       return ok(req.id, { stopped: name });
-    } catch (e) {
-      return err(req.id, e instanceof Error ? e.message : String(e));
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -76,8 +76,8 @@ const handlers: Record<string, Handler> = {
     try {
       await manager.restartService(name);
       return ok(req.id, { restarted: name });
-    } catch (e) {
-      return err(req.id, e instanceof Error ? e.message : String(e));
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -105,7 +105,7 @@ const handlers: Record<string, Handler> = {
     const task = tasks[key];
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
-    let success: boolean;
+    let success = false;
     if (isPopup) {
       // Execute popup commands directly (non-interactively)
       success = await runPopupTaskNonInteractive(req.id, key, config, manager, socket);
@@ -114,7 +114,9 @@ const handlers: Record<string, Handler> = {
         key,
         {
           tasks,
-          statuses: new Map(manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus])),
+          statuses: new Map(
+            manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
+          ),
           projectDir: config.projectDir,
           onLine: (_taskKey, line) => {
             send(socket, { id: req.id, event: "line", data: line });
@@ -141,7 +143,9 @@ async function runPopupTaskNonInteractive(
 ): Promise<boolean> {
   const tasks = config.project.tasks ?? {};
   const task = tasks[key];
-  if (!task?.commands) return false;
+  if (!task?.commands) {
+    return false;
+  }
 
   const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
   const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
@@ -180,7 +184,7 @@ export async function handleRequest(
   }
   try {
     return await handler(req, manager, config, socket);
-  } catch (e) {
-    return err(req.id, e instanceof Error ? e.message : String(e));
+  } catch (error) {
+    return err(req.id, error instanceof Error ? error.message : String(error));
   }
 }

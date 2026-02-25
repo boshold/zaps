@@ -1,0 +1,169 @@
+import { createHash } from "node:crypto";
+
+import type { ResolvedConfig } from "#src/config/types.js";
+import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+import type net from "node:net";
+
+import { LogBuffer } from "./log-buffer.js";
+import { LogMonitor } from "./log-monitor.js";
+
+type PaneMap = Record<string, string>;
+
+export interface SessionCreateParams {
+  configPath: string;
+  projectDir: string;
+  config: ResolvedConfig;
+  paneMap: PaneMap;
+  tmuxSession: string;
+  originPane: string;
+  deps: ServiceManagerDeps;
+}
+
+export function sessionId(configPath: string): string {
+  return createHash("sha256").update(configPath).digest("hex").slice(0, 12);
+}
+
+export class Session {
+  readonly id: string;
+  readonly name: string;
+  readonly configPath: string;
+  readonly projectDir: string;
+  readonly config: ResolvedConfig;
+  readonly paneMap: PaneMap;
+  readonly tmuxSession: string;
+  readonly originPane: string;
+  readonly manager: ServiceManager;
+  readonly logBuffers: Map<string, LogBuffer>;
+  readonly logMonitor: LogMonitor;
+  readonly subscribers = new Set<net.Socket>();
+  readonly createdAt = Date.now();
+
+  constructor(params: SessionCreateParams, manager: ServiceManager) {
+    this.id = sessionId(params.configPath);
+    this.name = params.config.project.name ?? "unnamed";
+    this.configPath = params.configPath;
+    this.projectDir = params.projectDir;
+    this.config = params.config;
+    this.paneMap = params.paneMap;
+    this.tmuxSession = params.tmuxSession;
+    this.originPane = params.originPane;
+    this.manager = manager;
+
+    // Create log buffers per service
+    this.logBuffers = new Map<string, LogBuffer>();
+    for (const svcName of Object.keys(params.config.project.services)) {
+      this.logBuffers.set(svcName, new LogBuffer());
+    }
+
+    // Log monitor: push new lines to buffers + broadcast to subscribers
+    this.logMonitor = new LogMonitor(
+      { capturePane: params.deps.capturePane },
+      this.logBuffers,
+      (serviceName, lines) => {
+        this.broadcast({
+          session: this.id,
+          event: "log.lines",
+          data: { service: serviceName, lines },
+        });
+      },
+    );
+
+    // Forward service stateChange events to subscribers
+    this.manager.on("stateChange", (svcName, status) => {
+      this.broadcast({
+        session: this.id,
+        event: "service.stateChange",
+        data: { name: svcName, status },
+      });
+    });
+
+    this.manager.on("taskStart", (taskKey, taskName) => {
+      this.broadcast({
+        session: this.id,
+        event: "task.start",
+        data: { key: taskKey, name: taskName },
+      });
+    });
+
+    this.manager.on("taskComplete", (taskKey, taskName, result) => {
+      this.broadcast({
+        session: this.id,
+        event: "task.complete",
+        data: { key: taskKey, name: taskName, result },
+      });
+    });
+  }
+
+  /**
+   * Start all services and begin log monitoring.
+   */
+  async startAll(): Promise<void> {
+    await this.manager.startAll();
+
+    // Start log monitoring for each service pane
+    for (const [svcName, paneId] of Object.entries(this.paneMap)) {
+      if (svcName !== "@tui") {
+        this.logMonitor.start(svcName, paneId);
+      }
+    }
+  }
+
+  /**
+   * Stop all services and clean up.
+   */
+  async destroy(): Promise<void> {
+    this.logMonitor.stopAll();
+    await this.manager.stopAll();
+
+    // Notify subscribers of session destruction
+    this.broadcast({ session: this.id, event: "session.destroyed", data: null });
+
+    // Close subscriber sockets
+    for (const sock of this.subscribers) {
+      sock.destroy();
+    }
+    this.subscribers.clear();
+  }
+
+  /**
+   * Get attach snapshot: statuses + log snapshots for each service.
+   */
+  attachSnapshot(): SessionSnapshot {
+    const logSnapshots: Record<string, string[]> = {};
+    for (const [svcName, buf] of this.logBuffers) {
+      logSnapshots[svcName] = buf.snapshot();
+    }
+    return {
+      id: this.id,
+      name: this.name,
+      paneMap: this.paneMap,
+      tmuxSession: this.tmuxSession,
+      originPane: this.originPane,
+      statuses: this.manager.getAllStatuses(),
+      logSnapshots,
+      configPath: this.configPath,
+      projectDir: this.projectDir,
+    };
+  }
+
+  broadcast(event: DaemonEvent): void {
+    const line = `${JSON.stringify(event)}\n`;
+    for (const sock of this.subscribers) {
+      sock.write(line);
+    }
+  }
+}
+
+export interface SessionSnapshot {
+  id: string;
+  name: string;
+  paneMap: PaneMap;
+  tmuxSession: string;
+  originPane: string;
+  statuses: ServiceStatus[];
+  logSnapshots: Record<string, string[]>;
+  configPath: string;
+  projectDir: string;
+}

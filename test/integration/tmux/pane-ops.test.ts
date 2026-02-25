@@ -19,7 +19,7 @@ describe.skipIf(!hasTmux())("tmux pane-ops integration", () => {
     await sendKeys(session.initialPaneId, "echo hello-world");
 
     // Wait for command to execute
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const output = await capturePane(session.initialPaneId);
     expect(output).toContain("hello-world");
@@ -38,14 +38,14 @@ describe.skipIf(!hasTmux())("tmux pane-ops integration", () => {
     const paneId = await splitPane(session.initialPaneId, "v");
 
     await sendKeys(paneId, longRunningCmd());
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     const rootPid = await panePid(paneId);
     const before = await getDescendantPids(rootPid);
     expect(before.length).toBeGreaterThan(1);
 
     await sendCtrlC(paneId);
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     const after = await getDescendantPids(rootPid);
     expect(after.length).toBeLessThanOrEqual(1);
@@ -55,11 +55,11 @@ describe.skipIf(!hasTmux())("tmux pane-ops integration", () => {
     session = await createTestSession();
 
     // Send several lines
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 5; i += 1) {
       // eslint-disable-next-line no-await-in-loop
       await sendKeys(session.initialPaneId, `echo line-${i}`);
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((resolve) => setTimeout(resolve, 1000));
 
     const full = await capturePane(session.initialPaneId, 100);
     const limited = await capturePane(session.initialPaneId, 3);

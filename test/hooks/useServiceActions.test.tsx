@@ -1,7 +1,8 @@
 /* eslint-disable typescript-eslint/unbound-method -- Mock method assertions */
+/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
 import { EventEmitter } from "node:events";
 
-import type { ServiceManager } from "../../src/lib/service/manager.js";
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
@@ -9,37 +10,38 @@ import { describe, expect, it, vi } from "vitest";
 
 import { useServiceActions } from "../../src/hooks/useServiceActions.js";
 
-function createMockManager(statuses: Record<string, ServiceStatus>): ServiceManager {
+function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
-
-  const manager = Object.assign(emitter, {
-    getAllStatuses: vi.fn(() => Object.values(statuses)),
-    getStatus: vi.fn((name: string) => {
-      const s = statuses[name];
-      if (!s) {
-        throw new Error(`Unknown service: ${name}`);
-      }
-      return s;
+  const client = Object.assign(emitter, {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: true,
+    session: "test",
+    attach: vi.fn().mockResolvedValue({
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+      paneMap: {},
+      statuses: [],
     }),
-    startService: vi.fn().mockResolvedValue(null),
-    stopService: vi.fn().mockResolvedValue(null),
-    restartService: vi.fn().mockResolvedValue(null),
-    startAll: vi.fn().mockResolvedValue(null),
-    stopAll: vi.fn().mockResolvedValue(null),
+    destroySession: vi.fn().mockResolvedValue(undefined),
+    listServices: vi.fn().mockResolvedValue([...statuses]),
+    startService: vi.fn().mockResolvedValue(undefined),
+    stopService: vi.fn().mockResolvedValue(undefined),
+    restartService: vi.fn().mockResolvedValue(undefined),
+    getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
-
-  return manager as unknown as ServiceManager;
+  return client as unknown as DaemonClient;
 }
 
 function makeStatus(name: string, state: ServiceStatus["state"] = "stopped"): ServiceStatus {
   return { name, state, ports: [], retryCount: 0 };
 }
 
-function renderActions(manager: ServiceManager) {
+function renderActions(client: DaemonClient) {
   let actionsRef: ReturnType<typeof useServiceActions> | null = null;
 
   function Wrapper() {
-    actionsRef = useServiceActions(manager);
+    actionsRef = useServiceActions(client);
     return <Text>ok</Text>;
   }
 
@@ -48,82 +50,50 @@ function renderActions(manager: ServiceManager) {
 }
 
 describe("useServiceActions", () => {
-  it("toggle: calls stopService when state is ready", async () => {
-    const manager = createMockManager({
-      api: makeStatus("api", "ready"),
-    });
+  it("toggle: calls stopService when service is running", async () => {
+    const client = createMockClient([makeStatus("api", "ready")]);
 
-    const actions = renderActions(manager);
+    const actions = renderActions(client);
     await actions.toggle("api");
-    expect(vi.mocked(manager.stopService)).toHaveBeenCalledWith("api");
-    expect(vi.mocked(manager.startService)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.stopService)).toHaveBeenCalledWith("api");
+    expect(vi.mocked(client.startService)).not.toHaveBeenCalled();
   });
 
-  it("toggle: calls stopService when state is starting", async () => {
-    const manager = createMockManager({
-      api: makeStatus("api", "starting"),
-    });
+  it("toggle: calls startService when stopService fails", async () => {
+    const client = createMockClient([makeStatus("api", "stopped")]);
+    vi.mocked(client.stopService).mockRejectedValueOnce(new Error("already stopped"));
 
-    const actions = renderActions(manager);
+    const actions = renderActions(client);
     await actions.toggle("api");
-    expect(vi.mocked(manager.stopService)).toHaveBeenCalledWith("api");
+    expect(vi.mocked(client.stopService)).toHaveBeenCalledWith("api");
+    expect(vi.mocked(client.startService)).toHaveBeenCalledWith("api");
   });
 
-  it("toggle: calls startService when state is stopped", async () => {
-    const manager = createMockManager({
-      api: makeStatus("api", "stopped"),
-    });
+  it("restart calls client.restartService", async () => {
+    const client = createMockClient([makeStatus("db", "ready")]);
 
-    const actions = renderActions(manager);
-    await actions.toggle("api");
-    expect(vi.mocked(manager.startService)).toHaveBeenCalledWith("api");
-    expect(vi.mocked(manager.stopService)).not.toHaveBeenCalled();
-  });
-
-  it("toggle: calls startService when state is error", async () => {
-    const manager = createMockManager({
-      api: makeStatus("api", "error"),
-    });
-
-    const actions = renderActions(manager);
-    await actions.toggle("api");
-    expect(vi.mocked(manager.startService)).toHaveBeenCalledWith("api");
-  });
-
-  it("restart calls manager.restartService", async () => {
-    const manager = createMockManager({
-      db: makeStatus("db", "ready"),
-    });
-
-    const actions = renderActions(manager);
+    const actions = renderActions(client);
     await actions.restart("db");
-    expect(vi.mocked(manager.restartService)).toHaveBeenCalledWith("db");
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
   });
 
-  it("restartAll calls stopAll then startAll", async () => {
-    const manager = createMockManager({
-      db: makeStatus("db", "ready"),
-    });
+  it("restartAll calls listServices then restartService for each", async () => {
+    const statuses = [makeStatus("db", "ready"), makeStatus("api", "ready")];
+    const client = createMockClient(statuses);
 
-    const actions = renderActions(manager);
+    const actions = renderActions(client);
     await actions.restartAll();
-    expect(vi.mocked(manager.stopAll)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(manager.startAll)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(client.listServices)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
+    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("api");
   });
 
-  it("rebuildDocker calls manager.restartWithDockerOverrides", async () => {
-    const restartWithDockerOverrides = vi.fn().mockResolvedValue(null);
-    const manager = createMockManager({
-      db: makeStatus("db", "ready"),
-    });
-    (manager as unknown as Record<string, unknown>).restartWithDockerOverrides =
-      restartWithDockerOverrides;
+  it("rebuildDocker does not throw", async () => {
+    const client = createMockClient([makeStatus("db", "ready")]);
 
-    const actions = renderActions(manager);
-    await actions.rebuildDocker("db", { build: true, forceRecreate: true });
-    expect(restartWithDockerOverrides).toHaveBeenCalledWith("db", {
-      build: true,
-      forceRecreate: true,
-    });
+    const actions = renderActions(client);
+    await expect(
+      actions.rebuildDocker("db", { build: true, forceRecreate: true }),
+    ).resolves.not.toThrow();
   });
 });

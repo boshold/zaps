@@ -1,61 +1,37 @@
 #!/usr/bin/env node
-import os from "node:os";
+/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol: result types known by contract */
 import path from "node:path";
 
-import type { ServiceManagerDeps } from "./lib/service/manager.js";
 import { program } from "commander";
 
+import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
 import { scaffoldConfig } from "./config/scaffold.js";
+import { ensureDaemon, runDaemon } from "./daemon/index.js";
+import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcStream } from "./lib/ipc/client.js";
-import { IpcServer } from "./lib/ipc/server.js";
-import { detectPorts, getDescendantPids } from "./lib/port.js";
-import { createLayout } from "./lib/tmux-layout.js";
 import {
-  capturePane,
   currentPaneId,
   currentSession,
-  getWindowName,
-  getWindowOption,
   killPane,
   listZapsSessions,
-  panePid,
-  removeEnv,
-  renameWindow,
   selectPane,
-  sendCtrlC,
   sendKeys,
-  setEnv,
-  setWindowOption,
   showEnv,
 } from "./lib/tmux.js";
 
 declare const __BUILD_TIME__: string;
-
-function isPaneMap(value: unknown): value is Record<string, string> {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  for (const v of Object.values(value)) {
-    if (typeof v !== "string") {
-      return false;
-    }
-  }
-  return true;
-}
 
 function resolveCommand(): string {
   const zapsCommand = getEnv("ZAPS_COMMAND");
   if (zapsCommand) {
     return zapsCommand;
   }
-  // Compiled bun binary: argv[1] is virtual /$bunfs/ path
   if (process.argv[1]?.startsWith("/$bunfs/")) {
     return path.basename(process.execPath);
   }
-  // Dev mode (tsx/node): need runtime + script
   return process.argv.slice(0, 2).join(" ");
 }
 
@@ -64,7 +40,6 @@ function resolveRuntime(): string {
   if (env) {
     return env;
   }
-  // Compiled bun binary invoked directly (no bash wrapper)
   if (process.argv[1]?.startsWith("/$bunfs/")) {
     return "native";
   }
@@ -78,22 +53,34 @@ program
   )
   .description("Terminal session manager");
 
-/**
- * Build real ServiceManagerDeps from the actual tmux/port modules.
- */
-function buildDeps(): ServiceManagerDeps {
-  return {
-    sendKeys,
-    sendCtrlC,
-    panePid,
-    detectPorts,
-    capturePane,
-    getDescendantPids,
-    renameWindow,
-    getWindowName,
-    getWindowOption,
-    setWindowOption,
-  };
+interface SessionInfo {
+  id: string;
+  name: string;
+  projectDir: string;
+}
+
+function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
+  if (sessionArg) {
+    const found = sessions.find((s) => s.id === sessionArg || s.name === sessionArg);
+    if (!found) {
+      process.stderr.write(`Session not found: ${sessionArg}\n`);
+      process.exit(1);
+    }
+    return found;
+  }
+  if (sessions.length === 1) {
+    return sessions[0];
+  }
+  const cwd = process.cwd();
+  const match = sessions.find((s) => s.projectDir === cwd);
+  if (match) {
+    return match;
+  }
+  process.stderr.write("Multiple sessions running. Specify one:\n");
+  for (const s of sessions) {
+    process.stderr.write(`  ${s.id}  ${s.name}  ${s.projectDir}\n`);
+  }
+  process.exit(1);
 }
 
 program
@@ -107,99 +94,67 @@ program
     }
 
     const invokeDir = process.cwd();
-    const config = await loadConfig(configPath, invokeDir);
 
-    // Must be inside tmux
     if (!getEnv("TMUX")) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
     }
 
-    // Get current pane and session
     const originPane = await currentPaneId();
-    const sessionName = await currentSession();
+    const tmuxSession = await currentSession();
 
-    // Build pane layout starting from current pane
-    const { paneMap, focusPane } = await createLayout(
+    const command = resolveCommand();
+    const sock = await ensureDaemon(command);
+
+    const res = await ipcRequest(sock, "session.create", {
+      configPath,
+      projectDir: invokeDir,
+      tmuxSession,
       originPane,
-      config.project.layout,
-      config.project.services,
-    );
+    });
 
-    // Focus the designated pane (defaults to @tui)
-    await selectPane(focusPane);
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
 
-    // Serialize pane map, origin pane, and invoke dir to tmux env
-    await setEnv(sessionName, "ZAPS_PANE_MAP", JSON.stringify(paneMap));
-    await setEnv(sessionName, "ZAPS_ORIGIN_PANE", originPane);
-    await setEnv(sessionName, "ZAPS_INVOKE_DIR", invokeDir);
+    const session = res.result as { id: string; name: string; paneMap: Record<string, string> };
+    const tuiPaneId = session.paneMap["@tui"];
 
-    const tuiPaneId = paneMap["@tui"];
+    await selectPane(tuiPaneId);
 
-    // Launch inner process in @tui pane
     if (tuiPaneId === originPane) {
-      // Same pane: become the inner process directly — no subprocess, no sendKeys
-      await runTui({ start: true });
+      await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
     } else {
-      // Different pane: send command via tmux IPC
-      await sendKeys(tuiPaneId, `${resolveCommand()} ui --start; exit`);
+      await sendKeys(
+        tuiPaneId,
+        `${command} ui --session ${session.id} --socket ${sock} --start; exit`,
+      );
     }
   });
 
-async function runTui(opts: { start?: boolean }): Promise<void> {
-  const configPath = discoverConfig(process.cwd());
-  if (!configPath) {
-    process.stderr.write("No config found.\n");
-    process.exit(1);
-  }
+async function runTui(opts: {
+  sessionId: string;
+  socketPath: string;
+  autoStart?: boolean;
+}): Promise<void> {
+  const client = new DaemonClient(opts.socketPath, opts.sessionId);
+  client.connect();
 
-  const sessionName = await currentSession();
+  const snapshot = await client.attach();
+  const config = await loadConfig(snapshot.configPath, snapshot.projectDir);
 
-  // Read invoke dir from tmux environment (set by `zaps dev`)
-  const invokeDir = await showEnv(sessionName, "ZAPS_INVOKE_DIR");
-
-  const config = await loadConfig(configPath, invokeDir || process.cwd());
-
-  // Read pane map from tmux environment
-  const paneMapRaw = await showEnv(sessionName, "ZAPS_PANE_MAP");
-  if (!paneMapRaw) {
-    process.stderr.write("ZAPS_PANE_MAP not set. Must run via `zaps dev`.\n");
-    process.exit(1);
-  }
-
-  const parsed: unknown = JSON.parse(paneMapRaw);
-  if (!isPaneMap(parsed)) {
-    process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
-    process.exit(1);
-  }
-  const paneMap = parsed;
-  const deps = buildDeps();
-  const { ServiceManager } = await import("./lib/service/manager.js");
-  const manager = new ServiceManager(config, paneMap, deps, sessionName);
-
-  // Start IPC server
-  const socketPath = `${os.tmpdir()}/zaps-${sessionName.replaceAll("/", "-")}.sock`;
-  const ipcServer = new IpcServer(socketPath, manager, config);
-  await ipcServer.start();
-  await setEnv(sessionName, "ZAPS_IPC_SOCKET", socketPath);
-
-  // Render TUI (dynamic import to avoid TLA from ink/yoga-layout at top level)
-  // Ensure yoga-wasm is loaded before Ink creates layout nodes.
-  // The build plugin (scripts/build.ts) exposes __yogaReady on the Proxy default export.
-  // In dev (unbundled), yoga-layout's real TLA handles init, so this resolves undefined (no-op).
   const { default: yoga } = await import("yoga-layout");
-  // eslint-disable-next-line typescript/no-unsafe-type-assertion -- Build plugin exposes __yogaReady on Proxy
   await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
 
-  // Enter alternate screen buffer (like vim/htop) so TUI output doesn't linger after exit
   process.stdout.write("\x1b[?1049h");
 
-  // Show ANSI splash while Ink loads — uses tmux pane dimensions for correct centering
-  if (opts.start) {
+  if (opts.autoStart) {
     const { renderSplash } = await import("./components/logo.js");
     const { listPanes } = await import("./lib/tmux.js");
-    const panes = await listPanes(sessionName);
-    const tuiPane = panes.find((p) => p.id === paneMap["@tui"]);
+    const tmuxSession = await currentSession();
+    const panes = await listPanes(tmuxSession);
+    const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
     if (tuiPane) {
       renderSplash({ cols: tuiPane.width, rows: tuiPane.height });
     } else {
@@ -211,58 +166,92 @@ async function runTui(opts: { start?: boolean }): Promise<void> {
   const { App } = await import("./components/App.js");
 
   const { waitUntilExit } = render(
-    <App manager={manager} config={config} paneMap={paneMap} autoStart={Boolean(opts.start)} />,
-    {
-      patchConsole: false,
-    },
+    <App
+      client={client}
+      config={config}
+      paneMap={snapshot.paneMap}
+      initialStatuses={snapshot.statuses}
+      autoStart={Boolean(opts.autoStart)}
+    />,
+    { patchConsole: false },
   );
 
   await waitUntilExit();
 
-  // Leave alternate screen buffer — restores original terminal content
   process.stdout.write("\x1b[?1049l");
-
-  // Read origin pane before cleaning env (needed for pane-killing loop)
-  const originPane = await showEnv(sessionName, "ZAPS_ORIGIN_PANE");
-
-  // Stop IPC server and remove env vars early so `zaps sessions` no longer sees this as alive
-  ipcServer.stop();
-  await removeEnv(sessionName, "ZAPS_IPC_SOCKET").catch(() => {});
-  await removeEnv(sessionName, "ZAPS_PANE_MAP").catch(() => {});
-  await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {});
-  await removeEnv(sessionName, "ZAPS_INVOKE_DIR").catch(() => {});
-
-  // Cleanup — stopAll is idempotent, and it fires onStop hook internally
-  await manager.stopAll();
-  const tuiPaneId = paneMap["@tui"];
-  for (const paneId of Object.values(paneMap)) {
-    if (paneId !== originPane && paneId !== tuiPaneId) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
-      await killPane(paneId).catch(() => {
-        /* Pane may already be gone */
-      });
-    }
-  }
-  // TUI pane closes automatically on process exit (launched via exec)
+  client.disconnect();
 }
 
 program
   .command("ui")
   .description("Run zaps TUI (called by dev command)")
   .option("--start", "Start services before rendering TUI")
-  .action(runTui);
+  .requiredOption("--session <id>", "Daemon session ID")
+  .requiredOption("--socket <path>", "Daemon socket path")
+  .action(async (opts: { start?: boolean; session: string; socket: string }) => {
+    await runTui({ sessionId: opts.session, socketPath: opts.socket, autoStart: opts.start });
+  });
+
+program
+  .command("attach [session]")
+  .description("Attach to a running zaps session")
+  .action(async (sessionArg?: string) => {
+    if (!getEnv("TMUX")) {
+      process.stderr.write("zaps must be run from inside a tmux session.\n");
+      process.exit(1);
+    }
+
+    const sock = socketPath();
+    if (!isDaemonRunning()) {
+      process.stderr.write("No running daemon found.\n");
+      process.exit(1);
+    }
+
+    const res = await ipcRequest(sock, "session.list");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+
+    const sessions = res.result as { id: string; name: string; projectDir: string }[];
+    if (sessions.length === 0) {
+      process.stderr.write("No active sessions.\n");
+      process.exit(1);
+    }
+
+    const targetSession = resolveTargetSession(sessions, sessionArg);
+    await runTui({ sessionId: targetSession.id, socketPath: sock });
+  });
 
 program
   .command("sessions")
   .description("List running zaps instances")
   .action(async () => {
-    const sessions = await listZapsSessions();
-    if (sessions.length === 0) {
-      process.stdout.write("No running zaps instances found.\n");
+    const sock = socketPath();
+    if (!isDaemonRunning()) {
+      const sessions = await listZapsSessions();
+      if (sessions.length === 0) {
+        process.stdout.write("No running zaps instances found.\n");
+        return;
+      }
+      for (const { session, panes } of sessions) {
+        process.stdout.write(`${session} (${panes} panes)\n`);
+      }
       return;
     }
-    for (const { session, panes } of sessions) {
-      process.stdout.write(`${session} (${panes} panes)\n`);
+
+    const res = await ipcRequest(sock, "session.list");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+    const sessions = res.result as { id: string; name: string; projectDir: string }[];
+    if (sessions.length === 0) {
+      process.stdout.write("No active sessions.\n");
+      return;
+    }
+    for (const s of sessions) {
+      process.stdout.write(`${s.id}  ${s.name}  ${s.projectDir}\n`);
     }
   });
 
@@ -280,28 +269,55 @@ program
     process.stdout.write(`Created ${written}\n`);
   });
 
-async function withIpc<T>(fn: (socketPath: string) => Promise<T>): Promise<T> {
+// --- CLI session routing ---
+
+async function withDaemon<T>(fn: (sock: string, sessionId: string) => Promise<T>): Promise<T> {
+  const sock = socketPath();
+  if (!isDaemonRunning()) {
+    return withLegacyIpc(fn);
+  }
+
+  const res = await ipcRequest(sock, "session.list");
+  if (res.error) {
+    process.stderr.write(`Error: ${res.error}\n`);
+    process.exit(1);
+  }
+  const sessions = res.result as { id: string; projectDir: string }[];
+  const cwd = process.cwd();
+  const match = sessions.find((s) => s.projectDir === cwd);
+
+  if (!match && sessions.length === 1) {
+    return fn(sock, sessions[0].id);
+  }
+  if (!match) {
+    process.stderr.write("No running zaps session found for this directory.\n");
+    process.exit(1);
+  }
+  return fn(sock, match.id);
+}
+
+async function withLegacyIpc<T>(fn: (sock: string, sessionId: string) => Promise<T>): Promise<T> {
   if (!getEnv("TMUX")) {
     process.stderr.write("Must be inside a tmux session.\n");
     process.exit(1);
   }
-
-  const sessionName = await currentSession();
-  const socketPath = await showEnv(sessionName, "ZAPS_IPC_SOCKET");
-  if (!socketPath) {
+  const tmuxSession = await currentSession();
+  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
+  if (!legacySock) {
     process.stderr.write("No running zaps instance found in this session.\n");
     process.exit(1);
   }
-
-  return fn(socketPath);
+  return fn(legacySock, "");
 }
 
 function formatTable(rows: string[][]): string {
-  if (rows.length === 0) return "";
+  if (rows.length === 0) {
+    return "";
+  }
   const cols = rows[0].length;
   const widths: number[] = Array.from({ length: cols }, () => 0);
   for (const row of rows) {
-    for (let i = 0; i < cols; i++) {
+    for (let i = 0; i < cols; i += 1) {
       widths[i] = Math.max(widths[i], row[i].length);
     }
   }
@@ -313,7 +329,7 @@ program
   .description("List services from running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withIpc(async (sock) => {
+    await withDaemon(async (sock) => {
       const res = await ipcRequest(sock, "services.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
@@ -323,12 +339,12 @@ program
         process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
         return;
       }
-      const statuses = res.result as Array<{
+      const statuses = res.result as {
         name: string;
         state: string;
         ports: number[];
         url?: string;
-      }>;
+      }[];
       if (statuses.length === 0) {
         process.stdout.write("No services configured.\n");
         return;
@@ -346,7 +362,7 @@ program
   .description("List tasks from running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withIpc(async (sock) => {
+    await withDaemon(async (sock) => {
       const res = await ipcRequest(sock, "tasks.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
@@ -356,7 +372,7 @@ program
         process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
         return;
       }
-      const tasks = res.result as Array<{ key: string; name: string; description: string | null }>;
+      const tasks = res.result as { key: string; name: string; description: string | null }[];
       if (tasks.length === 0) {
         process.stdout.write("No tasks configured.\n");
         return;
@@ -376,17 +392,12 @@ taskCmd
   .description("Run a task on the running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (key: string, opts: { json?: boolean }) => {
-    await withIpc(async (sock) => {
-      const res = await ipcStream(
-        sock,
-        "tasks.run",
-        { key },
-        (event, data) => {
-          if (!opts.json && event === "line") {
-            process.stdout.write(`${data as string}\n`);
-          }
-        },
-      );
+    await withDaemon(async (sock) => {
+      const res = await ipcStream(sock, "tasks.run", { key }, (event, data) => {
+        if (!opts.json && event === "line") {
+          process.stdout.write(`${data as string}\n`);
+        }
+      });
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
@@ -410,7 +421,7 @@ serviceCmd
   .description("Show service details")
   .option("--json", "Output as JSON")
   .action(async (name: string, opts: { json?: boolean }) => {
-    await withIpc(async (sock) => {
+    await withDaemon(async (sock) => {
       const res = await ipcRequest(sock, "services.details", { name });
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
@@ -420,9 +431,15 @@ serviceCmd
         process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
         return;
       }
-      const d = res.result as Record<string, unknown>;
-      for (const [k, v] of Object.entries(d)) {
-        const val = Array.isArray(v) ? v.join(", ") || "-" : String(v ?? "-");
+      const details = res.result as Record<string, unknown>;
+      for (const [k, v] of Object.entries(details)) {
+        const val = Array.isArray(v)
+          ? v.join(", ") || "-"
+          : v === null
+            ? "-"
+            : typeof v === "object"
+              ? JSON.stringify(v)
+              : `${v as string | number | boolean}`; // eslint-disable-line no-nested-ternary -- Compact value formatting
         process.stdout.write(`${k}: ${val}\n`);
       }
     });
@@ -434,7 +451,7 @@ for (const action of ["start", "stop", "restart"] as const) {
     .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} a service`)
     .option("--json", "Output as JSON")
     .action(async (name: string, opts: { json?: boolean }) => {
-      await withIpc(async (sock) => {
+      await withDaemon(async (sock) => {
         const res = await ipcRequest(sock, `services.${action}`, { name });
         if (res.error) {
           process.stderr.write(`Error: ${res.error}\n`);
@@ -451,29 +468,44 @@ for (const action of ["start", "stop", "restart"] as const) {
 
 program
   .command("down")
-  .description("Stop all services and kill spawned panes")
+  .description("Stop all services and destroy session")
   .action(async () => {
-    // Must be inside tmux
+    const sock = socketPath();
+    if (isDaemonRunning()) {
+      const res = await ipcRequest(sock, "session.list");
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      const sessions = res.result as { id: string; projectDir: string }[];
+      const cwd = process.cwd();
+      const match = sessions.find((s) => s.projectDir === cwd) ?? sessions[0];
+      if (match) {
+        const destroyRes = await ipcRequest(sock, "session.destroy");
+        if (destroyRes.error) {
+          process.stderr.write(`Error: ${destroyRes.error}\n`);
+        } else {
+          process.stdout.write("Session destroyed.\n");
+        }
+      } else {
+        process.stderr.write("No active session found.\n");
+      }
+      return;
+    }
+
     if (!getEnv("TMUX")) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
     }
 
-    const sessionName = await currentSession();
-
-    // Read pane map from tmux env
-    const raw = await showEnv(sessionName, "ZAPS_PANE_MAP");
+    const tmuxSession = await currentSession();
+    const raw = await showEnv(tmuxSession, "ZAPS_PANE_MAP");
     if (!raw) {
       process.stderr.write("No active zaps panes found in this session.\n");
       process.exit(1);
     }
 
-    const parsedDown: unknown = JSON.parse(raw);
-    if (!isPaneMap(parsedDown)) {
-      process.stderr.write("ZAPS_PANE_MAP is not a valid pane map.\n");
-      process.exit(1);
-    }
-    const paneMap = parsedDown;
+    const paneMap = JSON.parse(raw) as Record<string, string>;
     const originPane = await currentPaneId();
 
     let killed = 0;
@@ -481,23 +513,84 @@ program
       if (paneId !== originPane) {
         // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         await killPane(paneId).catch(() => {
-          /* Pane may already be gone */
+          /* Best-effort cleanup */
         });
         killed += 1;
       }
     }
-
-    await removeEnv(sessionName, "ZAPS_PANE_MAP").catch(() => {
-      /* Session may already be gone */
-    });
-    await removeEnv(sessionName, "ZAPS_ORIGIN_PANE").catch(() => {
-      /* Session may already be gone */
-    });
-    await removeEnv(sessionName, "ZAPS_INVOKE_DIR").catch(() => {
-      /* Session may already be gone */
-    });
-
     process.stdout.write(`Killed ${killed} pane(s).\n`);
+  });
+
+// --- Daemon management ---
+
+const daemonCmd = program.command("daemon").description("Daemon management");
+
+daemonCmd
+  .command("run")
+  .description("Run daemon in foreground (internal)")
+  .action(async () => {
+    await runDaemon();
+  });
+
+daemonCmd
+  .command("start")
+  .description("Start the background daemon")
+  .action(async () => {
+    if (isDaemonRunning()) {
+      process.stdout.write("Daemon already running.\n");
+      return;
+    }
+    const command = resolveCommand();
+    await ensureDaemon(command);
+    process.stdout.write("Daemon started.\n");
+  });
+
+daemonCmd
+  .command("stop")
+  .description("Stop the background daemon")
+  .action(async () => {
+    if (!isDaemonRunning()) {
+      process.stdout.write("Daemon not running.\n");
+      return;
+    }
+    const sock = socketPath();
+    await ipcRequest(sock, "daemon.shutdown").catch(() => {
+      /* Best-effort */
+    });
+    process.stdout.write("Daemon stopped.\n");
+  });
+
+daemonCmd
+  .command("status")
+  .description("Show daemon status")
+  .option("--json", "Output as JSON")
+  .action(async (opts: { json?: boolean }) => {
+    if (!isDaemonRunning()) {
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify({ running: false })}\n`);
+      } else {
+        process.stdout.write("Daemon not running.\n");
+      }
+      return;
+    }
+    const sock = socketPath();
+    const res = await ipcRequest(sock, "daemon.status");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+    if (opts.json) {
+      process.stdout.write(
+        `${JSON.stringify({ running: true, ...(res.result as object) }, null, 2)}\n`,
+      );
+    } else {
+      const status = res.result as { pid: number; sessions: { id: string; name: string }[] };
+      process.stdout.write(`Daemon running (PID ${status.pid})\n`);
+      process.stdout.write(`Sessions: ${status.sessions.length}\n`);
+      for (const s of status.sessions) {
+        process.stdout.write(`  ${s.id}  ${s.name}\n`);
+      }
+    }
   });
 
 program.parse();

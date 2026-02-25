@@ -1,3 +1,8 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import {
@@ -11,11 +16,6 @@ import {
   setWindowOption,
 } from "#src/lib/tmux.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";

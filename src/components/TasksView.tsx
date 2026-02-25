@@ -25,8 +25,8 @@ export function TasksView({
   taskHistory,
   onTaskComplete,
 }: TasksViewProps) {
-  const { config, manager } = useZaps();
-  const statuses = useServices(manager);
+  const { config, client } = useZaps();
+  const statuses = useServices(client, []);
   const { stdout } = useStdout();
   const termCols = stdout?.columns ?? 80;
   const tasks = Object.entries(config.project.tasks ?? {});

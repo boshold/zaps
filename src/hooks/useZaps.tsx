@@ -1,13 +1,13 @@
+import type { DaemonClient } from "#src/client/daemon-client.js";
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
 import type { ResolvedConfig } from "#src/config/types.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ReactNode } from "react";
 import { createContext, useContext } from "react";
 
 type PaneMap = Record<string, string>;
 
 interface AppContextValue {
-  manager: ServiceManager;
+  client: DaemonClient;
   config: ResolvedConfig;
   paneMap: PaneMap;
 }
@@ -15,17 +15,17 @@ interface AppContextValue {
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({
-  manager,
+  client,
   config,
   paneMap,
   children,
 }: {
-  manager: ServiceManager;
+  client: DaemonClient;
   config: ResolvedConfig;
   paneMap: PaneMap;
   children: ReactNode;
 }) {
-  return <AppContext.Provider value={{ manager, config, paneMap }}>{children}</AppContext.Provider>;
+  return <AppContext.Provider value={{ client, config, paneMap }}>{children}</AppContext.Provider>;
 }
 
 export function useZaps(): AppContextValue {

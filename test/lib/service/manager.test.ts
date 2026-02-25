@@ -1689,7 +1689,7 @@ describe("onOutput monitoring", () => {
 });
 
 // =============================================================================
-// restartWithDockerOverrides
+// RestartWithDockerOverrides
 // =============================================================================
 
 describe("restartWithDockerOverrides", () => {
@@ -1730,9 +1730,7 @@ describe("restartWithDockerOverrides", () => {
 
     // Restart with overrides — stop phase needs descendants to drop
     let processRunning = true;
-    deps.getDescendantPids = vi.fn(async () =>
-      processRunning ? [1000, 2000] : [1000],
-    );
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
     deps.sendCtrlC = vi.fn(async () => {
       processRunning = false;
     });
@@ -1764,9 +1762,7 @@ describe("restartWithDockerOverrides", () => {
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
-    await expect(
-      mgr.restartWithDockerOverrides("db", { build: true }),
-    ).rejects.toThrow();
+    await expect(mgr.restartWithDockerOverrides("db", { build: true })).rejects.toThrow();
 
     // Original config should still be restored
     expect(config.project.services.db.docker?.build).toBeUndefined();

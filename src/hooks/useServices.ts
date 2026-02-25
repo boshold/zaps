@@ -1,29 +1,46 @@
-import type { ServiceManager } from "#src/lib/service/manager.js";
+/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- useEffect cannot be async */
+import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { useEffect, useState } from "react";
 
-export function useServices(manager: ServiceManager) {
-  const [statuses, setStatuses] = useState<ServiceStatus[]>(() => manager.getAllStatuses());
+export function useServices(client: DaemonClient, initialStatuses: ServiceStatus[]) {
+  const [statuses, setStatuses] = useState<ServiceStatus[]>(initialStatuses);
 
   useEffect(() => {
-    function onStateChange(_name: string, _status: ServiceStatus) {
-      setStatuses(manager.getAllStatuses());
+    function onStateChange(_name: string, status: ServiceStatus) {
+      setStatuses((prev) => {
+        const idx = prev.findIndex((s) => s.name === status.name);
+        if (idx === -1) {
+          return prev;
+        }
+        const next = [...prev];
+        next[idx] = status;
+        return next;
+      });
     }
-    manager.on("stateChange", onStateChange);
+    client.on("service.stateChange", onStateChange);
     return () => {
-      manager.off("stateChange", onStateChange);
+      client.off("service.stateChange", onStateChange);
     };
-  }, [manager]);
+  }, [client]);
 
-  // Also poll every 2s for port updates (ports change without state events)
+  // Poll every 2s for port updates (ports may change without state events)
   useEffect(() => {
     const id = setInterval(() => {
-      setStatuses(manager.getAllStatuses());
+      // eslint-disable-next-line no-void -- Fire-and-forget poll
+      void (async () => {
+        try {
+          const result = await client.listServices();
+          setStatuses(result);
+        } catch {
+          // Poll failed — ignore
+        }
+      })();
     }, 2000);
     return () => {
       clearInterval(id);
     };
-  }, [manager]);
+  }, [client]);
 
   return statuses;
 }

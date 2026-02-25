@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import type { ResolvedConfig } from "../../src/config/types.js";
-import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,18 +20,27 @@ function makeConfig(tasks: ResolvedConfig["project"]["tasks"] = {}): ResolvedCon
   };
 }
 
-function createMockManager(): ServiceManager {
+function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();
-  const manager = Object.assign(emitter, {
-    getAllStatuses: vi.fn(() => []),
-    getStatus: vi.fn(),
-    startService: vi.fn(),
-    stopService: vi.fn(),
-    restartService: vi.fn(),
-    startAll: vi.fn(),
-    stopAll: vi.fn(),
+  const client = Object.assign(emitter, {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: true,
+    session: "test",
+    attach: vi.fn().mockResolvedValue({
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+      paneMap: {},
+      statuses: [],
+    }),
+    destroySession: vi.fn().mockResolvedValue(undefined),
+    listServices: vi.fn().mockResolvedValue([]),
+    startService: vi.fn().mockResolvedValue(undefined),
+    stopService: vi.fn().mockResolvedValue(undefined),
+    restartService: vi.fn().mockResolvedValue(undefined),
+    getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
-  return manager as unknown as ServiceManager;
+  return client as unknown as DaemonClient;
 }
 
 describe("TasksView", () => {
@@ -40,10 +49,10 @@ describe("TasksView", () => {
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
       seed: { name: "Seed DB", commands: "pnpm db:seed" },
     });
-    const manager = createMockManager();
+    const client = createMockClient();
 
     const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
+      <AppProvider client={client} config={config} paneMap={{}}>
         <TasksView
           selectedIndex={0}
           runTrigger={0}
@@ -63,10 +72,10 @@ describe("TasksView", () => {
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
       seed: { name: "Seed DB", commands: "pnpm db:seed" },
     });
-    const manager = createMockManager();
+    const client = createMockClient();
 
     const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
+      <AppProvider client={client} config={config} paneMap={{}}>
         <TasksView
           selectedIndex={1}
           runTrigger={0}
@@ -84,10 +93,10 @@ describe("TasksView", () => {
     const config = makeConfig({
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
     });
-    const manager = createMockManager();
+    const client = createMockClient();
 
     const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
+      <AppProvider client={client} config={config} paneMap={{}}>
         <TasksView
           selectedIndex={0}
           runTrigger={0}
@@ -105,10 +114,10 @@ describe("TasksView", () => {
     const config = makeConfig({
       migrate: { name: "Run migrations", commands: "pnpm db:migrate" },
     });
-    const manager = createMockManager();
+    const client = createMockClient();
 
     const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
+      <AppProvider client={client} config={config} paneMap={{}}>
         <TasksView
           selectedIndex={0}
           runTrigger={0}
@@ -125,10 +134,10 @@ describe("TasksView", () => {
 
   it("renders empty when no tasks defined", () => {
     const config = makeConfig({});
-    const manager = createMockManager();
+    const client = createMockClient();
 
     const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
+      <AppProvider client={client} config={config} paneMap={{}}>
         <TasksView
           selectedIndex={0}
           runTrigger={0}

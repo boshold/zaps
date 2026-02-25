@@ -1,35 +1,42 @@
-import { capturePane } from "#src/lib/tmux.js";
-import { useEffect, useRef, useState } from "react";
+/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- useEffect cannot be async */
+import type { DaemonClient } from "#src/client/daemon-client.js";
+import { useEffect, useState } from "react";
 
-export function useLogs(paneTarget: string | null) {
+export function useLogs(client: DaemonClient, serviceName: string | null) {
   const [lines, setLines] = useState<string[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
-  const fetchingRef = useRef(false);
   const [offset, setOffset] = useState(0);
 
+  // Fetch initial snapshot + subscribe to new lines
   useEffect(() => {
-    if (!paneTarget) {
+    if (!serviceName) {
+      setLines([]);
       return;
     }
-    const id = setInterval(() => {
-      if (fetchingRef.current) {
+
+    // Load initial snapshot
+    // eslint-disable-next-line no-void -- Fire-and-forget snapshot load
+    void (async () => {
+      try {
+        const snapshot = await client.getLogSnapshot(serviceName);
+        setLines(snapshot);
+      } catch {
+        // Snapshot failed — ignore
+      }
+    })();
+
+    function onLogLines(svc: string, newLines: string[]) {
+      if (svc !== serviceName) {
         return;
       }
-      fetchingRef.current = true;
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void (async () => {
-        try {
-          const output = await capturePane(paneTarget, 200);
-          setLines(output.split("\n"));
-        } finally {
-          fetchingRef.current = false;
-        }
-      })();
-    }, 500);
+      setLines((prev) => [...prev, ...newLines]);
+    }
+
+    client.on("log.lines", onLogLines);
     return () => {
-      clearInterval(id);
+      client.off("log.lines", onLogLines);
     };
-  }, [paneTarget]);
+  }, [client, serviceName]);
 
   function scrollUp() {
     setAutoScroll(false);
