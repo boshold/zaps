@@ -169,6 +169,71 @@ export const sessionHandlers: Record<
     }
   },
 
+  async "services.startAll"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return err(req.id, "Unknown session");
+    }
+    const params = req.params as { names?: string[] } | undefined;
+    try {
+      if (params?.names) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential start respects deps
+        for (const name of params.names) {
+          await session.manager.startService(name);
+        }
+        return ok(req.id, { started: params.names });
+      }
+      await session.manager.startAll();
+      return ok(req.id, { started: "all" });
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  async "services.stopAll"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return err(req.id, "Unknown session");
+    }
+    const params = req.params as { names?: string[] } | undefined;
+    try {
+      if (params?.names) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential stop for safety
+        for (const name of params.names) {
+          await session.manager.stopService(name);
+        }
+        return ok(req.id, { stopped: params.names });
+      }
+      await session.manager.stopAll();
+      return ok(req.id, { stopped: "all" });
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  async "services.restartAll"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return err(req.id, "Unknown session");
+    }
+    const params = req.params as { names?: string[] } | undefined;
+    try {
+      if (params?.names) {
+        // eslint-disable-next-line no-await-in-loop -- Sequential restart for safety
+        for (const name of params.names) {
+          await session.manager.restartService(name);
+        }
+        return ok(req.id, { restarted: params.names });
+      }
+      // Restart all: stop all then start all
+      await session.manager.stopAll();
+      await session.manager.startAll();
+      return ok(req.id, { restarted: "all" });
+    } catch (error) {
+      return err(req.id, error instanceof Error ? error.message : String(error));
+    }
+  },
+
   async "tasks.list"(req, store) {
     const session = getSession(req, store);
     if (!session) {

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -9,6 +10,8 @@ import type net from "node:net";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
+
+const MAX_TASK_HISTORY = 50;
 
 type PaneMap = Record<string, string>;
 
@@ -60,6 +63,7 @@ export class Session {
   readonly logMonitor: LogMonitor;
   readonly subscribers = new Set<net.Socket>();
   readonly createdAt = Date.now();
+  readonly taskHistory: TaskRunRecord[] = [];
 
   constructor(params: SessionCreateParams, manager: ServiceManager) {
     this.id = sessionId(params.configPath);
@@ -101,6 +105,7 @@ export class Session {
     });
 
     this.manager.on("taskStart", (taskKey, taskName) => {
+      this.pushTaskRecord({ taskKey, taskName, result: "running", timestamp: Date.now() });
       this.broadcast({
         session: this.id,
         event: "task.start",
@@ -109,12 +114,34 @@ export class Session {
     });
 
     this.manager.on("taskComplete", (taskKey, taskName, result) => {
+      this.pushTaskRecord({ taskKey, taskName, result, timestamp: Date.now() });
       this.broadcast({
         session: this.id,
         event: "task.complete",
         data: { key: taskKey, name: taskName, result },
       });
     });
+  }
+
+  private pushTaskRecord(record: TaskRunRecord): void {
+    if (record.result === "running") {
+      this.taskHistory.unshift(record);
+      if (this.taskHistory.length > MAX_TASK_HISTORY) {
+        this.taskHistory.length = MAX_TASK_HISTORY;
+      }
+      return;
+    }
+    const runningIdx = this.taskHistory.findIndex(
+      (r) => r.taskKey === record.taskKey && r.result === "running",
+    );
+    if (runningIdx !== -1) {
+      this.taskHistory[runningIdx] = record;
+    } else {
+      this.taskHistory.unshift(record);
+      if (this.taskHistory.length > MAX_TASK_HISTORY) {
+        this.taskHistory.length = MAX_TASK_HISTORY;
+      }
+    }
   }
 
   /**
@@ -196,6 +223,7 @@ export class Session {
       projectDir: this.projectDir,
       tasks,
       servicesMeta,
+      taskHistory: this.taskHistory,
     };
   }
 
@@ -219,4 +247,5 @@ export interface SessionSnapshot {
   projectDir: string;
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
+  taskHistory: TaskRunRecord[];
 }

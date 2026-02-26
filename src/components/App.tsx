@@ -2,6 +2,7 @@ import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 import { Router } from "./Router.js";
 
@@ -14,6 +15,7 @@ interface AppProps {
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
   initialStatuses: ServiceStatus[];
+  initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }
 
@@ -24,6 +26,7 @@ export function App({
   tasks,
   servicesMeta,
   initialStatuses,
+  initialTaskHistory,
   autoStart,
 }: AppProps) {
   return (
@@ -34,7 +37,11 @@ export function App({
       tasks={tasks}
       servicesMeta={servicesMeta}
     >
-      <Router initialStatuses={initialStatuses} autoStart={autoStart} />
+      <Router
+        initialStatuses={initialStatuses}
+        initialTaskHistory={initialTaskHistory}
+        autoStart={autoStart}
+      />
     </AppProvider>
   );
 }

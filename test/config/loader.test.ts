@@ -324,6 +324,48 @@ describe("loadConfig", () => {
     );
   });
 
+  it("throws when restartWith entry is not in dependsOn", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            db: { start: "start-db" },
+            api: { start: "start-api", dependsOn: ["db"], restartWith: ["cache"] },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath)).rejects.toThrow(
+      "Service 'api' restartWith 'cache' is not in dependsOn",
+    );
+  });
+
+  it("accepts valid restartWith subset of dependsOn", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            db: { start: "start-db" },
+            cache: { start: "start-cache" },
+            api: { start: "start-api", dependsOn: ["db", "cache"], restartWith: ["db"] },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.api.restartWith).toEqual(["db"]);
+  });
+
   it("throws on unknown task dependsOn ref", async () => {
     const configPath = writeConfig(
       ".zaps.ts",

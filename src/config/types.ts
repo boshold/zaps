@@ -64,6 +64,7 @@ export interface ServiceConfig {
   docker?: DockerConfig;
   ready?: ReadyConfig;
   dependsOn?: string[];
+  restartWith?: string[];
   env?: EnvConfig;
   flags?: ServiceFlags;
   url?: string | false | ((ctx: ServiceContext) => string);

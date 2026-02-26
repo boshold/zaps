@@ -37,6 +37,7 @@ function handleDashboardInput(
     goToLogs: (name: string) => void;
     goToTasks: () => void;
     goToDockerRebuild: (name: string) => void;
+    destroySession: () => void;
     paneMap: Record<string, string>;
   },
 ) {
@@ -82,6 +83,10 @@ function handleDashboardInput(
         ctx.busyRef.current = false;
       });
     }
+  }
+  if (input === "d") {
+    ctx.destroySession();
+    return;
   }
   if (input === "t") {
     ctx.goToTasks();
@@ -209,9 +214,11 @@ function handleDockerRebuildInput(
 
 export function Router({
   initialStatuses,
+  initialTaskHistory,
   autoStart,
 }: {
   initialStatuses: ServiceStatus[];
+  initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }) {
   const {
@@ -258,7 +265,7 @@ export function Router({
   const [runTrigger, setRunTrigger] = useState(0);
 
   // Task run history — shared between Dashboard and TasksView
-  const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>([]);
+  const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>(initialTaskHistory);
 
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => {
@@ -362,8 +369,8 @@ export function Router({
       return;
     }
 
-    // D / ctrl+d: shut down — destroy session from any view
-    if (input === "d" || (key.ctrl && input === "d")) {
+    // Ctrl+d: shut down — destroy session from any view
+    if (key.ctrl && input === "d") {
       if (busyRef.current) {
         return;
       }
@@ -392,6 +399,21 @@ export function Router({
         restartAll,
         goToLogs,
         goToTasks,
+        destroySession: () => {
+          if (busyRef.current) {
+            return;
+          }
+          busyRef.current = true;
+          client
+            .destroySession()
+            .catch(() => {
+              /* Graceful shutdown */
+            })
+            .finally(() => {
+              client.disconnect();
+              exit();
+            });
+        },
         paneMap,
         goToDockerRebuild: (name: string) => {
           const meta = svcMetaMap.get(name);

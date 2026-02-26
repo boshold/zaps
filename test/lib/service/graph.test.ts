@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { detectCycles, reverseTopoSort, topoSort } from "../../../src/lib/service/graph.js";
+import {
+  buildRestartWithMap,
+  detectCycles,
+  reverseTopoSort,
+  topoSort,
+} from "../../../src/lib/service/graph.js";
 
 describe("topoSort", () => {
   it("linear chain: a->b->c", () => {
@@ -103,5 +108,51 @@ describe("reverseTopoSort", () => {
 
     const result = reverseTopoSort(services);
     expect(result).toEqual([["c"], ["b"], ["a"]]);
+  });
+});
+
+describe("buildRestartWithMap", () => {
+  it("direct: db restart cascades to api", () => {
+    const services = {
+      db: {},
+      api: { dependsOn: ["db"], restartWith: ["db"] },
+    };
+
+    const map = buildRestartWithMap(services);
+    expect(map.get("db")).toEqual(["api"]);
+  });
+
+  it("transitive: db→api→frontend chain", () => {
+    const services = {
+      db: {},
+      api: { dependsOn: ["db"], restartWith: ["db"] },
+      frontend: { dependsOn: ["api"], restartWith: ["api"] },
+    };
+
+    const map = buildRestartWithMap(services);
+    expect(map.get("db")).toEqual(["api", "frontend"]);
+    expect(map.get("api")).toEqual(["frontend"]);
+  });
+
+  it("empty: no restartWith → empty map", () => {
+    const services = {
+      db: {},
+      api: { dependsOn: ["db"] },
+    };
+
+    const map = buildRestartWithMap(services);
+    expect(map.size).toBe(0);
+  });
+
+  it("partial: only some deps in restartWith", () => {
+    const services = {
+      db: {},
+      cache: {},
+      api: { dependsOn: ["db", "cache"], restartWith: ["db"] },
+    };
+
+    const map = buildRestartWithMap(services);
+    expect(map.get("db")).toEqual(["api"]);
+    expect(map.has("cache")).toBe(false);
   });
 });

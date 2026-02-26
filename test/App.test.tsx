@@ -69,6 +69,7 @@ function renderApp(opts: {
         tasks={opts.tasks ?? []}
         servicesMeta={opts.servicesMeta ?? []}
         initialStatuses={statuses}
+        initialTaskHistory={[]}
       />,
     ),
   };

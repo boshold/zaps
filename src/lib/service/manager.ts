@@ -8,7 +8,7 @@ import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
-import { reverseTopoSort, topoSort } from "./graph.js";
+import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { createServiceStatus, transition } from "./state.js";
 
@@ -119,6 +119,8 @@ export class ServiceManager extends EventEmitter {
   private shuttingDown = false;
   private deps: ServiceManagerDeps;
   private autoOpened = new Set<string>();
+  private restartWithMap: Map<string, string[]>;
+  private cascading = false;
   private originalWindowTitle: Promise<string>;
   private originalAutoRename: Promise<string | null>;
 
@@ -148,6 +150,8 @@ export class ServiceManager extends EventEmitter {
       }
       this.statuses.set(name, status);
     }
+
+    this.restartWithMap = buildRestartWithMap(config.project.services);
 
     this.on("stateChange", () => {
       this.updateWindowTitle();
@@ -480,6 +484,38 @@ export class ServiceManager extends EventEmitter {
 
     // Start
     await this.startService(name);
+
+    // Cascade restart dependents
+    if (!this.cascading) {
+      await this.cascadeRestart(name);
+    }
+  }
+
+  /**
+   * Cascade-restart services that declared restartWith for the trigger.
+   */
+  private async cascadeRestart(trigger: string): Promise<void> {
+    const dependents = this.restartWithMap.get(trigger);
+    if (!dependents || dependents.length === 0) {
+      return;
+    }
+
+    this.cascading = true;
+    try {
+      for (const dep of dependents) {
+        const depStatus = this.statuses.get(dep);
+        if (!depStatus || (depStatus.state !== "ready" && depStatus.state !== "starting")) {
+          // eslint-disable-next-line no-continue -- skip non-running services
+          continue;
+        }
+        await this.stopService(dep);
+        depStatus.retryCount = 0;
+        // eslint-disable-next-line no-await-in-loop -- sequential cascade restart
+        await this.startService(dep);
+      }
+    } finally {
+      this.cascading = false;
+    }
   }
 
   /**
@@ -553,6 +589,7 @@ export class ServiceManager extends EventEmitter {
 
           // Transition: restarting -> starting (handled by startService)
           await this.startService(name);
+          await this.cascadeRestart(name);
         } else {
           status.state = transition(status.state, "error");
           status.lastError = "Process exited unexpectedly";
