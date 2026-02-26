@@ -1,4 +1,4 @@
-import type { TaskConfig } from "../../../src/config/types.js";
+import type { TaskConfig, TaskRunContext } from "../../../src/config/types.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -283,7 +283,7 @@ describe("runTaskWithDeps", () => {
   });
 
   it("runs task with run() function and provides TaskRunContext", async () => {
-    const runFn = vi.fn(async (ctx: import("../../../src/config/types.js").TaskRunContext) => {
+    const runFn = vi.fn(async (ctx: TaskRunContext) => {
       const result = await ctx.exec("echo hello");
       expect(result.success).toBe(true);
       ctx.stdout.write("output line\n");
@@ -301,7 +301,7 @@ describe("runTaskWithDeps", () => {
     expect(ok).toBe(true);
     expect(runFn).toHaveBeenCalledTimes(1);
     expect(mockExecCommandWithResult).toHaveBeenCalled();
-    // stdout.write emits lines via onLine
+    // Stdout.write emits lines via onLine
     expect(onLine).toHaveBeenCalledWith("task", "output line");
   });
 

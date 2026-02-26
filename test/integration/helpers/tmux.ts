@@ -10,7 +10,7 @@ export interface TestSession {
 
 export async function createTestSession(): Promise<TestSession> {
   const name = `zaps-test-${randomUUID().slice(0, 8)}`;
-  const initialPaneId = await newSession(name);
+  const initialPaneId = await newSession(name, { x: 220, y: 50 });
   return {
     name,
     initialPaneId,
@@ -30,7 +30,6 @@ export async function buildTestPaneMap(
 ): Promise<Record<string, string>> {
   const paneMap: Record<string, string> = { "@tui": initialPaneId };
   for (const name of serviceNames) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
     const paneId = await splitPane(initialPaneId, "v");
     paneMap[name] = paneId;
   }

@@ -1,27 +1,28 @@
+import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { DockerConfig } from "#src/config/types.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
 
-export function useServiceActions(manager: ServiceManager) {
+// Docker rebuild not yet supported via daemon — stub
+async function rebuildDocker(_name: string, _overrides: Partial<DockerConfig>) {
+  // TODO: Add docker rebuild support to daemon protocol
+}
+
+export function useServiceActions(client: DaemonClient) {
   async function restart(name: string) {
-    await manager.restartService(name);
+    await client.restartService(name);
   }
 
   async function toggle(name: string) {
-    const status = manager.getStatus(name);
-    if (status.state === "ready" || status.state === "starting") {
-      await manager.stopService(name);
+    const statuses = await client.listServices();
+    const svc = statuses.find((s) => s.name === name);
+    if (svc?.state === "ready" || svc?.state === "starting") {
+      await client.stopService(name);
     } else {
-      await manager.startService(name);
+      await client.startService(name);
     }
   }
 
   async function restartAll() {
-    await manager.stopAll();
-    await manager.startAll();
-  }
-
-  async function rebuildDocker(name: string, overrides: Partial<DockerConfig>) {
-    await manager.restartWithDockerOverrides(name, overrides);
+    await client.restartAll();
   }
 
   return { restart, toggle, restartAll, rebuildDocker };

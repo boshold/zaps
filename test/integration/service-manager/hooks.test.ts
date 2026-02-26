@@ -56,9 +56,15 @@ describe.skipIf(!hasTmux())("hooks integration", () => {
       { svc: { start: httpServerCmd(port), ready: { port } } },
       {
         hooks: {
-          onBeforeStart: () => { order.push("onBeforeStart"); },
-          onStart: () => { order.push("onStart"); },
-          onStop: () => { order.push("onStop"); },
+          onBeforeStart: () => {
+            order.push("onBeforeStart");
+          },
+          onStart: () => {
+            order.push("onStart");
+          },
+          onStop: () => {
+            order.push("onStop");
+          },
         },
       },
     );
@@ -82,9 +88,15 @@ describe.skipIf(!hasTmux())("hooks integration", () => {
       svc: {
         start: httpServerCmd(port),
         ready: { port },
-        onBeforeStart: () => { order.push("svc:onBeforeStart"); },
-        onReady: () => { order.push("svc:onReady"); },
-        onStop: () => { order.push("svc:onStop"); },
+        onBeforeStart: () => {
+          order.push("svc:onBeforeStart");
+        },
+        onReady: () => {
+          order.push("svc:onReady");
+        },
+        onStop: () => {
+          order.push("svc:onStop");
+        },
       },
     });
 
@@ -107,7 +119,9 @@ describe.skipIf(!hasTmux())("hooks integration", () => {
       svc: {
         start: httpServerCmd(port),
         ready: { port },
-        onBeforeStart: () => { throw new Error("hook-failed"); },
+        onBeforeStart: () => {
+          throw new Error("hook-failed");
+        },
       },
     });
 

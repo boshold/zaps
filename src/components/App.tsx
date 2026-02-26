@@ -1,22 +1,47 @@
-import type { ResolvedConfig } from "#src/config/types.js";
+import type { DaemonClient } from "#src/client/daemon-client.js";
+import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 import { Router } from "./Router.js";
 
 type PaneMap = Record<string, string>;
 
 interface AppProps {
-  manager: ServiceManager;
-  config: ResolvedConfig;
+  client: DaemonClient;
   paneMap: PaneMap;
+  projectName: string;
+  tasks: TaskInfo[];
+  servicesMeta: ServiceMeta[];
+  initialStatuses: ServiceStatus[];
+  initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }
 
-export function App({ manager, config, paneMap, autoStart }: AppProps) {
+export function App({
+  client,
+  paneMap,
+  projectName,
+  tasks,
+  servicesMeta,
+  initialStatuses,
+  initialTaskHistory,
+  autoStart,
+}: AppProps) {
   return (
-    <AppProvider manager={manager} config={config} paneMap={paneMap}>
-      <Router autoStart={autoStart} />
+    <AppProvider
+      client={client}
+      paneMap={paneMap}
+      projectName={projectName}
+      tasks={tasks}
+      servicesMeta={servicesMeta}
+    >
+      <Router
+        initialStatuses={initialStatuses}
+        initialTaskHistory={initialTaskHistory}
+        autoStart={autoStart}
+      />
     </AppProvider>
   );
 }

@@ -18,14 +18,12 @@ async function poll(checkFn: () => Promise<boolean>, signal: AbortSignal): Promi
   const start = Date.now();
 
   while (!signal.aborted) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential polling
     if (await checkFn()) {
       return;
     }
     if (Date.now() - start > TIMEOUT) {
       throw new Error("Ready check timed out after 60s");
     }
-    // eslint-disable-next-line no-await-in-loop -- Sequential polling
     await sleep(POLL_INTERVAL);
   }
   throw new Error("Ready check aborted");
@@ -57,7 +55,6 @@ export async function waitForReady(
     await poll(async () => {
       const collected: number[] = [];
       for (const svc of services) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential per-service check
         const info = await dockerStatus(svc, deps.cwd, file);
         if (!info || !isReady(info)) {
           return false;

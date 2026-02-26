@@ -134,3 +134,54 @@ export function reverseTopoSort(services: Record<string, { dependsOn?: string[] 
     .toReversed()
     .map((level) => level.toReversed());
 }
+
+/**
+ * Build a map from service name to the transitive list of services that
+ * should cascade-restart when it restarts. Uses BFS for ordering (closest first).
+ */
+export function buildRestartWithMap(
+  services: Record<string, { dependsOn?: string[]; restartWith?: string[] }>,
+): Map<string, string[]> {
+  // Build reverse index: trigger → direct dependents that declared restartWith
+  const directDependents = new Map<string, string[]>();
+  for (const [name, svc] of Object.entries(services)) {
+    for (const dep of svc.restartWith ?? []) {
+      const list = directDependents.get(dep) ?? [];
+      list.push(name);
+      directDependents.set(dep, list);
+    }
+  }
+
+  const result = new Map<string, string[]>();
+
+  for (const trigger of directDependents.keys()) {
+    // BFS transitive closure
+    const visited = new Set<string>();
+    const queue = [...(directDependents.get(trigger) ?? [])];
+    const order: string[] = [];
+
+    while (queue.length > 0) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- BFS queue is non-empty
+      const current = queue.shift()!;
+      if (visited.has(current)) {
+        // eslint-disable-next-line no-continue -- skip already-visited
+        continue;
+      }
+      visited.add(current);
+      order.push(current);
+
+      // Transitively follow: anything that has restartWith including `current`
+      for (const next of directDependents.get(current) ?? []) {
+        if (!visited.has(next)) {
+          queue.push(next);
+        }
+      }
+    }
+
+    if (order.length > 0) {
+      result.set(trigger, order);
+    }
+  }
+
+  return result;
+}

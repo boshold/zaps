@@ -48,26 +48,22 @@ describe.skipIf(!hasTmux())("tmux cleanup integration", () => {
 
     // Set all env vars
     for (const key of envKeys) {
-      // eslint-disable-next-line no-await-in-loop
       await setEnv(session.name, key, "test-value");
     }
 
     // Verify they're set
     for (const key of envKeys) {
-      // eslint-disable-next-line no-await-in-loop
       const val = await showEnv(session.name, key);
       expect(val).toBe("test-value");
     }
 
     // Remove all (simulating down command)
     for (const key of envKeys) {
-      // eslint-disable-next-line no-await-in-loop
       await removeEnv(session.name, key);
     }
 
     // Verify cleared
     for (const key of envKeys) {
-      // eslint-disable-next-line no-await-in-loop
       const val = await showEnv(session.name, key);
       expect(val).toBeNull();
     }

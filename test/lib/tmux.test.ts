@@ -204,7 +204,7 @@ describe("splitPane", () => {
     expect(paneId).toBe("%5");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-v", "-t", "%1", "-p", "30", "-P", "-F", "#{pane_id}"],
+      ["split-window", "-v", "-t", "%1", "-l", "30%", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -309,11 +309,9 @@ describe("currentPaneId", () => {
     mockSpawn.mockReturnValue(createMockProc("%5"));
     const id = await currentPaneId();
     expect(id).toBe("%5");
-    expect(mockSpawn).toHaveBeenCalledWith(
-      "tmux",
-      ["display-message", "-p", "#{pane_id}"],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   });
 });
 
@@ -322,11 +320,9 @@ describe("currentSession", () => {
     mockSpawn.mockReturnValue(createMockProc("my-session"));
     const name = await currentSession();
     expect(name).toBe("my-session");
-    expect(mockSpawn).toHaveBeenCalledWith(
-      "tmux",
-      ["display-message", "-p", "#{session_name}"],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{session_name}"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   });
 });
 

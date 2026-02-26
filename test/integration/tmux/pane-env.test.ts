@@ -53,7 +53,7 @@ describe.skipIf(!hasTmux())("tmux pane-env integration", () => {
     // Read back and parse
     const raw = await showEnv(session.name, "ZAPS_PANE_MAP");
     expect(raw).not.toBeNull();
-    const parsed = JSON.parse(raw!) as Record<string, string>;
+    const parsed: Record<string, string> = JSON.parse(raw!);
 
     expect(parsed["@tui"]).toBe(paneMap["@tui"]);
     expect(parsed.api).toBe(paneMap.api);

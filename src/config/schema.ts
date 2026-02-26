@@ -85,6 +85,7 @@ const serviceConfigBaseSchema = z.object({
   docker: z.optional(dockerConfigSchema),
   ready: z.optional(readyConfigSchema),
   dependsOn: z.optional(z.array(z.string())),
+  restartWith: z.optional(z.array(z.string())),
   env: z.optional(envConfigSchema),
   flags: z.optional(flagsSchema),
   url: z.optional(urlConfigSchema),

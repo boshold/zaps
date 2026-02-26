@@ -1,10 +1,11 @@
-import type { ResolvedConfig } from "#src/config/types.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
 import fs from "node:fs";
 import net from "node:net";
 
-import { handleRequest } from "./handler.js";
+import type { ResolvedConfig } from "#src/config/types.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { IpcRequest } from "./protocol.js";
+
+import { handleRequest } from "./handler.js";
 
 export class IpcServer {
   private server: net.Server | null = null;
@@ -37,9 +38,9 @@ export class IpcServer {
           buffer = lines.pop() ?? "";
 
           for (const line of lines) {
-            if (line.trim() === "") continue;
-            // eslint-disable-next-line no-void -- Fire-and-forget per-message handling
-            void this.handleLine(line, socket);
+            if (line.trim() !== "") {
+              void this.handleLine(line, socket);
+            }
           }
         });
 
@@ -56,7 +57,7 @@ export class IpcServer {
   }
 
   private async handleLine(line: string, socket: net.Socket): Promise<void> {
-    let req: IpcRequest;
+    let req: IpcRequest = { id: "?", method: "" };
     try {
       req = JSON.parse(line) as IpcRequest;
     } catch {

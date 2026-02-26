@@ -24,5 +24,4 @@ export function hasBinary(): boolean {
   return fs.existsSync(path.resolve("dist/zaps"));
 }
 
-// eslint-disable-next-line node/no-process-env -- CI detection for test skipping
 export const isCI = "CI" in process.env;

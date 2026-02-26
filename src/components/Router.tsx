@@ -1,6 +1,4 @@
 import type { DockerConfig } from "#src/config/types.js";
-/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
-/* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
@@ -9,7 +7,6 @@ import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
@@ -40,6 +37,7 @@ function handleDashboardInput(
     goToLogs: (name: string) => void;
     goToTasks: () => void;
     goToDockerRebuild: (name: string) => void;
+    destroySession: () => void;
     paneMap: Record<string, string>;
   },
 ) {
@@ -51,24 +49,31 @@ function handleDashboardInput(
   }
   if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void ctx.restart(ctx.statuses[ctx.index].name).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .restart(ctx.statuses[ctx.index].name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
   if (input === "s" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void ctx.toggle(ctx.statuses[ctx.index].name).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .toggle(ctx.statuses[ctx.index].name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
   if (input === "l" && ctx.statuses[ctx.index]) {
     ctx.goToLogs(ctx.statuses[ctx.index].name);
   }
   const selectedUrl = ctx.statuses[ctx.index]?.url;
   if (input === "o" && selectedUrl) {
-    // eslint-disable-next-line no-void -- Fire-and-forget browser open
     void openInBrowser(selectedUrl);
   }
   if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
@@ -77,7 +82,6 @@ function handleDashboardInput(
   if (input === "z" && ctx.statuses[ctx.index]) {
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
     if (paneId) {
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
       void zoomPane(paneId);
     }
   }
@@ -85,21 +89,32 @@ function handleDashboardInput(
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
     if (paneId) {
       ctx.busyRef.current = true;
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
-      void editPaneCapture(paneId, ctx.statuses[ctx.index].name).finally(() => {
-        ctx.busyRef.current = false;
-      });
+      void editPaneCapture(paneId, ctx.statuses[ctx.index].name)
+        .catch(() => {
+          /* IPC error — ignore */
+        })
+        .finally(() => {
+          ctx.busyRef.current = false;
+        });
     }
+  }
+  if (input === "d") {
+    ctx.destroySession();
+    return;
   }
   if (input === "t") {
     ctx.goToTasks();
   }
   if (input === "a" && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void ctx.restartAll().finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .restartAll()
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
 }
 
@@ -123,8 +138,9 @@ function handleTasksInput(
   input: string,
   key: Key,
   ctx: {
+    tasks: { key: string; name: string }[];
     taskShortcuts: { shortcut: string; name: string }[];
-    taskEntries: [string, { name: string }][];
+    taskCount: number;
     setIndex: (i: number) => void;
     goToDashboard: () => void;
     moveUp: () => void;
@@ -150,7 +166,7 @@ function handleTasksInput(
   // Match input against task shortcuts
   const matched = ctx.taskShortcuts.find((t) => t.shortcut === input);
   if (matched) {
-    const idx = ctx.taskEntries.findIndex(([, task]) => task.name === matched.name);
+    const idx = ctx.tasks.findIndex((t) => t.name === matched.name);
     if (idx !== -1) {
       ctx.setIndex(idx);
       ctx.setRunTrigger((n) => n + 1);
@@ -213,14 +229,26 @@ function handleDockerRebuildInput(
     ctx.busyRef.current = true;
     const overrides = buildDockerOverrides(ctx.dockerFlags);
     ctx.goToDashboard();
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void ctx.rebuildDocker(ctx.dockerRebuildTarget, overrides).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .rebuildDocker(ctx.dockerRebuildTarget, overrides)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
 }
 
-export function Router({ autoStart }: { autoStart?: boolean }) {
+export function Router({
+  initialStatuses,
+  initialTaskHistory,
+  autoStart,
+}: {
+  initialStatuses: ServiceStatus[];
+  initialTaskHistory: TaskRunRecord[];
+  autoStart?: boolean;
+}) {
   const {
     view,
     logTarget,
@@ -230,27 +258,25 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     goToTasks,
     goToDockerRebuild,
   } = useRouter();
-  const { manager, paneMap, config } = useZaps();
-  const statuses = useServices(manager);
-  const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(manager);
+  const { client, paneMap, tasks, servicesMeta } = useZaps();
+  const statuses = useServices(client, initialStatuses);
+  const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Selection count depends on view: services for dashboard, tasks for tasks view
-  const taskEntries = Object.entries(config.project.tasks ?? {});
-  const itemCount = view === "tasks" ? taskEntries.length : statuses.length;
+  const itemCount = view === "tasks" ? tasks.length : statuses.length;
   const { index, setIndex, moveUp, moveDown } = useSelection(itemCount);
 
   const { exit } = useInkApp();
   const busyRef = useRef(false);
 
-  // Logs state — called unconditionally (hooks rule)
-  const logPaneTarget = logTarget ? (paneMap[logTarget] ?? null) : null;
+  // Logs state — now uses daemon client event stream
   const {
     lines: logLines,
     autoScroll: logAutoScroll,
     offset: logOffset,
     scrollUp,
     scrollDown,
-  } = useLogs(logPaneTarget);
+  } = useLogs(client, logTarget);
 
   // Docker rebuild popup state
   const defaultFlags: Record<DockerFlagKey, boolean> = {
@@ -267,7 +293,7 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
   const [runTrigger, setRunTrigger] = useState(0);
 
   // Task run history — shared between Dashboard and TasksView
-  const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>([]);
+  const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>(initialTaskHistory);
 
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => {
@@ -287,7 +313,7 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     });
   }
 
-  // Subscribe to hook-triggered task start/completions from ServiceManager
+  // Subscribe to daemon task events
   useEffect(() => {
     function handleTaskStart(taskKey: string, taskName: string) {
       onTaskComplete({ taskKey, taskName, result: "running", timestamp: Date.now() });
@@ -295,82 +321,97 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
     function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
       onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
     }
-    manager.on("taskStart", handleTaskStart);
-    manager.on("taskComplete", handleTaskComplete);
+    client.on("task.start", handleTaskStart);
+    client.on("task.complete", handleTaskComplete);
     return () => {
-      manager.off("taskStart", handleTaskStart);
-      manager.off("taskComplete", handleTaskComplete);
+      client.off("task.start", handleTaskStart);
+      client.off("task.complete", handleTaskComplete);
     };
-  }, [manager]);
+  }, [client]);
 
-  // Ready gate: delay rendering until services emit first stateChange + minimum splash time
+  // Ready gate: delay rendering until minimum splash time
   const [ready, setReady] = useState(!autoStart);
 
-  // Auto-start services on mount when requested
   useEffect(() => {
     if (!autoStart) {
       return;
     }
 
     const MIN_SPLASH_MS = 1200;
-    const mountedAt = Date.now();
-    let stateChanged = false;
+    let activityDetected = false;
     let timerElapsed = false;
 
+    // Check if services are already starting/ready (daemon started them before TUI connected)
+    const alreadyActive = statuses.some((s) => s.state !== "stopped");
+    if (alreadyActive) {
+      activityDetected = true;
+    }
+
     function tryReady() {
-      if (stateChanged && timerElapsed) {
+      if (activityDetected && timerElapsed) {
         setReady(true);
       }
     }
 
     function onFirstAction() {
-      stateChanged = true;
-      manager.off("stateChange", onFirstAction);
-      manager.off("taskStart", onFirstAction);
+      activityDetected = true;
+      client.off("service.stateChange", onFirstAction);
+      client.off("task.start", onFirstAction);
       tryReady();
     }
 
-    manager.on("stateChange", onFirstAction);
-    manager.on("taskStart", onFirstAction);
+    if (!activityDetected) {
+      client.on("service.stateChange", onFirstAction);
+      client.on("task.start", onFirstAction);
+    }
 
-    const remaining = Math.max(0, MIN_SPLASH_MS - (Date.now() - mountedAt));
     const timer = setTimeout(() => {
       timerElapsed = true;
       tryReady();
-    }, remaining);
-
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void manager.startAll();
+    }, MIN_SPLASH_MS);
 
     return () => {
-      manager.off("stateChange", onFirstAction);
-      manager.off("taskStart", onFirstAction);
+      client.off("service.stateChange", onFirstAction);
+      client.off("task.start", onFirstAction);
       clearTimeout(timer);
     };
-  }, [autoStart, manager]);
+  }, [autoStart, client]); // eslint-disable-line react-hooks/exhaustive-deps -- statuses read once on mount
 
-  // Precompute task shortcuts
-  const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
+  // Build service metadata lookup
+  const svcMetaMap = new Map(servicesMeta.map((m) => [m.name, m]));
+
+  // Precompute task shortcuts from snapshot data
+  const taskShortcuts = tasks.flatMap((t) =>
+    t.shortcut ? [{ shortcut: t.shortcut, name: t.name }] : [],
+  );
 
   useInput((input, key) => {
-    // Q: quit on dashboard, go back on sub-views
-    if (input === "q") {
-      if (view === "dashboard") {
-        if (busyRef.current) {
-          return;
-        }
-        busyRef.current = true;
-        manager
-          .stopAll()
-          .catch(() => {
-            /* Graceful shutdown */
-          })
-          .finally(() => {
-            exit();
-          });
-      } else {
-        goToDashboard();
+    // Q / ctrl+c: detach from any view (services keep running)
+    if (input === "q" || (key.ctrl && input === "c")) {
+      if (busyRef.current) {
+        return;
       }
+      busyRef.current = true;
+      client.disconnect();
+      exit();
+      return;
+    }
+
+    // Ctrl+d: shut down — destroy session from any view
+    if (key.ctrl && input === "d") {
+      if (busyRef.current) {
+        return;
+      }
+      busyRef.current = true;
+      client
+        .destroySession()
+        .catch(() => {
+          /* Graceful shutdown */
+        })
+        .finally(() => {
+          client.disconnect();
+          exit();
+        });
       return;
     }
 
@@ -386,15 +427,30 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         restartAll,
         goToLogs,
         goToTasks,
+        destroySession: () => {
+          if (busyRef.current) {
+            return;
+          }
+          busyRef.current = true;
+          client
+            .destroySession()
+            .catch(() => {
+              /* Graceful shutdown */
+            })
+            .finally(() => {
+              client.disconnect();
+              exit();
+            });
+        },
         paneMap,
         goToDockerRebuild: (name: string) => {
-          const { docker } = config.project.services[name];
+          const meta = svcMetaMap.get(name);
           setDockerFlags({
-            build: docker?.build ?? false,
-            forceRecreate: docker?.forceRecreate ?? false,
-            renewVolumes: docker?.renewVolumes ?? false,
-            pull: docker?.pull === "always",
-            removeOrphans: docker?.removeOrphans ?? false,
+            build: meta?.dockerDefaults.build ?? false,
+            forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
+            renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
+            pull: meta?.dockerDefaults.pull ?? false,
+            removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
           });
           setDockerFlagIndex(0);
           goToDockerRebuild(name);
@@ -408,8 +464,9 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
 
     if (view === "tasks") {
       handleTasksInput(input, key, {
+        tasks,
         taskShortcuts,
-        taskEntries,
+        taskCount: tasks.length,
         setIndex,
         goToDashboard,
         moveUp,
@@ -454,7 +511,6 @@ export function Router({ autoStart }: { autoStart?: boolean }) {
         runTrigger={runTrigger}
         taskShortcuts={taskShortcuts}
         taskHistory={taskHistory}
-        onTaskComplete={onTaskComplete}
       />
     );
   }

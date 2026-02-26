@@ -1,25 +1,13 @@
 import { EventEmitter } from "node:events";
 
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
-import type { ResolvedConfig } from "../../src/config/types.js";
-import type { ServiceManager } from "../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
 import { Dashboard } from "../../src/components/Dashboard.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
-
-function makeConfig(name = "test-project"): ResolvedConfig {
-  return {
-    project: {
-      name,
-      services: {},
-    },
-    configPath: "/fake/.zaps.ts",
-    projectDir: "/fake",
-  };
-}
 
 function makeStatus(
   name: string,
@@ -29,24 +17,54 @@ function makeStatus(
   return { name, state, ports, retryCount: 0 };
 }
 
-function createMockManager(statuses: ServiceStatus[]): ServiceManager {
+function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();
-  const manager = Object.assign(emitter, {
-    getAllStatuses: vi.fn(() => [...statuses]),
-    getStatus: vi.fn((name: string) => {
-      const s = statuses.find((st) => st.name === name);
-      if (!s) {
-        throw new Error(`Unknown service: ${name}`);
-      }
-      return s;
+  const client = Object.assign(emitter, {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: true,
+    session: "test",
+    attach: vi.fn().mockResolvedValue({
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+      paneMap: {},
+      statuses: [],
+      tasks: [],
+      servicesMeta: [],
     }),
-    startService: vi.fn(),
-    stopService: vi.fn(),
-    restartService: vi.fn(),
-    startAll: vi.fn(),
-    stopAll: vi.fn(),
+    destroySession: vi.fn().mockResolvedValue(undefined),
+    listServices: vi.fn().mockResolvedValue([]),
+    startService: vi.fn().mockResolvedValue(undefined),
+    stopService: vi.fn().mockResolvedValue(undefined),
+    restartService: vi.fn().mockResolvedValue(undefined),
+    getLogSnapshot: vi.fn().mockResolvedValue([]),
+    runTask: vi.fn().mockResolvedValue({ success: true }),
   });
-  return manager as unknown as ServiceManager;
+  return client as unknown as DaemonClient;
+}
+
+function renderDashboard(opts: {
+  statuses: ServiceStatus[];
+  projectName?: string;
+  selectedIndex?: number;
+  taskHistory?: TaskRunRecord[];
+}) {
+  const client = createMockClient();
+  return render(
+    <AppProvider
+      client={client}
+      paneMap={{}}
+      projectName={opts.projectName ?? "test-project"}
+      tasks={[]}
+      servicesMeta={[]}
+    >
+      <Dashboard
+        statuses={opts.statuses}
+        selectedIndex={opts.selectedIndex ?? 0}
+        taskHistory={opts.taskHistory ?? []}
+      />
+    </AppProvider>,
+  );
 }
 
 describe("Dashboard", () => {
@@ -57,14 +75,8 @@ describe("Dashboard", () => {
       makeStatus("worker", "error"),
       makeStatus("frontend", "stopped"),
     ];
-    const config = makeConfig("my-project");
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses, projectName: "my-project" });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("my-project");
@@ -76,28 +88,16 @@ describe("Dashboard", () => {
 
   it("renders project name in header", () => {
     const statuses = [makeStatus("db")];
-    const config = makeConfig("cool-app");
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses, projectName: "cool-app" });
 
     expect(lastFrame()).toContain("cool-app");
   });
 
   it("renders help bar", () => {
     const statuses = [makeStatus("db")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses });
 
     expect(lastFrame()).toContain("[t]asks");
     expect(lastFrame()).toContain("[q]uit");
@@ -105,14 +105,8 @@ describe("Dashboard", () => {
 
   it("highlights selected service", () => {
     const statuses = [makeStatus("db", "ready"), makeStatus("api", "ready")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={1} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses, selectedIndex: 1 });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain(">");
@@ -120,14 +114,8 @@ describe("Dashboard", () => {
 
   it("renders column headers", () => {
     const statuses = [makeStatus("db")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("STATUS");
@@ -138,8 +126,6 @@ describe("Dashboard", () => {
 
   it("renders recent tasks when history provided", () => {
     const statuses = [makeStatus("db")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
     const taskHistory: TaskRunRecord[] = [
       {
         taskKey: "migrate",
@@ -150,11 +136,7 @@ describe("Dashboard", () => {
       { taskKey: "build", taskName: "Build", result: "error", timestamp: Date.now() - 300_000 },
     ];
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={taskHistory} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses, taskHistory });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Recent Tasks");
@@ -166,14 +148,8 @@ describe("Dashboard", () => {
 
   it("shows action hints for selected service", () => {
     const statuses = [makeStatus("db"), makeStatus("api")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses });
 
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[r]estart");
@@ -185,33 +161,18 @@ describe("Dashboard", () => {
     const withUrl = [makeStatus("db"), makeStatus("api")];
     withUrl[0].url = "http://localhost:5432";
     const withoutUrl = [makeStatus("db"), makeStatus("api")];
-    const config = makeConfig();
 
-    const { lastFrame: f1 } = render(
-      <AppProvider manager={createMockManager(withUrl)} config={config} paneMap={{}}>
-        <Dashboard statuses={withUrl} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame: f1 } = renderDashboard({ statuses: withUrl });
     expect(f1()).toContain("[o]pen");
 
-    const { lastFrame: f2 } = render(
-      <AppProvider manager={createMockManager(withoutUrl)} config={config} paneMap={{}}>
-        <Dashboard statuses={withoutUrl} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame: f2 } = renderDashboard({ statuses: withoutUrl });
     expect(f2()).not.toContain("[o]pen");
   });
 
   it("hides recent tasks when history is empty", () => {
     const statuses = [makeStatus("db")];
-    const config = makeConfig();
-    const manager = createMockManager(statuses);
 
-    const { lastFrame } = render(
-      <AppProvider manager={manager} config={config} paneMap={{}}>
-        <Dashboard statuses={statuses} selectedIndex={0} taskHistory={[]} />
-      </AppProvider>,
-    );
+    const { lastFrame } = renderDashboard({ statuses });
 
     const frame = lastFrame() ?? "";
     expect(frame).not.toContain("Recent Tasks");

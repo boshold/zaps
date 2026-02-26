@@ -97,7 +97,7 @@ vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
 }));
 
-describe("CLI — dev command", () => {
+describe("CLI — up command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -299,7 +299,7 @@ describe("CLI — down command", () => {
   });
 });
 
-describe("CLI — sessions command", () => {
+describe("CLI — ls command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

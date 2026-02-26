@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 
 import { getEnv } from "./env.js";
 
@@ -33,14 +35,12 @@ export async function listZapsSessions(): Promise<{ session: string; panes: numb
     const sessions = out ? out.split("\n") : [];
     const results: { session: string; panes: number }[] = [];
     for (const session of sessions) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
       const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
       if (paneMapRaw) {
         const parsed: unknown = JSON.parse(paneMapRaw);
         if (typeof parsed === "object" && parsed !== null) {
           const keys = Object.keys(parsed);
           const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
-          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
           const livePanes = await listPanes(session, true).catch(() => [] as PaneInfo[]);
           const liveIds = new Set(livePanes.map((p) => p.id));
           const hasLive = values.some((id) => liveIds.has(id));
@@ -70,8 +70,16 @@ export async function sendKeys(target: string, keys: string): Promise<void> {
   await run(["send-keys", "-t", target, "Enter"]);
 }
 
-export async function newSession(name: string): Promise<string> {
-  return run(["new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}"]);
+export async function newSession(name: string, opts?: { x?: number; y?: number }): Promise<string> {
+  const args = ["new-session", "-d", "-s", name];
+  if (opts?.x) {
+    args.push("-x", String(opts.x));
+  }
+  if (opts?.y) {
+    args.push("-y", String(opts.y));
+  }
+  args.push("-P", "-F", "#{pane_id}");
+  return run(args);
 }
 
 export async function newWindow(session: string): Promise<string> {
@@ -89,7 +97,7 @@ export async function splitPane(
 ): Promise<string> {
   const args = ["split-window", `-${direction}`, "-t", target];
   if (typeof percent === "number") {
-    args.push("-p", String(percent));
+    args.push("-l", `${percent}%`);
   }
   args.push("-P", "-F", "#{pane_id}");
   return run(args);
@@ -202,8 +210,9 @@ export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
 
 export async function editPaneCapture(target: string, title: string): Promise<void> {
   const editor = getEnv("EDITOR") || "vim";
+  const template = path.join(os.tmpdir(), "zaps-capture-XXXXXX");
   await displayPopup({
-    command: `sh -c 'f=$(mktemp /tmp/zaps-capture-XXXXXX) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
+    command: `sh -c 'f=$(mktemp ${template}) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
     title,
     width: "90%",
     height: "90%",
@@ -219,7 +228,9 @@ export interface PaneInfo {
 
 export async function listPanes(session: string, allWindows = false): Promise<PaneInfo[]> {
   const args = ["list-panes"];
-  if (allWindows) args.push("-s");
+  if (allWindows) {
+    args.push("-s");
+  }
   args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
   const out = await run(args);
   if (!out) {

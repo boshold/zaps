@@ -1,3 +1,6 @@
+import os from "node:os";
+import path from "node:path";
+
 import type { ResolvedConfig, ServiceConfig, TaskConfig } from "#src/config/types.js";
 
 export function makeConfig(
@@ -14,7 +17,7 @@ export function makeConfig(
       hooks: opts?.hooks,
       tasks: opts?.tasks,
     },
-    configPath: "/tmp/.zaps.ts",
-    projectDir: "/tmp",
+    configPath: path.join(os.tmpdir(), ".zaps.ts"),
+    projectDir: os.tmpdir(),
   };
 }

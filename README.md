@@ -42,21 +42,47 @@ zaps               # Launch
 
 ## Commands
 
-### `zaps` / `zaps dev`
+### Lifecycle
 
-Launch the dev session. Builds the pane layout from the current tmux pane, starts services, and renders the TUI dashboard.
+| Command            | Description                                                                |
+| ------------------ | -------------------------------------------------------------------------- |
+| `zaps` / `zaps up` | Smart default: attach if session running, else create + start + attach TUI |
+| `zaps up -d`       | Create session and start services without attaching TUI (detached)         |
+| `zaps down`        | Stop all services and destroy session                                      |
 
-### `zaps init`
+### Service Operations
 
-Scaffold a starter `.zaps.mts` in the current directory.
+| Command                     | Description                        |
+| --------------------------- | ---------------------------------- |
+| `zaps start [service...]`   | Start service(s). All if omitted   |
+| `zaps stop [service...]`    | Stop service(s). All if omitted    |
+| `zaps restart [service...]` | Restart service(s). All if omitted |
 
-### `zaps sessions`
+### Query
 
-List active tmux sessions.
+| Command                  | Description                                    |
+| ------------------------ | ---------------------------------------------- |
+| `zaps ps`                | List services with state, ports, URL. `--json` |
+| `zaps ls`                | List active sessions. `--json`                 |
+| `zaps inspect <service>` | Show service details. `--json`                 |
 
-### `zaps down`
+### Tasks & Logs
 
-Stop all services and kill spawned panes in the current tmux session.
+| Command                  | Description                                                      |
+| ------------------------ | ---------------------------------------------------------------- |
+| `zaps run <task>`        | Run a task. Streams output. `--json`                             |
+| `zaps tasks`             | List configured tasks. `--json`                                  |
+| `zaps logs [service...]` | Dump log buffer. `-f` to stream live. `--tail <n>` (default 100) |
+| `zaps events`            | Stream daemon events as ndjson. `--filter <type>`                |
+
+### Config & Setup
+
+| Command                           | Description                                            |
+| --------------------------------- | ------------------------------------------------------ |
+| `zaps config`                     | Validate and print resolved config. `--json`, `--path` |
+| `zaps init`                       | Scaffold a starter `.zaps.mts` config                  |
+| `zaps attach [session]`           | Attach TUI to a running session                        |
+| `zaps daemon start\|stop\|status` | Daemon management                                      |
 
 ## Configuration
 

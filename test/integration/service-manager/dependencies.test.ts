@@ -126,10 +126,10 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
 
     await mgr.startAll();
 
-    // d must be first, a must be last
+    // D must be first, a must be last
     expect(readyOrder[0]).toBe("d");
     expect(readyOrder[readyOrder.length - 1]).toBe("a");
-    // b and c should be between d and a
+    // B and c should be between d and a
     expect(readyOrder.indexOf("b")).toBeGreaterThan(0);
     expect(readyOrder.indexOf("c")).toBeGreaterThan(0);
   });
@@ -159,7 +159,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
     await mgr.startAll();
     await mgr.stopAll();
 
-    // fe depends on api depends on db → stop fe first, then api, then db
+    // Fe depends on api depends on db → stop fe first, then api, then db
     expect(stopOrder.indexOf("fe")).toBeLessThan(stopOrder.indexOf("api"));
     expect(stopOrder.indexOf("api")).toBeLessThan(stopOrder.indexOf("db"));
   });

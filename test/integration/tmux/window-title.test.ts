@@ -60,7 +60,7 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     await mgr.startAll();
 
     // Wait for async window rename to complete
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const title = await getWindowName(paneMap["@tui"]);
     expect(title).toContain("zaps");
@@ -84,12 +84,12 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     await mgr.startAll();
 
     // Title should have changed
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
     const runningTitle = await getWindowName(paneMap["@tui"]);
     expect(runningTitle).toContain("zaps");
 
     await mgr.stopAll();
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const restoredTitle = await getWindowName(paneMap["@tui"]);
     expect(restoredTitle).toBe("my-custom-title");
@@ -110,7 +110,7 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startAll();
     await mgr.stopAll();
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((resolve) => setTimeout(resolve, 500));
 
     const autoRename = await getWindowOption(paneMap["@tui"], "automatic-rename");
     expect(autoRename).toBe("on");

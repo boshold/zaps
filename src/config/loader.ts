@@ -16,24 +16,29 @@ function collectPaneNames(node: LayoutNode): string[] {
   return [];
 }
 
-function validateSemantics(project: ProjectConfig): void {
-  const serviceNames = Object.keys(project.services);
-
-  // Validate service dependsOn refs
-  for (const name of serviceNames) {
-    const deps = project.services[name].dependsOn ?? [];
+function validateServiceDeps(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    const deps = svc.dependsOn ?? [];
     for (const dep of deps) {
       if (!project.services[dep]) {
         throw new Error(`Service '${name}' references unknown dependency '${dep}'`);
       }
     }
+    for (const dep of svc.restartWith ?? []) {
+      if (!deps.includes(dep)) {
+        throw new Error(`Service '${name}' restartWith '${dep}' is not in dependsOn`);
+      }
+    }
   }
 
-  // Detect circular deps in services
   const cycle = detectCycles(project.services);
   if (cycle) {
     throw new Error(`Circular dependency detected: ${cycle.join(" \u2192 ")}`);
   }
+}
+
+function validateSemantics(project: ProjectConfig): void {
+  validateServiceDeps(project);
 
   // Validate task dependsOn refs
   if (project.tasks) {

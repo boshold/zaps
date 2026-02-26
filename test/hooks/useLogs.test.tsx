@@ -1,19 +1,34 @@
-/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
-/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
+import { EventEmitter } from "node:events";
+
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
 import { useLogs } from "../../src/hooks/useLogs.js";
 
-// Mock tmux.capturePane
-vi.mock("../../src/lib/tmux.js", () => ({
-  capturePane: vi.fn().mockResolvedValue("line1\nline2\nline3"),
-}));
-
-import { capturePane } from "../../src/lib/tmux.js";
-
-const mockCapturePane = capturePane as ReturnType<typeof vi.fn>;
+function createMockClient(): DaemonClient {
+  const emitter = new EventEmitter();
+  const client = Object.assign(emitter, {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    connected: true,
+    session: "test",
+    attach: vi.fn().mockResolvedValue({
+      configPath: "/fake/.zaps.ts",
+      projectDir: "/fake",
+      paneMap: {},
+      statuses: [],
+    }),
+    destroySession: vi.fn().mockResolvedValue(undefined),
+    listServices: vi.fn().mockResolvedValue([]),
+    startService: vi.fn().mockResolvedValue(undefined),
+    stopService: vi.fn().mockResolvedValue(undefined),
+    restartService: vi.fn().mockResolvedValue(undefined),
+    getLogSnapshot: vi.fn().mockResolvedValue([]),
+  });
+  return client as unknown as DaemonClient;
+}
 
 // Flush React/Ink reconciler
 async function act(fn: () => void): Promise<void> {
@@ -24,9 +39,10 @@ async function act(fn: () => void): Promise<void> {
 }
 
 describe("useLogs", () => {
-  it("returns empty lines when paneTarget is null", () => {
+  it("returns empty lines when serviceName is null", () => {
+    const client = createMockClient();
     function Wrapper() {
-      const { lines } = useLogs(null);
+      const { lines } = useLogs(client, null);
       return <Text>count:{lines.length}</Text>;
     }
 
@@ -35,10 +51,11 @@ describe("useLogs", () => {
   });
 
   it("scrollUp sets autoScroll to false and increments offset", async () => {
+    const client = createMockClient();
     let hookRef: ReturnType<typeof useLogs> | null = null;
 
     function Wrapper() {
-      hookRef = useLogs(null);
+      hookRef = useLogs(client, null);
       return (
         <>
           <Text>autoScroll:{String(hookRef.autoScroll)}</Text>
@@ -65,10 +82,11 @@ describe("useLogs", () => {
   });
 
   it("scrollDown decrements offset and re-enables autoScroll at 0", async () => {
+    const client = createMockClient();
     let hookRef: ReturnType<typeof useLogs> | null = null;
 
     function Wrapper() {
-      hookRef = useLogs(null);
+      hookRef = useLogs(client, null);
       return (
         <>
           <Text>autoScroll:{String(hookRef.autoScroll)}</Text>
@@ -105,10 +123,11 @@ describe("useLogs", () => {
   });
 
   it("resetScroll sets offset to 0 and autoScroll to true", async () => {
+    const client = createMockClient();
     let hookRef: ReturnType<typeof useLogs> | null = null;
 
     function Wrapper() {
-      hookRef = useLogs(null);
+      hookRef = useLogs(client, null);
       return (
         <>
           <Text>autoScroll:{String(hookRef.autoScroll)}</Text>
@@ -137,65 +156,68 @@ describe("useLogs", () => {
   });
 });
 
-// Separate describe for tests needing fake timers — ensures cleanup via afterEach
-describe("useLogs polling", () => {
-  it("polls capturePane at interval and returns lines", async () => {
-    vi.useFakeTimers();
-    mockCapturePane.mockClear();
-    mockCapturePane.mockResolvedValue("line1\nline2\nline3");
+describe("useLogs event streaming", () => {
+  it("loads snapshot and receives new lines via events", async () => {
+    const client = createMockClient();
+    vi.mocked(client.getLogSnapshot).mockResolvedValue(["line1", "line2"]);
 
-    try {
-      function Wrapper() {
-        const { lines } = useLogs("%test");
-        return <Text>lines:{lines.join("|")}</Text>;
-      }
-
-      const { lastFrame, unmount } = render(<Wrapper />);
-
-      // Initially empty
-      expect(lastFrame()).toContain("lines:");
-
-      // Advance past first interval (500ms)
-      await vi.advanceTimersByTimeAsync(600);
-      // Allow the async capturePane mock to resolve and React to re-render
-      await vi.advanceTimersByTimeAsync(1);
-      await vi.advanceTimersByTimeAsync(1);
-
-      expect(mockCapturePane).toHaveBeenCalledWith("%test", 200);
-      expect(lastFrame()).toContain("line1|line2|line3");
-
-      unmount();
-    } finally {
-      vi.useRealTimers();
+    function Wrapper() {
+      const { lines } = useLogs(client, "api");
+      return <Text>lines:{lines.join("|")}</Text>;
     }
+
+    const { lastFrame } = render(<Wrapper />);
+
+    // Wait for snapshot to load
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    expect(vi.mocked(client.getLogSnapshot)).toHaveBeenCalledWith("api");
+    expect(lastFrame()).toContain("line1|line2");
+
+    // Emit new lines via client event
+    await act(() => {
+      client.emit("log.lines", "api", ["line3"]);
+    });
+    expect(lastFrame()).toContain("line1|line2|line3");
   });
 
-  it("stops polling when unmounted", async () => {
-    vi.useFakeTimers();
-    mockCapturePane.mockClear();
-    mockCapturePane.mockResolvedValue("line1\nline2\nline3");
+  it("ignores log events for other services", async () => {
+    const client = createMockClient();
+    vi.mocked(client.getLogSnapshot).mockResolvedValue(["line1"]);
 
-    try {
-      function Wrapper() {
-        const { lines } = useLogs("%test");
-        return <Text>lines:{lines.length}</Text>;
-      }
-
-      const { unmount } = render(<Wrapper />);
-
-      // First poll
-      await vi.advanceTimersByTimeAsync(600);
-      const callCount = mockCapturePane.mock.calls.length;
-      expect(callCount).toBeGreaterThanOrEqual(1);
-
-      unmount();
-      mockCapturePane.mockClear();
-
-      // Advance more — should not poll anymore
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(mockCapturePane).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
+    function Wrapper() {
+      const { lines } = useLogs(client, "api");
+      return <Text>lines:{lines.join("|")}</Text>;
     }
+
+    const { lastFrame } = render(<Wrapper />);
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+    expect(lastFrame()).toContain("line1");
+
+    // Emit lines for a different service
+    await act(() => {
+      client.emit("log.lines", "db", ["db-line"]);
+    });
+    expect(lastFrame()).not.toContain("db-line");
+  });
+
+  it("unsubscribes from events on unmount", () => {
+    const client = createMockClient();
+
+    function Wrapper() {
+      const { lines } = useLogs(client, "api");
+      return <Text>lines:{lines.length}</Text>;
+    }
+
+    const { unmount } = render(<Wrapper />);
+    expect(client.listenerCount("log.lines")).toBe(1);
+
+    unmount();
+    expect(client.listenerCount("log.lines")).toBe(0);
   });
 });

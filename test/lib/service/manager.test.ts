@@ -9,7 +9,6 @@ vi.mock("../../../src/lib/probe.js", () => ({
   probePort: vi.fn().mockResolvedValue(undefined),
 }));
 
-// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Dynamic mock import
 const { probePort } = (await import("../../../src/lib/probe.js")) as {
   probePort: ReturnType<typeof vi.fn>;
 };
@@ -1689,7 +1688,7 @@ describe("onOutput monitoring", () => {
 });
 
 // =============================================================================
-// restartWithDockerOverrides
+// RestartWithDockerOverrides
 // =============================================================================
 
 describe("restartWithDockerOverrides", () => {
@@ -1730,9 +1729,7 @@ describe("restartWithDockerOverrides", () => {
 
     // Restart with overrides — stop phase needs descendants to drop
     let processRunning = true;
-    deps.getDescendantPids = vi.fn(async () =>
-      processRunning ? [1000, 2000] : [1000],
-    );
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
     deps.sendCtrlC = vi.fn(async () => {
       processRunning = false;
     });
@@ -1764,11 +1761,153 @@ describe("restartWithDockerOverrides", () => {
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
-    await expect(
-      mgr.restartWithDockerOverrides("db", { build: true }),
-    ).rejects.toThrow();
+    await expect(mgr.restartWithDockerOverrides("db", { build: true })).rejects.toThrow();
 
     // Original config should still be restored
     expect(config.project.services.db.docker?.build).toBeUndefined();
+  });
+});
+
+// =============================================================================
+// Cascade Restart (restartWith)
+// =============================================================================
+
+describe("cascadeRestart", () => {
+  function createCascadeDeps(): ServiceManagerDeps {
+    let stopping = false;
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn(async () => (stopping ? [1000] : [1000, 2000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      stopping = true;
+    });
+    deps.sendKeys = vi.fn(async () => {
+      stopping = false;
+    });
+    return deps;
+  }
+
+  it("restart db → api also restarts", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: { start: "start-api", dependsOn: ["db"], restartWith: ["db"] },
+    });
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createCascadeDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start both services
+    const startDb = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(500);
+    await startDb;
+
+    const startApi = mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(500);
+    await startApi;
+
+    expect(mgr.getStatus("db").state).toBe("ready");
+    expect(mgr.getStatus("api").state).toBe("ready");
+
+    (deps.sendKeys as ReturnType<typeof vi.fn>).mockClear();
+
+    const restart = mgr.restartService("db");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+
+    const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: string[]) => c[0],
+    );
+    expect(targets).toContain("%db");
+    expect(targets).toContain("%api");
+  });
+
+  it("restart cache → api stays (no restartWith for cache)", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      cache: { start: "start-cache" },
+      api: { start: "start-api", dependsOn: ["db", "cache"], restartWith: ["db"] },
+    });
+    const paneMap = makePaneMap(["db", "cache", "api"]);
+    const deps = createCascadeDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    for (const name of ["db", "cache", "api"]) {
+      const p = mgr.startService(name);
+      await vi.advanceTimersByTimeAsync(500);
+      await p;
+    }
+
+    (deps.sendKeys as ReturnType<typeof vi.fn>).mockClear();
+
+    const restart = mgr.restartService("cache");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+
+    const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: string[]) => c[0],
+    );
+    expect(targets).toContain("%cache");
+    expect(targets).not.toContain("%api");
+  });
+
+  it("skips stopped services during cascade", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: { start: "start-api", dependsOn: ["db"], restartWith: ["db"] },
+    });
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createCascadeDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const startDb = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(500);
+    await startDb;
+
+    expect(mgr.getStatus("api").state).toBe("stopped");
+
+    (deps.sendKeys as ReturnType<typeof vi.fn>).mockClear();
+
+    const restart = mgr.restartService("db");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+
+    const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: string[]) => c[0],
+    );
+    expect(targets).toContain("%db");
+    expect(targets).not.toContain("%api");
+  });
+
+  it("no double-cascade in nested restarts", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: { start: "start-api", dependsOn: ["db"], restartWith: ["db"] },
+      frontend: { start: "start-fe", dependsOn: ["api"], restartWith: ["api"] },
+    });
+    const paneMap = makePaneMap(["db", "api", "frontend"]);
+    const deps = createCascadeDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    for (const name of ["db", "api", "frontend"]) {
+      const p = mgr.startService(name);
+      await vi.advanceTimersByTimeAsync(500);
+      await p;
+    }
+
+    (deps.sendKeys as ReturnType<typeof vi.fn>).mockClear();
+
+    const restart = mgr.restartService("db");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+
+    const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: string[]) => c[0],
+    );
+    expect(targets.filter((t: string) => t === "%db")).toHaveLength(1);
+    expect(targets.filter((t: string) => t === "%api")).toHaveLength(1);
+    expect(targets.filter((t: string) => t === "%frontend")).toHaveLength(1);
   });
 });

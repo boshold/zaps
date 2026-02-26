@@ -42,11 +42,9 @@ async function pollUntil(
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    // eslint-disable-next-line no-await-in-loop
     if (await fn()) {
       return;
     }
-    // eslint-disable-next-line no-await-in-loop
     await sleep(intervalMs);
   }
   throw new Error("pollUntil timed out");
@@ -95,7 +93,7 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
     const initialPane = await newSession(sessionName);
 
     // Need to run inside tmux, so zaps dev is run from within this session
-    await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} dev`);
+    await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} up`);
 
     // Wait for layout creation — zaps creates panes and spawns TUI
     await sleep(3000);

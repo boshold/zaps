@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
@@ -51,7 +51,12 @@ describe("DockerFlagRow", () => {
 
   it("renders label and description", () => {
     const { lastFrame } = render(
-      <DockerFlagRow active={false} checked={false} label="--force-recreate" description="Recreate containers" />,
+      <DockerFlagRow
+        active={false}
+        checked={false}
+        label="--force-recreate"
+        description="Recreate containers"
+      />,
     );
     expect(lastFrame()).toContain("--force-recreate");
     expect(lastFrame()).toContain("Recreate containers");

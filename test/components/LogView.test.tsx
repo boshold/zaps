@@ -39,7 +39,7 @@ describe("LogView", () => {
   it("renders scroll help bar", () => {
     const { lastFrame } = render(<LogView serviceName="api" lines={[]} autoScroll offset={0} />);
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("[q/esc] back");
+    expect(frame).toContain("[esc] back");
     expect(frame).toContain("scroll");
   });
 
@@ -62,7 +62,7 @@ describe("LogView", () => {
       <LogView serviceName="api" lines={lines} autoScroll={false} offset={0} />,
     );
     const frame = lastFrame() ?? "";
-    // offset=0 → slice(-20, lines.length) = last 20 lines
+    // Offset=0 → slice(-20, lines.length) = last 20 lines
     expect(frame).toContain("line-29");
     expect(frame).toContain(`line-${30 - VISIBLE_LINES}`);
   });

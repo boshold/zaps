@@ -557,7 +557,7 @@ describe("waitForReady", () => {
       if (svc === "postgres") {
         return { state: "running", health: "", ports: [5432] };
       }
-      // redis never ready
+      // Redis never ready
       return { state: "created", health: "", ports: [] };
     });
 
