@@ -204,7 +204,7 @@ describe("splitPane", () => {
     expect(paneId).toBe("%5");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-v", "-t", "%1", "-p", "30", "-P", "-F", "#{pane_id}"],
+      ["split-window", "-v", "-t", "%1", "-l", "30%", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });

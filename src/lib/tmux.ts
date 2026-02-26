@@ -72,8 +72,12 @@ export async function sendKeys(target: string, keys: string): Promise<void> {
 
 export async function newSession(name: string, opts?: { x?: number; y?: number }): Promise<string> {
   const args = ["new-session", "-d", "-s", name];
-  if (opts?.x) {args.push("-x", String(opts.x));}
-  if (opts?.y) {args.push("-y", String(opts.y));}
+  if (opts?.x) {
+    args.push("-x", String(opts.x));
+  }
+  if (opts?.y) {
+    args.push("-y", String(opts.y));
+  }
   args.push("-P", "-F", "#{pane_id}");
   return run(args);
 }
@@ -93,7 +97,7 @@ export async function splitPane(
 ): Promise<string> {
   const args = ["split-window", `-${direction}`, "-t", target];
   if (typeof percent === "number") {
-    args.push("-p", String(percent));
+    args.push("-l", `${percent}%`);
   }
   args.push("-P", "-F", "#{pane_id}");
   return run(args);
