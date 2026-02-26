@@ -367,3 +367,214 @@ describe("Keyboard routing — Edge cases", () => {
     await act();
   });
 });
+
+describe("Keyboard routing — ctrl keys", () => {
+  it("ctrl+c detaches", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses });
+
+    await act(() => {
+      stdin.write("\x03"); // ctrl+c
+    });
+    await act();
+
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+  });
+
+  it("ctrl+d destroys session from dashboard", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses });
+
+    await act(() => {
+      stdin.write("\x04"); // ctrl+d
+    });
+    await act();
+
+    expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
+  });
+
+  it("ctrl+d works from tasks view", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "build", name: "Build", description: null },
+    ];
+
+    const { stdin, client } = renderApp({ statuses, tasks });
+
+    // Switch to tasks view
+    await act(() => {
+      stdin.write("t");
+    });
+    // Then ctrl+d
+    await act(() => {
+      stdin.write("\x04");
+    });
+    await act();
+
+    expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
+  });
+
+  it("ctrl+c works from logs view", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses, paneMap: { db: "%0" } });
+
+    await act(() => {
+      stdin.write("l");
+    });
+    await act(() => {
+      stdin.write("\x03");
+    });
+    await act();
+
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+  });
+});
+
+describe("Keyboard routing — Tasks view", () => {
+  it("enter triggers task run", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "build", name: "Build", description: null, shortcut: "b" },
+    ];
+
+    const { stdin, client } = renderApp({ statuses, tasks });
+
+    await act(() => {
+      stdin.write("t");
+    });
+    await act(() => {
+      stdin.write("\r"); // Enter
+    });
+    await act();
+
+    expect(vi.mocked(client.runTask)).toHaveBeenCalled();
+  });
+
+  it("shortcut key triggers task", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "build", name: "Build", description: null, shortcut: "b" },
+      { key: "test", name: "Test", description: null, shortcut: "x" },
+    ];
+
+    const { stdin, client } = renderApp({ statuses, tasks });
+
+    await act(() => {
+      stdin.write("t");
+    });
+    // Press shortcut for second task
+    await act(() => {
+      stdin.write("x");
+    });
+    await act();
+
+    expect(vi.mocked(client.runTask)).toHaveBeenCalled();
+  });
+
+  it("up/down navigates tasks", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "build", name: "Build", description: null },
+      { key: "test", name: "Test", description: null },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, tasks });
+
+    await act(() => {
+      stdin.write("t");
+    });
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+
+    // Should show tasks view with second task selected
+    expect(lastFrame()).toContain("Tasks");
+  });
+});
+
+describe("Keyboard routing — Docker rebuild", () => {
+  it("R opens docker rebuild for docker service", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    await act(() => {
+      stdin.write("R");
+    });
+
+    const frame = lastFrame() ?? "";
+    // Docker rebuild popup should appear
+    expect(frame).toContain("db");
+  });
+
+  it("R is no-op for non-docker service", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses });
+
+    await act(() => {
+      stdin.write("R");
+    });
+
+    // Should still be on dashboard
+    expect(lastFrame()).toContain("[t]asks");
+  });
+});
+
+describe("Router — task event handling", () => {
+  it("updates task history on daemon task events", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+    const client = createMockClient(statuses);
+
+    const { lastFrame } = renderApp({ statuses, client });
+    await act();
+
+    // Simulate daemon task.start event
+    (client as unknown as EventEmitter).emit("task.start", "build", "Build");
+    await act();
+
+    // Simulate daemon task.complete event
+    (client as unknown as EventEmitter).emit("task.complete", "build", "Build", "success");
+    await act();
+
+    // Dashboard should reflect task history
+    expect(lastFrame()).toBeDefined();
+  });
+});

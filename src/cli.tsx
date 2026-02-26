@@ -1,9 +1,17 @@
 #!/usr/bin/env node
-import path from "node:path";
-
 import type { DaemonEvent, IpcResponse } from "./lib/ipc/protocol.js";
 import { program } from "commander";
 
+import {
+  CliError,
+  formatTable,
+  resolveCommand,
+  resolveRuntime,
+  resolveSessionId,
+  resolveTargetSession,
+  withDaemon,
+} from "./cli/helpers.js";
+import type { SessionIpc, SessionInfo } from "./cli/helpers.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -25,28 +33,6 @@ import {
 
 declare const __BUILD_TIME__: string;
 
-function resolveCommand(): string {
-  const zapsCommand = getEnv("ZAPS_COMMAND");
-  if (zapsCommand) {
-    return zapsCommand;
-  }
-  if (process.argv[1]?.startsWith("/$bunfs/")) {
-    return path.basename(process.execPath);
-  }
-  return process.argv.slice(0, 2).join(" ");
-}
-
-function resolveRuntime(): string {
-  const env = getEnv("ZAPS_RUNTIME");
-  if (env) {
-    return env;
-  }
-  if (process.argv[1]?.startsWith("/$bunfs/")) {
-    return "native";
-  }
-  return "source";
-}
-
 program
   .name("zaps")
   .version(
@@ -57,54 +43,6 @@ program
 
 function globalSession(): string | undefined {
   return program.opts().session as string | undefined;
-}
-
-interface SessionInfo {
-  id: string;
-  name: string;
-  projectDir: string;
-}
-
-function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
-  if (sessionArg) {
-    // Priority: exact id → exact name → id prefix → name prefix
-    const exactId = sessions.find((s) => s.id === sessionArg);
-    if (exactId) {
-      return exactId;
-    }
-    const exactName = sessions.find((s) => s.name === sessionArg);
-    if (exactName) {
-      return exactName;
-    }
-    const prefixMatches = sessions.filter(
-      (s) => s.id.startsWith(sessionArg) || s.name.startsWith(sessionArg),
-    );
-    if (prefixMatches.length === 1) {
-      return prefixMatches[0];
-    }
-    if (prefixMatches.length > 1) {
-      process.stderr.write(`Ambiguous session "${sessionArg}". Matches:\n`);
-      for (const s of prefixMatches) {
-        process.stderr.write(`  ${s.id}  ${s.name}  ${s.projectDir}\n`);
-      }
-      process.exit(1);
-    }
-    process.stderr.write(`Session not found: ${sessionArg}\n`);
-    process.exit(1);
-  }
-  if (sessions.length === 1) {
-    return sessions[0];
-  }
-  const cwd = process.cwd();
-  const match = sessions.find((s) => s.projectDir === cwd);
-  if (match) {
-    return match;
-  }
-  process.stderr.write("Multiple sessions running. Specify one:\n");
-  for (const s of sessions) {
-    process.stderr.write(`  ${s.id}  ${s.name}  ${s.projectDir}\n`);
-  }
-  process.exit(1);
 }
 
 // --- TUI ---
@@ -234,16 +172,24 @@ program
       const res = await ipcRequest(sock, "session.list");
       if (!res.error) {
         const sessions = res.result as SessionInfo[];
-        const target = resolveTargetSession(sessions, sessionOpt);
-        const configPath = discoverConfig(process.cwd());
-        if (configPath) {
-          const cwdId = sessionId(configPath);
-          if (target.id !== cwdId) {
-            process.stderr.write(
-              `Session "${target.name}" is from a different project. Use \`zaps attach -s ${sessionOpt}\` instead.\n`,
-            );
+        try {
+          const target = resolveTargetSession(sessions, sessionOpt);
+          const configPath = discoverConfig(process.cwd());
+          if (configPath) {
+            const cwdId = sessionId(configPath);
+            if (target.id !== cwdId) {
+              process.stderr.write(
+                `Session "${target.name}" is from a different project. Use \`zaps attach -s ${sessionOpt}\` instead.\n`,
+              );
+              process.exit(1);
+            }
+          }
+        } catch (error) {
+          if (error instanceof CliError) {
+            process.stderr.write(`${error.message}\n`);
             process.exit(1);
           }
+          throw error;
         }
       }
     }
@@ -288,9 +234,18 @@ program
         process.exit(1);
       }
       const sessions = res.result as SessionInfo[];
-      const target = sessionOpt
-        ? resolveTargetSession(sessions, sessionOpt)
-        : sessions.find((s) => s.id === resolveSessionId().id);
+      let target: SessionInfo | undefined;
+      try {
+        target = sessionOpt
+          ? resolveTargetSession(sessions, sessionOpt)
+          : sessions.find((s) => s.id === resolveSessionId().id);
+      } catch (error) {
+        if (error instanceof CliError) {
+          process.stderr.write(`${error.message}\n`);
+          process.exit(1);
+        }
+        throw error;
+      }
       if (target) {
         const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, target.id);
         if (destroyRes.error) {
@@ -339,22 +294,30 @@ for (const action of ["start", "stop", "restart"] as const) {
     .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} service(s). All if omitted`)
     .option("--json", "Output as JSON")
     .action(async (services: string[], opts: { json?: boolean }) => {
-      await withDaemon(async (ipc) => {
-        const params = services.length > 0 ? { names: services } : undefined;
-        const res = await ipc.request(`services.${action}All`, params);
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
+      try {
+        await withDaemon(async (ipc) => {
+          const params = services.length > 0 ? { names: services } : undefined;
+          const res = await ipc.request(`services.${action}All`, params);
+          if (res.error) {
+            process.stderr.write(`Error: ${res.error}\n`);
+            process.exit(1);
+          }
+          if (opts.json) {
+            process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          } else {
+            const target = services.length > 0 ? services.join(", ") : "all services";
+            process.stdout.write(
+              `${action.charAt(0).toUpperCase()}${action.slice(1)}ed ${target}.\n`,
+            );
+          }
+        }, globalSession());
+      } catch (error) {
+        if (error instanceof CliError) {
+          process.stderr.write(`${error.message}\n`);
           process.exit(1);
         }
-        if (opts.json) {
-          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
-        } else {
-          const target = services.length > 0 ? services.join(", ") : "all services";
-          process.stdout.write(
-            `${action.charAt(0).toUpperCase()}${action.slice(1)}ed ${target}.\n`,
-          );
-        }
-      }, globalSession());
+        throw error;
+      }
     });
 }
 
@@ -365,32 +328,40 @@ program
   .description("List services and their status")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withDaemon(async (ipc) => {
-      const res = await ipc.request("services.list");
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
+    try {
+      await withDaemon(async (ipc) => {
+        const res = await ipc.request("services.list");
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          return;
+        }
+        const statuses = res.result as {
+          name: string;
+          state: string;
+          ports: number[];
+          url?: string;
+        }[];
+        if (statuses.length === 0) {
+          process.stdout.write("No services configured.\n");
+          return;
+        }
+        const rows = [["NAME", "STATE", "PORTS", "URL"]];
+        for (const s of statuses) {
+          rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
+        }
+        process.stdout.write(`${formatTable(rows)}\n`);
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
         process.exit(1);
       }
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
-        return;
-      }
-      const statuses = res.result as {
-        name: string;
-        state: string;
-        ports: number[];
-        url?: string;
-      }[];
-      if (statuses.length === 0) {
-        process.stdout.write("No services configured.\n");
-        return;
-      }
-      const rows = [["NAME", "STATE", "PORTS", "URL"]];
-      for (const s of statuses) {
-        rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
-      }
-      process.stdout.write(`${formatTable(rows)}\n`);
-    }, globalSession());
+      throw error;
+    }
   });
 
 program
@@ -439,28 +410,36 @@ program
   .description("Show service details")
   .option("--json", "Output as JSON")
   .action(async (name: string, opts: { json?: boolean }) => {
-    await withDaemon(async (ipc) => {
-      const res = await ipc.request("services.details", { name });
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
+    try {
+      await withDaemon(async (ipc) => {
+        const res = await ipc.request("services.details", { name });
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          return;
+        }
+        const details = res.result as Record<string, unknown>;
+        for (const [k, v] of Object.entries(details)) {
+          const val = Array.isArray(v)
+            ? v.join(", ") || "-"
+            : v === null
+              ? "-"
+              : typeof v === "object"
+                ? JSON.stringify(v)
+                : `${v as string | number | boolean}`; // eslint-disable-line no-nested-ternary -- Compact value formatting
+          process.stdout.write(`${k}: ${val}\n`);
+        }
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
         process.exit(1);
       }
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
-        return;
-      }
-      const details = res.result as Record<string, unknown>;
-      for (const [k, v] of Object.entries(details)) {
-        const val = Array.isArray(v)
-          ? v.join(", ") || "-"
-          : v === null
-            ? "-"
-            : typeof v === "object"
-              ? JSON.stringify(v)
-              : `${v as string | number | boolean}`; // eslint-disable-line no-nested-ternary -- Compact value formatting
-        process.stdout.write(`${k}: ${val}\n`);
-      }
-    }, globalSession());
+      throw error;
+    }
   });
 
 // --- New Commands ---
@@ -483,72 +462,85 @@ program
   .action(async (services: string[], opts: { follow?: boolean; tail: string }) => {
     const tail = Number.parseInt(opts.tail, 10);
 
-    await withDaemon(async (ipc: SessionIpc) => {
-      // Get service list if none specified
-      let targetServices = services;
-      if (targetServices.length === 0) {
-        const listRes = await ipc.request("services.list");
-        if (listRes.error) {
-          process.stderr.write(`Error: ${listRes.error}\n`);
-          process.exit(1);
+    try {
+      await withDaemon(async (ipc: SessionIpc) => {
+        // Get service list if none specified
+        let targetServices = services;
+        if (targetServices.length === 0) {
+          const listRes = await ipc.request("services.list");
+          if (listRes.error) {
+            process.stderr.write(`Error: ${listRes.error}\n`);
+            process.exit(1);
+          }
+          targetServices = (listRes.result as { name: string }[]).map((s) => s.name);
         }
-        targetServices = (listRes.result as { name: string }[]).map((s) => s.name);
-      }
 
-      const multiService = targetServices.length > 1;
-      const colorMap = new Map<string, string>();
-      for (let i = 0; i < targetServices.length; i += 1) {
-        colorMap.set(targetServices[i], SERVICE_COLORS[i % SERVICE_COLORS.length]);
-      }
-
-      // Compute max service name length for padding
-      const maxLen = Math.max(...targetServices.map((s) => s.length));
-
-      function formatLine(service: string, line: string): string {
-        if (!multiService) {
-          return line;
+        const multiService = targetServices.length > 1;
+        const colorMap = new Map<string, string>();
+        for (let i = 0; i < targetServices.length; i += 1) {
+          colorMap.set(targetServices[i], SERVICE_COLORS[i % SERVICE_COLORS.length]);
         }
-        const color = colorMap.get(service) ?? "";
-        return `${color}${service.padEnd(maxLen)}${RESET} | ${line}`;
-      }
 
-      // Snapshot: get last N lines per service
-      for (const svc of targetServices) {
-        const snapRes = await ipc.request("logs.snapshot", { service: svc });
-        if (snapRes.error) {
-          process.stderr.write(`Error (${svc}): ${snapRes.error}\n`);
-          continue; // eslint-disable-line no-continue -- Skip failed services
+        // Compute max service name length for padding
+        const maxLen = Math.max(...targetServices.map((s) => s.length));
+
+        function formatLine(service: string, line: string): string {
+          if (!multiService) {
+            return line;
+          }
+          const color = colorMap.get(service) ?? "";
+          return `${color}${service.padEnd(maxLen)}${RESET} | ${line}`;
         }
-        const lines = snapRes.result as string[];
-        const sliced = lines.slice(-tail);
-        for (const line of sliced) {
-          process.stdout.write(`${formatLine(svc, line)}\n`);
-        }
-      }
 
-      if (!opts.follow) {
-        return;
-      }
-
-      // Follow mode: subscribe to log events
-      const sock = socketPath();
-      const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], (event: DaemonEvent) => {
-        const data = event.data as { service: string; lines: string[] };
-        if (targetServices.includes(data.service)) {
-          for (const line of data.lines) {
-            process.stdout.write(`${formatLine(data.service, line)}\n`);
+        // Snapshot: get last N lines per service
+        for (const svc of targetServices) {
+          const snapRes = await ipc.request("logs.snapshot", { service: svc });
+          if (snapRes.error) {
+            process.stderr.write(`Error (${svc}): ${snapRes.error}\n`);
+            continue; // eslint-disable-line no-continue -- Skip failed services
+          }
+          const lines = snapRes.result as string[];
+          const sliced = lines.slice(-tail);
+          for (const line of sliced) {
+            process.stdout.write(`${formatLine(svc, line)}\n`);
           }
         }
-      });
 
-      // Wait for ctrl+c
-      await new Promise<void>((resolve) => {
-        process.on("SIGINT", () => {
-          sub.close();
-          resolve();
+        if (!opts.follow) {
+          return;
+        }
+
+        // Follow mode: subscribe to log events
+        const sock = socketPath();
+        const sub = ipcSubscribe(
+          sock,
+          ipc.sessionId,
+          ["log.lines"],
+          (event: DaemonEvent) => {
+            const data = event.data as { service: string; lines: string[] };
+            if (targetServices.includes(data.service)) {
+              for (const line of data.lines) {
+                process.stdout.write(`${formatLine(data.service, line)}\n`);
+              }
+            }
+          },
+        );
+
+        // Wait for ctrl+c
+        await new Promise<void>((resolve) => {
+          process.on("SIGINT", () => {
+            sub.close();
+            resolve();
+          });
         });
-      });
-    }, globalSession());
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
+    }
   });
 
 program
@@ -556,26 +548,34 @@ program
   .description("Run a task")
   .option("--json", "Output as JSON")
   .action(async (key: string, opts: { json?: boolean }) => {
-    await withDaemon(async (ipc) => {
-      const res = await ipc.stream("tasks.run", { key }, (event, data) => {
-        if (!opts.json && event === "line") {
-          process.stdout.write(`${data as string}\n`);
+    try {
+      await withDaemon(async (ipc) => {
+        const res = await ipc.stream("tasks.run", { key }, (event, data) => {
+          if (!opts.json && event === "line") {
+            process.stdout.write(`${data as string}\n`);
+          }
+        });
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
         }
-      });
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          return;
+        }
+        const result = res.result as { success: boolean };
+        if (!result.success) {
+          process.stderr.write("Task failed.\n");
+          process.exit(1);
+        }
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
         process.exit(1);
       }
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
-        return;
-      }
-      const result = res.result as { success: boolean };
-      if (!result.success) {
-        process.stderr.write("Task failed.\n");
-        process.exit(1);
-      }
-    }, globalSession());
+      throw error;
+    }
   });
 
 program
@@ -590,18 +590,26 @@ program
       process.exit(1);
     }
 
-    const sessionOpt = globalSession();
-    const id = await (async () => {
-      if (sessionOpt) {
-        const res = await ipcRequest(sock, "session.list");
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
-          process.exit(1);
+    let id: string;
+    try {
+      const sessionOpt = globalSession();
+      id = await (async () => {
+        if (sessionOpt) {
+          const res = await ipcRequest(sock, "session.list");
+          if (res.error) {
+            throw new CliError(`Error: ${res.error}`);
+          }
+          return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
         }
-        return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
+        return resolveSessionId().id;
+      })();
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
       }
-      return resolveSessionId().id;
-    })();
+      throw error;
+    }
 
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
@@ -734,8 +742,16 @@ program
       process.exit(1);
     }
 
-    const targetSession = resolveTargetSession(sessions, globalSession());
-    await runTui({ sessionId: targetSession.id, socketPath: sock });
+    try {
+      const targetSession = resolveTargetSession(sessions, globalSession());
+      await runTui({ sessionId: targetSession.id, socketPath: sock });
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
+    }
   });
 
 program
@@ -743,27 +759,35 @@ program
   .description("List tasks")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withDaemon(async (ipc) => {
-      const res = await ipc.request("tasks.list");
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
+    try {
+      await withDaemon(async (ipc) => {
+        const res = await ipc.request("tasks.list");
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        if (opts.json) {
+          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          return;
+        }
+        const tasks = res.result as { key: string; name: string; description: string | null }[];
+        if (tasks.length === 0) {
+          process.stdout.write("No tasks configured.\n");
+          return;
+        }
+        const rows = [["KEY", "NAME", "DESCRIPTION"]];
+        for (const t of tasks) {
+          rows.push([t.key, t.name, t.description ?? "-"]);
+        }
+        process.stdout.write(`${formatTable(rows)}\n`);
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
         process.exit(1);
       }
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
-        return;
-      }
-      const tasks = res.result as { key: string; name: string; description: string | null }[];
-      if (tasks.length === 0) {
-        process.stdout.write("No tasks configured.\n");
-        return;
-      }
-      const rows = [["KEY", "NAME", "DESCRIPTION"]];
-      for (const t of tasks) {
-        rows.push([t.key, t.name, t.description ?? "-"]);
-      }
-      process.stdout.write(`${formatTable(rows)}\n`);
-    }, globalSession());
+      throw error;
+    }
   });
 
 program
@@ -864,102 +888,6 @@ daemonCmd
     }
     process.stdout.write(`${res.result as string}\n`);
   });
-
-// --- CLI session routing ---
-
-interface SessionIpc {
-  readonly sessionId: string;
-  request(method: string, params?: unknown): Promise<IpcResponse>;
-  stream(
-    method: string,
-    params: unknown,
-    onEvent: (event: string, data: unknown) => void,
-  ): Promise<IpcResponse>;
-}
-
-function resolveSessionId(): { configPath: string; id: string } {
-  const cwd = process.cwd();
-  const configPath = discoverConfig(cwd);
-  if (!configPath) {
-    process.stderr.write("No .zaps.mts config found. Run `zaps init` to create one.\n");
-    process.exit(1);
-  }
-  return { configPath, id: sessionId(configPath) };
-}
-
-async function withDaemon<T>(fn: (ipc: SessionIpc) => Promise<T>, sessionArg?: string): Promise<T> {
-  const sock = socketPath();
-  if (!isDaemonRunning()) {
-    if (sessionArg) {
-      process.stderr.write("No running daemon found.\n");
-      process.exit(1);
-    }
-    return withLegacyIpc(fn);
-  }
-
-  const id = await (async () => {
-    if (sessionArg) {
-      const res = await ipcRequest(sock, "session.list");
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
-        process.exit(1);
-      }
-      return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
-    }
-    const resolved = resolveSessionId().id;
-    const res = await ipcRequest(sock, "session.list");
-    if (res.error) {
-      process.stderr.write(`Error: ${res.error}\n`);
-      process.exit(1);
-    }
-    if (!(res.result as { id: string }[]).some((s) => s.id === resolved)) {
-      process.stderr.write("No running zaps session for this project.\n");
-      process.exit(1);
-    }
-    return resolved;
-  })();
-
-  const ipc: SessionIpc = {
-    sessionId: id,
-    request: async (method, params?) => ipcRequest(sock, method, params, 30_000, id),
-    stream: async (method, params, onEvent) =>
-      ipcStream(sock, method, params, onEvent, 120_000, id),
-  };
-  return fn(ipc);
-}
-
-async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
-  if (!getEnv("TMUX")) {
-    process.stderr.write("Must be inside a tmux session.\n");
-    process.exit(1);
-  }
-  const tmuxSession = await currentSession();
-  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
-  if (!legacySock) {
-    process.stderr.write("No running zaps instance found in this session.\n");
-    process.exit(1);
-  }
-  const ipc: SessionIpc = {
-    sessionId: "",
-    request: async (method, params?) => ipcRequest(legacySock, method, params),
-    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
-  };
-  return fn(ipc);
-}
-
-function formatTable(rows: string[][]): string {
-  if (rows.length === 0) {
-    return "";
-  }
-  const cols = rows[0].length;
-  const widths: number[] = Array.from({ length: cols }, () => 0);
-  for (const row of rows) {
-    for (let i = 0; i < cols; i += 1) {
-      widths[i] = Math.max(widths[i], row[i].length);
-    }
-  }
-  return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
-}
 
 if (process.argv.length === 2) {
   process.argv.push("up");
