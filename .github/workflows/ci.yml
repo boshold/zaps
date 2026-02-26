@@ -48,7 +48,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test -- --coverage
+      - run: pnpm test --coverage
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -93,7 +93,7 @@ jobs:
           path: dist/
       - run: tmux -V
       - run: docker info
-      - run: pnpm test:integration -- --coverage
+      - run: pnpm test:integration --coverage
       - uses: actions/upload-artifact@v4
         if: always()
         with:
