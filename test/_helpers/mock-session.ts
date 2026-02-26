@@ -1,8 +1,6 @@
-import { EventEmitter } from "node:events";
-import { vi } from "vitest";
-
-import type { Session } from "../../src/daemon/session.js";
 import type { SessionStore } from "../../src/daemon/server.js";
+import type { Session } from "../../src/daemon/session.js";
+import { vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 
@@ -70,9 +68,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     tmuxSession: "test-tmux",
     originPane: "%0",
     manager: {
-      getAllStatuses: vi.fn(() => [
-        { name: "api", state: "ready", ports: [3000], retryCount: 0 },
-      ]),
+      getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
       getStatus: vi.fn((name: string) => {
         if (name === "api") {
           return { name: "api", state: "ready", ports: [3000], retryCount: 0 };
@@ -124,9 +120,7 @@ export function createMockStore(sessions: MockSession[] = []): SessionStore {
     list: () => [...sessionMap.values()] as unknown as Session[],
     get: (id: string) => sessionMap.get(id) as unknown as Session | undefined,
     getByProjectDir: (dir: string) =>
-      [...sessionMap.values()].find((s) => s.projectDir === dir) as unknown as
-        | Session
-        | undefined,
+      [...sessionMap.values()].find((s) => s.projectDir === dir) as unknown as Session | undefined,
     create: vi.fn().mockImplementation(async () => sessions[0]),
     destroy: vi.fn().mockResolvedValue(undefined),
   };

@@ -1,13 +1,12 @@
-import { getEnv } from "#src/lib/env.js";
+import path from "node:path";
+
+import { discoverConfig } from "#src/config/discovery.js";
 import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
-import { discoverConfig } from "#src/config/discovery.js";
-import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
-import { currentSession, showEnv } from "#src/lib/tmux.js";
-
+import { getEnv } from "#src/lib/env.js";
+import { ipcRequest, ipcStream } from "#src/lib/ipc/client.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
-
-import path from "node:path";
+import { currentSession, showEnv } from "#src/lib/tmux.js";
 
 export class CliError extends Error {
   constructor(message: string) {
@@ -54,10 +53,7 @@ export function resolveRuntime(): string {
   return "source";
 }
 
-export function resolveTargetSession(
-  sessions: SessionInfo[],
-  sessionArg?: string,
-): SessionInfo {
+export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
   if (sessionArg) {
     // Priority: exact id → exact name → id prefix → name prefix
     const exactId = sessions.find((s) => s.id === sessionArg);
@@ -133,6 +129,7 @@ export async function withDaemon<T>(
       if (res.error) {
         throw new CliError(`Error: ${res.error}`);
       }
+      // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
       return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
     }
     const resolved = resolveSessionId().id;
@@ -140,6 +137,7 @@ export async function withDaemon<T>(
     if (res.error) {
       throw new CliError(`Error: ${res.error}`);
     }
+    // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
     if (!(res.result as { id: string }[]).some((s) => s.id === resolved)) {
       throw new CliError("No running zaps session for this project.");
     }

@@ -377,7 +377,7 @@ describe("Keyboard routing — ctrl keys", () => {
     const { stdin, client } = renderApp({ statuses });
 
     await act(() => {
-      stdin.write("\x03"); // ctrl+c
+      stdin.write("\x03"); // Ctrl+c
     });
     await act();
 
@@ -392,7 +392,7 @@ describe("Keyboard routing — ctrl keys", () => {
     const { stdin, client } = renderApp({ statuses });
 
     await act(() => {
-      stdin.write("\x04"); // ctrl+d
+      stdin.write("\x04"); // Ctrl+d
     });
     await act();
 
@@ -403,9 +403,7 @@ describe("Keyboard routing — ctrl keys", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const tasks: TaskInfo[] = [
-      { key: "build", name: "Build", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null }];
 
     const { stdin, client } = renderApp({ statuses, tasks });
 
@@ -446,9 +444,7 @@ describe("Keyboard routing — Tasks view", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const tasks: TaskInfo[] = [
-      { key: "build", name: "Build", description: null, shortcut: "b" },
-    ];
+    const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null, shortcut: "b" }];
 
     const { stdin, client } = renderApp({ statuses, tasks });
 

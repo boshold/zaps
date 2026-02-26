@@ -103,7 +103,7 @@ describe("LogMonitor", () => {
     const { capturePane, monitor } = setup();
     let resolveCapture!: (value: string) => void;
     capturePane.mockImplementation(
-      () =>
+      async () =>
         new Promise<string>((resolve) => {
           resolveCapture = resolve;
         }),

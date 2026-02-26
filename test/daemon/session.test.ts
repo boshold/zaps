@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 
+import type { SessionCreateParams } from "../../src/daemon/session.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Session, sessionId } from "../../src/daemon/session.js";
-import type { SessionCreateParams } from "../../src/daemon/session.js";
 
 vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),
@@ -18,9 +18,7 @@ function createMockManager(): ServiceManager {
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
-    getAllStatuses: vi.fn(() => [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
-    ]),
+    getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
     getStatus: vi.fn(),
   }) as unknown as ServiceManager;
 }

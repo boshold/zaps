@@ -11,6 +11,7 @@ let mockSocket: EventEmitter & {
 vi.mock("node:net", () => ({
   default: {
     createConnection: vi.fn(() => {
+      // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
       const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
       const socket = new EE() as EventEmitter & {
         write: ReturnType<typeof vi.fn>;
@@ -54,7 +55,7 @@ describe("ipcRequest", () => {
     expect(req.method).toBe("daemon.ping");
 
     // Simulate response
-    const response = JSON.stringify({ id: req.id, result: "pong" }) + "\n";
+    const response = `${JSON.stringify({ id: req.id, result: "pong" })}\n`;
     mockSocket.emit("data", Buffer.from(response));
 
     const res = await promise;
@@ -85,7 +86,7 @@ describe("ipcRequest", () => {
     const req = JSON.parse(written.replace("\n", ""));
     expect(req.session).toBe("sess1");
 
-    const response = JSON.stringify({ id: req.id, result: [] }) + "\n";
+    const response = `${JSON.stringify({ id: req.id, result: [] })}\n`;
     mockSocket.emit("data", Buffer.from(response));
 
     const res = await promise;
@@ -100,9 +101,9 @@ describe("ipcRequest", () => {
     const req = JSON.parse(written.replace("\n", ""));
 
     // Send response with wrong id
-    mockSocket.emit("data", Buffer.from(JSON.stringify({ id: "other", result: "nope" }) + "\n"));
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: "other", result: "nope" })}\n`));
     // Then correct response
-    mockSocket.emit("data", Buffer.from(JSON.stringify({ id: req.id, result: "yes" }) + "\n"));
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "yes" })}\n`));
 
     const res = await promise;
     expect(res.result).toBe("yes");
@@ -131,14 +132,14 @@ describe("ipcStream", () => {
     // Send event
     mockSocket.emit(
       "data",
-      Buffer.from(JSON.stringify({ id: req.id, event: "line", data: "output" }) + "\n"),
+      Buffer.from(`${JSON.stringify({ id: req.id, event: "line", data: "output" })}\n`),
     );
     expect(onEvent).toHaveBeenCalledWith("line", "output");
 
     // Send final response
     mockSocket.emit(
       "data",
-      Buffer.from(JSON.stringify({ id: req.id, result: { success: true } }) + "\n"),
+      Buffer.from(`${JSON.stringify({ id: req.id, result: { success: true } })}\n`),
     );
 
     const res = await promise;
@@ -164,15 +165,12 @@ describe("ipcStream", () => {
     // Event with wrong id
     mockSocket.emit(
       "data",
-      Buffer.from(JSON.stringify({ id: "other", event: "line", data: "x" }) + "\n"),
+      Buffer.from(`${JSON.stringify({ id: "other", event: "line", data: "x" })}\n`),
     );
     expect(onEvent).not.toHaveBeenCalled();
 
     // Correct response
-    mockSocket.emit(
-      "data",
-      Buffer.from(JSON.stringify({ id: req.id, result: "done" }) + "\n"),
-    );
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`));
 
     await promise;
   });
@@ -200,7 +198,7 @@ describe("ipcSubscribe", () => {
     mockSocket.emit(
       "data",
       Buffer.from(
-        JSON.stringify({ session: "sess1", event: "log.lines", data: { lines: ["hi"] } }) + "\n",
+        `${JSON.stringify({ session: "sess1", event: "log.lines", data: { lines: ["hi"] } })}\n`,
       ),
     );
 
@@ -262,13 +260,13 @@ describe("ipcSubscribe", () => {
     const reqPromise = sub.request("services.list");
 
     // Find the request id from the write call
-    const calls = mockSocket.write.mock.calls;
+    const { calls } = mockSocket.write.mock;
     const lastCall = JSON.parse((calls[calls.length - 1][0] as string).replace("\n", ""));
 
     // Simulate response
     mockSocket.emit(
       "data",
-      Buffer.from(JSON.stringify({ id: lastCall.id, result: ["api"] }) + "\n"),
+      Buffer.from(`${JSON.stringify({ id: lastCall.id, result: ["api"] })}\n`),
     );
 
     const res = await reqPromise;

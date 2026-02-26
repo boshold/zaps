@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
-import { vi } from "vitest";
 
 import type { ServiceManager } from "../../src/lib/service/manager.js";
+import { vi } from "vitest";
 
 export function createMockServiceManager(): ServiceManager {
   const emitter = new EventEmitter();
@@ -11,9 +11,7 @@ export function createMockServiceManager(): ServiceManager {
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
-    getAllStatuses: vi.fn(() => [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
-    ]),
+    getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
     getStatus: vi.fn((name: string) => {
       if (name === "api") {
         return { name: "api", state: "ready", ports: [3000], retryCount: 0 };

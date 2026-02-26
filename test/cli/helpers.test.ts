@@ -1,4 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { SessionInfo } from "../../src/cli/helpers.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CliError,
@@ -7,7 +8,6 @@ import {
   resolveRuntime,
   resolveTargetSession,
 } from "../../src/cli/helpers.js";
-import type { SessionInfo } from "../../src/cli/helpers.js";
 
 describe("CliError", () => {
   it("is an Error with name CliError", () => {
@@ -20,7 +20,6 @@ describe("CliError", () => {
 
 describe("resolveCommand", () => {
   const originalArgv = process.argv;
-  const originalEnv = process.env;
 
   beforeEach(() => {
     process.argv = [...originalArgv];

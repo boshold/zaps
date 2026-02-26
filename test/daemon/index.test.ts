@@ -1,5 +1,3 @@
-import { EventEmitter } from "node:events";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({
@@ -29,13 +27,14 @@ vi.mock("node:os", () => ({
 }));
 
 vi.mock("node:net", () => {
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   return {
     default: {
       createConnection: vi.fn(() => {
         const socket = new EE();
-        (socket as Record<string, unknown>)["write"] = vi.fn();
-        (socket as Record<string, unknown>)["destroy"] = vi.fn();
+        (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+        (socket as unknown as Record<string, unknown>)["destroy"] = vi.fn();
         // Auto-connect and respond with pong
         setTimeout(() => {
           socket.emit("connect");
@@ -47,10 +46,13 @@ vi.mock("node:net", () => {
       }),
       createServer: vi.fn(() => {
         const server = new EE();
-        (server as Record<string, unknown>)["listen"] = vi.fn((_path: string, cb: () => void) => {
-          setTimeout(cb, 0);
-        });
-        (server as Record<string, unknown>)["close"] = vi.fn();
+        (server as unknown as Record<string, unknown>)["listen"] = vi.fn(
+          // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
+          (_path: string, cb: () => void) => {
+            setTimeout(cb, 0);
+          },
+        );
+        (server as unknown as Record<string, unknown>)["close"] = vi.fn();
         return server;
       }),
     },
@@ -58,6 +60,7 @@ vi.mock("node:net", () => {
 });
 
 vi.mock("../../src/daemon/server.js", () => {
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   return {
     DaemonServer: vi.fn(() => {
@@ -89,7 +92,8 @@ describe("ensureDaemon", () => {
   });
 
   it("returns socket path when daemon already alive and responsive", async () => {
-    const fs = (await import("node:fs")).default;
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
     vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
@@ -98,7 +102,8 @@ describe("ensureDaemon", () => {
   });
 
   it("spawns new daemon when not running", async () => {
-    const fs = (await import("node:fs")).default;
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
     // First readPid returns null (no daemon)
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       throw new Error("ENOENT");
@@ -112,9 +117,10 @@ describe("ensureDaemon", () => {
   });
 
   it("cleans stale PID and relaunches", async () => {
-    const fs = (await import("node:fs")).default;
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
     vi.mocked(fs.readFileSync).mockReturnValue("99999");
-    // kill(pid, 0) throws — process not found
+    // Kill(pid, 0) throws — process not found
     vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error("ESRCH");
     });

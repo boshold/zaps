@@ -16,7 +16,8 @@ vi.mock("node:os", () => ({
   },
 }));
 
-const fs = (await import("node:fs")).default;
+const fsModule = await import("node:fs");
+const fs = fsModule.default;
 const mockKill = vi.fn();
 const originalKill = process.kill;
 
@@ -84,7 +85,7 @@ describe("PID operations", () => {
 
   it("readPid returns parsed PID", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
-    expect(readPid()).toBe(12345);
+    expect(readPid()).toBe(12_345);
   });
 
   it("readPid returns null for NaN", () => {
@@ -136,7 +137,7 @@ describe("isDaemonRunning", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
     mockKill.mockReturnValue(undefined);
     expect(isDaemonRunning()).toBe(true);
-    expect(mockKill).toHaveBeenCalledWith(12345, 0);
+    expect(mockKill).toHaveBeenCalledWith(12_345, 0);
   });
 
   it("returns false and cleans up stale PID", () => {

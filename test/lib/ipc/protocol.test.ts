@@ -1,3 +1,4 @@
+import type { IpcEvent, IpcMessage, IpcResponse } from "../../../src/lib/ipc/protocol.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -7,7 +8,6 @@ import {
   isIpcEvent,
   isIpcResponse,
 } from "../../../src/lib/ipc/protocol.js";
-import type { IpcEvent, IpcMessage, IpcResponse } from "../../../src/lib/ipc/protocol.js";
 
 describe("isIpcEvent", () => {
   it("returns true for event messages", () => {

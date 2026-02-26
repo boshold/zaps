@@ -3,8 +3,10 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:net", () => {
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   class MockServer extends EE {
+    // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
     listen = vi.fn((_path: string, cb: () => void) => {
       setTimeout(cb, 0);
     });
@@ -48,22 +50,25 @@ describe("IpcServer", () => {
 
   it("starts and listens", async () => {
     await server.start();
-    const net = (await import("node:net")).default;
+    const netModule = await import("node:net");
+    const net = netModule.default;
     const mockServer = vi.mocked(net.createServer).mock.results[0].value;
     expect(mockServer.listen).toHaveBeenCalledWith("/test.sock", expect.any(Function));
   });
 
   it("cleans up stale socket on start", async () => {
     await server.start();
-    const fs = (await import("node:fs")).default;
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
     expect(fs.unlinkSync).toHaveBeenCalledWith("/test.sock");
   });
 
   it("stops cleanly", async () => {
     await server.start();
     server.stop();
-    const fs = (await import("node:fs")).default;
-    // unlinkSync called on start + stop
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    // UnlinkSync called on start + stop
     expect(fs.unlinkSync).toHaveBeenCalledTimes(2);
   });
 
@@ -73,20 +78,21 @@ describe("IpcServer", () => {
 
   it("handles incoming JSON lines", async () => {
     await server.start();
-    const net = (await import("node:net")).default;
-    const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+    const netModule = await import("node:net");
+    const net = netModule.default;
+
     const connectionHandler = vi.mocked(net.createServer).mock.calls[0][0] as (
       socket: EventEmitter,
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
     connectionHandler(socket);
 
-    const req = JSON.stringify({ id: "r1", method: "ping" }) + "\n";
+    const req = `${JSON.stringify({ id: "r1", method: "ping" })}\n`;
     socket.emit("data", Buffer.from(req));
 
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(handleRequest).toHaveBeenCalledWith(
       expect.objectContaining({ id: "r1", method: "ping" }),
@@ -95,26 +101,27 @@ describe("IpcServer", () => {
       socket,
     );
 
-    const write = (socket as Record<string, ReturnType<typeof vi.fn>>)["write"];
+    const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
     expect(write).toHaveBeenCalled();
   });
 
   it("handles invalid JSON", async () => {
     await server.start();
-    const net = (await import("node:net")).default;
+    const netModule = await import("node:net");
+    const net = netModule.default;
     const connectionHandler = vi.mocked(net.createServer).mock.calls[0][0] as (
       socket: EventEmitter,
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
     connectionHandler(socket);
 
     socket.emit("data", Buffer.from("bad json\n"));
 
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
-    const write = (socket as Record<string, ReturnType<typeof vi.fn>>)["write"];
+    const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
     expect(write).toHaveBeenCalled();
     const response = JSON.parse((write.mock.calls[0][0] as string).replace("\n", ""));
     expect(response.error).toContain("Invalid JSON");
@@ -122,30 +129,32 @@ describe("IpcServer", () => {
 
   it("ignores empty lines", async () => {
     await server.start();
-    const net = (await import("node:net")).default;
+    const netModule = await import("node:net");
+    const net = netModule.default;
     const connectionHandler = vi.mocked(net.createServer).mock.calls[0][0] as (
       socket: EventEmitter,
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
     connectionHandler(socket);
 
     socket.emit("data", Buffer.from("\n\n"));
 
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(handleRequest).not.toHaveBeenCalled();
   });
 
   it("handles socket errors gracefully", async () => {
     await server.start();
-    const net = (await import("node:net")).default;
+    const netModule = await import("node:net");
+    const net = netModule.default;
     const connectionHandler = vi.mocked(net.createServer).mock.calls[0][0] as (
       socket: EventEmitter,
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
     connectionHandler(socket);
 
     // Should not throw

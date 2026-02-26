@@ -1,5 +1,3 @@
-import { EventEmitter } from "node:events";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -7,8 +5,8 @@ const mockIpcStream = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockIpcSubscribe = vi.fn();
 
 vi.mock("../../src/lib/ipc/client.js", () => ({
-  ipcRequest: (...args: unknown[]) => mockIpcRequest(...args),
-  ipcStream: (...args: unknown[]) => mockIpcStream(...args),
+  ipcRequest: async (...args: unknown[]) => mockIpcRequest(...args),
+  ipcStream: async (...args: unknown[]) => mockIpcStream(...args),
   ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
 }));
 
@@ -44,7 +42,11 @@ describe("DaemonClient", () => {
         onClose?: () => void,
       ) => {
         eventHandler = onEvent;
-        closeHandler = onClose ?? (() => {});
+        closeHandler =
+          onClose ??
+          (() => {
+            /* Noop */
+          });
         return mockSub;
       },
     );
@@ -181,9 +183,10 @@ describe("DaemonClient", () => {
   describe("runTask", () => {
     it("streams task output", async () => {
       mockIpcStream.mockImplementation(
-        async (_sock, _method, _params, onEvent: (event: string, data: unknown) => void) => {
-          onEvent("line", "output1");
-          onEvent("progress", { key: "sub", result: "success" });
+        async (_sock: unknown, _method: unknown, _params: unknown, onEvent: unknown) => {
+          const emit = onEvent as (event: string, data: unknown) => void;
+          emit("line", "output1");
+          emit("progress", { key: "sub", result: "success" });
           return { id: "r1", result: { success: true } };
         },
       );

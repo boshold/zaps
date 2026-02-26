@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 
+import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import type { ServiceManager } from "../../../src/lib/service/manager.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleRequest } from "../../../src/lib/ipc/handler.js";
-import type { IpcRequest, IpcResponse } from "../../../src/lib/ipc/protocol.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
 vi.mock("../../../src/lib/exec.js", () => ({
@@ -28,9 +28,7 @@ function createManager(): ServiceManager {
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
-    getAllStatuses: vi.fn(() => [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
-    ]),
+    getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
     getStatus: vi.fn((name: string) => {
       if (name === "api") {
         return { name: "api", state: "ready", ports: [3000], retryCount: 0 };
@@ -184,7 +182,7 @@ describe("handleRequest", () => {
   });
 
   it("handles popup task non-interactively", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
       execCommand: ReturnType<typeof vi.fn>;
     };
     execCommand.mockResolvedValue(undefined);

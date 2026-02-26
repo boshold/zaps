@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+
 import { vi } from "vitest";
 
 export interface MockSocket extends EventEmitter {

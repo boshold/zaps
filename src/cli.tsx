@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import type { DaemonEvent, IpcResponse } from "./lib/ipc/protocol.js";
+import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
+import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { program } from "commander";
 
 import {
@@ -11,7 +12,6 @@ import {
   resolveTargetSession,
   withDaemon,
 } from "./cli/helpers.js";
-import type { SessionIpc, SessionInfo } from "./cli/helpers.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -20,7 +20,7 @@ import { ensureDaemon, runDaemon } from "./daemon/index.js";
 import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
-import { ipcRequest, ipcStream, ipcSubscribe } from "./lib/ipc/client.js";
+import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import {
   currentPaneId,
   currentSession,
@@ -234,18 +234,19 @@ program
         process.exit(1);
       }
       const sessions = res.result as SessionInfo[];
-      let target: SessionInfo | undefined;
-      try {
-        target = sessionOpt
-          ? resolveTargetSession(sessions, sessionOpt)
-          : sessions.find((s) => s.id === resolveSessionId().id);
-      } catch (error) {
-        if (error instanceof CliError) {
-          process.stderr.write(`${error.message}\n`);
-          process.exit(1);
+      const target = (() => {
+        try {
+          return sessionOpt
+            ? resolveTargetSession(sessions, sessionOpt)
+            : sessions.find((s) => s.id === resolveSessionId().id);
+        } catch (error) {
+          if (error instanceof CliError) {
+            process.stderr.write(`${error.message}\n`);
+            process.exit(1);
+          }
+          throw error;
         }
-        throw error;
-      }
+      })();
       if (target) {
         const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, target.id);
         if (destroyRes.error) {
@@ -512,19 +513,14 @@ program
 
         // Follow mode: subscribe to log events
         const sock = socketPath();
-        const sub = ipcSubscribe(
-          sock,
-          ipc.sessionId,
-          ["log.lines"],
-          (event: DaemonEvent) => {
-            const data = event.data as { service: string; lines: string[] };
-            if (targetServices.includes(data.service)) {
-              for (const line of data.lines) {
-                process.stdout.write(`${formatLine(data.service, line)}\n`);
-              }
+        const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], (event: DaemonEvent) => {
+          const data = event.data as { service: string; lines: string[] };
+          if (targetServices.includes(data.service)) {
+            for (const line of data.lines) {
+              process.stdout.write(`${formatLine(data.service, line)}\n`);
             }
-          },
-        );
+          }
+        });
 
         // Wait for ctrl+c
         await new Promise<void>((resolve) => {
@@ -590,10 +586,9 @@ program
       process.exit(1);
     }
 
-    let id: string;
-    try {
-      const sessionOpt = globalSession();
-      id = await (async () => {
+    const id = await (async () => {
+      try {
+        const sessionOpt = globalSession();
         if (sessionOpt) {
           const res = await ipcRequest(sock, "session.list");
           if (res.error) {
@@ -602,14 +597,14 @@ program
           return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
         }
         return resolveSessionId().id;
-      })();
-    } catch (error) {
-      if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+      } catch (error) {
+        if (error instanceof CliError) {
+          process.stderr.write(`${error.message}\n`);
+          process.exit(1);
+        }
+        throw error;
       }
-      throw error;
-    }
+    })();
 
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 

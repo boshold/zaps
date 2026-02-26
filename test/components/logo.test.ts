@@ -1,3 +1,4 @@
+import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LOGO, renderSplash } from "../../src/components/logo.js";
@@ -16,10 +17,10 @@ describe("LOGO", () => {
 });
 
 describe("renderSplash", () => {
-  let writeSpy: ReturnType<typeof vi.spyOn>;
+  let writeSpy: MockInstance;
 
   beforeEach(() => {
-    writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((() => true) as never);
   });
 
   afterEach(() => {
@@ -30,7 +31,7 @@ describe("renderSplash", () => {
     renderSplash({ cols: 80, rows: 24 });
     expect(writeSpy).toHaveBeenCalled();
     const output = writeSpy.mock.calls[0][0] as string;
-    expect(output).toContain("\x1b[H"); // cursor home
+    expect(output).toContain("\x1b[H"); // Cursor home
   });
 
   it("uses provided dimensions", () => {

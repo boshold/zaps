@@ -1,7 +1,7 @@
+import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { daemonHandlers } from "../../../src/daemon/handlers/daemon.js";
-import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 
 describe("daemon handlers", () => {

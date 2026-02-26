@@ -4,9 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // eslint-disable-next-line no-unsafe-type-assertion -- Test boundary
 vi.mock("node:net", () => {
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
 
   class MockServer extends EE {
+    // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
     listen = vi.fn((_path: string, cb: () => void) => {
       setTimeout(cb, 0);
     });
@@ -46,7 +48,8 @@ vi.mock("#src/config/loader.js", () => ({
   loadConfig: vi.fn(),
 }));
 
-const mockLoadConfig = vi.mocked((await import("#src/config/loader.js")).loadConfig);
+const loaderModule = await import("#src/config/loader.js");
+const mockLoadConfig = vi.mocked(loaderModule.loadConfig);
 
 vi.mock("#src/lib/tmux-layout.js", () => ({
   createLayout: vi.fn(),
@@ -70,10 +73,12 @@ vi.mock("#src/lib/port.js", () => ({
   getDescendantPids: vi.fn(),
 }));
 
-const mockCreateLayout = vi.mocked((await import("#src/lib/tmux-layout.js")).createLayout);
+const layoutModule = await import("#src/lib/tmux-layout.js");
+const mockCreateLayout = vi.mocked(layoutModule.createLayout);
 const tmux = vi.mocked(await import("#src/lib/tmux.js"));
 
 vi.mock("#src/lib/service/manager.js", () => {
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   return {
     ServiceManager: vi.fn(() => {
@@ -209,7 +214,8 @@ describe("DaemonServer", () => {
   describe("request routing", () => {
     it("handles daemon.ping", async () => {
       await server.start("/tmp/test.sock");
-      const net = (await import("node:net")).default;
+      const netModule = await import("node:net");
+      const net = netModule.default;
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
@@ -217,13 +223,13 @@ describe("DaemonServer", () => {
       (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
       handler(socket);
 
-      const req = JSON.stringify({ id: "p1", method: "daemon.ping" }) + "\n";
+      const req = `${JSON.stringify({ id: "p1", method: "daemon.ping" })}\n`;
       socket.emit("data", Buffer.from(req));
 
       // Wait for async handler
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const write = (socket as unknown as Record<string, ReturnType<typeof vi.fn>>)["write"];
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       expect(write).toHaveBeenCalled();
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response).toEqual({ id: "p1", result: "pong" });
@@ -231,7 +237,8 @@ describe("DaemonServer", () => {
 
     it("handles invalid JSON", async () => {
       await server.start("/tmp/test.sock");
-      const net = (await import("node:net")).default;
+      const netModule = await import("node:net");
+      const net = netModule.default;
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
@@ -240,9 +247,9 @@ describe("DaemonServer", () => {
       handler(socket);
 
       socket.emit("data", Buffer.from("not json\n"));
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const write = (socket as unknown as Record<string, ReturnType<typeof vi.fn>>)["write"];
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       expect(write).toHaveBeenCalled();
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("Invalid JSON");
@@ -250,7 +257,8 @@ describe("DaemonServer", () => {
 
     it("returns error for unknown method", async () => {
       await server.start("/tmp/test.sock");
-      const net = (await import("node:net")).default;
+      const netModule = await import("node:net");
+      const net = netModule.default;
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
@@ -258,18 +266,19 @@ describe("DaemonServer", () => {
       (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
       handler(socket);
 
-      const req = JSON.stringify({ id: "u1", method: "unknown.method" }) + "\n";
+      const req = `${JSON.stringify({ id: "u1", method: "unknown.method" })}\n`;
       socket.emit("data", Buffer.from(req));
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const write = (socket as unknown as Record<string, ReturnType<typeof vi.fn>>)["write"];
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("Unknown method");
     });
 
     it('handles backward-compat bare "ping"', async () => {
       await server.start("/tmp/test.sock");
-      const net = (await import("node:net")).default;
+      const netModule = await import("node:net");
+      const net = netModule.default;
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
@@ -277,18 +286,19 @@ describe("DaemonServer", () => {
       (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
       handler(socket);
 
-      const req = JSON.stringify({ id: "bp1", method: "ping" }) + "\n";
+      const req = `${JSON.stringify({ id: "bp1", method: "ping" })}\n`;
       socket.emit("data", Buffer.from(req));
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const write = (socket as unknown as Record<string, ReturnType<typeof vi.fn>>)["write"];
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response).toEqual({ id: "bp1", result: "pong" });
     });
 
     it("requires session for session-scoped handlers", async () => {
       await server.start("/tmp/test.sock");
-      const net = (await import("node:net")).default;
+      const netModule = await import("node:net");
+      const net = netModule.default;
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
@@ -296,11 +306,11 @@ describe("DaemonServer", () => {
       (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
       handler(socket);
 
-      const req = JSON.stringify({ id: "s1", method: "services.list" }) + "\n";
+      const req = `${JSON.stringify({ id: "s1", method: "services.list" })}\n`;
       socket.emit("data", Buffer.from(req));
-      await new Promise((r) => setTimeout(r, 50));
+      await new Promise((resolve) => setTimeout(resolve, 50));
 
-      const write = (socket as unknown as Record<string, ReturnType<typeof vi.fn>>)["write"];
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("Session required");
     });
