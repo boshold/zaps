@@ -1,27 +1,5 @@
+import { diffOutput } from "#src/lib/service/manager.js";
 import type { LogBuffer } from "./log-buffer.js";
-
-/**
- * Find new lines between two pane captures using line-overlap diffing.
- * Finds the tail of `prev` that matches the head of `current`, returns lines after the overlap.
- */
-export function diffOutput(prev: string[], current: string[]): string[] {
-  if (prev.length === 0) {
-    return current;
-  }
-  for (let overlap = Math.min(prev.length, current.length); overlap > 0; overlap -= 1) {
-    let match = true;
-    for (let i = 0; i < overlap; i += 1) {
-      if (prev[prev.length - overlap + i] !== current[i]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return current.slice(overlap);
-    }
-  }
-  return current;
-}
 
 export interface LogMonitorDeps {
   capturePane: (target: string, lines: number) => Promise<string>;
