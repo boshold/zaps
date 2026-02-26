@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
 
 import { getEnv } from "./env.js";
 
@@ -200,8 +202,9 @@ export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
 
 export async function editPaneCapture(target: string, title: string): Promise<void> {
   const editor = getEnv("EDITOR") || "vim";
+  const template = path.join(os.tmpdir(), "zaps-capture-XXXXXX");
   await displayPopup({
-    command: `sh -c 'f=$(mktemp /tmp/zaps-capture-XXXXXX) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
+    command: `sh -c 'f=$(mktemp ${template}) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
     title,
     width: "90%",
     height: "90%",

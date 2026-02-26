@@ -93,7 +93,7 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
     const initialPane = await newSession(sessionName);
 
     // Need to run inside tmux, so zaps dev is run from within this session
-    await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} dev`);
+    await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} up`);
 
     // Wait for layout creation — zaps creates panes and spawns TUI
     await sleep(3000);
