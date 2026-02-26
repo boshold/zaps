@@ -1,6 +1,6 @@
 import type { DaemonClient } from "#src/client/daemon-client.js";
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
-import type { ResolvedConfig } from "#src/config/types.js";
+import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import type { ReactNode } from "react";
 import { createContext, useContext } from "react";
 
@@ -8,24 +8,34 @@ type PaneMap = Record<string, string>;
 
 interface AppContextValue {
   client: DaemonClient;
-  config: ResolvedConfig;
   paneMap: PaneMap;
+  projectName: string;
+  tasks: TaskInfo[];
+  servicesMeta: ServiceMeta[];
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({
   client,
-  config,
   paneMap,
+  projectName,
+  tasks,
+  servicesMeta,
   children,
 }: {
   client: DaemonClient;
-  config: ResolvedConfig;
   paneMap: PaneMap;
+  projectName: string;
+  tasks: TaskInfo[];
+  servicesMeta: ServiceMeta[];
   children: ReactNode;
 }) {
-  return <AppContext.Provider value={{ client, config, paneMap }}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={{ client, paneMap, projectName, tasks, servicesMeta }}>
+      {children}
+    </AppContext.Provider>
+  );
 }
 
 export function useZaps(): AppContextValue {

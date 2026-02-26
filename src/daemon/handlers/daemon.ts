@@ -54,7 +54,6 @@ export const daemonHandlers: Record<
   },
 
   async "session.create"(req, store) {
-    // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- IPC protocol
     const params = req.params as {
       configPath: string;
       projectDir: string;

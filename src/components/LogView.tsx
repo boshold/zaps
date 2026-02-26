@@ -29,7 +29,7 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
         ))}
       </Box>
       <Box marginTop={1}>
-        <Text dimColor>[j/k/↑/↓] scroll [q/esc] back</Text>
+        <Text dimColor>[j/k/↑/↓] scroll [esc] back</Text>
       </Box>
     </Box>
   );

@@ -42,11 +42,9 @@ async function pollUntil(
 ): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    // eslint-disable-next-line no-await-in-loop
     if (await fn()) {
       return;
     }
-    // eslint-disable-next-line no-await-in-loop
     await sleep(intervalMs);
   }
   throw new Error("pollUntil timed out");

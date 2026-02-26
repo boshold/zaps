@@ -39,7 +39,7 @@ describe("LogView", () => {
   it("renders scroll help bar", () => {
     const { lastFrame } = render(<LogView serviceName="api" lines={[]} autoScroll offset={0} />);
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("[q/esc] back");
+    expect(frame).toContain("[esc] back");
     expect(frame).toContain("scroll");
   });
 

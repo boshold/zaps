@@ -1,4 +1,3 @@
-/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- useEffect cannot be async */
 import type { DaemonClient } from "#src/client/daemon-client.js";
 import { useEffect, useState } from "react";
 
@@ -15,7 +14,6 @@ export function useLogs(client: DaemonClient, serviceName: string | null) {
     }
 
     // Load initial snapshot
-    // eslint-disable-next-line no-void -- Fire-and-forget snapshot load
     void (async () => {
       try {
         const snapshot = await client.getLogSnapshot(serviceName);

@@ -89,7 +89,7 @@ async function ensureDaemon(command: string): Promise<string> {
   const child = spawn(command, ["daemon", "run"], {
     detached: true,
     stdio: ["ignore", logFile, logFile],
-    env: { ...process.env }, // eslint-disable-line no-process-env -- Pass full env to daemon
+    env: { ...process.env },
   });
   child.unref();
   fs.closeSync(logFile);
@@ -97,12 +97,10 @@ async function ensureDaemon(command: string): Promise<string> {
   // Wait for socket to become connectable
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    // eslint-disable-next-line no-await-in-loop -- Sequential polling for socket readiness
     const alive = await pingSocket(sock);
     if (alive) {
       return sock;
     }
-    // eslint-disable-next-line no-await-in-loop -- Sequential polling
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 

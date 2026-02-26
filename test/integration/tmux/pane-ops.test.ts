@@ -56,7 +56,6 @@ describe.skipIf(!hasTmux())("tmux pane-ops integration", () => {
 
     // Send several lines
     for (let i = 0; i < 5; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       await sendKeys(session.initialPaneId, `echo line-${i}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));

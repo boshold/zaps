@@ -1,4 +1,4 @@
-import type { TaskConfig } from "#src/config/types.js";
+import type { TaskInfo } from "#src/daemon/session.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, Text } from "ink";
@@ -7,7 +7,7 @@ import { TaskHistorySection } from "./TaskHistorySection.js";
 import { TaskRow } from "./TaskRow.js";
 
 interface TaskListPanelProps {
-  tasks: [string, TaskConfig][];
+  tasks: TaskInfo[];
   selectedIndex: number;
   taskResults: Record<string, "success" | "error">;
   runningTask: string | null;
@@ -28,21 +28,20 @@ export function TaskListPanel({
   return (
     <Box flexDirection="column" flexShrink={0} marginRight={1}>
       <Box flexDirection="column" flexGrow={1}>
-        {tasks.map(([key, task], i) => (
+        {tasks.map((task, i) => (
           <TaskRow
-            key={key}
-            taskKey={key}
+            key={task.key}
             task={task}
             isSelected={i === selectedIndex}
-            result={taskResults[key]}
-            isRunning={runningTask === key}
+            result={taskResults[task.key]}
+            isRunning={runningTask === task.key}
             shortcut={shortcutMap.get(task.name)}
           />
         ))}
       </Box>
       <TaskHistorySection title="History" history={taskHistory} limit={10} />
       <Box marginTop={1}>
-        <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [q/esc] back</Text>
+        <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [esc] back</Text>
       </Box>
     </Box>
   );

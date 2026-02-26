@@ -60,7 +60,6 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
       });
     } else {
       for (const resolved of resolvedCommands) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential command execution
         await execCommand(resolved, {
           cwd: ctx.taskCwd,
           ...ctx.envSpread,
@@ -92,7 +91,6 @@ export async function runTaskWithDeps(
   // Run deps first
   if (t.dependsOn) {
     for (const dep of t.dependsOn) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential dependency execution
       if (!(await runTaskWithDeps(dep, deps, visited, results))) {
         return false;
       }

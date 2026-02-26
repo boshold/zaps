@@ -17,6 +17,12 @@
     "no-debugger": "error",
     "no-console": "warn",
     "no-duplicate-imports": "off",
+    "no-await-in-loop": "off",
+    "no-void": "off",
+    "no-continue": "off",
+    "no-undefined": "off",
+    "no-process-env": "off",
+    "node/no-process-env": "off",
     "func-style": "off",
     "max-params": "off",
     "max-statements": "off",
@@ -55,13 +61,36 @@
       "files": ["**/*.{test,spec}.{ts,tsx,js,jsx}", "**/test/**", "**/__tests__/**"],
       "rules": {
         "typescript/no-explicit-any": "off",
+        "typescript/no-non-null-assertion": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/unbound-method": "off",
+        "typescript/consistent-type-imports": "off",
+        "react/no-multi-comp": "off",
         "import/no-relative-parent-imports": "off",
         "import/first": "off",
-        "typescript/no-unsafe-type-assertion": "off",
-        "no-undefined": "off",
-        "no-await-in-loop": "off",
         "promise/prefer-await-to-then": "off",
         "init-declarations": "off"
+      }
+    },
+    {
+      "files": [
+        "src/lib/ipc/**",
+        "src/daemon/handlers/**",
+        "src/client/**",
+        "src/daemon/server.ts",
+        "src/cli.tsx"
+      ],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off",
+        "promise/prefer-await-to-then": "off",
+        "promise/catch-or-return": "off"
+      }
+    },
+    {
+      "files": ["src/components/**", "src/hooks/**"],
+      "rules": {
+        "promise/prefer-await-to-then": "off",
+        "promise/catch-or-return": "off"
       }
     },
     {

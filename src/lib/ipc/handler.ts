@@ -1,4 +1,3 @@
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol: param types known by contract */
 import type { ResolvedConfig } from "#src/config/types.js";
 import { execCommand } from "#src/lib/exec.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
@@ -157,7 +156,6 @@ async function runPopupTaskNonInteractive(
 
   try {
     for (const cmd of resolved) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential command execution
       await execCommand(cmd, {
         cwd: taskCwd,
         ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),

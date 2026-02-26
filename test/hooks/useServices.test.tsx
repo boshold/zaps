@@ -1,4 +1,3 @@
-/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
 import { EventEmitter } from "node:events";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";

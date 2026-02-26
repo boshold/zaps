@@ -1,4 +1,3 @@
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- JSON protocol: parsed request */
 import fs from "node:fs";
 import net from "node:net";
 
@@ -40,7 +39,6 @@ export class IpcServer {
 
           for (const line of lines) {
             if (line.trim() !== "") {
-              // eslint-disable-next-line no-void -- Fire-and-forget per-message handling
               void this.handleLine(line, socket);
             }
           }

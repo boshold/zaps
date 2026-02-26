@@ -1,4 +1,3 @@
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol: param types known by contract */
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
@@ -52,7 +51,6 @@ async function runPopupTaskNonInteractive(
 
   try {
     for (const cmd of resolved) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential command execution
       await execCommand(cmd, {
         cwd: taskCwd,
         ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
@@ -198,7 +196,15 @@ export const sessionHandlers: Record<
     }
 
     const task = tasks[key];
+    const taskName = task.name;
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
+
+    // Broadcast task.start to all subscribers
+    session.broadcast({
+      session: session.id,
+      event: "task.start",
+      data: { key, name: taskName },
+    });
 
     let success = false;
     if (isPopup) {
@@ -231,6 +237,13 @@ export const sessionHandlers: Record<
         results,
       );
     }
+
+    // Broadcast task.complete to all subscribers
+    session.broadcast({
+      session: session.id,
+      event: "task.complete",
+      data: { key, name: taskName, result: success ? "success" : "error" },
+    });
 
     return ok(req.id, { success });
   },

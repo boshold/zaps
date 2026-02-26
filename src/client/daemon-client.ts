@@ -1,9 +1,8 @@
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol boundary: types known by contract */
 import { EventEmitter } from "node:events";
 
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
-import { ipcRequest, ipcSubscribe } from "#src/lib/ipc/client.js";
+import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
@@ -116,6 +115,35 @@ export class DaemonClient extends EventEmitter {
       throw new Error(res.error);
     }
     return res.result as string[];
+  }
+
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  async runTask(
+    key: string,
+    callbacks: {
+      onLine?: (line: string) => void;
+      onProgress?: (taskKey: string, result: "success" | "error") => void;
+    },
+  ): Promise<{ success: boolean }> {
+    const res = await ipcStream(
+      this.socketPath,
+      "tasks.run",
+      { key },
+      (event, data) => {
+        if (event === "line") {
+          callbacks.onLine?.(data as string);
+        } else if (event === "progress") {
+          const d = data as { key: string; result: "success" | "error" };
+          callbacks.onProgress?.(d.key, d.result);
+        }
+      },
+      120_000,
+      this.sessionId,
+    );
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.result as { success: boolean };
   }
 
   // --- Internal ---

@@ -1,6 +1,4 @@
-import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
-import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, useStdout } from "ink";
@@ -15,7 +13,6 @@ export interface TasksViewProps {
   runTrigger: number;
   taskShortcuts: TaskShortcut[];
   taskHistory: TaskRunRecord[];
-  onTaskComplete: (record: TaskRunRecord) => void;
 }
 
 export function TasksView({
@@ -23,13 +20,10 @@ export function TasksView({
   runTrigger,
   taskShortcuts,
   taskHistory,
-  onTaskComplete,
 }: TasksViewProps) {
-  const { config, client } = useZaps();
-  const statuses = useServices(client, []);
+  const { client, tasks } = useZaps();
   const { stdout } = useStdout();
   const termCols = stdout?.columns ?? 80;
-  const tasks = Object.entries(config.project.tasks ?? {});
   const [runningTask, setRunningTask] = useState<string | null>(null);
   const [taskOutput, setTaskOutput] = useState<string[]>([]);
   const [taskResults, setTaskResults] = useState<Record<string, "success" | "error">>({});
@@ -44,14 +38,12 @@ export function TasksView({
     }
     prevTrigger.current = runTrigger;
 
-    const entry = tasks[selectedIndex];
-    if (!entry || runningRef.current) {
+    const task = tasks[selectedIndex];
+    if (!task || runningRef.current) {
       return;
     }
 
-    const [taskKey] = entry;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
-    void runTask(taskKey);
+    void runTask(task.key);
   }, [runTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- Only trigger on runTrigger
 
   async function runTask(taskKey: string) {
@@ -62,41 +54,19 @@ export function TasksView({
     setRunningTask(taskKey);
     setTaskOutput([]);
 
-    const allTasks = config.project.tasks ?? {};
-    const statusMap = new Map(statuses.map((s) => [s.name, s]));
-    const visited = new Set<string>();
-    const results = new Map<string, "success" | "error">();
-
-    onTaskComplete({
-      taskKey,
-      taskName: allTasks[taskKey]?.name ?? taskKey,
-      result: "running",
-      timestamp: Date.now(),
-    });
-
-    await runTaskWithDeps(
-      taskKey,
-      {
-        tasks: allTasks,
-        statuses: statusMap,
-        projectDir: config.projectDir,
+    try {
+      await client.runTask(taskKey, {
+        onLine: (line) => {
+          setTaskOutput((prev) => [...prev, line]);
+        },
         onProgress: (key, result) => {
           taskResultsRef.current[key] = result;
           setTaskResults((prev) => ({ ...prev, [key]: result }));
-          onTaskComplete({
-            taskKey: key,
-            taskName: allTasks[key]?.name ?? key,
-            result,
-            timestamp: Date.now(),
-          });
         },
-        onLine: (_key, line) => {
-          setTaskOutput((prev) => [...prev, line]);
-        },
-      },
-      visited,
-      results,
-    );
+      });
+    } catch {
+      /* Task execution error handled by daemon */
+    }
 
     setRunningTask(null);
     runningRef.current = false;

@@ -1,9 +1,8 @@
-import type { TaskConfig } from "#src/config/types.js";
+import type { TaskInfo } from "#src/daemon/session.js";
 import { Box, Text } from "ink";
 
 interface TaskRowProps {
-  taskKey: string;
-  task: TaskConfig;
+  task: TaskInfo;
   isSelected: boolean;
   result?: "success" | "error";
   isRunning: boolean;

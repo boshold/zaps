@@ -9,7 +9,6 @@ vi.mock("../../../src/lib/probe.js", () => ({
   probePort: vi.fn().mockResolvedValue(undefined),
 }));
 
-// eslint-disable-next-line @typescript-eslint/consistent-type-imports -- Dynamic mock import
 const { probePort } = (await import("../../../src/lib/probe.js")) as {
   probePort: ReturnType<typeof vi.fn>;
 };

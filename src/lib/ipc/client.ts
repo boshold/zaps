@@ -1,4 +1,3 @@
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- JSON protocol: types validated by guards */
 import net from "node:net";
 
 import type { DaemonEvent, IpcMessage, IpcRequest, IpcResponse } from "./protocol.js";
@@ -43,7 +42,6 @@ export async function ipcRequest(
 
       for (const line of lines) {
         if (line.trim() === "") {
-          // eslint-disable-next-line no-continue -- Skip empty lines
           continue;
         }
         const msg = JSON.parse(line) as IpcMessage;
@@ -69,9 +67,10 @@ export async function ipcStream(
   params: unknown,
   onEvent: (event: string, data: unknown) => void,
   timeout = 120_000,
+  session?: string,
 ): Promise<IpcResponse> {
   const id = generateId();
-  const req: IpcRequest = { id, method, params };
+  const req: IpcRequest = { id, method, params, ...(session && { session }) };
 
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
@@ -92,12 +91,10 @@ export async function ipcStream(
 
       for (const line of lines) {
         if (line.trim() === "") {
-          // eslint-disable-next-line no-continue -- Skip empty lines
           continue;
         }
         const msg = JSON.parse(line) as IpcMessage;
         if (msg.id !== id) {
-          // eslint-disable-next-line no-continue -- Skip messages for other requests
           continue;
         }
 
@@ -152,7 +149,6 @@ export function ipcSubscribe(
 
     for (const line of lines) {
       if (line.trim() === "") {
-        // eslint-disable-next-line no-continue -- Skip empty lines
         continue;
       }
       const msg: unknown = JSON.parse(line);
@@ -201,7 +197,6 @@ export function ipcSubscribe(
 
           for (const dataLine of dataLines) {
             if (dataLine.trim() === "") {
-              // eslint-disable-next-line no-continue -- Skip empty lines
               continue;
             }
             const responseMsg = JSON.parse(dataLine) as IpcMessage;

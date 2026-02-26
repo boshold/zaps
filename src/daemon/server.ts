@@ -66,7 +66,6 @@ class DaemonServer implements SessionStore {
           buffer = lines.pop() ?? "";
           for (const line of lines) {
             if (line.trim() !== "") {
-              // eslint-disable-next-line no-void -- Fire-and-forget per-message handling
               void this.handleLine(line, socket);
             }
           }
@@ -113,7 +112,7 @@ class DaemonServer implements SessionStore {
         return s;
       }
     }
-    return undefined; // eslint-disable-line no-undefined -- Explicit absence
+    return undefined;
   }
 
   async create(params: {
@@ -177,8 +176,10 @@ class DaemonServer implements SessionStore {
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 
-    // Start all services
-    await session.startAll();
+    // Start services in background — TUI connects and sees them starting
+    void session.startAll().catch(() => {
+      /* Errors surfaced via stateChange */
+    });
 
     return session;
   }
@@ -194,7 +195,6 @@ class DaemonServer implements SessionStore {
     // Kill non-origin, non-TUI panes
     for (const paneId of Object.values(session.paneMap)) {
       if (paneId !== session.originPane && paneId !== session.paneMap["@tui"]) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         await killPane(paneId).catch(() => {
           /* Best-effort cleanup */
         });
@@ -210,7 +210,6 @@ class DaemonServer implements SessionStore {
   private async handleLine(line: string, socket: net.Socket): Promise<void> {
     let req: IpcRequest = { id: "?", method: "" };
     try {
-      // eslint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- Line-delimited JSON protocol
       req = JSON.parse(line) as IpcRequest;
     } catch {
       socket.write(`${JSON.stringify({ id: "?", error: "Invalid JSON" })}\n`);
@@ -242,20 +241,6 @@ class DaemonServer implements SessionStore {
         return await sHandler(req, this, socket);
       } catch (error) {
         return err(req.id, error instanceof Error ? error.message : String(error));
-      }
-    }
-
-    // Legacy compat: route to session handlers if there's exactly one session
-    if (this.sessions.size === 1) {
-      const [session] = this.sessions.values();
-      const legacyReq = { ...req, session: session.id };
-      const legacyHandler = sessionHandlers[req.method];
-      if (legacyHandler) {
-        try {
-          return await legacyHandler(legacyReq, this, socket);
-        } catch (error) {
-          return err(req.id, error instanceof Error ? error.message : String(error));
-        }
       }
     }
 

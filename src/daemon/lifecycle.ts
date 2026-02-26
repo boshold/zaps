@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 function getRuntimeDir(): string {
-  const xdg = process.env["XDG_RUNTIME_DIR"]; // eslint-disable-line no-process-env -- Centralized path resolution
+  const xdg = process.env["XDG_RUNTIME_DIR"];
   if (xdg) {
     return path.join(xdg, "zaps");
   }

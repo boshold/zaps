@@ -63,7 +63,6 @@ export class LogMonitor {
         return;
       }
       fetching = true;
-      // eslint-disable-next-line no-void -- Fire-and-forget poll
       void (async () => {
         try {
           const output = await this.deps.capturePane(paneTarget, 500);

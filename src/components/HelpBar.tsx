@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 export function HelpBar() {
   return (
     <Box>
-      <Text dimColor>[t]asks [a]ll restart [q]uit</Text>
+      <Text dimColor>[t]asks [a]ll restart [q]uit [d]own</Text>
     </Box>
   );
 }

@@ -33,14 +33,12 @@ export async function listZapsSessions(): Promise<{ session: string; panes: numb
     const sessions = out ? out.split("\n") : [];
     const results: { session: string; panes: number }[] = [];
     for (const session of sessions) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
       const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
       if (paneMapRaw) {
         const parsed: unknown = JSON.parse(paneMapRaw);
         if (typeof parsed === "object" && parsed !== null) {
           const keys = Object.keys(parsed);
           const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
-          // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
           const livePanes = await listPanes(session, true).catch(() => [] as PaneInfo[]);
           const liveIds = new Set(livePanes.map((p) => p.id));
           const hasLive = values.some((id) => liveIds.has(id));

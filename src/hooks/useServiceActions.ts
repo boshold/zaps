@@ -23,7 +23,6 @@ export function useServiceActions(client: DaemonClient) {
   async function restartAll() {
     const statuses = await client.listServices();
     for (const s of statuses) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential restart
       await client.restartService(s.name);
     }
   }

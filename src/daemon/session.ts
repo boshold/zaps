@@ -4,12 +4,33 @@ import type { ResolvedConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type net from "node:net";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
 
 type PaneMap = Record<string, string>;
+
+export interface TaskInfo {
+  key: string;
+  name: string;
+  description: string | null;
+  shortcut?: string;
+}
+
+export interface ServiceMeta {
+  name: string;
+  dependsOn: string[];
+  hasDocker: boolean;
+  dockerDefaults: {
+    build: boolean;
+    forceRecreate: boolean;
+    renewVolumes: boolean;
+    pull: boolean;
+    removeOrphans: boolean;
+  };
+}
 
 export interface SessionCreateParams {
   configPath: string;
@@ -135,6 +156,34 @@ export class Session {
     for (const [svcName, buf] of this.logBuffers) {
       logSnapshots[svcName] = buf.snapshot();
     }
+
+    // Compute task info with auto-assigned shortcuts
+    const rawTasks = this.config.project.tasks ?? {};
+    const shortcuts = getTaskShortcuts(rawTasks);
+    const shortcutMap = new Map(shortcuts.map((s) => [s.name, s.shortcut]));
+    const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) =>
+      ({
+        key, name: t.name, description: t.description ?? null,
+        ...shortcutMap.has(t.name) && { shortcut: shortcutMap.get(t.name) },
+      }),
+    );
+
+    // Compute service metadata
+    const servicesMeta: ServiceMeta[] = Object.entries(this.config.project.services).map(
+      ([svcName, svc]) => ({
+        name: svcName,
+        dependsOn: svc.dependsOn ?? [],
+        hasDocker: Boolean(svc.docker),
+        dockerDefaults: {
+          build: svc.docker?.build ?? false,
+          forceRecreate: svc.docker?.forceRecreate ?? false,
+          renewVolumes: svc.docker?.renewVolumes ?? false,
+          pull: svc.docker?.pull === "always",
+          removeOrphans: svc.docker?.removeOrphans ?? false,
+        },
+      }),
+    );
+
     return {
       id: this.id,
       name: this.name,
@@ -145,6 +194,8 @@ export class Session {
       logSnapshots,
       configPath: this.configPath,
       projectDir: this.projectDir,
+      tasks,
+      servicesMeta,
     };
   }
 
@@ -166,4 +217,6 @@ export interface SessionSnapshot {
   logSnapshots: Record<string, string[]>;
   configPath: string;
   projectDir: string;
+  tasks: TaskInfo[];
+  servicesMeta: ServiceMeta[];
 }

@@ -1,6 +1,3 @@
-/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
-/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
-/* eslint-disable typescript-eslint/unbound-method -- vi.mocked() requires unbound method refs */
 import { EventEmitter } from "node:events";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";

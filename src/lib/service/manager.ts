@@ -63,7 +63,7 @@ function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
   if (config.docker) {
     return { docker: config.docker.service, file: config.docker.file };
   }
-  return undefined; // eslint-disable-line no-undefined -- Explicit absence
+  return undefined;
 }
 
 function buildReadyDeps(serviceConfig: ServiceConfig, deps: ServiceManagerDeps): ReadyDeps {
@@ -86,7 +86,7 @@ function resolveExplicitUrl(
   if (serviceConfig.url) {
     return typeof serviceConfig.url === "function" ? serviceConfig.url(ctx) : serviceConfig.url;
   }
-  return undefined; // eslint-disable-line no-undefined -- Explicit absence
+  return undefined;
 }
 
 async function fireHook(
@@ -207,7 +207,6 @@ export class ServiceManager extends EventEmitter {
     const levels = topoSort(autostartServices);
 
     for (const level of levels) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential topological levels
       await Promise.all(
         level.map(async (name) => {
           try {
@@ -235,7 +234,6 @@ export class ServiceManager extends EventEmitter {
     const levels = reverseTopoSort(services);
 
     for (const level of levels) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential topological levels
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
@@ -369,7 +367,6 @@ export class ServiceManager extends EventEmitter {
     } else {
       status.url = await probePort(ports);
       if (!status.url && ports.length > 0) {
-        // eslint-disable-next-line no-void -- Fire-and-forget URL monitor
         void this.monitorUrl(name, ports);
       }
     }
@@ -386,12 +383,10 @@ export class ServiceManager extends EventEmitter {
     }
 
     // Start crash monitor in background
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void this.monitorCrash(name);
 
     // Start output monitor if onOutput is configured
     if (serviceConfig.onOutput) {
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
       void this.monitorOutput(name);
     }
   }
@@ -427,15 +422,12 @@ export class ServiceManager extends EventEmitter {
     let exited = false;
 
     while (Date.now() - stopStart < STOP_TIMEOUT) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const rootPid = await this.deps.panePid(paneTarget);
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const descendants = await this.deps.getDescendantPids(rootPid);
       if (descendants.length <= 1) {
         exited = true;
         break;
       }
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       await sleep(200);
     }
 
@@ -538,16 +530,13 @@ export class ServiceManager extends EventEmitter {
 
     // Poll every 2s: check if process still alive
     while (status.state === "ready") {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       await sleep(2000);
       // Re-check state after sleep (stopService may have changed it)
       if (status.state !== "ready") {
         return;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const rootPid = await this.deps.panePid(this.paneMap[name]);
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const descendants = await this.deps.getDescendantPids(rootPid);
 
       // If only shell PID left (no child), service has crashed
@@ -560,11 +549,9 @@ export class ServiceManager extends EventEmitter {
           this.emit("stateChange", name, status);
 
           const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
-          // eslint-disable-next-line no-await-in-loop -- Sequential retry with backoff
           await sleep(backoff);
 
           // Transition: restarting -> starting (handled by startService)
-          // eslint-disable-next-line no-await-in-loop -- Sequential retry
           await this.startService(name);
         } else {
           status.state = transition(status.state, "error");
@@ -590,7 +577,6 @@ export class ServiceManager extends EventEmitter {
     let retries = 0;
 
     while (status.state === "ready" && !status.url && retries < MAX_RETRIES) {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       await sleep(2000);
       if (status.state !== "ready" || status.url) {
         return;
@@ -598,11 +584,9 @@ export class ServiceManager extends EventEmitter {
 
       retries += 1;
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const result = await probePort(ports);
       if (result) {
         status.url = result;
-        // eslint-disable-next-line no-await-in-loop -- Sequential polling
         await tryAutoOpen(this.config.project.services[name], name, result, this.autoOpened);
         this.emit("stateChange", name, status);
         return;
@@ -625,13 +609,11 @@ export class ServiceManager extends EventEmitter {
     let prevLines = baseline.split("\n");
 
     while (status.state === "ready") {
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       await sleep(1000);
       if (status.state !== "ready") {
         return;
       }
 
-      // eslint-disable-next-line no-await-in-loop -- Sequential polling
       const capture = await this.deps.capturePane(paneTarget, 500);
       const currentLines = capture.split("\n");
       const newLines = diffOutput(prevLines, currentLines);
@@ -640,7 +622,6 @@ export class ServiceManager extends EventEmitter {
       for (const line of newLines) {
         if (line.trim() !== "") {
           try {
-            // eslint-disable-next-line no-await-in-loop -- Sequential callback invocation
             await serviceConfig.onOutput(line);
           } catch {
             // Swallow errors — onOutput must not crash the service
@@ -677,7 +658,6 @@ export class ServiceManager extends EventEmitter {
     }
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    // eslint-disable-next-line no-void -- Fire-and-forget window rename
     void this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 }

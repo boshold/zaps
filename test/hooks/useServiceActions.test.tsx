@@ -1,5 +1,3 @@
-/* eslint-disable typescript-eslint/unbound-method -- Mock method assertions */
-/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
 import { EventEmitter } from "node:events";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
@@ -46,7 +44,7 @@ function renderActions(client: DaemonClient) {
   }
 
   render(<Wrapper />);
-  return actionsRef!; // eslint-disable-line typescript-eslint/no-non-null-assertion -- Set synchronously by render
+  return actionsRef!;
 }
 
 describe("useServiceActions", () => {

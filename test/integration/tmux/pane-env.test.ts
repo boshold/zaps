@@ -53,7 +53,6 @@ describe.skipIf(!hasTmux())("tmux pane-env integration", () => {
     // Read back and parse
     const raw = await showEnv(session.name, "ZAPS_PANE_MAP");
     expect(raw).not.toBeNull();
-    // eslint-disable-next-line typescript-eslint/no-non-null-assertion -- Asserted not null above
     const parsed: Record<string, string> = JSON.parse(raw!);
 
     expect(parsed["@tui"]).toBe(paneMap["@tui"]);

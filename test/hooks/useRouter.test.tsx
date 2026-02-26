@@ -1,5 +1,3 @@
-/* eslint-disable eslint-plugin-react/no-multi-comp -- Test wrappers */
-/* eslint-disable typescript-eslint/no-non-null-assertion -- Hook refs set synchronously by render */
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";

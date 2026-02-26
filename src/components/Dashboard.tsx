@@ -17,7 +17,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardProps) {
-  const { config } = useZaps();
+  const { projectName } = useZaps();
   const { stdout } = useStdout();
   const rows = stdout?.rows ?? 24;
   const cols = Math.min(stdout?.columns ?? 100, 100);
@@ -25,7 +25,7 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   return (
     <Box height={rows} alignItems="center" justifyContent="center">
       <Box flexDirection="column" width={cols}>
-        <Header projectName={config.project.name} statuses={statuses} width={cols} />
+        <Header projectName={projectName} statuses={statuses} width={cols} />
         <ColumnHeaders />
         <ServiceList statuses={statuses} selectedIndex={selectedIndex} />
         <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />

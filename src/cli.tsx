@@ -1,15 +1,15 @@
 #!/usr/bin/env node
-/* eslint-disable typescript-eslint/no-unsafe-type-assertion -- IPC protocol: result types known by contract */
 import path from "node:path";
 
+import type { IpcResponse } from "./lib/ipc/protocol.js";
 import { program } from "commander";
 
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
-import { loadConfig } from "./config/loader.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
 import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
+import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcStream } from "./lib/ipc/client.js";
 import {
@@ -141,15 +141,17 @@ async function runTui(opts: {
   const client = new DaemonClient(opts.socketPath, opts.sessionId);
   client.connect();
 
-  const snapshot = await client.attach();
-  const config = await loadConfig(snapshot.configPath, snapshot.projectDir);
+  // Parallel: load yoga + attach to daemon (no config loading needed)
+  const [yogaMod, snapshot] = await Promise.all([import("yoga-layout"), client.attach()]);
+  await (yogaMod.default as unknown as Record<string, unknown>)["__yogaReady"];
 
-  const { default: yoga } = await import("yoga-layout");
-  await (yoga as unknown as Record<string, unknown>)["__yogaReady"];
+  // Skip splash on reattach (services already running)
+  const allStopped = snapshot.statuses.every((s) => s.state === "stopped");
+  const showSplash = Boolean(opts.autoStart) && allStopped;
 
   process.stdout.write("\x1b[?1049h");
 
-  if (opts.autoStart) {
+  if (showSplash) {
     const { renderSplash } = await import("./components/logo.js");
     const { listPanes } = await import("./lib/tmux.js");
     const tmuxSession = await currentSession();
@@ -162,16 +164,18 @@ async function runTui(opts: {
     }
   }
 
-  const { render } = await import("ink");
-  const { App } = await import("./components/App.js");
+  // Parallel: load ink + App component
+  const [{ render }, { App }] = await Promise.all([import("ink"), import("./components/App.js")]);
 
   const { waitUntilExit } = render(
     <App
       client={client}
-      config={config}
       paneMap={snapshot.paneMap}
+      projectName={snapshot.name}
+      tasks={snapshot.tasks ?? []}
+      servicesMeta={snapshot.servicesMeta ?? []}
       initialStatuses={snapshot.statuses}
-      autoStart={Boolean(opts.autoStart)}
+      autoStart={showSplash}
     />,
     { patchConsole: false },
   );
@@ -271,32 +275,54 @@ program
 
 // --- CLI session routing ---
 
-async function withDaemon<T>(fn: (sock: string, sessionId: string) => Promise<T>): Promise<T> {
+interface SessionIpc {
+  request(method: string, params?: unknown): Promise<IpcResponse>;
+  stream(
+    method: string,
+    params: unknown,
+    onEvent: (event: string, data: unknown) => void,
+  ): Promise<IpcResponse>;
+}
+
+function resolveSessionId(): { configPath: string; id: string } {
+  const cwd = process.cwd();
+  const configPath = discoverConfig(cwd);
+  if (!configPath) {
+    process.stderr.write("No .zaps.mts config found. Run `zaps init` to create one.\n");
+    process.exit(1);
+  }
+  return { configPath, id: sessionId(configPath) };
+}
+
+async function withDaemon<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
   const sock = socketPath();
   if (!isDaemonRunning()) {
     return withLegacyIpc(fn);
   }
+
+  const { id } = resolveSessionId();
 
   const res = await ipcRequest(sock, "session.list");
   if (res.error) {
     process.stderr.write(`Error: ${res.error}\n`);
     process.exit(1);
   }
-  const sessions = res.result as { id: string; projectDir: string }[];
-  const cwd = process.cwd();
-  const match = sessions.find((s) => s.projectDir === cwd);
-
-  if (!match && sessions.length === 1) {
-    return fn(sock, sessions[0].id);
-  }
+  const sessions = res.result as { id: string }[];
+  const match = sessions.find((s) => s.id === id);
   if (!match) {
-    process.stderr.write("No running zaps session found for this directory.\n");
+    process.stderr.write("No running zaps session for this project.\n");
     process.exit(1);
   }
-  return fn(sock, match.id);
+
+  const ipc: SessionIpc = {
+    request: async (method, params?) => ipcRequest(sock, method, params, 30_000, id),
+    stream: async (method, params, onEvent) =>
+      ipcStream(sock, method, params, onEvent, 120_000, id),
+  };
+  return fn(ipc);
 }
 
-async function withLegacyIpc<T>(fn: (sock: string, sessionId: string) => Promise<T>): Promise<T> {
+async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
   if (!getEnv("TMUX")) {
     process.stderr.write("Must be inside a tmux session.\n");
     process.exit(1);
@@ -307,7 +333,11 @@ async function withLegacyIpc<T>(fn: (sock: string, sessionId: string) => Promise
     process.stderr.write("No running zaps instance found in this session.\n");
     process.exit(1);
   }
-  return fn(legacySock, "");
+  const ipc: SessionIpc = {
+    request: async (method, params?) => ipcRequest(legacySock, method, params),
+    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
+  };
+  return fn(ipc);
 }
 
 function formatTable(rows: string[][]): string {
@@ -329,8 +359,8 @@ program
   .description("List services from running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withDaemon(async (sock) => {
-      const res = await ipcRequest(sock, "services.list");
+    await withDaemon(async (ipc) => {
+      const res = await ipc.request("services.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
@@ -362,8 +392,8 @@ program
   .description("List tasks from running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (opts: { json?: boolean }) => {
-    await withDaemon(async (sock) => {
-      const res = await ipcRequest(sock, "tasks.list");
+    await withDaemon(async (ipc) => {
+      const res = await ipc.request("tasks.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
@@ -392,8 +422,8 @@ taskCmd
   .description("Run a task on the running zaps instance")
   .option("--json", "Output as JSON")
   .action(async (key: string, opts: { json?: boolean }) => {
-    await withDaemon(async (sock) => {
-      const res = await ipcStream(sock, "tasks.run", { key }, (event, data) => {
+    await withDaemon(async (ipc) => {
+      const res = await ipc.stream("tasks.run", { key }, (event, data) => {
         if (!opts.json && event === "line") {
           process.stdout.write(`${data as string}\n`);
         }
@@ -421,8 +451,8 @@ serviceCmd
   .description("Show service details")
   .option("--json", "Output as JSON")
   .action(async (name: string, opts: { json?: boolean }) => {
-    await withDaemon(async (sock) => {
-      const res = await ipcRequest(sock, "services.details", { name });
+    await withDaemon(async (ipc) => {
+      const res = await ipc.request("services.details", { name });
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
@@ -451,8 +481,8 @@ for (const action of ["start", "stop", "restart"] as const) {
     .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} a service`)
     .option("--json", "Output as JSON")
     .action(async (name: string, opts: { json?: boolean }) => {
-      await withDaemon(async (sock) => {
-        const res = await ipcRequest(sock, `services.${action}`, { name });
+      await withDaemon(async (ipc) => {
+        const res = await ipc.request(`services.${action}`, { name });
         if (res.error) {
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
@@ -472,23 +502,23 @@ program
   .action(async () => {
     const sock = socketPath();
     if (isDaemonRunning()) {
+      const { id } = resolveSessionId();
       const res = await ipcRequest(sock, "session.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
       }
-      const sessions = res.result as { id: string; projectDir: string }[];
-      const cwd = process.cwd();
-      const match = sessions.find((s) => s.projectDir === cwd) ?? sessions[0];
+      const sessions = res.result as { id: string }[];
+      const match = sessions.find((s) => s.id === id);
       if (match) {
-        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, match.id);
+        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, id);
         if (destroyRes.error) {
           process.stderr.write(`Error: ${destroyRes.error}\n`);
         } else {
           process.stdout.write("Session destroyed.\n");
         }
       } else {
-        process.stderr.write("No active session found.\n");
+        process.stderr.write("No running zaps session for this project.\n");
       }
       return;
     }
@@ -511,7 +541,6 @@ program
     let killed = 0;
     for (const paneId of Object.values(paneMap)) {
       if (paneId !== originPane) {
-        // eslint-disable-next-line no-await-in-loop -- Sequential tmux operations
         await killPane(paneId).catch(() => {
           /* Best-effort cleanup */
         });

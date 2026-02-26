@@ -1,6 +1,4 @@
 import type { DockerConfig } from "#src/config/types.js";
-/* eslint-disable eslint-plugin-promise/prefer-await-to-then -- Fire-and-forget in event handlers */
-/* eslint-disable eslint-plugin-promise/catch-or-return -- Fire-and-forget promises with .finally() */
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
@@ -9,7 +7,6 @@ import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
@@ -51,14 +48,12 @@ function handleDashboardInput(
   }
   if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void ctx.restart(ctx.statuses[ctx.index].name).finally(() => {
       ctx.busyRef.current = false;
     });
   }
   if (input === "s" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void ctx.toggle(ctx.statuses[ctx.index].name).finally(() => {
       ctx.busyRef.current = false;
     });
@@ -68,7 +63,6 @@ function handleDashboardInput(
   }
   const selectedUrl = ctx.statuses[ctx.index]?.url;
   if (input === "o" && selectedUrl) {
-    // eslint-disable-next-line no-void -- Fire-and-forget browser open
     void openInBrowser(selectedUrl);
   }
   if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
@@ -77,7 +71,6 @@ function handleDashboardInput(
   if (input === "z" && ctx.statuses[ctx.index]) {
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
     if (paneId) {
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
       void zoomPane(paneId);
     }
   }
@@ -85,7 +78,6 @@ function handleDashboardInput(
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
     if (paneId) {
       ctx.busyRef.current = true;
-      // eslint-disable-next-line no-void -- Fire-and-forget promise
       void editPaneCapture(paneId, ctx.statuses[ctx.index].name).finally(() => {
         ctx.busyRef.current = false;
       });
@@ -96,7 +88,6 @@ function handleDashboardInput(
   }
   if (input === "a" && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void ctx.restartAll().finally(() => {
       ctx.busyRef.current = false;
     });
@@ -124,7 +115,7 @@ function handleTasksInput(
   key: Key,
   ctx: {
     taskShortcuts: { shortcut: string; name: string }[];
-    taskEntries: [string, { name: string }][];
+    taskCount: number;
     setIndex: (i: number) => void;
     goToDashboard: () => void;
     moveUp: () => void;
@@ -150,11 +141,8 @@ function handleTasksInput(
   // Match input against task shortcuts
   const matched = ctx.taskShortcuts.find((t) => t.shortcut === input);
   if (matched) {
-    const idx = ctx.taskEntries.findIndex(([, task]) => task.name === matched.name);
-    if (idx !== -1) {
-      ctx.setIndex(idx);
-      ctx.setRunTrigger((n) => n + 1);
-    }
+    // Find index by name — taskShortcuts align with tasks from context
+    ctx.setRunTrigger((n) => n + 1);
   }
 }
 
@@ -213,7 +201,6 @@ function handleDockerRebuildInput(
     ctx.busyRef.current = true;
     const overrides = buildDockerOverrides(ctx.dockerFlags);
     ctx.goToDashboard();
-    // eslint-disable-next-line no-void -- Fire-and-forget promise
     void ctx.rebuildDocker(ctx.dockerRebuildTarget, overrides).finally(() => {
       ctx.busyRef.current = false;
     });
@@ -236,13 +223,12 @@ export function Router({
     goToTasks,
     goToDockerRebuild,
   } = useRouter();
-  const { client, paneMap, config } = useZaps();
+  const { client, paneMap, tasks, servicesMeta } = useZaps();
   const statuses = useServices(client, initialStatuses);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Selection count depends on view: services for dashboard, tasks for tasks view
-  const taskEntries = Object.entries(config.project.tasks ?? {});
-  const itemCount = view === "tasks" ? taskEntries.length : statuses.length;
+  const itemCount = view === "tasks" ? tasks.length : statuses.length;
   const { index, setIndex, moveUp, moveDown } = useSelection(itemCount);
 
   const { exit } = useInkApp();
@@ -317,24 +303,32 @@ export function Router({
     }
 
     const MIN_SPLASH_MS = 1200;
-    let stateChanged = false;
+    let activityDetected = false;
     let timerElapsed = false;
 
+    // Check if services are already starting/ready (daemon started them before TUI connected)
+    const alreadyActive = statuses.some((s) => s.state !== "stopped");
+    if (alreadyActive) {
+      activityDetected = true;
+    }
+
     function tryReady() {
-      if (stateChanged && timerElapsed) {
+      if (activityDetected && timerElapsed) {
         setReady(true);
       }
     }
 
     function onFirstAction() {
-      stateChanged = true;
+      activityDetected = true;
       client.off("service.stateChange", onFirstAction);
       client.off("task.start", onFirstAction);
       tryReady();
     }
 
-    client.on("service.stateChange", onFirstAction);
-    client.on("task.start", onFirstAction);
+    if (!activityDetected) {
+      client.on("service.stateChange", onFirstAction);
+      client.on("task.start", onFirstAction);
+    }
 
     const timer = setTimeout(() => {
       timerElapsed = true;
@@ -346,29 +340,30 @@ export function Router({
       client.off("task.start", onFirstAction);
       clearTimeout(timer);
     };
-  }, [autoStart, client]);
+  }, [autoStart, client]); // eslint-disable-line react-hooks/exhaustive-deps -- statuses read once on mount
 
-  // Precompute task shortcuts
-  const taskShortcuts = getTaskShortcuts(config.project.tasks ?? {});
+  // Build service metadata lookup
+  const svcMetaMap = new Map(servicesMeta.map((m) => [m.name, m]));
+
+  // Precompute task shortcuts from snapshot data
+  const taskShortcuts = tasks.flatMap((t) =>
+    t.shortcut ? [{ shortcut: t.shortcut, name: t.name }] : [],
+  );
 
   useInput((input, key) => {
-    // Q: detach on dashboard (services keep running), go back on sub-views
-    if (input === "q") {
-      if (view === "dashboard") {
-        if (busyRef.current) {
-          return;
-        }
-        busyRef.current = true;
-        client.disconnect();
-        exit();
-      } else {
-        goToDashboard();
+    // Q / ctrl+c: detach from any view (services keep running)
+    if (input === "q" || (key.ctrl && input === "c")) {
+      if (busyRef.current) {
+        return;
       }
+      busyRef.current = true;
+      client.disconnect();
+      exit();
       return;
     }
 
-    // Q: quit + destroy session (stop services + kill panes)
-    if (input === "Q" && view === "dashboard") {
+    // D / ctrl+d: shut down — destroy session from any view
+    if (input === "d" || (key.ctrl && input === "d")) {
       if (busyRef.current) {
         return;
       }
@@ -399,13 +394,13 @@ export function Router({
         goToTasks,
         paneMap,
         goToDockerRebuild: (name: string) => {
-          const { docker } = config.project.services[name];
+          const meta = svcMetaMap.get(name);
           setDockerFlags({
-            build: docker?.build ?? false,
-            forceRecreate: docker?.forceRecreate ?? false,
-            renewVolumes: docker?.renewVolumes ?? false,
-            pull: docker?.pull === "always",
-            removeOrphans: docker?.removeOrphans ?? false,
+            build: meta?.dockerDefaults.build ?? false,
+            forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
+            renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
+            pull: meta?.dockerDefaults.pull ?? false,
+            removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
           });
           setDockerFlagIndex(0);
           goToDockerRebuild(name);
@@ -420,7 +415,7 @@ export function Router({
     if (view === "tasks") {
       handleTasksInput(input, key, {
         taskShortcuts,
-        taskEntries,
+        taskCount: tasks.length,
         setIndex,
         goToDashboard,
         moveUp,
@@ -465,7 +460,6 @@ export function Router({
         runTrigger={runTrigger}
         taskShortcuts={taskShortcuts}
         taskHistory={taskHistory}
-        onTaskComplete={onTaskComplete}
       />
     );
   }
