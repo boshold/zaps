@@ -10,7 +10,7 @@ export interface TestSession {
 
 export async function createTestSession(): Promise<TestSession> {
   const name = `zaps-test-${randomUUID().slice(0, 8)}`;
-  const initialPaneId = await newSession(name);
+  const initialPaneId = await newSession(name, { x: 220, y: 50 });
   return {
     name,
     initialPaneId,

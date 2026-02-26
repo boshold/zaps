@@ -70,8 +70,12 @@ export async function sendKeys(target: string, keys: string): Promise<void> {
   await run(["send-keys", "-t", target, "Enter"]);
 }
 
-export async function newSession(name: string): Promise<string> {
-  return run(["new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}"]);
+export async function newSession(name: string, opts?: { x?: number; y?: number }): Promise<string> {
+  const args = ["new-session", "-d", "-s", name];
+  if (opts?.x) {args.push("-x", String(opts.x));}
+  if (opts?.y) {args.push("-y", String(opts.y));}
+  args.push("-P", "-F", "#{pane_id}");
+  return run(args);
 }
 
 export async function newWindow(session: string): Promise<string> {
