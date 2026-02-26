@@ -1,8 +1,8 @@
 import fs from "node:fs";
 import net from "node:net";
 
-import { discoverConfig } from "#src/config/discovery.js";
 import { loadConfig } from "#src/config/loader.js";
+import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
@@ -35,14 +35,6 @@ interface SessionStore {
     originPane: string;
   }): Promise<Session>;
   destroy(id: string): Promise<void>;
-}
-
-function ok(id: string, result: unknown): IpcResponse {
-  return { id, result };
-}
-
-function err(id: string, error: string): IpcResponse {
-  return { id, error };
 }
 
 class DaemonServer implements SessionStore {
@@ -130,11 +122,7 @@ class DaemonServer implements SessionStore {
     }
 
     // Load config
-    const configPath = params.configPath || discoverConfig(params.projectDir);
-    if (!configPath) {
-      throw new Error("No config found");
-    }
-    const config = await loadConfig(configPath, params.projectDir);
+    const config = await loadConfig(params.configPath, params.projectDir);
 
     // Build pane layout
     const { paneMap, focusPane } = await createLayout(
@@ -163,7 +151,7 @@ class DaemonServer implements SessionStore {
     const manager = new ServiceManager(config, paneMap, deps, params.tmuxSession);
 
     const sessionParams: SessionCreateParams = {
-      configPath,
+      configPath: params.configPath,
       projectDir: params.projectDir,
       config,
       paneMap,
@@ -227,7 +215,7 @@ class DaemonServer implements SessionStore {
       try {
         return await dHandler(req, this);
       } catch (error) {
-        return err(req.id, error instanceof Error ? error.message : String(error));
+        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
       }
     }
 
@@ -235,21 +223,21 @@ class DaemonServer implements SessionStore {
     const sHandler = sessionHandlers[req.method];
     if (sHandler) {
       if (!req.session) {
-        return err(req.id, `Session required for method: ${req.method}`);
+        return ipcErr(req.id, `Session required for method: ${req.method}`);
       }
       try {
         return await sHandler(req, this, socket);
       } catch (error) {
-        return err(req.id, error instanceof Error ? error.message : String(error));
+        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
       }
     }
 
     // Backward compat: bare "ping" → daemon.ping
     if (req.method === "ping") {
-      return ok(req.id, "pong");
+      return ipcOk(req.id, "pong");
     }
 
-    return err(req.id, `Unknown method: ${req.method}`);
+    return ipcErr(req.id, `Unknown method: ${req.method}`);
   }
 }
 

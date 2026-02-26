@@ -1,24 +1,17 @@
 import type { SessionStore } from "#src/daemon/server.js";
+import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
-
-function ok(id: string, result: unknown): IpcResponse {
-  return { id, result };
-}
-
-function err(id: string, error: string): IpcResponse {
-  return { id, error };
-}
 
 export const daemonHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>
 > = {
   async "daemon.ping"(req) {
-    return ok(req.id, "pong");
+    return ipcOk(req.id, "pong");
   },
 
   async "daemon.status"(req, store) {
-    return ok(req.id, {
+    return ipcOk(req.id, {
       pid: process.pid,
       sessions: store.list().map((s) => ({
         id: s.id,
@@ -37,11 +30,11 @@ export const daemonHandlers: Record<
     setTimeout(() => {
       process.exit(0);
     }, 100);
-    return ok(req.id, { shutting_down: true });
+    return ipcOk(req.id, { shuttingDown: true });
   },
 
   async "session.list"(req, store) {
-    return ok(
+    return ipcOk(
       req.id,
       store.list().map((s) => ({
         id: s.id,
@@ -62,31 +55,31 @@ export const daemonHandlers: Record<
     };
 
     if (!params?.configPath) {
-      return err(req.id, "configPath required");
+      return ipcErr(req.id, "configPath required");
     }
 
     try {
       const session = await store.create(params);
-      return ok(req.id, {
+      return ipcOk(req.id, {
         id: session.id,
         name: session.name,
         paneMap: session.paneMap,
       });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "session.destroy"(req, store) {
     const sessionId = req.session;
     if (!sessionId) {
-      return err(req.id, "session required");
+      return ipcErr(req.id, "session required");
     }
     const session = store.get(sessionId);
     if (!session) {
-      return err(req.id, `Unknown session: ${sessionId}`);
+      return ipcErr(req.id, `Unknown session: ${sessionId}`);
     }
     await store.destroy(sessionId);
-    return ok(req.id, { destroyed: sessionId });
+    return ipcOk(req.id, { destroyed: sessionId });
   },
 };

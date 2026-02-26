@@ -2,20 +2,13 @@ import type { ResolvedConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
+import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { Socket } from "node:net";
-
-function ok(id: string, result: unknown): IpcResponse {
-  return { id, result };
-}
-
-function err(id: string, error: string): IpcResponse {
-  return { id, error };
-}
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -72,24 +65,24 @@ export const sessionHandlers: Record<
   async "session.attach"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
-    return ok(req.id, session.attachSnapshot());
+    return ipcOk(req.id, session.attachSnapshot());
   },
 
   async "session.detach"(req, store, socket) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     session.subscribers.delete(socket);
-    return ok(req.id, { detached: true });
+    return ipcOk(req.id, { detached: true });
   },
 
   async subscribe(req, store, socket) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     session.subscribers.add(socket);
 
@@ -97,82 +90,82 @@ export const sessionHandlers: Record<
       session.subscribers.delete(socket);
     });
 
-    return ok(req.id, { subscribed: true });
+    return ipcOk(req.id, { subscribed: true });
   },
 
   async "services.list"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
-    return ok(req.id, session.manager.getAllStatuses());
+    return ipcOk(req.id, session.manager.getAllStatuses());
   },
 
   async "services.details"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const { name } = req.params as { name: string };
     try {
       const status = session.manager.getStatus(name);
       const svcConfig = session.config.project.services[name];
-      return ok(req.id, {
+      return ipcOk(req.id, {
         ...status,
         dependsOn: svcConfig?.dependsOn ?? [],
         hasDocker: Boolean(svcConfig?.docker),
       });
     } catch {
-      return err(req.id, `Unknown service: ${name}`);
+      return ipcErr(req.id, `Unknown service: ${name}`);
     }
   },
 
   async "services.start"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const { name } = req.params as { name: string };
     try {
       await session.manager.startService(name);
-      return ok(req.id, { started: name });
+      return ipcOk(req.id, { started: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "services.stop"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const { name } = req.params as { name: string };
     try {
       await session.manager.stopService(name);
-      return ok(req.id, { stopped: name });
+      return ipcOk(req.id, { stopped: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "services.restart"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const { name } = req.params as { name: string };
     try {
       await session.manager.restartService(name);
-      return ok(req.id, { restarted: name });
+      return ipcOk(req.id, { restarted: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "services.startAll"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const params = req.params as { names?: string[] } | undefined;
     try {
@@ -181,19 +174,19 @@ export const sessionHandlers: Record<
         for (const name of params.names) {
           await session.manager.startService(name);
         }
-        return ok(req.id, { started: params.names });
+        return ipcOk(req.id, { started: params.names });
       }
       await session.manager.startAll();
-      return ok(req.id, { started: "all" });
+      return ipcOk(req.id, { started: "all" });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "services.stopAll"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const params = req.params as { names?: string[] } | undefined;
     try {
@@ -202,19 +195,19 @@ export const sessionHandlers: Record<
         for (const name of params.names) {
           await session.manager.stopService(name);
         }
-        return ok(req.id, { stopped: params.names });
+        return ipcOk(req.id, { stopped: params.names });
       }
       await session.manager.stopAll();
-      return ok(req.id, { stopped: "all" });
+      return ipcOk(req.id, { stopped: "all" });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "services.restartAll"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const params = req.params as { names?: string[] } | undefined;
     try {
@@ -223,21 +216,21 @@ export const sessionHandlers: Record<
         for (const name of params.names) {
           await session.manager.restartService(name);
         }
-        return ok(req.id, { restarted: params.names });
+        return ipcOk(req.id, { restarted: params.names });
       }
       // Restart all: stop all then start all
       await session.manager.stopAll();
       await session.manager.startAll();
-      return ok(req.id, { restarted: "all" });
+      return ipcOk(req.id, { restarted: "all" });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
   async "tasks.list"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const tasks = session.config.project.tasks ?? {};
     const list = Object.entries(tasks).map(([key, t]) => ({
@@ -245,26 +238,27 @@ export const sessionHandlers: Record<
       name: t.name,
       description: t.description ?? null,
     }));
-    return ok(req.id, list);
+    return ipcOk(req.id, list);
   },
 
   async "tasks.run"(req, store, socket) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
 
     const { key } = req.params as { key: string };
     const tasks = session.config.project.tasks ?? {};
     if (!tasks[key]) {
-      return err(req.id, `Unknown task: ${key}`);
+      return ipcErr(req.id, `Unknown task: ${key}`);
     }
 
     const task = tasks[key];
     const taskName = task.name;
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
-    // Broadcast task.start to all subscribers
+    // Record + broadcast task.start to all subscribers
+    session.pushTaskRecord({ taskKey: key, taskName, result: "running", timestamp: Date.now() });
     session.broadcast({
       session: session.id,
       event: "task.start",
@@ -303,26 +297,32 @@ export const sessionHandlers: Record<
       );
     }
 
-    // Broadcast task.complete to all subscribers
+    // Record + broadcast task.complete to all subscribers
+    session.pushTaskRecord({
+      taskKey: key,
+      taskName,
+      result: success ? "success" : "error",
+      timestamp: Date.now(),
+    });
     session.broadcast({
       session: session.id,
       event: "task.complete",
       data: { key, name: taskName, result: success ? "success" : "error" },
     });
 
-    return ok(req.id, { success });
+    return ipcOk(req.id, { success });
   },
 
   async "logs.snapshot"(req, store) {
     const session = getSession(req, store);
     if (!session) {
-      return err(req.id, "Unknown session");
+      return ipcErr(req.id, "Unknown session");
     }
     const { service } = req.params as { service: string };
     const buf = session.logBuffers.get(service);
     if (!buf) {
-      return err(req.id, `Unknown service: ${service}`);
+      return ipcErr(req.id, `Unknown service: ${service}`);
     }
-    return ok(req.id, buf.snapshot());
+    return ipcOk(req.id, buf.snapshot());
   },
 };

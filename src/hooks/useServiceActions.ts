@@ -12,19 +12,17 @@ export function useServiceActions(client: DaemonClient) {
   }
 
   async function toggle(name: string) {
-    // Try stop; if fails (already stopped), start instead
-    try {
+    const statuses = await client.listServices();
+    const svc = statuses.find((s) => s.name === name);
+    if (svc?.state === "ready" || svc?.state === "starting") {
       await client.stopService(name);
-    } catch {
+    } else {
       await client.startService(name);
     }
   }
 
   async function restartAll() {
-    const statuses = await client.listServices();
-    for (const s of statuses) {
-      await client.restartService(s.name);
-    }
+    await client.restartAll();
   }
 
   return { restart, toggle, restartAll, rebuildDocker };

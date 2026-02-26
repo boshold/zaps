@@ -39,3 +39,11 @@ export function isIpcResponse(msg: IpcMessage): msg is IpcResponse {
 export function isDaemonEvent(msg: unknown): msg is DaemonEvent {
   return typeof msg === "object" && msg !== null && "session" in msg && "event" in msg;
 }
+
+export function ipcOk(id: string, result: unknown): IpcResponse {
+  return { id, result };
+}
+
+export function ipcErr(id: string, error: string): IpcResponse {
+  return { id, error };
+}

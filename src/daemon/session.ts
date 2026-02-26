@@ -123,7 +123,7 @@ export class Session {
     });
   }
 
-  private pushTaskRecord(record: TaskRunRecord): void {
+  pushTaskRecord(record: TaskRunRecord): void {
     if (record.result === "running") {
       this.taskHistory.unshift(record);
       if (this.taskHistory.length > MAX_TASK_HISTORY) {
@@ -188,7 +188,14 @@ export class Session {
     const rawTasks = this.config.project.tasks ?? {};
     const shortcuts = getTaskShortcuts(rawTasks);
     const shortcutMap = new Map(shortcuts.map((s) => [s.name, s.shortcut]));
-    const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) => (Object.assign({key,name:t.name,description:t.description??null}, shortcutMap.has(t.name)&&{shortcut:shortcutMap.get(t.name)})));
+    const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) => {
+      const info: TaskInfo = { key, name: t.name, description: t.description ?? null };
+      const shortcut = shortcutMap.get(t.name);
+      if (shortcut) {
+        info.shortcut = shortcut;
+      }
+      return info;
+    });
 
     // Compute service metadata
     const servicesMeta: ServiceMeta[] = Object.entries(this.config.project.services).map(

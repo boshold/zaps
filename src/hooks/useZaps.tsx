@@ -1,5 +1,5 @@
-import type { DaemonClient } from "#src/client/daemon-client.js";
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
+import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import type { ReactNode } from "react";
 import { createContext, useContext } from "react";

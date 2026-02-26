@@ -120,7 +120,7 @@ export class ServiceManager extends EventEmitter {
   private deps: ServiceManagerDeps;
   private autoOpened = new Set<string>();
   private restartWithMap: Map<string, string[]>;
-  private cascading = false;
+  private cascadingTriggers = new Set<string>();
   private originalWindowTitle: Promise<string>;
   private originalAutoRename: Promise<string | null>;
 
@@ -486,7 +486,7 @@ export class ServiceManager extends EventEmitter {
     await this.startService(name);
 
     // Cascade restart dependents
-    if (!this.cascading) {
+    if (!this.cascadingTriggers.has(name)) {
       await this.cascadeRestart(name);
     }
   }
@@ -500,7 +500,7 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    this.cascading = true;
+    this.cascadingTriggers.add(trigger);
     try {
       for (const dep of dependents) {
         const depStatus = this.statuses.get(dep);
@@ -514,7 +514,7 @@ export class ServiceManager extends EventEmitter {
         await this.startService(dep);
       }
     } finally {
-      this.cascading = false;
+      this.cascadingTriggers.delete(trigger);
     }
   }
 

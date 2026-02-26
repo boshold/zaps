@@ -138,6 +138,7 @@ function handleTasksInput(
   input: string,
   key: Key,
   ctx: {
+    tasks: { key: string; name: string }[];
     taskShortcuts: { shortcut: string; name: string }[];
     taskCount: number;
     setIndex: (i: number) => void;
@@ -165,8 +166,11 @@ function handleTasksInput(
   // Match input against task shortcuts
   const matched = ctx.taskShortcuts.find((t) => t.shortcut === input);
   if (matched) {
-    // Find index by name — taskShortcuts align with tasks from context
-    ctx.setRunTrigger((n) => n + 1);
+    const idx = ctx.tasks.findIndex((t) => t.name === matched.name);
+    if (idx !== -1) {
+      ctx.setIndex(idx);
+      ctx.setRunTrigger((n) => n + 1);
+    }
   }
 }
 
@@ -460,6 +464,7 @@ export function Router({
 
     if (view === "tasks") {
       handleTasksInput(input, key, {
+        tasks,
         taskShortcuts,
         taskCount: tasks.length,
         setIndex,

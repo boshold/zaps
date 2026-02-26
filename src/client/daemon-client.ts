@@ -109,6 +109,13 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
+  async restartAll(): Promise<void> {
+    const res = await this.request("services.restartAll");
+    if (res.error) {
+      throw new Error(res.error);
+    }
+  }
+
   async getLogSnapshot(service: string): Promise<string[]> {
     const res = await this.request("logs.snapshot", { service });
     if (res.error) {

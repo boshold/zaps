@@ -1,10 +1,11 @@
 import type { ResolvedConfig } from "#src/config/types.js";
 import { execCommand } from "#src/lib/exec.js";
+import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
+import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { IpcRequest, IpcResponse } from "./protocol.js";
 import type { Socket } from "node:net";
 
 type Handler = (
@@ -14,25 +15,17 @@ type Handler = (
   socket: Socket,
 ) => Promise<IpcResponse>;
 
-function ok(id: string, result: unknown): IpcResponse {
-  return { id, result };
-}
-
-function err(id: string, error: string): IpcResponse {
-  return { id, error };
-}
-
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
 }
 
 const handlers: Record<string, Handler> = {
   async ping(req) {
-    return ok(req.id, "pong");
+    return ipcOk(req.id, "pong");
   },
 
   async "services.list"(req, manager) {
-    return ok(req.id, manager.getAllStatuses());
+    return ipcOk(req.id, manager.getAllStatuses());
   },
 
   async "services.details"(req, manager, config) {
@@ -40,13 +33,13 @@ const handlers: Record<string, Handler> = {
     try {
       const status = manager.getStatus(name);
       const svcConfig = config.project.services[name];
-      return ok(req.id, {
+      return ipcOk(req.id, {
         ...status,
         dependsOn: svcConfig?.dependsOn ?? [],
         hasDocker: Boolean(svcConfig?.docker),
       });
     } catch {
-      return err(req.id, `Unknown service: ${name}`);
+      return ipcErr(req.id, `Unknown service: ${name}`);
     }
   },
 
@@ -54,9 +47,9 @@ const handlers: Record<string, Handler> = {
     const { name } = req.params as { name: string };
     try {
       await manager.startService(name);
-      return ok(req.id, { started: name });
+      return ipcOk(req.id, { started: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -64,9 +57,9 @@ const handlers: Record<string, Handler> = {
     const { name } = req.params as { name: string };
     try {
       await manager.stopService(name);
-      return ok(req.id, { stopped: name });
+      return ipcOk(req.id, { stopped: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -74,9 +67,9 @@ const handlers: Record<string, Handler> = {
     const { name } = req.params as { name: string };
     try {
       await manager.restartService(name);
-      return ok(req.id, { restarted: name });
+      return ipcOk(req.id, { restarted: name });
     } catch (error) {
-      return err(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
 
@@ -87,14 +80,14 @@ const handlers: Record<string, Handler> = {
       name: t.name,
       description: t.description ?? null,
     }));
-    return ok(req.id, list);
+    return ipcOk(req.id, list);
   },
 
   async "tasks.run"(req, manager, config, socket) {
     const { key } = req.params as { key: string };
     const tasks = config.project.tasks ?? {};
     if (!tasks[key]) {
-      return err(req.id, `Unknown task: ${key}`);
+      return ipcErr(req.id, `Unknown task: ${key}`);
     }
 
     const visited = new Set<string>();
@@ -129,7 +122,7 @@ const handlers: Record<string, Handler> = {
       );
     }
 
-    return ok(req.id, { success });
+    return ipcOk(req.id, { success });
   },
 };
 
@@ -178,11 +171,11 @@ export async function handleRequest(
 ): Promise<IpcResponse> {
   const handler = handlers[req.method];
   if (!handler) {
-    return err(req.id, `Unknown method: ${req.method}`);
+    return ipcErr(req.id, `Unknown method: ${req.method}`);
   }
   try {
     return await handler(req, manager, config, socket);
   } catch (error) {
-    return err(req.id, error instanceof Error ? error.message : String(error));
+    return ipcErr(req.id, error instanceof Error ? error.message : String(error));
   }
 }

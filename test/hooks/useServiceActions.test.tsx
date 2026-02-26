@@ -26,6 +26,7 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
+    restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
   return client as unknown as DaemonClient;
@@ -57,13 +58,12 @@ describe("useServiceActions", () => {
     expect(vi.mocked(client.startService)).not.toHaveBeenCalled();
   });
 
-  it("toggle: calls startService when stopService fails", async () => {
+  it("toggle: calls startService when service is stopped", async () => {
     const client = createMockClient([makeStatus("api", "stopped")]);
-    vi.mocked(client.stopService).mockRejectedValueOnce(new Error("already stopped"));
 
     const actions = renderActions(client);
     await actions.toggle("api");
-    expect(vi.mocked(client.stopService)).toHaveBeenCalledWith("api");
+    expect(vi.mocked(client.stopService)).not.toHaveBeenCalled();
     expect(vi.mocked(client.startService)).toHaveBeenCalledWith("api");
   });
 
@@ -75,15 +75,13 @@ describe("useServiceActions", () => {
     expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
   });
 
-  it("restartAll calls listServices then restartService for each", async () => {
+  it("restartAll calls client.restartAll", async () => {
     const statuses = [makeStatus("db", "ready"), makeStatus("api", "ready")];
     const client = createMockClient(statuses);
 
     const actions = renderActions(client);
     await actions.restartAll();
-    expect(vi.mocked(client.listServices)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
-    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("api");
+    expect(vi.mocked(client.restartAll)).toHaveBeenCalledTimes(1);
   });
 
   it("rebuildDocker does not throw", async () => {

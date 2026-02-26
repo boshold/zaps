@@ -43,6 +43,7 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
+    restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
   });
@@ -163,8 +164,7 @@ describe("Keyboard routing — Dashboard", () => {
     });
     await act();
 
-    expect(vi.mocked(client.listServices)).toHaveBeenCalled();
-    expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
+    expect(vi.mocked(client.restartAll)).toHaveBeenCalledTimes(1);
   });
 
   it("q detaches (disconnects and exits)", async () => {

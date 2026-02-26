@@ -194,10 +194,11 @@ export function ipcSubscribe(
           reject(new Error("Request timed out"));
         }, 30_000);
 
+        let reqBuffer = "";
         function onData(chunk: Buffer) {
-          buffer += chunk.toString();
-          const dataLines = buffer.split("\n");
-          buffer = dataLines.pop() ?? "";
+          reqBuffer += chunk.toString();
+          const dataLines = reqBuffer.split("\n");
+          reqBuffer = dataLines.pop() ?? "";
 
           for (const dataLine of dataLines) {
             if (dataLine.trim() === "") {
