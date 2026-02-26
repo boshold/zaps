@@ -848,6 +848,23 @@ daemonCmd
     }
   });
 
+daemonCmd
+  .command("ping")
+  .description("Check if daemon is responsive")
+  .action(async () => {
+    if (!isDaemonRunning()) {
+      process.stderr.write("Daemon not running.\n");
+      process.exit(1);
+    }
+    const sock = socketPath();
+    const res = await ipcRequest(sock, "daemon.ping");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`${res.result as string}\n`);
+  });
+
 // --- CLI session routing ---
 
 interface SessionIpc {

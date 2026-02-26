@@ -188,12 +188,7 @@ export class Session {
     const rawTasks = this.config.project.tasks ?? {};
     const shortcuts = getTaskShortcuts(rawTasks);
     const shortcutMap = new Map(shortcuts.map((s) => [s.name, s.shortcut]));
-    const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) =>
-      ({
-        key, name: t.name, description: t.description ?? null,
-        ...shortcutMap.has(t.name) && { shortcut: shortcutMap.get(t.name) },
-      }),
-    );
+    const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) => (Object.assign({key,name:t.name,description:t.description??null}, shortcutMap.has(t.name)&&{shortcut:shortcutMap.get(t.name)})));
 
     // Compute service metadata
     const servicesMeta: ServiceMeta[] = Object.entries(this.config.project.services).map(
