@@ -151,11 +151,15 @@ export function ipcSubscribe(
       if (line.trim() === "") {
         continue;
       }
-      const msg: unknown = JSON.parse(line);
-      if (isDaemonEvent(msg)) {
-        onEvent(msg);
+      try {
+        const msg: unknown = JSON.parse(line);
+        if (isDaemonEvent(msg)) {
+          onEvent(msg);
+        }
+        // IpcResponse to subscribe request — ignore (ack)
+      } catch {
+        /* Malformed message — skip */
       }
-      // IpcResponse to subscribe request — ignore (ack)
     }
   });
 

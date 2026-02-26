@@ -49,15 +49,25 @@ function handleDashboardInput(
   }
   if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    void ctx.restart(ctx.statuses[ctx.index].name).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .restart(ctx.statuses[ctx.index].name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
   if (input === "s" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    void ctx.toggle(ctx.statuses[ctx.index].name).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .toggle(ctx.statuses[ctx.index].name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
   if (input === "l" && ctx.statuses[ctx.index]) {
     ctx.goToLogs(ctx.statuses[ctx.index].name);
@@ -79,9 +89,13 @@ function handleDashboardInput(
     const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
     if (paneId) {
       ctx.busyRef.current = true;
-      void editPaneCapture(paneId, ctx.statuses[ctx.index].name).finally(() => {
-        ctx.busyRef.current = false;
-      });
+      void editPaneCapture(paneId, ctx.statuses[ctx.index].name)
+        .catch(() => {
+          /* IPC error — ignore */
+        })
+        .finally(() => {
+          ctx.busyRef.current = false;
+        });
     }
   }
   if (input === "d") {
@@ -93,9 +107,14 @@ function handleDashboardInput(
   }
   if (input === "a" && !ctx.busyRef.current) {
     ctx.busyRef.current = true;
-    void ctx.restartAll().finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .restartAll()
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
 }
 
@@ -206,9 +225,14 @@ function handleDockerRebuildInput(
     ctx.busyRef.current = true;
     const overrides = buildDockerOverrides(ctx.dockerFlags);
     ctx.goToDashboard();
-    void ctx.rebuildDocker(ctx.dockerRebuildTarget, overrides).finally(() => {
-      ctx.busyRef.current = false;
-    });
+    void ctx
+      .rebuildDocker(ctx.dockerRebuildTarget, overrides)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyRef.current = false;
+      });
   }
 }
 

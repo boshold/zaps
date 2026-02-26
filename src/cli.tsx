@@ -52,7 +52,12 @@ program
   .version(
     `0.1.0 (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}`,
   )
-  .description("Terminal session manager");
+  .description("Terminal session manager")
+  .option("-s, --session <session>", "Target session by id/name prefix");
+
+function globalSession(): string | undefined {
+  return program.opts().session as string | undefined;
+}
 
 interface SessionInfo {
   id: string;
@@ -62,12 +67,30 @@ interface SessionInfo {
 
 function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
   if (sessionArg) {
-    const found = sessions.find((s) => s.id === sessionArg || s.name === sessionArg);
-    if (!found) {
-      process.stderr.write(`Session not found: ${sessionArg}\n`);
+    // Priority: exact id → exact name → id prefix → name prefix
+    const exactId = sessions.find((s) => s.id === sessionArg);
+    if (exactId) {
+      return exactId;
+    }
+    const exactName = sessions.find((s) => s.name === sessionArg);
+    if (exactName) {
+      return exactName;
+    }
+    const prefixMatches = sessions.filter(
+      (s) => s.id.startsWith(sessionArg) || s.name.startsWith(sessionArg),
+    );
+    if (prefixMatches.length === 1) {
+      return prefixMatches[0];
+    }
+    if (prefixMatches.length > 1) {
+      process.stderr.write(`Ambiguous session "${sessionArg}". Matches:\n`);
+      for (const s of prefixMatches) {
+        process.stderr.write(`  ${s.id}  ${s.name}  ${s.projectDir}\n`);
+      }
       process.exit(1);
     }
-    return found;
+    process.stderr.write(`Session not found: ${sessionArg}\n`);
+    process.exit(1);
   }
   if (sessions.length === 1) {
     return sessions[0];
@@ -201,10 +224,30 @@ async function upFlow(detach?: boolean): Promise<void> {
 // --- Smart default: attach if running, else up ---
 
 program
-  .command("up", { isDefault: true })
+  .command("up")
   .description("Create session, start services, attach TUI")
   .option("-d, --detach", "Start without attaching TUI")
   .action(async (opts: { detach?: boolean }) => {
+    const sessionOpt = globalSession();
+    if (sessionOpt && isDaemonRunning()) {
+      const sock = socketPath();
+      const res = await ipcRequest(sock, "session.list");
+      if (!res.error) {
+        const sessions = res.result as SessionInfo[];
+        const target = resolveTargetSession(sessions, sessionOpt);
+        const configPath = discoverConfig(process.cwd());
+        if (configPath) {
+          const cwdId = sessionId(configPath);
+          if (target.id !== cwdId) {
+            process.stderr.write(
+              `Session "${target.name}" is from a different project. Use \`zaps attach -s ${sessionOpt}\` instead.\n`,
+            );
+            process.exit(1);
+          }
+        }
+      }
+    }
+
     // Smart default: if session already running for this project, attach
     if (!opts.detach && isDaemonRunning()) {
       const configPath = discoverConfig(process.cwd());
@@ -238,16 +281,18 @@ program
   .action(async () => {
     const sock = socketPath();
     if (isDaemonRunning()) {
-      const { id } = resolveSessionId();
+      const sessionOpt = globalSession();
       const res = await ipcRequest(sock, "session.list");
       if (res.error) {
         process.stderr.write(`Error: ${res.error}\n`);
         process.exit(1);
       }
-      const sessions = res.result as { id: string }[];
-      const match = sessions.find((s) => s.id === id);
-      if (match) {
-        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, id);
+      const sessions = res.result as SessionInfo[];
+      const target = sessionOpt
+        ? resolveTargetSession(sessions, sessionOpt)
+        : sessions.find((s) => s.id === resolveSessionId().id);
+      if (target) {
+        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, target.id);
         if (destroyRes.error) {
           process.stderr.write(`Error: ${destroyRes.error}\n`);
         } else {
@@ -309,7 +354,7 @@ for (const action of ["start", "stop", "restart"] as const) {
             `${action.charAt(0).toUpperCase()}${action.slice(1)}ed ${target}.\n`,
           );
         }
-      });
+      }, globalSession());
     });
 }
 
@@ -345,7 +390,7 @@ program
         rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
       }
       process.stdout.write(`${formatTable(rows)}\n`);
-    });
+    }, globalSession());
   });
 
 program
@@ -415,7 +460,7 @@ program
               : `${v as string | number | boolean}`; // eslint-disable-line no-nested-ternary -- Compact value formatting
         process.stdout.write(`${k}: ${val}\n`);
       }
-    });
+    }, globalSession());
   });
 
 // --- New Commands ---
@@ -438,7 +483,7 @@ program
   .action(async (services: string[], opts: { follow?: boolean; tail: string }) => {
     const tail = Number.parseInt(opts.tail, 10);
 
-    await withDaemon(async (ipc) => {
+    await withDaemon(async (ipc: SessionIpc) => {
       // Get service list if none specified
       let targetServices = services;
       if (targetServices.length === 0) {
@@ -486,9 +531,8 @@ program
       }
 
       // Follow mode: subscribe to log events
-      const { id } = resolveSessionId();
       const sock = socketPath();
-      const sub = ipcSubscribe(sock, id, ["log.lines"], (event: DaemonEvent) => {
+      const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], (event: DaemonEvent) => {
         const data = event.data as { service: string; lines: string[] };
         if (targetServices.includes(data.service)) {
           for (const line of data.lines) {
@@ -504,7 +548,7 @@ program
           resolve();
         });
       });
-    });
+    }, globalSession());
   });
 
 program
@@ -531,7 +575,7 @@ program
         process.stderr.write("Task failed.\n");
         process.exit(1);
       }
-    });
+    }, globalSession());
   });
 
 program
@@ -539,13 +583,25 @@ program
   .description("Stream daemon events as ndjson")
   .option("--filter <type>", "Filter events by type (regex)")
   .action(async (opts: { filter?: string }) => {
-    const { id } = resolveSessionId();
     const sock = socketPath();
 
     if (!isDaemonRunning()) {
       process.stderr.write("No running daemon found.\n");
       process.exit(1);
     }
+
+    const sessionOpt = globalSession();
+    const id = await (async () => {
+      if (sessionOpt) {
+        const res = await ipcRequest(sock, "session.list");
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
+      }
+      return resolveSessionId().id;
+    })();
 
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
@@ -652,9 +708,9 @@ program
   });
 
 program
-  .command("attach [session]")
+  .command("attach")
   .description("Attach to a running zaps session")
-  .action(async (sessionArg?: string) => {
+  .action(async () => {
     if (!getEnv("TMUX")) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
@@ -678,7 +734,7 @@ program
       process.exit(1);
     }
 
-    const targetSession = resolveTargetSession(sessions, sessionArg);
+    const targetSession = resolveTargetSession(sessions, globalSession());
     await runTui({ sessionId: targetSession.id, socketPath: sock });
   });
 
@@ -707,7 +763,7 @@ program
         rows.push([t.key, t.name, t.description ?? "-"]);
       }
       process.stdout.write(`${formatTable(rows)}\n`);
-    });
+    }, globalSession());
   });
 
 program
@@ -795,6 +851,7 @@ daemonCmd
 // --- CLI session routing ---
 
 interface SessionIpc {
+  readonly sessionId: string;
   request(method: string, params?: unknown): Promise<IpcResponse>;
   stream(
     method: string,
@@ -813,27 +870,40 @@ function resolveSessionId(): { configPath: string; id: string } {
   return { configPath, id: sessionId(configPath) };
 }
 
-async function withDaemon<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
+async function withDaemon<T>(fn: (ipc: SessionIpc) => Promise<T>, sessionArg?: string): Promise<T> {
   const sock = socketPath();
   if (!isDaemonRunning()) {
+    if (sessionArg) {
+      process.stderr.write("No running daemon found.\n");
+      process.exit(1);
+    }
     return withLegacyIpc(fn);
   }
 
-  const { id } = resolveSessionId();
-
-  const res = await ipcRequest(sock, "session.list");
-  if (res.error) {
-    process.stderr.write(`Error: ${res.error}\n`);
-    process.exit(1);
-  }
-  const sessions = res.result as { id: string }[];
-  const match = sessions.find((s) => s.id === id);
-  if (!match) {
-    process.stderr.write("No running zaps session for this project.\n");
-    process.exit(1);
-  }
+  const id = await (async () => {
+    if (sessionArg) {
+      const res = await ipcRequest(sock, "session.list");
+      if (res.error) {
+        process.stderr.write(`Error: ${res.error}\n`);
+        process.exit(1);
+      }
+      return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
+    }
+    const resolved = resolveSessionId().id;
+    const res = await ipcRequest(sock, "session.list");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+    if (!(res.result as { id: string }[]).some((s) => s.id === resolved)) {
+      process.stderr.write("No running zaps session for this project.\n");
+      process.exit(1);
+    }
+    return resolved;
+  })();
 
   const ipc: SessionIpc = {
+    sessionId: id,
     request: async (method, params?) => ipcRequest(sock, method, params, 30_000, id),
     stream: async (method, params, onEvent) =>
       ipcStream(sock, method, params, onEvent, 120_000, id),
@@ -853,6 +923,7 @@ async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T>
     process.exit(1);
   }
   const ipc: SessionIpc = {
+    sessionId: "",
     request: async (method, params?) => ipcRequest(legacySock, method, params),
     stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
   };
@@ -871,6 +942,10 @@ function formatTable(rows: string[][]): string {
     }
   }
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
+}
+
+if (process.argv.length === 2) {
+  process.argv.push("up");
 }
 
 program.parse();

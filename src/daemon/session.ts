@@ -230,7 +230,11 @@ export class Session {
   broadcast(event: DaemonEvent): void {
     const line = `${JSON.stringify(event)}\n`;
     for (const sock of this.subscribers) {
-      sock.write(line);
+      if (sock.destroyed) {
+        this.subscribers.delete(sock);
+      } else {
+        sock.write(line);
+      }
     }
   }
 }
