@@ -479,6 +479,45 @@ describe("DaemonServer", () => {
       expect(response.error).toBe("string error");
     });
 
+    it("catches non-Error thrown in daemon handler", async () => {
+      await server.start("/tmp/test.sock");
+
+      vi.spyOn(server, "list").mockImplementation(() => {
+        throw "daemon string error"; // eslint-disable-line no-throw-literal
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "dne1", method: "daemon.status" })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBe("daemon string error");
+    });
+
+    it("destroy completes when killPane rejects", async () => {
+      tmux.killPane.mockRejectedValue(new Error("pane already dead"));
+
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      await expect(server.destroy(session.id)).resolves.toBeUndefined();
+      expect(server.sessionCount).toBe(0);
+    });
+
     it("catches daemon handler errors", async () => {
       await server.start("/tmp/test.sock");
       const netModule = await import("node:net");

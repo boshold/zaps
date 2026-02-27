@@ -150,6 +150,18 @@ describe("Session", () => {
       }
       expect(session.taskHistory.length).toBe(50);
     });
+
+    it("caps non-running records at 50 when no matching running entry", () => {
+      for (let i = 0; i < 55; i += 1) {
+        session.pushTaskRecord({
+          taskKey: `t${i}`,
+          taskName: `T${i}`,
+          result: "success",
+          timestamp: i,
+        });
+      }
+      expect(session.taskHistory.length).toBe(50);
+    });
   });
 
   describe("startAll", () => {
@@ -191,6 +203,30 @@ describe("Session", () => {
       expect(snap.logSnapshots).toHaveProperty("api");
       expect(snap.tasks).toBeDefined();
       expect(snap.servicesMeta).toBeDefined();
+    });
+
+    it("includes task shortcuts from getTaskShortcuts", async () => {
+      const { getTaskShortcuts } = await import("../../src/lib/taskShortcuts.js");
+      vi.mocked(getTaskShortcuts).mockReturnValue([
+        { shortcut: "b", name: "Build" },
+      ]);
+
+      const params = createSessionParams({
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" } },
+            tasks: { build: { name: "Build", description: "Build it" } },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+        } as SessionCreateParams["config"],
+      });
+
+      const s = new Session(params, createMockManager());
+      const snap = s.attachSnapshot();
+      expect(snap.tasks).toHaveLength(1);
+      expect(snap.tasks[0].shortcut).toBe("b");
     });
   });
 

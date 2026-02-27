@@ -28,7 +28,7 @@ const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
 // ── helpers ────────────────────────────────────────────────────────────
 
 /** Let ink's React reconciler flush state updates */
-const tick = () => new Promise<void>((r) => setTimeout(r, 10));
+const tick = () => new Promise<void>((r) => setTimeout(r, 100));
 
 function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();

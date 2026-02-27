@@ -308,4 +308,146 @@ describe("projectConfigSchema", () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe("z.custom validator rejections", () => {
+    it("rejects commandSchema with number", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: 42 } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects readyFn with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: "not-a-function" } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects readyOutput with non-regex non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { output: 123 } } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects readyPort with non-number non-function non-true", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { port: "not-valid" } } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects cwdConfigSchema with invalid type", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        cwd: 123,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects taskRunFnSchema with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        tasks: { build: { name: "Build", run: "not-a-function" } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects onBeforeStart with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", onBeforeStart: "bad" } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects onReady with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", onReady: 42 } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects onStop with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", onStop: true } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects onOutput with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", onOutput: [] } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects project hooks.onBeforeStart with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        hooks: { onBeforeStart: "bad" },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects project hooks.onStart with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        hooks: { onStart: 42 },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects project hooks.onStop with non-function", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        hooks: { onStop: "bad" },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects env with invalid type", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", env: 42 } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects url with invalid type", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", url: 42 } },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("accepts readyDocker with array of strings", () => {
+      const result = projectConfigSchema.safeParse({
+        services: {
+          db: { docker: { service: "postgres" }, ready: { docker: ["svc1", "svc2"] } },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts readyHttp with string shorthand", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { http: "/health" } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts readyPort with true literal", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { port: true } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts url as false", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", url: false } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
 });

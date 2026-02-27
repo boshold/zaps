@@ -384,6 +384,52 @@ describe("handleRequest", () => {
     );
   });
 
+  it("popup task with single string command (not array)", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockResolvedValue(undefined);
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: "eslint ." } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rsc1", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    expect(execCommand).toHaveBeenCalledWith("eslint .", expect.anything());
+  });
+
+  it("popup task with empty resolvedEnv omits env from execCommand", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockResolvedValue(undefined);
+
+    const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
+      resolveEnv: ReturnType<typeof vi.fn>;
+    };
+    resolveEnv.mockReturnValue({});
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."] } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "ree1", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    const callOpts = execCommand.mock.calls[0][1] as Record<string, unknown>;
+    expect(callOpts).not.toHaveProperty("env");
+  });
+
   it("popup task failure returns success: false", async () => {
     const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
       execCommand: ReturnType<typeof vi.fn>;
