@@ -1,6 +1,6 @@
 ---
 name: zaps-usage
-description: Use when interacting with local dev sessions - start/stop services, run tasks, view logs, and manage sessions via CLI
+description: Use when interacting with local dev sessions/services - start/stop/inspect services, run tasks, view logs via CLI
 ---
 
 # ZAPS Usage Skill
