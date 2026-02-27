@@ -1,8 +1,8 @@
-import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { ServiceRow } from "../../src/components/ServiceRow.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
   return {

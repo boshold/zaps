@@ -1,9 +1,9 @@
-import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
-import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
-import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
+import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
+import type { ServiceStatus } from "../../../src/lib/service/types.js";
 
 vi.mock("../../../src/lib/probe.js", () => ({
   probePort: vi.fn().mockResolvedValue(undefined),

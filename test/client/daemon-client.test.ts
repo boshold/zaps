@@ -178,6 +178,31 @@ describe("DaemonClient", () => {
       const result = await client.getLogSnapshot("api");
       expect(result).toEqual(["line1", "line2"]);
     });
+
+    it("listServices throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "list fail" });
+      await expect(client.listServices()).rejects.toThrow("list fail");
+    });
+
+    it("stopService throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "stop fail" });
+      await expect(client.stopService("api")).rejects.toThrow("stop fail");
+    });
+
+    it("restartService throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "restart fail" });
+      await expect(client.restartService("api")).rejects.toThrow("restart fail");
+    });
+
+    it("restartAll throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "restartAll fail" });
+      await expect(client.restartAll()).rejects.toThrow("restartAll fail");
+    });
+
+    it("getLogSnapshot throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "log fail" });
+      await expect(client.getLogSnapshot("api")).rejects.toThrow("log fail");
+    });
   });
 
   describe("runTask", () => {

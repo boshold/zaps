@@ -5,12 +5,12 @@ import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { createServiceStatus, transition } from "./state.js";
+import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 type PaneMap = Record<string, string>;
 
@@ -123,6 +123,8 @@ export class ServiceManager extends EventEmitter {
   private cascadingTriggers = new Set<string>();
   private originalWindowTitle: Promise<string>;
   private originalAutoRename: Promise<string | null>;
+  // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
+  private pendingRename: Promise<void> = Promise.resolve();
 
   constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps, session: string) {
     super();
@@ -254,20 +256,18 @@ export class ServiceManager extends EventEmitter {
 
     await fireHook(hooks?.onStop);
 
+    await this.pendingRename.catch(() => {
+      /* Ignored */
+    });
+
     const autoRename = await this.originalAutoRename;
-    if (autoRename === "on") {
-      // When automatic-rename was originally on, just re-enable it — tmux
-      // Manages the title itself, so setting a static title is wrong.
-      await this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on").catch(() => {
-        // Session may already be gone
-      });
-    } else {
-      await this.deps
-        .renameWindow(this.paneMap["@tui"], await this.originalWindowTitle)
-        .catch(() => {
-          // Session may already be gone
-        });
-    }
+    await (
+      autoRename === "on"
+        ? this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on")
+        : this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle)
+    ).catch(() => {
+      // Session may already be gone
+    });
     this.shuttingDown = false;
   }
 
@@ -695,7 +695,13 @@ export class ServiceManager extends EventEmitter {
     }
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    void this.deps.renameWindow(this.paneMap["@tui"], title);
+    this.pendingRename = this.chainRename(title);
+    void this.pendingRename;
+  }
+
+  private async chainRename(title: string): Promise<void> {
+    await this.pendingRename.catch(() => { /* Ignored */ });
+    await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 }
 

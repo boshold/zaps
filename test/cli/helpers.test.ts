@@ -1,12 +1,42 @@
-import type { SessionInfo } from "../../src/cli/helpers.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../src/config/discovery.js", () => ({
+  discoverConfig: vi.fn(),
+}));
+
+vi.mock("../../src/daemon/lifecycle.js", () => ({
+  isDaemonRunning: vi.fn(() => false),
+  socketPath: vi.fn(() => "/tmp/test-daemon.sock"),
+}));
+
+vi.mock("../../src/daemon/session.js", () => ({
+  sessionId: vi.fn((configPath: string) => `session-${configPath}`),
+}));
+
+vi.mock("../../src/lib/env.js", () => ({
+  getEnv: vi.fn((key: string) => process.env[key]),
+}));
+
+vi.mock("../../src/lib/ipc/client.js", () => ({
+  ipcRequest: vi.fn(),
+  ipcStream: vi.fn(),
+}));
+
+vi.mock("../../src/lib/tmux.js", () => ({
+  currentSession: vi.fn(),
+  showEnv: vi.fn(),
+}));
+
+import type { SessionInfo } from "../../src/cli/helpers.js";
 import {
   CliError,
   formatTable,
   resolveCommand,
   resolveRuntime,
+  resolveSessionId,
   resolveTargetSession,
+  withDaemon,
+  withLegacyIpc,
 } from "../../src/cli/helpers.js";
 
 describe("CliError", () => {
@@ -162,5 +192,170 @@ describe("formatTable", () => {
     // First column width = 2 (from "cc")
     expect(lines[0]).toBe("a   bb");
     expect(lines[1]).toBe("cc  d ");
+  });
+});
+
+describe("resolveSessionId", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+  it("returns configPath and id when config found", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+
+    const result = resolveSessionId();
+    expect(result.configPath).toBe("/my/.zaps.mts");
+    expect(result.id).toBe("session-/my/.zaps.mts");
+  });
+
+  it("throws CliError when no config found", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue(null);
+
+    expect(() => resolveSessionId()).toThrow(CliError);
+    expect(() => resolveSessionId()).toThrow(/No .zaps.mts config found/);
+  });
+});
+
+describe("withLegacyIpc", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env["TMUX"];
+  });
+
+  it("throws when not in tmux", async () => {
+    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/tmux session/);
+  });
+
+  it("throws when no ZAPS_IPC_SOCKET found", async () => {
+    process.env["TMUX"] = "yes";
+
+    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
+    vi.mocked(currentSession).mockResolvedValue("main");
+    vi.mocked(showEnv).mockResolvedValue("");
+
+    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/No running zaps instance/);
+  });
+
+  it("calls fn with ipc when socket found", async () => {
+    process.env["TMUX"] = "yes";
+
+    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
+    vi.mocked(currentSession).mockResolvedValue("main");
+    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
+
+    const result = await withLegacyIpc(async (ipc) => {
+      expect(ipc.sessionId).toBe("");
+      return "done";
+    });
+    expect(result).toBe("done");
+  });
+});
+
+describe("withDaemon", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    delete process.env["TMUX"];
+  });
+
+  it("falls back to legacy when no daemon running and no sessionArg", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(false);
+
+    process.env["TMUX"] = "yes";
+
+    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
+    vi.mocked(currentSession).mockResolvedValue("main");
+    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
+
+    const result = await withDaemon(async () => "legacy-result");
+    expect(result).toBe("legacy-result");
+  });
+
+  it("throws when no daemon and sessionArg provided", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(false);
+
+    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(
+      /No running daemon found/,
+    );
+  });
+
+  it("resolves session from daemon with sessionArg", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(true);
+
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockResolvedValue({
+      id: "r1",
+      result: [{ id: "abc123", name: "project-a", projectDir: "/a" }],
+    });
+
+    const result = await withDaemon(async (ipc) => {
+      expect(ipc.sessionId).toBe("abc123");
+      return "daemon-result";
+    }, "abc123");
+    expect(result).toBe("daemon-result");
+  });
+
+  it("throws when daemon session.list returns error", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(true);
+
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockResolvedValue({ id: "r1", error: "daemon error" });
+
+    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(/daemon error/);
+  });
+
+  it("resolves session by config when no sessionArg", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(true);
+
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockResolvedValue({
+      id: "r1",
+      result: [{ id: "session-/my/.zaps.mts", name: "my-project", projectDir: "/my" }],
+    });
+
+    const result = await withDaemon(async (ipc) => {
+      expect(ipc.sessionId).toBe("session-/my/.zaps.mts");
+      return "ok";
+    });
+    expect(result).toBe("ok");
+  });
+
+  it("throws when session not found in daemon session list", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(true);
+
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockResolvedValue({
+      id: "r1",
+      result: [{ id: "other-session", name: "other", projectDir: "/other" }],
+    });
+
+    await expect(withDaemon(async () => "result")).rejects.toThrow(
+      /No running zaps session for this project/,
+    );
+  });
+
+  it("throws when session.list returns error without sessionArg", async () => {
+    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
+    vi.mocked(isDaemonRunning).mockReturnValue(true);
+
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockResolvedValue({ id: "r1", error: "list error" });
+
+    await expect(withDaemon(async () => "result")).rejects.toThrow(/list error/);
   });
 });

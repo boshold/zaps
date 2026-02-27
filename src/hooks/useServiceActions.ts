@@ -14,11 +14,9 @@ export function useServiceActions(client: DaemonClient) {
   async function toggle(name: string) {
     const statuses = await client.listServices();
     const svc = statuses.find((s) => s.name === name);
-    if (svc?.state === "ready" || svc?.state === "starting") {
-      await client.stopService(name);
-    } else {
-      await client.startService(name);
-    }
+    await (svc?.state === "ready" || svc?.state === "starting"
+      ? client.stopService(name)
+      : client.startService(name));
   }
 
   async function restartAll() {

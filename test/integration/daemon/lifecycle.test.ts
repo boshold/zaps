@@ -15,10 +15,34 @@ import {
   socketPath,
   writePid,
 } from "#src/daemon/lifecycle.js";
-import type { TestDaemon } from "../helpers/daemon.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TestDaemon } from "../helpers/daemon.js";
 import { createTestDaemon } from "../helpers/daemon.js";
+
+/**
+ * Minimal ping implementation matching daemon's pingSocket behavior.
+ */
+async function pingTestSocket(sock: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const client = net.createConnection(sock);
+    client.on("connect", () => {
+      const req = JSON.stringify({ id: "ping0", method: "daemon.ping" });
+      client.write(`${req}\n`);
+    });
+    client.on("data", () => {
+      client.destroy();
+      resolve(true);
+    });
+    client.on("error", () => {
+      resolve(false);
+    });
+    setTimeout(() => {
+      client.destroy();
+      resolve(false);
+    }, 500);
+  });
+}
 
 describe("lifecycle helpers", () => {
   let originalXdg: string | undefined;
@@ -189,27 +213,3 @@ describe("lifecycle helpers", () => {
     });
   });
 });
-
-/**
- * Minimal ping implementation matching daemon's pingSocket behavior.
- */
-async function pingTestSocket(sock: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const client = net.createConnection(sock);
-    client.on("connect", () => {
-      const req = JSON.stringify({ id: "ping0", method: "daemon.ping" });
-      client.write(`${req}\n`);
-    });
-    client.on("data", () => {
-      client.destroy();
-      resolve(true);
-    });
-    client.on("error", () => {
-      resolve(false);
-    });
-    setTimeout(() => {
-      client.destroy();
-      resolve(false);
-    }, 500);
-  });
-}

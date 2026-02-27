@@ -16,6 +16,27 @@ import { DaemonServer } from "#src/daemon/server.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 
+async function pingSocket(sock: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const client = net.createConnection(sock);
+    client.on("connect", () => {
+      const req = JSON.stringify({ id: "ping0", method: "daemon.ping" });
+      client.write(`${req}\n`);
+    });
+    client.on("data", () => {
+      client.destroy();
+      resolve(true);
+    });
+    client.on("error", () => {
+      resolve(false);
+    });
+    setTimeout(() => {
+      client.destroy();
+      resolve(false);
+    }, 500);
+  });
+}
+
 /**
  * Run the daemon in the current process (called after fork+detach).
  */
@@ -30,6 +51,17 @@ async function runDaemon(): Promise<void> {
   log(`daemon started pid=${process.pid}`);
 
   const server = new DaemonServer();
+
+  function shutdown(): void {
+    log("shutting down");
+    idle.cancel(); // eslint-disable-line no-use-before-define -- circular: shutdown/idle
+    server.stop();
+    removeSocket();
+    removePid();
+    fs.closeSync(logFile);
+    process.exit(0);
+  }
+
   const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
     if (server.sessionCount === 0) {
       log("idle timeout, shutting down");
@@ -38,16 +70,6 @@ async function runDaemon(): Promise<void> {
       idle.reset();
     }
   });
-
-  function shutdown(): void {
-    log("shutting down");
-    idle.cancel();
-    server.stop();
-    removeSocket();
-    removePid();
-    fs.closeSync(logFile);
-    process.exit(0);
-  }
 
   server.onSessionChange = (count: number) => {
     if (count === 0) {
@@ -105,27 +127,6 @@ async function ensureDaemon(command: string): Promise<string> {
   }
 
   throw new Error("Daemon failed to start within 5s");
-}
-
-async function pingSocket(sock: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const client = net.createConnection(sock);
-    client.on("connect", () => {
-      const req = JSON.stringify({ id: "ping0", method: "daemon.ping" });
-      client.write(`${req}\n`);
-    });
-    client.on("data", () => {
-      client.destroy();
-      resolve(true);
-    });
-    client.on("error", () => {
-      resolve(false);
-    });
-    setTimeout(() => {
-      client.destroy();
-      resolve(false);
-    }, 500);
-  });
 }
 
 export { ensureDaemon, runDaemon };

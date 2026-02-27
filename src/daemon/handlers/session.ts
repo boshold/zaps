@@ -1,3 +1,5 @@
+import type { Socket } from "node:net";
+
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
@@ -8,7 +10,6 @@ import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { Socket } from "node:net";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);

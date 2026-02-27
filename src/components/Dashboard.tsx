@@ -1,6 +1,5 @@
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, useStdout } from "ink";
 
 import { ActionHints } from "./ActionHints.js";
@@ -9,6 +8,7 @@ import { Header } from "./Header.js";
 import { HelpBar } from "./HelpBar.js";
 import { ServiceList } from "./ServiceList.js";
 import { TaskHistorySection } from "./TaskHistorySection.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 interface DashboardProps {
   statuses: ServiceStatus[];

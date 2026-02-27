@@ -1,7 +1,7 @@
-import type { ServiceState } from "../../../src/lib/service/types.js";
 import { describe, expect, it } from "vitest";
 
 import { canTransition, createServiceStatus, transition } from "../../../src/lib/service/state.js";
+import type { ServiceState } from "../../../src/lib/service/types.js";
 
 describe("canTransition", () => {
   const validTransitions: [ServiceState, ServiceState][] = [
@@ -42,6 +42,10 @@ describe("canTransition", () => {
     ["restarting", "ready"],
     ["restarting", "error"],
   ];
+
+  it("returns false for unknown state key", () => {
+    expect(canTransition("bogus" as never, "ready")).toBe(false);
+  });
 
   for (const [from, to] of invalidTransitions) {
     it(`${from} -> ${to} is invalid`, () => {

@@ -1,3 +1,5 @@
+import type { Socket } from "node:net";
+
 import type { ResolvedConfig } from "#src/config/types.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
@@ -6,7 +8,6 @@ import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { Socket } from "node:net";
 
 type Handler = (
   req: IpcRequest,
@@ -17,6 +18,43 @@ type Handler = (
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
+}
+
+async function runPopupTaskNonInteractive(
+  reqId: string,
+  key: string,
+  config: ResolvedConfig,
+  manager: ServiceManager,
+  socket: Socket,
+): Promise<boolean> {
+  const tasks = config.project.tasks ?? {};
+  const task = tasks[key];
+  if (!task?.commands) {
+    return false;
+  }
+
+  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
+  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
+
+  const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
+  const serviceCtx = buildServiceContext(statuses, config.projectDir);
+  const resolvedEnv = resolveEnv(task.env, serviceCtx);
+  const taskCwd = task.cwd ?? config.projectDir;
+
+  try {
+    for (const cmd of resolved) {
+      await execCommand(cmd, {
+        cwd: taskCwd,
+        ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
+        onLine: (line) => {
+          send(socket, { id: reqId, event: "line", data: line });
+        },
+      });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const handlers: Record<string, Handler> = {
@@ -97,71 +135,30 @@ const handlers: Record<string, Handler> = {
     const task = tasks[key];
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
-    let success = false;
-    if (isPopup) {
-      // Execute popup commands directly (non-interactively)
-      success = await runPopupTaskNonInteractive(req.id, key, config, manager, socket);
-    } else {
-      success = await runTaskWithDeps(
-        key,
-        {
-          tasks,
-          statuses: new Map(
-            manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
-          ),
-          projectDir: config.projectDir,
-          onLine: (_taskKey, line) => {
-            send(socket, { id: req.id, event: "line", data: line });
+    const success = isPopup
+      ? await runPopupTaskNonInteractive(req.id, key, config, manager, socket)
+      : await runTaskWithDeps(
+          key,
+          {
+            tasks,
+            statuses: new Map(
+              manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
+            ),
+            projectDir: config.projectDir,
+            onLine: (_taskKey, line) => {
+              send(socket, { id: req.id, event: "line", data: line });
+            },
+            onProgress: (taskKey, result) => {
+              send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
+            },
           },
-          onProgress: (taskKey, result) => {
-            send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
-          },
-        },
-        visited,
-        results,
-      );
-    }
+          visited,
+          results,
+        );
 
     return ipcOk(req.id, { success });
   },
 };
-
-async function runPopupTaskNonInteractive(
-  reqId: string,
-  key: string,
-  config: ResolvedConfig,
-  manager: ServiceManager,
-  socket: Socket,
-): Promise<boolean> {
-  const tasks = config.project.tasks ?? {};
-  const task = tasks[key];
-  if (!task?.commands) {
-    return false;
-  }
-
-  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
-  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
-
-  const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
-  const serviceCtx = buildServiceContext(statuses, config.projectDir);
-  const resolvedEnv = resolveEnv(task.env, serviceCtx);
-  const taskCwd = task.cwd ?? config.projectDir;
-
-  try {
-    for (const cmd of resolved) {
-      await execCommand(cmd, {
-        cwd: taskCwd,
-        ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
-        onLine: (line) => {
-          send(socket, { id: reqId, event: "line", data: line });
-        },
-      });
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export async function handleRequest(
   req: IpcRequest,

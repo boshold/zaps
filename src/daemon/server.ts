@@ -18,10 +18,10 @@ import {
   sendKeys,
   setWindowOption,
 } from "#src/lib/tmux.js";
-import type { SessionCreateParams } from "./session.js";
 
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
+import type { SessionCreateParams } from "./session.js";
 import { Session, sessionId } from "./session.js";
 
 interface SessionStore {

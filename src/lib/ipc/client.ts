@@ -1,7 +1,6 @@
 import net from "node:net";
 
 import type { DaemonEvent, IpcMessage, IpcRequest, IpcResponse } from "./protocol.js";
-
 import { isDaemonEvent, isIpcEvent, isIpcResponse } from "./protocol.js";
 
 function generateId(): string {

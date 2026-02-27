@@ -110,6 +110,14 @@ describe("parseContainerInfo", () => {
       ports: [],
     });
   });
+
+  it("returns null for non-record JSON value (string)", () => {
+    expect(parseContainerInfo(JSON.stringify("hello"))).toBeNull();
+  });
+
+  it("returns null for array of non-objects", () => {
+    expect(parseContainerInfo(JSON.stringify(["a", "b"]))).toBeNull();
+  });
 });
 
 describe("isReady", () => {

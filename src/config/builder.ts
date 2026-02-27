@@ -1,9 +1,9 @@
 import { openInBrowser } from "#src/lib/open.js";
-import type { Library, LibraryActions, ProjectConfig } from "./types.js";
 import { z } from "zod";
 
 import { nodeModules } from "./node.js";
 import { projectConfigSchema } from "./schema.js";
+import type { Library, LibraryActions, ProjectConfig } from "./types.js";
 
 export interface ZapsLib {
   lib: Library;

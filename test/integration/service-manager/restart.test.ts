@@ -11,13 +11,13 @@ import {
   sendKeys,
   setWindowOption,
 } from "#src/lib/tmux.js";
-import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { crashingCmd, httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
+import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
 
 const deps = {
@@ -44,18 +44,18 @@ async function waitForState(
       resolve();
       return;
     }
-    const timer = setTimeout(() => {
-      mgr.removeListener("stateChange", listener);
-      reject(new Error(`Timed out waiting for ${name} to reach ${target}`));
-    }, timeoutMs);
-
     function listener(n: string, status: ServiceStatus) {
       if (n === name && status.state === target) {
-        clearTimeout(timer);
+        clearTimeout(timer); // eslint-disable-line no-use-before-define -- circular timer/listener
         mgr.removeListener("stateChange", listener);
         resolve();
       }
     }
+
+    const timer = setTimeout(() => {
+      mgr.removeListener("stateChange", listener);
+      reject(new Error(`Timed out waiting for ${name} to reach ${target}`));
+    }, timeoutMs);
     mgr.on("stateChange", listener);
   });
 }

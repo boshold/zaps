@@ -1,4 +1,3 @@
-import type { EnvDeps, ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,6 +7,7 @@ import {
   setServiceEnv,
   shellEscape,
 } from "../../../src/lib/service/env.js";
+import type { EnvDeps, ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
 
 const mockSetEnv = vi.fn<EnvDeps["setEnv"]>();
 

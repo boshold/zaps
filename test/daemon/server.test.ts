@@ -78,22 +78,18 @@ const mockCreateLayout = vi.mocked(layoutModule.createLayout);
 const tmux = vi.mocked(await import("#src/lib/tmux.js"));
 
 vi.mock("#src/lib/service/manager.js", () => {
-  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires, unicorn/prefer-module -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
-  return {
-    ServiceManager: vi.fn(() => {
-      const emitter = new EE();
-      return Object.assign(emitter, {
-        startAll: vi.fn().mockResolvedValue(undefined),
-        stopAll: vi.fn().mockResolvedValue(undefined),
-        startService: vi.fn().mockResolvedValue(undefined),
-        stopService: vi.fn().mockResolvedValue(undefined),
-        restartService: vi.fn().mockResolvedValue(undefined),
-        getAllStatuses: vi.fn(() => []),
-        getStatus: vi.fn(),
-      });
-    }),
-  };
+  class MockServiceManager extends EE {
+    startAll = vi.fn().mockResolvedValue(undefined);
+    stopAll = vi.fn().mockResolvedValue(undefined);
+    startService = vi.fn().mockResolvedValue(undefined);
+    stopService = vi.fn().mockResolvedValue(undefined);
+    restartService = vi.fn().mockResolvedValue(undefined);
+    getAllStatuses = vi.fn(() => []);
+    getStatus = vi.fn();
+  }
+  return { ServiceManager: MockServiceManager };
 });
 
 const { DaemonServer } = await import("../../src/daemon/server.js");
@@ -152,6 +148,16 @@ describe("DaemonServer", () => {
 
   it("returns undefined for unknown projectDir", () => {
     expect(server.getByProjectDir("/nonexistent")).toBeUndefined();
+  });
+
+  it("finds session by projectDir", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    expect(server.getByProjectDir("/test")).toBe(session);
   });
 
   it("creates session and stores it", async () => {
@@ -313,6 +319,225 @@ describe("DaemonServer", () => {
       const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("Session required");
+    });
+
+    it("socket error cleans up subscribers", async () => {
+      await server.start("/tmp/test.sock");
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Add socket as subscriber
+      session.subscribers.add(socket as never);
+      expect(session.subscribers.has(socket as never)).toBe(true);
+
+      // Emit error to trigger cleanup
+      socket.emit("error", new Error("ECONNRESET"));
+      expect(session.subscribers.has(socket as never)).toBe(false);
+    });
+
+    it("handles multi-chunk JSON buffering", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Split the JSON across two data events
+      const fullReq = `${JSON.stringify({ id: "mc1", method: "daemon.ping" })}\n`;
+      const half = Math.floor(fullReq.length / 2);
+      socket.emit("data", Buffer.from(fullReq.slice(0, half)));
+      socket.emit("data", Buffer.from(fullReq.slice(half)));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response).toEqual({ id: "mc1", result: "pong" });
+    });
+
+    it("skips empty lines in buffered data", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Send data with empty lines between valid JSON
+      const req = JSON.stringify({ id: "el1", method: "daemon.ping" });
+      socket.emit("data", Buffer.from(`\n\n${req}\n\n`));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      // Should only handle the valid JSON line, not empty ones
+      expect(write).toHaveBeenCalledTimes(1);
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response).toEqual({ id: "el1", result: "pong" });
+    });
+
+    it("fires onSessionChange on destroy", async () => {
+      const callback = vi.fn();
+      server.onSessionChange = callback;
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+      expect(callback).toHaveBeenCalledWith(1);
+      callback.mockClear();
+
+      await server.destroy(session.id);
+      expect(callback).toHaveBeenCalledWith(0);
+    });
+
+    it("catches session handler errors", async () => {
+      await server.start("/tmp/test.sock");
+
+      // Create a session first
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      // Make the handler throw
+      vi.mocked(session.manager.getAllStatuses).mockImplementation(() => {
+        throw new Error("session handler error");
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "se1", method: "services.list", session: session.id })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toContain("session handler error");
+    });
+
+    it("catches non-Error in session handler", async () => {
+      await server.start("/tmp/test.sock");
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      vi.mocked(session.manager.getAllStatuses).mockImplementation(() => {
+        throw "string error"; // eslint-disable-line no-throw-literal
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "sne1", method: "services.list", session: session.id })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBe("string error");
+    });
+
+    it("catches non-Error thrown in daemon handler", async () => {
+      await server.start("/tmp/test.sock");
+
+      vi.spyOn(server, "list").mockImplementation(() => {
+        throw "daemon string error"; // eslint-disable-line no-throw-literal
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "dne1", method: "daemon.status" })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBe("daemon string error");
+    });
+
+    it("destroy completes when killPane rejects", async () => {
+      tmux.killPane.mockRejectedValue(new Error("pane already dead"));
+
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      await expect(server.destroy(session.id)).resolves.toBeUndefined();
+      expect(server.sessionCount).toBe(0);
+    });
+
+    it("catches daemon handler errors", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Daemon.sessions.create will throw because of invalid params
+      const req = `${JSON.stringify({ id: "de1", method: "daemon.sessions.create", params: {} })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBeDefined();
     });
   });
 });

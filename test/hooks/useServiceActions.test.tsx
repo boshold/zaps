@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 
-import type { DaemonClient } from "../../src/client/daemon-client.js";
-import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { useServiceActions } from "../../src/hooks/useServiceActions.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();

@@ -8,15 +8,15 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
-import type { DockerFlagKey } from "./DockerRebuildView.js";
-import type { TaskRunRecord } from "./TaskRunRecord.js";
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./Dashboard.js";
+import type { DockerFlagKey } from "./DockerRebuildView.js";
 import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
 import { LogView } from "./LogView.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { TasksView } from "./TasksView.js";
 
 const MAX_HISTORY = 50;

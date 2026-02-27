@@ -1,9 +1,9 @@
 import path from "node:path";
 
 import { detectCycles } from "#src/lib/service/graph.js";
-import type { LayoutNode, ProjectConfig, ResolvedConfig } from "./types.js";
 
 import { createZapsLib } from "./builder.js";
+import type { LayoutNode, ProjectConfig, ResolvedConfig } from "./types.js";
 import { isLayoutLeaf, isLayoutSplit } from "./types.js";
 
 function collectPaneNames(node: LayoutNode): string[] {

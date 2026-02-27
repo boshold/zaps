@@ -142,4 +142,26 @@ describe("LogMonitor", () => {
 
     monitor.stopAll();
   });
+
+  it("stop is no-op for non-monitored service", () => {
+    const { monitor } = setup();
+    // Should not throw
+    monitor.stop("unknown");
+  });
+
+  it("start monitoring for service with no buffer does not crash", async () => {
+    const capturePane = vi.fn<(target: string, lines: number) => Promise<string>>();
+    capturePane.mockResolvedValueOnce("line1\nline2");
+    const buffers = new Map<string, InstanceType<typeof LogBuffer>>();
+    const listener = vi.fn();
+    const monitor = new LogMonitor({ capturePane }, buffers, listener);
+
+    monitor.start("missing", "%2", 100);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Listener still called with new lines even without a buffer
+    expect(listener).toHaveBeenCalledWith("missing", expect.arrayContaining(["line1"]));
+
+    monitor.stopAll();
+  });
 });

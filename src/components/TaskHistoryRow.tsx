@@ -1,7 +1,8 @@
 import { relativeTime } from "#src/lib/relativeTime.js";
-import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
+
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 const SPINNER_FRAMES = ["◐", "◑", "◒", "◓"];
 const SPINNER_INTERVAL = 150;

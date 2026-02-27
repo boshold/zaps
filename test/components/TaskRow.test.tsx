@@ -1,8 +1,8 @@
-import type { TaskInfo } from "../../src/daemon/session.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { TaskRow } from "../../src/components/TaskRow.js";
+import type { TaskInfo } from "../../src/daemon/session.js";
 
 function makeTask(overrides: Partial<TaskInfo> = {}): TaskInfo {
   return {

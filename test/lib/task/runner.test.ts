@@ -1,6 +1,7 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import type { TaskConfig, TaskRunContext } from "../../../src/config/types.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock execCommand and execCommandWithResult
 vi.mock("#src/lib/exec.js", () => ({
@@ -18,9 +19,8 @@ vi.mock("#src/lib/tmux.js", () => ({
   displayPopup: vi.fn().mockResolvedValue(undefined),
 }));
 
-import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
-
 import { execCommand, execCommandWithResult } from "../../../src/lib/exec.js";
+import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
 import { displayPopup } from "../../../src/lib/tmux.js";
 
@@ -339,5 +339,40 @@ describe("runTaskWithDeps", () => {
 
     expect(ok).toBe(false);
     expect(mockExecCommand).not.toHaveBeenCalled();
+  });
+
+  it("stdout.write text without trailing newline emits single line", async () => {
+    const runFn = vi.fn(async (ctx: TaskRunContext) => {
+      ctx.stdout.write("no-newline");
+    });
+
+    const onLine = vi.fn();
+    const deps = makeDeps({ task: { name: "T", run: runFn } }, { onLine });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("task", deps, visited, results);
+
+    expect(onLine).toHaveBeenCalledWith("task", "no-newline");
+  });
+
+  it("task with env config passes resolved env", async () => {
+    mockExecCommand.mockImplementation(async (_cmd, opts) => {
+      opts.onLine("line");
+    });
+
+    const deps = makeDeps({
+      build: {
+        name: "Build",
+        commands: "build",
+        env: { NODE_ENV: "production" },
+      },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("build", deps, visited, results);
+
+    expect(results.get("build")).toBe("success");
   });
 });

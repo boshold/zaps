@@ -1,7 +1,7 @@
-import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { Box, Text } from "ink";
 
 import { TaskHistoryRow } from "./TaskHistoryRow.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 interface TaskHistorySectionProps {
   title: string;

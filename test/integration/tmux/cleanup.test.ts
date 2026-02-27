@@ -1,8 +1,8 @@
 import { killPane, listPanes, removeEnv, setEnv, showEnv, splitPane } from "#src/lib/tmux.js";
-import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { hasTmux } from "../helpers/skip.js";
+import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("tmux cleanup integration", () => {

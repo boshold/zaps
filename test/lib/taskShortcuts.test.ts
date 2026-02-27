@@ -1,6 +1,6 @@
-import type { TaskConfig } from "../../src/config/types.js";
 import { describe, expect, it } from "vitest";
 
+import type { TaskConfig } from "../../src/config/types.js";
 import { getTaskShortcuts } from "../../src/lib/taskShortcuts.js";
 
 describe("getTaskShortcuts", () => {

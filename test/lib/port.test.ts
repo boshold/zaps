@@ -117,6 +117,19 @@ describe("getListeningPorts — Linux", () => {
     expect(result).toEqual([]);
   });
 
+  it("skips addresses with no colon", async () => {
+    const ssOutput = [
+      "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
+      'LISTEN 0      128    nocolon             0.0.0.0:*        users:(("node",pid=1234,fd=5))',
+      'LISTEN 0      128    0.0.0.0:3000        0.0.0.0:*        users:(("node",pid=1234,fd=7))',
+    ].join("\n");
+
+    mockExecFileOutput(ssOutput);
+
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([3000]);
+  });
+
   it("handles multiple PIDs in one line", async () => {
     const ssOutput = [
       "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
@@ -170,6 +183,36 @@ describe("getListeningPorts — macOS", () => {
 
   it("returns empty array when lsof fails", async () => {
     mockExecFileError();
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([]);
+  });
+
+  it("skips short lines with fewer than 9 fields", async () => {
+    const lsofOutput = [
+      "COMMAND   PID   USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME",
+      "short line",
+      "postgres  1234  user   5u   IPv4  12345  0t0      TCP  *:5432 (LISTEN)",
+    ].join("\n");
+
+    mockExecFileOutput(lsofOutput);
+
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([5432]);
+  });
+});
+
+describe("getListeningPorts — unsupported platform", () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "freebsd", configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("returns empty array on unsupported platform", async () => {
     const result = await getListeningPorts([1234]);
     expect(result).toEqual([]);
   });

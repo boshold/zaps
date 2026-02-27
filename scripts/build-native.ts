@@ -20,7 +20,7 @@ const tlaFixPlugin: BunPlugin = {
     // Yoga-layout: Force all imports to resolve to the hoisted copy so the
     // Bundler produces a single module instance (pnpm may create two paths).
     build.onResolve({ filter: /^yoga-layout$/ }, () => ({
-      path: require.resolve("yoga-layout"),
+      path: require.resolve("yoga-layout"), // eslint-disable-line unicorn/prefer-module -- Bun build plugin requires synchronous resolve
     }));
 
     // Yoga-layout: Replace TLA `await loadYoga()` with async IIFE + Proxy

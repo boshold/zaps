@@ -1,12 +1,35 @@
 import { EventEmitter } from "node:events";
 
-import type { DaemonClient } from "../src/client/daemon-client.js";
-import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
-import type { ServiceStatus } from "../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+// Mock tmux functions to prevent real tmux commands
+vi.mock("../src/lib/tmux.js", () => ({
+  zoomPane: vi.fn().mockResolvedValue(undefined),
+  editPaneCapture: vi.fn().mockResolvedValue(undefined),
+  displayPopup: vi.fn().mockResolvedValue(undefined),
+  capturePane: vi.fn().mockResolvedValue(""),
+  selectPane: vi.fn().mockResolvedValue(undefined),
+  sendKeys: vi.fn().mockResolvedValue(undefined),
+  sendCtrlC: vi.fn().mockResolvedValue(undefined),
+  panePid: vi.fn().mockResolvedValue(0),
+  killPane: vi.fn().mockResolvedValue(undefined),
+  renameWindow: vi.fn().mockResolvedValue(undefined),
+  getWindowName: vi.fn().mockResolvedValue(""),
+  getWindowOption: vi.fn().mockResolvedValue(""),
+  setWindowOption: vi.fn().mockResolvedValue(undefined),
+  currentSession: vi.fn().mockResolvedValue(""),
+  showEnv: vi.fn().mockResolvedValue(""),
+}));
+
+vi.mock("../src/lib/open.js", () => ({
+  openInBrowser: vi.fn().mockResolvedValue(undefined),
+}));
+
+import type { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
+import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
+import type { ServiceStatus } from "../src/lib/service/types.js";
 
 // Flush React/Ink reconciler
 async function act(fn?: () => void): Promise<void> {
@@ -549,6 +572,198 @@ describe("Keyboard routing — Docker rebuild", () => {
 
     // Should still be on dashboard
     expect(lastFrame()).toContain("[t]asks");
+  });
+
+  it("docker rebuild: space toggles flag, enter submits", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    // Open docker rebuild
+    await act(() => {
+      stdin.write("R");
+    });
+    // Toggle first flag (build)
+    await act(() => {
+      stdin.write(" ");
+    });
+    // Move down to next flag
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    // Press enter to submit
+    await act(() => {
+      stdin.write("\r");
+    });
+    await act();
+
+    // After enter, view returns to dashboard
+    expect(lastFrame()).toContain("[t]asks");
+  });
+
+  it("docker rebuild: escape cancels", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    await act(() => {
+      stdin.write("R");
+    });
+    await act(() => {
+      stdin.write(ESCAPE);
+    });
+
+    // Should be back on dashboard
+    expect(lastFrame()).toContain("[t]asks");
+  });
+
+  it("docker rebuild: navigate flags with up/down", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    await act(() => {
+      stdin.write("R");
+    });
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    await act(() => {
+      stdin.write(ARROW_UP);
+    });
+
+    expect(lastFrame()).toContain("db");
+  });
+});
+
+describe("Keyboard routing — Logs scroll", () => {
+  it("up/down scrolls in logs view", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { lastFrame, stdin } = renderApp({ statuses, paneMap: { db: "%0" } });
+
+    // Go to logs
+    await act(() => {
+      stdin.write("l");
+    });
+    expect(lastFrame()).toContain("[esc] back");
+
+    // Scroll up
+    await act(() => {
+      stdin.write(ARROW_UP);
+    });
+    // Scroll down
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    // K/j also scroll
+    await act(() => {
+      stdin.write("k");
+    });
+    await act(() => {
+      stdin.write("j");
+    });
+
+    // Should still be in logs view (no crash)
+    expect(lastFrame()).toContain("[esc] back");
+  });
+});
+
+describe("Keyboard routing — Dashboard special keys", () => {
+  it("o opens url when service has url", async () => {
+    const { openInBrowser } = await import("../src/lib/open.js");
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0, url: "http://localhost:3000" },
+    ];
+
+    const { stdin } = renderApp({ statuses });
+
+    await act(() => {
+      stdin.write("o");
+    });
+    expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("http://localhost:3000");
+  });
+
+  it("z zooms pane when paneMap has entry", async () => {
+    const { zoomPane } = await import("../src/lib/tmux.js");
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    ];
+
+    const { stdin } = renderApp({ statuses, paneMap: { api: "%1" } });
+
+    await act(() => {
+      stdin.write("z");
+    });
+    expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
+  });
+
+  it("E edits pane capture when paneMap has entry", async () => {
+    const { editPaneCapture } = await import("../src/lib/tmux.js");
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, paneMap: { api: "%1" } });
+
+    await act(() => {
+      stdin.write("E");
+    });
+    expect(vi.mocked(editPaneCapture)).toHaveBeenCalledWith("%1", "api");
+    expect(lastFrame()).toBeDefined();
   });
 });
 

@@ -1,4 +1,5 @@
 import { diffOutput } from "#src/lib/service/manager.js";
+
 import type { LogBuffer } from "./log-buffer.js";
 
 export interface LogMonitorDeps {

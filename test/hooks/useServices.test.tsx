@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 
-import type { DaemonClient } from "../../src/client/daemon-client.js";
-import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { useServices } from "../../src/hooks/useServices.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 // Minimal act()
 async function act(fn: () => void): Promise<void> {

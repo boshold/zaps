@@ -1,7 +1,7 @@
-import type { ReadyConfig, ReadyDeps } from "../../../src/lib/service/types.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { waitForReady } from "../../../src/lib/service/ready.js";
+import type { ReadyConfig, ReadyDeps } from "../../../src/lib/service/types.js";
 
 const mockDetectPorts = vi.fn<ReadyDeps["detectPorts"]>();
 const mockCapturePane = vi.fn<ReadyDeps["capturePane"]>();
