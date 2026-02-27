@@ -41,6 +41,9 @@ function diffOutput(prev: string[], current: string[]): string[] {
   return current;
 }
 
+// eslint-disable-next-line no-empty-function -- intentional no-op for .catch() swallowing
+function noop() {}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -695,9 +698,8 @@ export class ServiceManager extends EventEmitter {
     }
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    this.pendingRename = this.pendingRename
-      .catch(() => {})
-      .then(() => this.deps.renameWindow(this.paneMap["@tui"], title));
+    // eslint-disable-next-line promise/prefer-await-to-then, @typescript-eslint/promise-function-async -- sync fire-and-forget; chaining prevents concurrent renames
+    this.pendingRename = this.pendingRename.catch(noop).then(() => this.deps.renameWindow(this.paneMap["@tui"], title));
     void this.pendingRename;
   }
 }
