@@ -695,7 +695,9 @@ export class ServiceManager extends EventEmitter {
     }
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    this.pendingRename = this.deps.renameWindow(this.paneMap["@tui"], title);
+    this.pendingRename = this.pendingRename
+      .catch(() => {})
+      .then(() => this.deps.renameWindow(this.paneMap["@tui"], title));
     void this.pendingRename;
   }
 }
