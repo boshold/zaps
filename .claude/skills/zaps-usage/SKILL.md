@@ -65,4 +65,3 @@ Run prisma migration:
 ```
 zaps run prisma:migrate
 ```
-

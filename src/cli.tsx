@@ -11,6 +11,7 @@ import {
   resolveTargetSession,
   withDaemon,
 } from "./cli/helpers.js";
+import { resolveFormat, writeData } from "./cli/output.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -289,7 +290,8 @@ for (const action of ["start", "stop", "restart"] as const) {
     .command(`${action} [services...]`)
     .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} service(s). All if omitted`)
     .option("--json", "Output as JSON")
-    .action(async (services: string[], opts: { json?: boolean }) => {
+    .option("--toon", "Output as TOON")
+    .action(async (services: string[], opts: { json?: boolean; toon?: boolean }) => {
       try {
         await withDaemon(async (ipc) => {
           const params = services.length > 0 ? { names: services } : undefined;
@@ -298,8 +300,9 @@ for (const action of ["start", "stop", "restart"] as const) {
             process.stderr.write(`Error: ${res.error}\n`);
             process.exit(1);
           }
-          if (opts.json) {
-            process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+          const format = resolveFormat(opts);
+          if (format !== "text") {
+            writeData(res.result, format);
           } else {
             const target = services.length > 0 ? services.join(", ") : "all services";
             process.stdout.write(
@@ -323,7 +326,8 @@ program
   .command("ps")
   .description("List services and their status")
   .option("--json", "Output as JSON")
-  .action(async (opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (opts: { json?: boolean; toon?: boolean }) => {
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("services.list");
@@ -331,8 +335,9 @@ program
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        if (opts.json) {
-          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        const format = resolveFormat(opts);
+        if (format !== "text") {
+          writeData(res.result, format);
           return;
         }
         const statuses = res.result as {
@@ -364,16 +369,18 @@ program
   .command("ls")
   .description("List active sessions")
   .option("--json", "Output as JSON")
-  .action(async (opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+    const format = resolveFormat(opts);
     const sock = socketPath();
     if (!isDaemonRunning()) {
       const sessions = await listZapsSessions();
-      if (sessions.length === 0) {
-        process.stdout.write("No running zaps instances found.\n");
+      if (format !== "text") {
+        writeData(sessions, format);
         return;
       }
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+      if (sessions.length === 0) {
+        process.stdout.write("No running zaps instances found.\n");
         return;
       }
       for (const { session, panes } of sessions) {
@@ -388,12 +395,12 @@ program
       process.exit(1);
     }
     const sessions = res.result as SessionInfo[];
-    if (sessions.length === 0) {
-      process.stdout.write("No active sessions.\n");
+    if (format !== "text") {
+      writeData(sessions, format);
       return;
     }
-    if (opts.json) {
-      process.stdout.write(`${JSON.stringify(sessions, null, 2)}\n`);
+    if (sessions.length === 0) {
+      process.stdout.write("No active sessions.\n");
       return;
     }
     for (const s of sessions) {
@@ -405,7 +412,8 @@ program
   .command("inspect <service>")
   .description("Show service details")
   .option("--json", "Output as JSON")
-  .action(async (name: string, opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (name: string, opts: { json?: boolean; toon?: boolean }) => {
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("services.details", { name });
@@ -413,8 +421,9 @@ program
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        if (opts.json) {
-          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        const format = resolveFormat(opts);
+        if (format !== "text") {
+          writeData(res.result, format);
           return;
         }
         const details = res.result as Record<string, unknown>;
@@ -538,11 +547,13 @@ program
   .command("run <task>")
   .description("Run a task")
   .option("--json", "Output as JSON")
-  .action(async (key: string, opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (key: string, opts: { json?: boolean; toon?: boolean }) => {
     try {
+      const format = resolveFormat(opts);
       await withDaemon(async (ipc) => {
         const res = await ipc.stream("tasks.run", { key }, (event, data) => {
-          if (!opts.json && event === "line") {
+          if (format === "text" && event === "line") {
             process.stdout.write(`${data as string}\n`);
           }
         });
@@ -550,8 +561,8 @@ program
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        if (opts.json) {
-          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        if (format !== "text") {
+          writeData(res.result, format);
           return;
         }
         const result = res.result as { success: boolean };
@@ -622,8 +633,9 @@ program
   .command("config")
   .description("Validate and print resolved config")
   .option("--json", "Output as JSON")
+  .option("--toon", "Output as TOON")
   .option("--path", "Print config file path only")
-  .action(async (opts: { json?: boolean; path?: boolean }) => {
+  .action(async (opts: { json?: boolean; toon?: boolean; path?: boolean }) => {
     const configPath = discoverConfig(process.cwd());
     if (!configPath) {
       process.stderr.write("No config found. Run `zaps init` to create one.\n");
@@ -637,7 +649,8 @@ program
 
     const config = await loadConfig(configPath);
 
-    if (opts.json) {
+    const format = resolveFormat(opts);
+    if (format !== "text") {
       const output = {
         configPath: config.configPath,
         projectDir: config.projectDir,
@@ -661,7 +674,7 @@ program
             )
           : {},
       };
-      process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+      writeData(output, format);
       return;
     }
 
@@ -748,7 +761,8 @@ program
   .command("tasks")
   .description("List tasks")
   .option("--json", "Output as JSON")
-  .action(async (opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (opts: { json?: boolean; toon?: boolean }) => {
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("tasks.list");
@@ -756,8 +770,9 @@ program
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        if (opts.json) {
-          process.stdout.write(`${JSON.stringify(res.result, null, 2)}\n`);
+        const format = resolveFormat(opts);
+        if (format !== "text") {
+          writeData(res.result, format);
           return;
         }
         const tasks = res.result as { key: string; name: string; description: string | null }[];
@@ -833,10 +848,12 @@ daemonCmd
   .command("status")
   .description("Show daemon status")
   .option("--json", "Output as JSON")
-  .action(async (opts: { json?: boolean }) => {
+  .option("--toon", "Output as TOON")
+  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+    const format = resolveFormat(opts);
     if (!isDaemonRunning()) {
-      if (opts.json) {
-        process.stdout.write(`${JSON.stringify({ running: false })}\n`);
+      if (format !== "text") {
+        writeData({ running: false }, format);
       } else {
         process.stdout.write("Daemon not running.\n");
       }
@@ -848,10 +865,8 @@ daemonCmd
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
     }
-    if (opts.json) {
-      process.stdout.write(
-        `${JSON.stringify({ running: true, ...(res.result as object) }, null, 2)}\n`,
-      );
+    if (format !== "text") {
+      writeData({ running: true, ...(res.result as object) }, format);
     } else {
       const status = res.result as { pid: number; sessions: { id: string; name: string }[] };
       process.stdout.write(`Daemon running (PID ${status.pid})\n`);
