@@ -698,8 +698,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    // eslint-disable-next-line promise/prefer-await-to-then, @typescript-eslint/promise-function-async -- sync fire-and-forget; chaining prevents concurrent renames
-    this.pendingRename = this.pendingRename.catch(noop).then(() => this.deps.renameWindow(this.paneMap["@tui"], title));
+    this.pendingRename = this.chainRename(title);
     void this.pendingRename;
   }
 }
