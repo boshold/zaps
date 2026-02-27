@@ -45,6 +45,14 @@ describe("session handlers", () => {
       const res = await sessionHandlers["session.attach"](req, store, socket as never);
       expect(res.error).toBe("Unknown session");
     });
+
+    it("returns error when session field is missing", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = { id: "r2b", method: "session.attach" };
+      const res = await sessionHandlers["session.attach"](req, store, socket as never);
+      expect(res.error).toBe("Unknown session");
+    });
   });
 
   describe("session.detach", () => {
@@ -162,6 +170,21 @@ describe("session handlers", () => {
       expect(session.manager.startService).toHaveBeenCalledWith("api");
     });
 
+    it("returns error when start rejects with non-Error", async () => {
+      const session = createMockSession();
+      session.manager.startService.mockRejectedValue("string rejection"); // eslint-disable-line prefer-promise-reject-errors
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r11ne",
+        method: "services.start",
+        session: session.id,
+        params: { name: "api" },
+      };
+      const res = await sessionHandlers["services.start"](req, store, socket as never);
+      expect(res.error).toBe("string rejection");
+    });
+
     it("returns error when start fails", async () => {
       const session = createMockSession();
       session.manager.startService.mockRejectedValue(new Error("start failed"));
@@ -191,6 +214,21 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.stop"](req, store, socket as never);
       expect(res.result).toEqual({ stopped: "api" });
+    });
+
+    it("returns error when stop rejects with non-Error", async () => {
+      const session = createMockSession();
+      session.manager.stopService.mockRejectedValue("stop string"); // eslint-disable-line prefer-promise-reject-errors
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r12ne",
+        method: "services.stop",
+        session: session.id,
+        params: { name: "api" },
+      };
+      const res = await sessionHandlers["services.stop"](req, store, socket as never);
+      expect(res.error).toBe("stop string");
     });
 
     it("returns error when stop fails", async () => {
@@ -298,6 +336,29 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.startAll"](req, store, socket as never);
       expect(res.error).toBe("named start failed");
+    });
+  });
+
+  describe("services.details (dependsOn)", () => {
+    it("returns dependsOn array when set", async () => {
+      const session = createMockSession();
+      session.config.project.services = {
+        api: { start: "npm dev", dependsOn: ["db"] },
+      };
+      session.manager.getStatus.mockReturnValue({
+        name: "api", state: "ready", ports: [3000], retryCount: 0,
+      });
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rdo1",
+        method: "services.details",
+        session: session.id,
+        params: { name: "api" },
+      };
+      const res = await sessionHandlers["services.details"](req, store, socket as never);
+      const result = res.result as Record<string, unknown>;
+      expect(result["dependsOn"]).toEqual(["db"]);
     });
   });
 
@@ -583,6 +644,39 @@ describe("session handlers", () => {
       expect(res.result).toEqual({ success: false });
     });
 
+    it("runs task and invokes onLine/onProgress callbacks", async () => {
+      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
+        runTaskWithDeps: ReturnType<typeof vi.fn>;
+      };
+      runTaskWithDeps.mockImplementation(
+        async (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
+          deps.onLine?.("build", "output line");
+          deps.onProgress?.("build", "success");
+          return true;
+        },
+      );
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        build: { name: "Build", commands: "npm run build" },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25f",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: true });
+      // Verify socket received line and progress events
+      expect(socket.write).toHaveBeenCalled();
+      const writes = socket.write.mock.calls.map((c: [string]) => JSON.parse(c[0]));
+      expect(writes.some((w: { event?: string }) => w.event === "line")).toBe(true);
+      expect(writes.some((w: { event?: string }) => w.event === "progress")).toBe(true);
+    });
+
     it("runs popup task with no commands uses runTaskWithDeps", async () => {
       // popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
       const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
@@ -604,6 +698,32 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
       expect(res.result).toEqual({ success: false });
+    });
+
+    it("runs popup task with custom cwd", async () => {
+      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+        execCommand: ReturnType<typeof vi.fn>;
+      };
+      execCommand.mockResolvedValue(undefined);
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        lint: { name: "Lint", popup: true, commands: ["eslint ."], cwd: "/custom" },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25cwd",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "lint" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: true });
+      expect(execCommand).toHaveBeenCalledWith(
+        "eslint .",
+        expect.objectContaining({ cwd: "/custom" }),
+      );
     });
 
     it("runs popup task with env", async () => {

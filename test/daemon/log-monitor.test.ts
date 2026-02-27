@@ -143,6 +143,12 @@ describe("LogMonitor", () => {
     monitor.stopAll();
   });
 
+  it("stop is no-op for non-monitored service", () => {
+    const { monitor } = setup();
+    // Should not throw
+    monitor.stop("unknown");
+  });
+
   it("start monitoring for service with no buffer does not crash", async () => {
     const capturePane = vi.fn<(target: string, lines: number) => Promise<string>>();
     capturePane.mockResolvedValueOnce("line1\nline2");

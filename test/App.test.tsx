@@ -3,6 +3,29 @@ import { EventEmitter } from "node:events";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+// Mock tmux functions to prevent real tmux commands
+vi.mock("../src/lib/tmux.js", () => ({
+  zoomPane: vi.fn().mockResolvedValue(undefined),
+  editPaneCapture: vi.fn().mockResolvedValue(undefined),
+  displayPopup: vi.fn().mockResolvedValue(undefined),
+  capturePane: vi.fn().mockResolvedValue(""),
+  selectPane: vi.fn().mockResolvedValue(undefined),
+  sendKeys: vi.fn().mockResolvedValue(undefined),
+  sendCtrlC: vi.fn().mockResolvedValue(undefined),
+  panePid: vi.fn().mockResolvedValue(0),
+  killPane: vi.fn().mockResolvedValue(undefined),
+  renameWindow: vi.fn().mockResolvedValue(undefined),
+  getWindowName: vi.fn().mockResolvedValue(""),
+  getWindowOption: vi.fn().mockResolvedValue(""),
+  setWindowOption: vi.fn().mockResolvedValue(undefined),
+  currentSession: vi.fn().mockResolvedValue(""),
+  showEnv: vi.fn().mockResolvedValue(""),
+}));
+
+vi.mock("../src/lib/open.js", () => ({
+  openInBrowser: vi.fn().mockResolvedValue(undefined),
+}));
+
 import type { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
 import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
@@ -701,20 +724,21 @@ describe("Keyboard routing — Logs scroll", () => {
 
 describe("Keyboard routing — Dashboard special keys", () => {
   it("o opens url when service has url", async () => {
+    const { openInBrowser } = await import("../src/lib/open.js");
     const statuses: ServiceStatus[] = [
       { name: "api", state: "ready", ports: [3000], retryCount: 0, url: "http://localhost:3000" },
     ];
 
     const { stdin } = renderApp({ statuses });
 
-    // Press o to open url
     await act(() => {
       stdin.write("o");
     });
-    // Should not crash; openInBrowser is called
+    expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("http://localhost:3000");
   });
 
   it("z zooms pane when paneMap has entry", async () => {
+    const { zoomPane } = await import("../src/lib/tmux.js");
     const statuses: ServiceStatus[] = [
       { name: "api", state: "ready", ports: [3000], retryCount: 0 },
     ];
@@ -724,10 +748,11 @@ describe("Keyboard routing — Dashboard special keys", () => {
     await act(() => {
       stdin.write("z");
     });
-    // Should not crash; zoomPane is called
+    expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
   });
 
   it("E edits pane capture when paneMap has entry", async () => {
+    const { editPaneCapture } = await import("../src/lib/tmux.js");
     const statuses: ServiceStatus[] = [
       { name: "api", state: "ready", ports: [3000], retryCount: 0 },
     ];
@@ -737,7 +762,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
     await act(() => {
       stdin.write("E");
     });
-    // Should not crash; editPaneCapture is called
+    expect(vi.mocked(editPaneCapture)).toHaveBeenCalledWith("%1", "api");
     expect(lastFrame()).toBeDefined();
   });
 });

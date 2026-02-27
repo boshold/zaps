@@ -117,6 +117,19 @@ describe("getListeningPorts — Linux", () => {
     expect(result).toEqual([]);
   });
 
+  it("skips addresses with no colon", async () => {
+    const ssOutput = [
+      "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",
+      'LISTEN 0      128    nocolon             0.0.0.0:*        users:(("node",pid=1234,fd=5))',
+      'LISTEN 0      128    0.0.0.0:3000        0.0.0.0:*        users:(("node",pid=1234,fd=7))',
+    ].join("\n");
+
+    mockExecFileOutput(ssOutput);
+
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([3000]);
+  });
+
   it("handles multiple PIDs in one line", async () => {
     const ssOutput = [
       "State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process",

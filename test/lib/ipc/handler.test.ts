@@ -324,6 +324,33 @@ describe("handleRequest", () => {
     );
   });
 
+  it("tasks.run invokes onLine and onProgress callbacks", async () => {
+    const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
+      runTaskWithDeps: ReturnType<typeof vi.fn>;
+    };
+    runTaskWithDeps.mockImplementation(
+      async (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
+        deps.onLine?.("test", "output");
+        deps.onProgress?.("test", "success");
+        return true;
+      },
+    );
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { test: { name: "Test", commands: "npm test" } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rcb1", method: "tasks.run", params: { key: "test" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    // Verify socket received events
+    expect(socket.write).toHaveBeenCalled();
+  });
+
   it("catches non-Error objects in handleRequest", async () => {
     vi.mocked(manager.getAllStatuses).mockImplementation(() => {
       throw "string error"; // eslint-disable-line no-throw-literal
@@ -332,6 +359,29 @@ describe("handleRequest", () => {
     const req: IpcRequest = { id: "rne1", method: "services.list" };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.error).toBe("string error");
+  });
+
+  it("popup task with custom cwd uses task cwd", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockResolvedValue(undefined);
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."], cwd: "/custom" } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rcwd1", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    expect(execCommand).toHaveBeenCalledWith(
+      "eslint .",
+      expect.objectContaining({ cwd: "/custom" }),
+    );
   });
 
   it("popup task failure returns success: false", async () => {

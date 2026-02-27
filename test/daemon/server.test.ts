@@ -150,6 +150,16 @@ describe("DaemonServer", () => {
     expect(server.getByProjectDir("/nonexistent")).toBeUndefined();
   });
 
+  it("finds session by projectDir", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    expect(server.getByProjectDir("/test")).toBe(session);
+  });
+
   it("creates session and stores it", async () => {
     const session = await server.create({
       configPath: "/test/.zaps.mts",
@@ -436,6 +446,37 @@ describe("DaemonServer", () => {
       expect(write).toHaveBeenCalled();
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("session handler error");
+    });
+
+    it("catches non-Error in session handler", async () => {
+      await server.start("/tmp/test.sock");
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      vi.mocked(session.manager.getAllStatuses).mockImplementation(() => {
+        throw "string error"; // eslint-disable-line no-throw-literal
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "sne1", method: "services.list", session: session.id })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBe("string error");
     });
 
     it("catches daemon handler errors", async () => {

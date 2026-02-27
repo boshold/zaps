@@ -43,6 +43,10 @@ describe("canTransition", () => {
     ["restarting", "error"],
   ];
 
+  it("returns false for unknown state key", () => {
+    expect(canTransition("bogus" as never, "ready")).toBe(false);
+  });
+
   for (const [from, to] of invalidTransitions) {
     it(`${from} -> ${to} is invalid`, () => {
       expect(canTransition(from, to)).toBe(false);
