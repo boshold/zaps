@@ -60,3 +60,9 @@ agent-browser open http://localhost:3000 # Open dev
 agent-browser open http://localhost:8025 # Open Mailpit for E-Mail
 ```
 
+Run prisma migration:
+
+```
+zaps run prisma:migrate
+```
+
