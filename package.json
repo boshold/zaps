@@ -14,13 +14,15 @@
     "build": "tsx scripts/build.ts",
     "build:native": "bun run scripts/build-native.ts",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run -c test/integration/vitest.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
     "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware",
-    "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm test"
+    "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/node": "^25.2.3",
     "chalk": "^5.4.1",
     "commander": "^12.1.0",

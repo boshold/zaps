@@ -56,6 +56,8 @@ export class LogMonitor {
             }
             this.listener?.(serviceName, newLines);
           }
+        } catch {
+          /* Pane may have been destroyed during shutdown — ignore */
         } finally {
           fetching = false;
         }

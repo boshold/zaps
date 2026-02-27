@@ -623,6 +623,56 @@ services: {
 }
 ```
 
+## MCP Server
+
+ZAPS exposes an [MCP](https://modelcontextprotocol.io/) server that lets AI agents manage services, run tasks, and read logs.
+
+```bash
+zaps mcp                   # auto-detects session from CWD
+zaps mcp --session my-app  # target specific session
+```
+
+### Available Tools
+
+| Tool                   | Description                          |
+| ---------------------- | ------------------------------------ |
+| `services_list`        | List all services and their statuses |
+| `services_details`     | Get details for a specific service   |
+| `services_start`       | Start a service                      |
+| `services_stop`        | Stop a service                       |
+| `services_restart`     | Restart a service                    |
+| `services_start_all`   | Start all (or specific) services     |
+| `services_stop_all`    | Stop all (or specific) services      |
+| `services_restart_all` | Restart all (or specific) services   |
+| `logs_snapshot`        | Get recent log lines for a service   |
+| `tasks_list`           | List available tasks                 |
+| `tasks_run`            | Run a task and return its output     |
+
+### Resources
+
+| URI                         | Description                    |
+| --------------------------- | ------------------------------ |
+| `zaps://logs/{serviceName}` | Live log output (subscribable) |
+
+### Claude Code Setup
+
+```bash
+claude mcp add zaps -- zaps mcp
+```
+
+Or manually add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "zaps": {
+      "command": "zaps",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
 ## License
 
 MIT

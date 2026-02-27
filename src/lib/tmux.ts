@@ -4,9 +4,14 @@ import path from "node:path";
 
 import { getEnv } from "./env.js";
 
+function socketArgs(): string[] {
+  const socket = getEnv("ZAPS_TMUX_SOCKET");
+  return socket ? ["-L", socket] : [];
+}
+
 async function run(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const proc = spawn("tmux", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (d: Buffer) => (stdout += d));
@@ -197,7 +202,7 @@ export async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
     }
     args.push("--", opts.command);
 
-    const proc = spawn("tmux", args, { stdio: "ignore" });
+    const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: "ignore" });
     proc.on("close", (code: number | null) => {
       if (code === 0) {
         resolve();

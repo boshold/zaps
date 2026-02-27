@@ -8,6 +8,8 @@ export default defineConfig({
     hookTimeout: 30_000,
     pool: "forks",
     fileParallelism: false,
+    env: { ZAPS_TMUX_SOCKET: "zaps-test" },
+    globalSetup: "./test/integration/global-setup.ts",
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "json"],
