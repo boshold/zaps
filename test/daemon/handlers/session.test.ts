@@ -192,6 +192,21 @@ describe("session handlers", () => {
       const res = await sessionHandlers["services.stop"](req, store, socket as never);
       expect(res.result).toEqual({ stopped: "api" });
     });
+
+    it("returns error when stop fails", async () => {
+      const session = createMockSession();
+      session.manager.stopService.mockRejectedValue(new Error("stop failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r12b",
+        method: "services.stop",
+        session: session.id,
+        params: { name: "api" },
+      };
+      const res = await sessionHandlers["services.stop"](req, store, socket as never);
+      expect(res.error).toBe("stop failed");
+    });
   });
 
   describe("services.restart", () => {
@@ -208,6 +223,21 @@ describe("session handlers", () => {
       const res = await sessionHandlers["services.restart"](req, store, socket as never);
       expect(res.result).toEqual({ restarted: "api" });
       expect(session.manager.restartService).toHaveBeenCalledWith("api");
+    });
+
+    it("returns error when restart fails", async () => {
+      const session = createMockSession();
+      session.manager.restartService.mockRejectedValue(new Error("restart failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r13b",
+        method: "services.restart",
+        session: session.id,
+        params: { name: "api" },
+      };
+      const res = await sessionHandlers["services.restart"](req, store, socket as never);
+      expect(res.error).toBe("restart failed");
     });
   });
 
@@ -254,6 +284,44 @@ describe("session handlers", () => {
       const res = await sessionHandlers["services.startAll"](req, store, socket as never);
       expect(res.error).toBe("boom");
     });
+
+    it("returns error when named services start fails", async () => {
+      const session = createMockSession();
+      session.manager.startService.mockRejectedValue(new Error("named start failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r16b",
+        method: "services.startAll",
+        session: session.id,
+        params: { names: ["api"] },
+      };
+      const res = await sessionHandlers["services.startAll"](req, store, socket as never);
+      expect(res.error).toBe("named start failed");
+    });
+  });
+
+  describe("services.details (docker)", () => {
+    it("returns hasDocker true when docker is configured", async () => {
+      const session = createMockSession();
+      session.config.project.services = {
+        db: { docker: { service: "postgres" } },
+      };
+      session.manager.getStatus.mockReturnValue({
+        name: "db", state: "ready", ports: [5432], retryCount: 0,
+      });
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rd1",
+        method: "services.details",
+        session: session.id,
+        params: { name: "db" },
+      };
+      const res = await sessionHandlers["services.details"](req, store, socket as never);
+      const result = res.result as Record<string, unknown>;
+      expect(result["hasDocker"]).toBe(true);
+    });
   });
 
   describe("services.stopAll", () => {
@@ -282,6 +350,35 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.stopAll"](req, store, socket as never);
       expect(res.result).toEqual({ stopped: ["api"] });
+    });
+
+    it("returns error when named services stop fails", async () => {
+      const session = createMockSession();
+      session.manager.stopService.mockRejectedValue(new Error("named stop failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r18c",
+        method: "services.stopAll",
+        session: session.id,
+        params: { names: ["api"] },
+      };
+      const res = await sessionHandlers["services.stopAll"](req, store, socket as never);
+      expect(res.error).toBe("named stop failed");
+    });
+
+    it("returns error when stopAll fails", async () => {
+      const session = createMockSession();
+      session.manager.stopAll.mockRejectedValue(new Error("stopAll failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r18b",
+        method: "services.stopAll",
+        session: session.id,
+      };
+      const res = await sessionHandlers["services.stopAll"](req, store, socket as never);
+      expect(res.error).toBe("stopAll failed");
     });
   });
 
@@ -313,6 +410,35 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.restartAll"](req, store, socket as never);
       expect(res.result).toEqual({ restarted: ["api"] });
+    });
+
+    it("returns error when named services restart fails", async () => {
+      const session = createMockSession();
+      session.manager.restartService.mockRejectedValue(new Error("named restart failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r20c",
+        method: "services.restartAll",
+        session: session.id,
+        params: { names: ["api"] },
+      };
+      const res = await sessionHandlers["services.restartAll"](req, store, socket as never);
+      expect(res.error).toBe("named restart failed");
+    });
+
+    it("returns error when restartAll fails", async () => {
+      const session = createMockSession();
+      session.manager.stopAll.mockRejectedValue(new Error("restartAll failed"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r20b",
+        method: "services.restartAll",
+        session: session.id,
+      };
+      const res = await sessionHandlers["services.restartAll"](req, store, socket as never);
+      expect(res.error).toBe("restartAll failed");
     });
   });
 
@@ -410,6 +536,105 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
       expect(res.result).toEqual({ success: true });
+    });
+
+    it("runs popup task with function command", async () => {
+      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+        execCommand: ReturnType<typeof vi.fn>;
+      };
+      execCommand.mockResolvedValue(undefined);
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        lint: { name: "Lint", popup: true, commands: [() => "dynamic-cmd"] },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25b",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "lint" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: true });
+      expect(execCommand).toHaveBeenCalledWith("dynamic-cmd", expect.anything());
+    });
+
+    it("returns success: false when popup task throws", async () => {
+      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+        execCommand: ReturnType<typeof vi.fn>;
+      };
+      execCommand.mockRejectedValue(new Error("exec failed"));
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        lint: { name: "Lint", popup: true, commands: ["fail"] },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25c",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "lint" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: false });
+    });
+
+    it("runs popup task with no commands uses runTaskWithDeps", async () => {
+      // popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
+      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
+        runTaskWithDeps: ReturnType<typeof vi.fn>;
+      };
+      runTaskWithDeps.mockResolvedValue(false);
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        lint: { name: "Lint", popup: true, run: async () => {} },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25e",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "lint" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: false });
+    });
+
+    it("runs popup task with env", async () => {
+      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+        execCommand: ReturnType<typeof vi.fn>;
+      };
+      execCommand.mockResolvedValue(undefined);
+
+      const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
+        resolveEnv: ReturnType<typeof vi.fn>;
+      };
+      resolveEnv.mockReturnValue({ NODE_ENV: "test" });
+
+      const session = createMockSession();
+      session.config.project.tasks = {
+        lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "r25d",
+        method: "tasks.run",
+        session: session.id,
+        params: { key: "lint" },
+      };
+      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      expect(res.result).toEqual({ success: true });
+      expect(execCommand).toHaveBeenCalledWith(
+        "eslint .",
+        expect.objectContaining({ env: { NODE_ENV: "test" } }),
+      );
     });
   });
 

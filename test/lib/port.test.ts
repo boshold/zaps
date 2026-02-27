@@ -173,6 +173,36 @@ describe("getListeningPorts — macOS", () => {
     const result = await getListeningPorts([1234]);
     expect(result).toEqual([]);
   });
+
+  it("skips short lines with fewer than 9 fields", async () => {
+    const lsofOutput = [
+      "COMMAND   PID   USER   FD   TYPE  DEVICE SIZE/OFF NODE NAME",
+      "short line",
+      "postgres  1234  user   5u   IPv4  12345  0t0      TCP  *:5432 (LISTEN)",
+    ].join("\n");
+
+    mockExecFileOutput(lsofOutput);
+
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([5432]);
+  });
+});
+
+describe("getListeningPorts — unsupported platform", () => {
+  const originalPlatform = process.platform;
+
+  beforeEach(() => {
+    Object.defineProperty(process, "platform", { value: "freebsd", configurable: true });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("returns empty array on unsupported platform", async () => {
+    const result = await getListeningPorts([1234]);
+    expect(result).toEqual([]);
+  });
 });
 
 describe("detectPorts", () => {

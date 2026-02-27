@@ -87,6 +87,17 @@ describe("detectCycles", () => {
     expect(detectCycles(services)).toBeNull();
   });
 
+  it("diamond dep: node reachable via two paths returns null (visited early return)", () => {
+    const services = {
+      a: {},
+      b: { dependsOn: ["a"] },
+      c: { dependsOn: ["a"] },
+      d: { dependsOn: ["b", "c"] },
+    };
+
+    expect(detectCycles(services)).toBeNull();
+  });
+
   it("self-dependency a->a returns cycle", () => {
     const services = {
       a: { dependsOn: ["a"] },
@@ -154,5 +165,19 @@ describe("buildRestartWithMap", () => {
     const map = buildRestartWithMap(services);
     expect(map.get("db")).toEqual(["api"]);
     expect(map.has("cache")).toBe(false);
+  });
+
+  it("diamond: deduplicates nodes reachable via two paths", () => {
+    const services = {
+      db: {},
+      api: { restartWith: ["db"] },
+      worker: { restartWith: ["db"] },
+      gateway: { restartWith: ["api", "worker"] },
+    };
+
+    const map = buildRestartWithMap(services);
+    expect(map.get("db")).toEqual(["api", "worker", "gateway"]);
+    // gateway only appears once despite being reachable via both api and worker
+    expect(map.get("db")?.filter((n) => n === "gateway")).toHaveLength(1);
   });
 });

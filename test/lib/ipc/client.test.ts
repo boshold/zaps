@@ -108,6 +108,35 @@ describe("ipcRequest", () => {
     const res = await promise;
     expect(res.result).toBe("yes");
   });
+
+  it("omits params when params is null", async () => {
+    const promise = ipcRequest("/test.sock", "test", null);
+    mockSocket.emit("connect");
+
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+    expect(req).not.toHaveProperty("params");
+
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "ok" })}\n`));
+    await promise;
+  });
+
+  it("skips empty lines in buffer", async () => {
+    const promise = ipcRequest("/test.sock", "test");
+    mockSocket.emit("connect");
+
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+
+    // Send empty line followed by response
+    mockSocket.emit(
+      "data",
+      Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`),
+    );
+
+    const res = await promise;
+    expect(res.result).toBe("ok");
+  });
 });
 
 describe("ipcStream", () => {
@@ -173,6 +202,24 @@ describe("ipcStream", () => {
     mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`));
 
     await promise;
+  });
+
+  it("skips empty lines in buffer", async () => {
+    const onEvent = vi.fn();
+    const promise = ipcStream("/test.sock", "test", {}, onEvent);
+
+    mockSocket.emit("connect");
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+
+    // Empty line followed by response
+    mockSocket.emit(
+      "data",
+      Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`),
+    );
+
+    const res = await promise;
+    expect(res.result).toBe("ok");
   });
 });
 
@@ -283,5 +330,35 @@ describe("ipcSubscribe", () => {
     // Should not throw
     mockSocket.emit("data", Buffer.from("not-json\n"));
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("request times out after 30s", async () => {
+    vi.useFakeTimers();
+    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    mockSocket.emit("connect");
+
+    const reqPromise = sub.request("services.list");
+    vi.advanceTimersByTime(30_001);
+
+    await expect(reqPromise).rejects.toThrow("Request timed out");
+
+    sub.close();
+    vi.useRealTimers();
+  });
+
+  it("skips empty lines in subscription data", () => {
+    const onEvent = vi.fn();
+    ipcSubscribe("/test.sock", "s1", [], onEvent);
+    mockSocket.emit("connect");
+
+    // Empty line + daemon event
+    mockSocket.emit(
+      "data",
+      Buffer.from(
+        `\n${JSON.stringify({ session: "s1", event: "log.lines", data: { lines: ["x"] } })}\n`,
+      ),
+    );
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
   });
 });

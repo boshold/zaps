@@ -340,4 +340,39 @@ describe("runTaskWithDeps", () => {
     expect(ok).toBe(false);
     expect(mockExecCommand).not.toHaveBeenCalled();
   });
+
+  it("stdout.write text without trailing newline emits single line", async () => {
+    const runFn = vi.fn(async (ctx: TaskRunContext) => {
+      ctx.stdout.write("no-newline");
+    });
+
+    const onLine = vi.fn();
+    const deps = makeDeps({ task: { name: "T", run: runFn } }, { onLine });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("task", deps, visited, results);
+
+    expect(onLine).toHaveBeenCalledWith("task", "no-newline");
+  });
+
+  it("task with env config passes resolved env", async () => {
+    mockExecCommand.mockImplementation(async (_cmd, opts) => {
+      opts.onLine("line");
+    });
+
+    const deps = makeDeps({
+      build: {
+        name: "Build",
+        commands: "build",
+        env: { NODE_ENV: "production" },
+      },
+    });
+    const visited = new Set<string>();
+    const results = new Map<string, "success" | "error">();
+
+    await runTaskWithDeps("build", deps, visited, results);
+
+    expect(results.get("build")).toBe("success");
+  });
 });

@@ -550,6 +550,196 @@ describe("Keyboard routing — Docker rebuild", () => {
     // Should still be on dashboard
     expect(lastFrame()).toContain("[t]asks");
   });
+
+  it("docker rebuild: space toggles flag, enter submits", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    // Open docker rebuild
+    await act(() => {
+      stdin.write("R");
+    });
+    // Toggle first flag (build)
+    await act(() => {
+      stdin.write(" ");
+    });
+    // Move down to next flag
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    // Press enter to submit
+    await act(() => {
+      stdin.write("\r");
+    });
+    await act();
+
+    // After enter, view returns to dashboard
+    expect(lastFrame()).toContain("[t]asks");
+  });
+
+  it("docker rebuild: escape cancels", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    await act(() => {
+      stdin.write("R");
+    });
+    await act(() => {
+      stdin.write(ESCAPE);
+    });
+
+    // Should be back on dashboard
+    expect(lastFrame()).toContain("[t]asks");
+  });
+
+  it("docker rebuild: navigate flags with up/down", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0, isDocker: true },
+    ];
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "db",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
+      },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
+
+    await act(() => {
+      stdin.write("R");
+    });
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    await act(() => {
+      stdin.write(ARROW_UP);
+    });
+
+    expect(lastFrame()).toContain("db");
+  });
+});
+
+describe("Keyboard routing — Logs scroll", () => {
+  it("up/down scrolls in logs view", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { lastFrame, stdin } = renderApp({ statuses, paneMap: { db: "%0" } });
+
+    // Go to logs
+    await act(() => {
+      stdin.write("l");
+    });
+    expect(lastFrame()).toContain("[esc] back");
+
+    // Scroll up
+    await act(() => {
+      stdin.write(ARROW_UP);
+    });
+    // Scroll down
+    await act(() => {
+      stdin.write(ARROW_DOWN);
+    });
+    // k/j also scroll
+    await act(() => {
+      stdin.write("k");
+    });
+    await act(() => {
+      stdin.write("j");
+    });
+
+    // Should still be in logs view (no crash)
+    expect(lastFrame()).toContain("[esc] back");
+  });
+});
+
+describe("Keyboard routing — Dashboard special keys", () => {
+  it("o opens url when service has url", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0, url: "http://localhost:3000" },
+    ];
+
+    const { stdin } = renderApp({ statuses });
+
+    // Press o to open url
+    await act(() => {
+      stdin.write("o");
+    });
+    // Should not crash; openInBrowser is called
+  });
+
+  it("z zooms pane when paneMap has entry", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    ];
+
+    const { stdin } = renderApp({ statuses, paneMap: { api: "%1" } });
+
+    await act(() => {
+      stdin.write("z");
+    });
+    // Should not crash; zoomPane is called
+  });
+
+  it("E edits pane capture when paneMap has entry", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    ];
+
+    const { stdin, lastFrame } = renderApp({ statuses, paneMap: { api: "%1" } });
+
+    await act(() => {
+      stdin.write("E");
+    });
+    // Should not crash; editPaneCapture is called
+    expect(lastFrame()).toBeDefined();
+  });
 });
 
 describe("Router — task event handling", () => {

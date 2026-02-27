@@ -121,11 +121,27 @@ describe("handleRequest", () => {
     expect(res.result).toEqual({ stopped: "api" });
   });
 
+  it("handles services.stop error", async () => {
+    vi.mocked(manager.stopService).mockRejectedValue(new Error("stop fail"));
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "r8b", method: "services.stop", params: { name: "api" } };
+    const res = await handleRequest(req, manager, baseConfig as never, socket as never);
+    expect(res.error).toBe("stop fail");
+  });
+
   it("handles services.restart", async () => {
     const socket = createMockSocket();
     const req: IpcRequest = { id: "r9", method: "services.restart", params: { name: "api" } };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.result).toEqual({ restarted: "api" });
+  });
+
+  it("handles services.restart error", async () => {
+    vi.mocked(manager.restartService).mockRejectedValue(new Error("restart fail"));
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "r9b", method: "services.restart", params: { name: "api" } };
+    const res = await handleRequest(req, manager, baseConfig as never, socket as never);
+    expect(res.error).toBe("restart fail");
   });
 
   it("handles tasks.list", async () => {
@@ -208,5 +224,132 @@ describe("handleRequest", () => {
     const req: IpcRequest = { id: "r15", method: "services.list" };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.error).toBe("unexpected");
+  });
+
+  it("popup task with no commands returns success: false", async () => {
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, run: async () => {} } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "r16", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    // popup=true + run (no commands) → isPopup=false, uses runTaskWithDeps
+    expect(res.result).toEqual({ success: true });
+  });
+
+  it("popup task with function commands resolves them", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockResolvedValue(undefined);
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: [() => "dynamic-lint"] } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "r17", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    expect(execCommand).toHaveBeenCalledWith("dynamic-lint", expect.anything());
+  });
+
+  it("services.details returns hasDocker true when docker config exists", async () => {
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        services: { api: { start: "npm dev", docker: { service: "api" } } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rd1", method: "services.details", params: { name: "api" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    const result = res.result as Record<string, unknown>;
+    expect(result["hasDocker"]).toBe(true);
+  });
+
+  it("popup task with no commands falls through to runTaskWithDeps", async () => {
+    // popup=true + no commands → isPopup=false → uses runTaskWithDeps
+    const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
+      runTaskWithDeps: ReturnType<typeof vi.fn>;
+    };
+    runTaskWithDeps.mockResolvedValue(false);
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, run: async () => {} } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rnc1", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: false });
+  });
+
+  it("popup task with env passes resolved env to execCommand", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockResolvedValue(undefined);
+
+    const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
+      resolveEnv: ReturnType<typeof vi.fn>;
+    };
+    resolveEnv.mockReturnValue({ NODE_ENV: "test" });
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "re1", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: true });
+    expect(execCommand).toHaveBeenCalledWith(
+      "eslint .",
+      expect.objectContaining({ env: { NODE_ENV: "test" } }),
+    );
+  });
+
+  it("catches non-Error objects in handleRequest", async () => {
+    vi.mocked(manager.getAllStatuses).mockImplementation(() => {
+      throw "string error"; // eslint-disable-line no-throw-literal
+    });
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "rne1", method: "services.list" };
+    const res = await handleRequest(req, manager, baseConfig as never, socket as never);
+    expect(res.error).toBe("string error");
+  });
+
+  it("popup task failure returns success: false", async () => {
+    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+      execCommand: ReturnType<typeof vi.fn>;
+    };
+    execCommand.mockRejectedValue(new Error("exec failed"));
+
+    const config = {
+      ...baseConfig,
+      project: {
+        ...baseConfig.project,
+        tasks: { lint: { name: "Lint", popup: true, commands: ["fail"] } },
+      },
+    };
+    const socket = createMockSocket();
+    const req: IpcRequest = { id: "r18", method: "tasks.run", params: { key: "lint" } };
+    const res = await handleRequest(req, manager, config as never, socket as never);
+    expect(res.result).toEqual({ success: false });
   });
 });

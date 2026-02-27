@@ -310,5 +310,154 @@ describe("DaemonServer", () => {
       const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
       expect(response.error).toContain("Session required");
     });
+
+    it("socket error cleans up subscribers", async () => {
+      await server.start("/tmp/test.sock");
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Add socket as subscriber
+      session.subscribers.add(socket);
+      expect(session.subscribers.has(socket)).toBe(true);
+
+      // Emit error to trigger cleanup
+      socket.emit("error", new Error("ECONNRESET"));
+      expect(session.subscribers.has(socket)).toBe(false);
+    });
+
+    it("handles multi-chunk JSON buffering", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Split the JSON across two data events
+      const fullReq = `${JSON.stringify({ id: "mc1", method: "daemon.ping" })}\n`;
+      const half = Math.floor(fullReq.length / 2);
+      socket.emit("data", Buffer.from(fullReq.slice(0, half)));
+      socket.emit("data", Buffer.from(fullReq.slice(half)));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response).toEqual({ id: "mc1", result: "pong" });
+    });
+
+    it("skips empty lines in buffered data", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // Send data with empty lines between valid JSON
+      const req = JSON.stringify({ id: "el1", method: "daemon.ping" });
+      socket.emit("data", Buffer.from(`\n\n${req}\n\n`));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      // Should only handle the valid JSON line, not empty ones
+      expect(write).toHaveBeenCalledTimes(1);
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response).toEqual({ id: "el1", result: "pong" });
+    });
+
+    it("fires onSessionChange on destroy", async () => {
+      const callback = vi.fn();
+      server.onSessionChange = callback;
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+      expect(callback).toHaveBeenCalledWith(1);
+      callback.mockClear();
+
+      await server.destroy(session.id);
+      expect(callback).toHaveBeenCalledWith(0);
+    });
+
+    it("catches session handler errors", async () => {
+      await server.start("/tmp/test.sock");
+
+      // Create a session first
+      const session = await server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      });
+
+      // Make the handler throw
+      vi.mocked(session.manager.getAllStatuses).mockImplementation(() => {
+        throw new Error("session handler error");
+      });
+
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      const req = `${JSON.stringify({ id: "se1", method: "services.list", session: session.id })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toContain("session handler error");
+    });
+
+    it("catches daemon handler errors", async () => {
+      await server.start("/tmp/test.sock");
+      const netModule = await import("node:net");
+      const net = netModule.default;
+      const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+      const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
+
+      const socket = new EventEmitter();
+      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      handler(socket);
+
+      // daemon.sessions.create will throw because of invalid params
+      const req = `${JSON.stringify({ id: "de1", method: "daemon.sessions.create", params: {} })}\n`;
+      socket.emit("data", Buffer.from(req));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;
+      expect(write).toHaveBeenCalled();
+      const response = JSON.parse(write.mock.calls[0][0].replace("\n", ""));
+      expect(response.error).toBeDefined();
+    });
   });
 });
