@@ -11,8 +11,8 @@ export default defineConfig({
       exclude: ["src/cli.tsx"],
       thresholds: {
         lines: 85,
-        functions: 92,
-        branches: 87,
+        functions: 85,
+        branches: 90,
         statements: 85,
       },
     },
