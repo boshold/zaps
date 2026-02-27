@@ -530,6 +530,32 @@ describe("startMcpServer", () => {
   // --- Error propagation ---
 
   describe("error propagation", () => {
+    it("request() catches ECONNREFUSED and returns friendly message", async () => {
+      const err = new Error("connect ECONNREFUSED") as NodeJS.ErrnoException;
+      err.code = "ECONNREFUSED";
+      mockIpcRequest.mockRejectedValue(err);
+
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
+      );
+    });
+
+    it("request() catches ENOENT and returns friendly message", async () => {
+      const err = new Error("connect ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      mockIpcRequest.mockRejectedValue(err);
+
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
+      );
+    });
+
+    it("request() re-throws unknown errors", async () => {
+      mockIpcRequest.mockRejectedValue(new Error("unexpected"));
+
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow("unexpected");
+    });
+
     it("request() helper throws on IPC error", async () => {
       mockIpcRequest.mockResolvedValue({ id: "r1", error: "Session expired" });
 

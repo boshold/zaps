@@ -13,7 +13,18 @@ async function startMcpServer(socketPath: string, sessionId: string): Promise<vo
   );
 
   async function request(method: string, params?: unknown): Promise<unknown> {
-    const res = await ipcRequest(socketPath, method, params, 30_000, sessionId);
+    let res: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
+    try {
+      res = await ipcRequest(socketPath, method, params, 30_000, sessionId);
+    } catch (error) {
+      const { code } = error as NodeJS.ErrnoException;
+      if (code === "ENOENT" || code === "ECONNREFUSED") {
+        throw new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     if (res.error) {
       throw new Error(res.error);
     }

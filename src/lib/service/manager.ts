@@ -700,7 +700,9 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async chainRename(title: string): Promise<void> {
-    await this.pendingRename.catch(() => { /* Ignored */ });
+    await this.pendingRename.catch(() => {
+      /* Ignored */
+    });
     await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 }
