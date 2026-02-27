@@ -884,6 +884,32 @@ daemonCmd
     process.stdout.write(`${res.result as string}\n`);
   });
 
+program
+  .command("mcp")
+  .description("Start MCP server for AI tool integration")
+  .option("-s, --session <id>", "Target session (auto-detected from CWD)")
+  .action(async (opts: { session?: string }) => {
+    if (!isDaemonRunning()) {
+      process.stderr.write("Daemon not running. Start with `zaps daemon start`.\n");
+      process.exit(1);
+    }
+    const sock = socketPath();
+    const res = await ipcRequest(sock, "session.list");
+    if (res.error) {
+      process.stderr.write(`Error: ${res.error}\n`);
+      process.exit(1);
+    }
+    // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+    const sessions = res.result as SessionInfo[];
+    if (sessions.length === 0) {
+      process.stderr.write("No active sessions.\n");
+      process.exit(1);
+    }
+    const target = resolveTargetSession(sessions, opts.session);
+    const { startMcpServer } = await import("./mcp/server.js");
+    await startMcpServer(sock, target.id);
+  });
+
 if (process.argv.length === 2) {
   process.argv.push("up");
 }
