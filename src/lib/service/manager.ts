@@ -41,9 +41,6 @@ function diffOutput(prev: string[], current: string[]): string[] {
   return current;
 }
 
-// eslint-disable-next-line no-empty-function -- intentional no-op for .catch() swallowing
-function noop() {}
-
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -700,6 +697,11 @@ export class ServiceManager extends EventEmitter {
     const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
     this.pendingRename = this.chainRename(title);
     void this.pendingRename;
+  }
+
+  private async chainRename(title: string): Promise<void> {
+    await this.pendingRename.catch(() => { /* ignored */ });
+    await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 }
 
