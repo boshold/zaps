@@ -9,9 +9,7 @@ import { TasksView } from "../../src/components/TasksView.js";
 import type { TaskInfo } from "../../src/daemon/session.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
 
-function createMockClient(
-  overrides?: Partial<Record<string, unknown>>,
-): DaemonClient {
+function createMockClient(overrides?: Partial<Record<string, unknown>>): DaemonClient {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     connect: vi.fn(),
@@ -142,9 +140,7 @@ describe("TasksView", () => {
   });
 
   it("runs task when runTrigger changes", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const client = createMockClient();
     const { rerender } = renderTasksView({ tasks, client });
 
@@ -155,15 +151,13 @@ describe("TasksView", () => {
   });
 
   it("does not re-run when runTrigger stays the same", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const client = createMockClient();
     const { rerender } = renderTasksView({ tasks, client, runTrigger: 0 });
 
     rerenderTasksView(rerender, client, tasks, { runTrigger: 0 });
     // Give effect a chance to fire
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.runTask).not.toHaveBeenCalled();
   });
 
@@ -171,9 +165,7 @@ describe("TasksView", () => {
     const client = createMockClient({
       runTask: vi.fn().mockRejectedValue(new Error("daemon crashed")),
     });
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { rerender, lastFrame } = renderTasksView({ tasks, client });
 
     rerenderTasksView(rerender, client, tasks, { runTrigger: 1 });
@@ -189,14 +181,13 @@ describe("TasksView", () => {
     let resolveRun!: () => void;
     const client = createMockClient({
       runTask: vi.fn().mockImplementation(
-        () => new Promise<{ success: boolean }>((r) => {
-          resolveRun = () => r({ success: true });
-        }),
+        async () =>
+          new Promise<{ success: boolean }>((resolve) => {
+            resolveRun = () => resolve({ success: true });
+          }),
       ),
     });
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { rerender } = renderTasksView({ tasks, client });
 
     // First trigger starts a run
@@ -207,7 +198,7 @@ describe("TasksView", () => {
 
     // Second trigger while first is still running — should be ignored
     rerenderTasksView(rerender, client, tasks, { runTrigger: 2 });
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.runTask).toHaveBeenCalledTimes(1);
 
     // Resolve first run
@@ -219,7 +210,7 @@ describe("TasksView", () => {
     const { rerender } = renderTasksView({ tasks: [], client });
 
     rerenderTasksView(rerender, client, [], { runTrigger: 1 });
-    await new Promise((r) => setTimeout(r, 50));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.runTask).not.toHaveBeenCalled();
   });
 
@@ -228,26 +219,23 @@ describe("TasksView", () => {
       onLine?: (line: string) => void;
     } = {};
     const client = createMockClient({
-      runTask: vi.fn().mockImplementation(
-        (
-          _key: string,
-          callbacks: { onLine?: (line: string) => void },
-        ) => {
-          capturedCallbacks.onLine = callbacks.onLine;
-          return new Promise<{ success: boolean }>((resolve) => {
-            // Invoke onLine asynchronously so React can flush
-            setTimeout(() => {
-              callbacks.onLine?.("output line 1");
-              callbacks.onLine?.("output line 2");
-              resolve({ success: true });
-            }, 10);
-          });
-        },
-      ),
+      runTask: vi
+        .fn()
+        .mockImplementation(
+          async (_key: string, callbacks: { onLine?: (line: string) => void }) => {
+            capturedCallbacks.onLine = callbacks.onLine;
+            return new Promise<{ success: boolean }>((resolve) => {
+              // Invoke onLine asynchronously so React can flush
+              setTimeout(() => {
+                callbacks.onLine?.("output line 1");
+                callbacks.onLine?.("output line 2");
+                resolve({ success: true });
+              }, 10);
+            });
+          },
+        ),
     });
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { rerender, lastFrame } = renderTasksView({ tasks, client });
 
     rerenderTasksView(rerender, client, tasks, { runTrigger: 1 });
@@ -263,7 +251,7 @@ describe("TasksView", () => {
   it("invokes onProgress callback during task execution", async () => {
     const client = createMockClient({
       runTask: vi.fn().mockImplementation(
-        (
+        async (
           _key: string,
           callbacks: {
             onProgress?: (taskKey: string, result: "success" | "error") => void;
@@ -274,9 +262,7 @@ describe("TasksView", () => {
         },
       ),
     });
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { rerender, lastFrame } = renderTasksView({ tasks, client });
 
     rerenderTasksView(rerender, client, tasks, { runTrigger: 1 });

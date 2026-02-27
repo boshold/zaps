@@ -346,7 +346,10 @@ describe("session handlers", () => {
         api: { start: "npm dev", dependsOn: ["db"] },
       };
       session.manager.getStatus.mockReturnValue({
-        name: "api", state: "ready", ports: [3000], retryCount: 0,
+        name: "api",
+        state: "ready",
+        ports: [3000],
+        retryCount: 0,
       });
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -369,7 +372,10 @@ describe("session handlers", () => {
         db: { docker: { service: "postgres" } },
       };
       session.manager.getStatus.mockReturnValue({
-        name: "db", state: "ready", ports: [5432], retryCount: 0,
+        name: "db",
+        state: "ready",
+        ports: [5432],
+        retryCount: 0,
       });
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -649,7 +655,7 @@ describe("session handlers", () => {
         runTaskWithDeps: ReturnType<typeof vi.fn>;
       };
       runTaskWithDeps.mockImplementation(
-        async (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
+        (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
           deps.onLine?.("build", "output line");
           deps.onProgress?.("build", "success");
           return true;
@@ -672,13 +678,13 @@ describe("session handlers", () => {
       expect(res.result).toEqual({ success: true });
       // Verify socket received line and progress events
       expect(socket.write).toHaveBeenCalled();
-      const writes = socket.write.mock.calls.map((c: [string]) => JSON.parse(c[0]));
+      const writes = socket.write.mock.calls.map((c: string[]) => JSON.parse(c[0]));
       expect(writes.some((w: { event?: string }) => w.event === "line")).toBe(true);
       expect(writes.some((w: { event?: string }) => w.event === "progress")).toBe(true);
     });
 
     it("runs popup task with no commands uses runTaskWithDeps", async () => {
-      // popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
+      // Popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
       const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
         runTaskWithDeps: ReturnType<typeof vi.fn>;
       };
@@ -686,7 +692,13 @@ describe("session handlers", () => {
 
       const session = createMockSession();
       session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, run: async () => {} },
+        lint: {
+          name: "Lint",
+          popup: true,
+          run: async () => {
+            /* Noop */
+          },
+        },
       };
       const store = createMockStore([session]);
       const socket = createMockSocket();

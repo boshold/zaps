@@ -224,7 +224,6 @@ describe("withLegacyIpc", () => {
   });
 
   it("throws when not in tmux", async () => {
-
     await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/tmux session/);
   });
 
@@ -235,9 +234,7 @@ describe("withLegacyIpc", () => {
     vi.mocked(currentSession).mockResolvedValue("main");
     vi.mocked(showEnv).mockResolvedValue("");
 
-    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(
-      /No running zaps instance/,
-    );
+    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/No running zaps instance/);
   });
 
   it("calls fn with ipc when socket found", async () => {

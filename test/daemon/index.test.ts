@@ -65,7 +65,7 @@ vi.mock("../../src/daemon/server.js", () => {
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   return {
     // Must use `function` (not arrow) so `new DaemonServer()` works in runDaemon
-    DaemonServer: vi.fn(function () {
+    DaemonServer: vi.fn(function daemonServer() {
       const emitter = new EE();
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
@@ -147,7 +147,7 @@ describe("runDaemon", () => {
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
     const { EventEmitter } = await import("node:events");
-    vi.mocked(DaemonServer).mockImplementation(function () {
+    vi.mocked(DaemonServer).mockImplementation(function daemonServer() {
       const emitter = new EventEmitter();
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
@@ -167,14 +167,12 @@ describe("runDaemon", () => {
 
   function signalHandler(signal: string): () => void {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- mock type
-    const call = processOnSpy.mock.calls.find(
-      ([ev]: [string]) => ev === signal,
-    );
+    const call = processOnSpy.mock.calls.find(([ev]: [string]) => ev === signal);
     return call[1] as () => void;
   }
 
   function serverInstance() {
-    return vi.mocked(DaemonServer).mock.results[0]!.value as {
+    return vi.mocked(DaemonServer).mock.results[0].value as {
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
       sessionCount: number;
@@ -185,19 +183,17 @@ describe("runDaemon", () => {
   it("writes PID and starts server on socket path", async () => {
     await runDaemon();
 
-    const fs = (await import("node:fs")).default;
+    const { default: fs } = await import("node:fs");
     expect(fs.writeFileSync).toHaveBeenCalled();
     expect(fs.openSync).toHaveBeenCalled();
-    expect(serverInstance().start).toHaveBeenCalledWith(
-      expect.stringMatching(/daemon\.sock$/),
-    );
+    expect(serverInstance().start).toHaveBeenCalledWith(expect.stringMatching(/daemon\.sock$/));
   });
 
   it("shuts down on idle timeout with no sessions", async () => {
     await runDaemon();
     const server = serverInstance();
 
-    server.onSessionChange!(0); // starts idle timer
+    server.onSessionChange!(0); // Starts idle timer
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(server.stop).toHaveBeenCalled();
@@ -208,8 +204,8 @@ describe("runDaemon", () => {
     await runDaemon();
     const server = serverInstance();
 
-    server.onSessionChange!(0); // starts idle timer
-    server.sessionCount = 1; // sessions active before timeout fires
+    server.onSessionChange!(0); // Starts idle timer
+    server.sessionCount = 1; // Sessions active before timeout fires
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(server.stop).not.toHaveBeenCalled();
@@ -220,8 +216,8 @@ describe("runDaemon", () => {
     await runDaemon();
     const server = serverInstance();
 
-    server.onSessionChange!(0); // starts idle timer
-    server.onSessionChange!(1); // cancel idle
+    server.onSessionChange!(0); // Starts idle timer
+    server.onSessionChange!(1); // Cancel idle
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(server.stop).not.toHaveBeenCalled();
@@ -245,7 +241,7 @@ describe("runDaemon", () => {
 
   it("logs messages and closes log file on shutdown", async () => {
     await runDaemon();
-    const fs = (await import("node:fs")).default;
+    const { default: fs } = await import("node:fs");
 
     signalHandler("SIGTERM")();
 
@@ -272,40 +268,28 @@ describe("pingSocket branches", () => {
     const fsModule = await import("node:fs");
     const fs = fsModule.default;
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
-    vi.mocked(
-      process.kill as unknown as ReturnType<typeof vi.fn>,
-    ).mockReturnValue(undefined);
+    vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
     const netModule = await import("node:net");
     const { EventEmitter } = await import("node:events");
 
     let callCount = 0;
-    vi.mocked(netModule.default.createConnection).mockImplementation(
-      (() => {
-        callCount++;
-        const socket = new EventEmitter();
-        Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
-        if (callCount === 1) {
-          // First call: error (stale socket)
-          setTimeout(
-            () => socket.emit("error", new Error("ECONNREFUSED")),
-            5,
-          );
-        } else {
-          // Subsequent: success
-          setTimeout(() => {
-            socket.emit("connect");
-            setTimeout(
-              () => socket.emit("data", Buffer.from("pong")),
-              5,
-            );
-          }, 5);
-        }
-        return socket as unknown as ReturnType<
-          typeof netModule.default.createConnection
-        >;
-      }) as typeof netModule.default.createConnection,
-    );
+    vi.mocked(netModule.default.createConnection).mockImplementation((() => {
+      callCount += 1;
+      const socket = new EventEmitter();
+      Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
+      if (callCount === 1) {
+        // First call: error (stale socket)
+        setTimeout(() => socket.emit("error", new Error("ECONNREFUSED")), 5);
+      } else {
+        // Subsequent: success
+        setTimeout(() => {
+          socket.emit("connect");
+          setTimeout(() => socket.emit("data", Buffer.from("pong")), 5);
+        }, 5);
+      }
+      return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
+    }) as typeof netModule.default.createConnection);
 
     const sock = await ensureDaemon("zaps");
     expect(sock).toMatch(/daemon\.sock$/);
@@ -320,34 +304,26 @@ describe("pingSocket branches", () => {
     const fsModule = await import("node:fs");
     const fs = fsModule.default;
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
-    vi.mocked(
-      process.kill as unknown as ReturnType<typeof vi.fn>,
-    ).mockReturnValue(undefined);
+    vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
     const netModule = await import("node:net");
     const { EventEmitter } = await import("node:events");
 
     let callCount = 0;
-    vi.mocked(netModule.default.createConnection).mockImplementation(
-      (() => {
-        callCount++;
-        const socket = new EventEmitter();
-        Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
-        if (callCount > 1) {
-          // Success for subsequent pings via microtask (unaffected by fake timers)
-          queueMicrotask(() => {
-            socket.emit("connect");
-            queueMicrotask(() =>
-              socket.emit("data", Buffer.from("pong")),
-            );
-          });
-        }
-        // First call: no events → relies on 500ms timeout in pingSocket
-        return socket as unknown as ReturnType<
-          typeof netModule.default.createConnection
-        >;
-      }) as typeof netModule.default.createConnection,
-    );
+    vi.mocked(netModule.default.createConnection).mockImplementation((() => {
+      callCount += 1;
+      const socket = new EventEmitter();
+      Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
+      if (callCount > 1) {
+        // Success for subsequent pings via microtask (unaffected by fake timers)
+        queueMicrotask(() => {
+          socket.emit("connect");
+          queueMicrotask(() => socket.emit("data", Buffer.from("pong")));
+        });
+      }
+      // First call: no events → relies on 500ms timeout in pingSocket
+      return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
+    }) as typeof netModule.default.createConnection);
 
     const promise = ensureDaemon("zaps");
     // Advance past pingSocket's 500ms timeout

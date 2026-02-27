@@ -207,9 +207,7 @@ describe("Session", () => {
 
     it("includes task shortcuts from getTaskShortcuts", async () => {
       const { getTaskShortcuts } = await import("../../src/lib/taskShortcuts.js");
-      vi.mocked(getTaskShortcuts).mockReturnValue([
-        { shortcut: "b", name: "Build" },
-      ]);
+      vi.mocked(getTaskShortcuts).mockReturnValue([{ shortcut: "b", name: "Build" }]);
 
       const params = createSessionParams({
         config: {

@@ -42,7 +42,9 @@ describe("projectConfigSchema", () => {
           build: {
             name: "Build",
             commands: "npm run build",
-            run: async () => {},
+            run: async () => {
+              /* Noop */
+            },
           },
         },
       });
@@ -73,7 +75,9 @@ describe("projectConfigSchema", () => {
         tasks: {
           build: {
             name: "Build",
-            run: async () => {},
+            run: async () => {
+              /* Noop */
+            },
             popup: true,
           },
         },
@@ -99,10 +103,7 @@ describe("projectConfigSchema", () => {
             { pane: "api", size: "50%" },
             {
               direction: "columns",
-              children: [
-                { pane: "api", size: "50%" },
-                { pane: "api" },
-              ],
+              children: [{ pane: "api", size: "50%" }, { pane: "api" }],
             },
           ],
         },
@@ -161,10 +162,18 @@ describe("projectConfigSchema", () => {
         services: {
           api: {
             start: "npm dev",
-            onBeforeStart: async () => {},
-            onReady: async () => {},
-            onStop: async () => {},
-            onOutput: async () => {},
+            onBeforeStart: async () => {
+              /* Noop */
+            },
+            onReady: async () => {
+              /* Noop */
+            },
+            onStop: async () => {
+              /* Noop */
+            },
+            onOutput: async () => {
+              /* Noop */
+            },
           },
         },
       });
@@ -174,7 +183,14 @@ describe("projectConfigSchema", () => {
     it("accepts task with run function", () => {
       const result = projectConfigSchema.safeParse({
         services: { api: { start: "npm dev" } },
-        tasks: { build: { name: "Build", run: async () => {} } },
+        tasks: {
+          build: {
+            name: "Build",
+            run: async () => {
+              /* Noop */
+            },
+          },
+        },
       });
       expect(result.success).toBe(true);
     });
@@ -183,9 +199,15 @@ describe("projectConfigSchema", () => {
       const result = projectConfigSchema.safeParse({
         services: { api: { start: "npm dev" } },
         hooks: {
-          onBeforeStart: async () => {},
-          onStart: async () => {},
-          onStop: async () => {},
+          onBeforeStart: async () => {
+            /* Noop */
+          },
+          onStart: async () => {
+            /* Noop */
+          },
+          onStop: async () => {
+            /* Noop */
+          },
         },
       });
       expect(result.success).toBe(true);
@@ -303,7 +325,11 @@ describe("projectConfigSchema", () => {
           lint: { name: "Lint", commands: ["eslint .", "prettier --check ."] },
         },
         layout: { pane: "api", size: "100%", focus: true },
-        hooks: { onStart: () => {} },
+        hooks: {
+          onStart: () => {
+            /* Noop */
+          },
+        },
       });
       expect(result.success).toBe(true);
     });

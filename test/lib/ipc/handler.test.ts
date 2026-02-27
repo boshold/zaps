@@ -231,13 +231,21 @@ describe("handleRequest", () => {
       ...baseConfig,
       project: {
         ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, run: async () => {} } },
+        tasks: {
+          lint: {
+            name: "Lint",
+            popup: true,
+            run: async () => {
+              /* Noop */
+            },
+          },
+        },
       },
     };
     const socket = createMockSocket();
     const req: IpcRequest = { id: "r16", method: "tasks.run", params: { key: "lint" } };
     const res = await handleRequest(req, manager, config as never, socket as never);
-    // popup=true + run (no commands) → isPopup=false, uses runTaskWithDeps
+    // Popup=true + run (no commands) → isPopup=false, uses runTaskWithDeps
     expect(res.result).toEqual({ success: true });
   });
 
@@ -277,7 +285,7 @@ describe("handleRequest", () => {
   });
 
   it("popup task with no commands falls through to runTaskWithDeps", async () => {
-    // popup=true + no commands → isPopup=false → uses runTaskWithDeps
+    // Popup=true + no commands → isPopup=false → uses runTaskWithDeps
     const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
       runTaskWithDeps: ReturnType<typeof vi.fn>;
     };
@@ -287,7 +295,15 @@ describe("handleRequest", () => {
       ...baseConfig,
       project: {
         ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, run: async () => {} } },
+        tasks: {
+          lint: {
+            name: "Lint",
+            popup: true,
+            run: async () => {
+              /* Noop */
+            },
+          },
+        },
       },
     };
     const socket = createMockSocket();
@@ -311,7 +327,9 @@ describe("handleRequest", () => {
       ...baseConfig,
       project: {
         ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } } },
+        tasks: {
+          lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } },
+        },
       },
     };
     const socket = createMockSocket();
@@ -329,7 +347,7 @@ describe("handleRequest", () => {
       runTaskWithDeps: ReturnType<typeof vi.fn>;
     };
     runTaskWithDeps.mockImplementation(
-      async (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
+      (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
         deps.onLine?.("test", "output");
         deps.onProgress?.("test", "success");
         return true;

@@ -709,7 +709,7 @@ describe("Keyboard routing — Logs scroll", () => {
     await act(() => {
       stdin.write(ARROW_DOWN);
     });
-    // k/j also scroll
+    // K/j also scroll
     await act(() => {
       stdin.write("k");
     });

@@ -340,12 +340,12 @@ describe("DaemonServer", () => {
       handler(socket);
 
       // Add socket as subscriber
-      session.subscribers.add(socket);
-      expect(session.subscribers.has(socket)).toBe(true);
+      session.subscribers.add(socket as never);
+      expect(session.subscribers.has(socket as never)).toBe(true);
 
       // Emit error to trigger cleanup
       socket.emit("error", new Error("ECONNRESET"));
-      expect(session.subscribers.has(socket)).toBe(false);
+      expect(session.subscribers.has(socket as never)).toBe(false);
     });
 
     it("handles multi-chunk JSON buffering", async () => {
@@ -529,7 +529,7 @@ describe("DaemonServer", () => {
       (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
       handler(socket);
 
-      // daemon.sessions.create will throw because of invalid params
+      // Daemon.sessions.create will throw because of invalid params
       const req = `${JSON.stringify({ id: "de1", method: "daemon.sessions.create", params: {} })}\n`;
       socket.emit("data", Buffer.from(req));
       await new Promise((resolve) => setTimeout(resolve, 50));

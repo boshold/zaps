@@ -177,7 +177,7 @@ describe("buildRestartWithMap", () => {
 
     const map = buildRestartWithMap(services);
     expect(map.get("db")).toEqual(["api", "worker", "gateway"]);
-    // gateway only appears once despite being reachable via both api and worker
+    // Gateway only appears once despite being reachable via both api and worker
     expect(map.get("db")?.filter((n) => n === "gateway")).toHaveLength(1);
   });
 });

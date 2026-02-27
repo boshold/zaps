@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { render } from "ink-testing-library";
-import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { DOCKER_REBUILD_FLAGS } from "../../src/components/DockerRebuildView.js";
@@ -28,7 +28,7 @@ const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
 // ── helpers ────────────────────────────────────────────────────────────
 
 /** Let ink's React reconciler flush state updates */
-const tick = () => new Promise<void>((r) => setTimeout(r, 100));
+const tick = async () => new Promise<void>((resolve) => setTimeout(resolve, 100));
 
 function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();
@@ -67,15 +67,17 @@ function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
   };
 }
 
-function renderRouter(opts: {
-  statuses?: ServiceStatus[];
-  tasks?: TaskInfo[];
-  servicesMeta?: ServiceMeta[];
-  paneMap?: Record<string, string>;
-  taskHistory?: TaskRunRecord[];
-  autoStart?: boolean;
-  client?: DaemonClient;
-} = {}) {
+function renderRouter(
+  opts: {
+    statuses?: ServiceStatus[];
+    tasks?: TaskInfo[];
+    servicesMeta?: ServiceMeta[];
+    paneMap?: Record<string, string>;
+    taskHistory?: TaskRunRecord[];
+    autoStart?: boolean;
+    client?: DaemonClient;
+  } = {},
+) {
   const client = opts.client ?? createMockClient();
   const statuses = opts.statuses ?? [makeStatus()];
   const tasks = opts.tasks ?? [];
@@ -129,10 +131,7 @@ describe("Router", () => {
   // ── dashboard input: navigation ──────────────────────────────
 
   it("navigates down with j key", async () => {
-    const statuses = [
-      makeStatus({ name: "web" }),
-      makeStatus({ name: "api" }),
-    ];
+    const statuses = [makeStatus({ name: "web" }), makeStatus({ name: "api" })];
     const { stdin, lastFrame } = renderRouter({ statuses });
     stdin.write("j");
     await tick();
@@ -141,10 +140,7 @@ describe("Router", () => {
   });
 
   it("navigates up with k key", async () => {
-    const statuses = [
-      makeStatus({ name: "web" }),
-      makeStatus({ name: "api" }),
-    ];
+    const statuses = [makeStatus({ name: "web" }), makeStatus({ name: "api" })];
     const { stdin, lastFrame } = renderRouter({ statuses });
     stdin.write("j");
     stdin.write("k");
@@ -164,7 +160,11 @@ describe("Router", () => {
 
   it("ignores r when busy", () => {
     const client = createMockClient();
-    client.restartService = vi.fn().mockReturnValue(new Promise(() => {}));
+    client.restartService = vi.fn().mockReturnValue(
+      new Promise(() => {
+        /* Noop */
+      }),
+    );
     const { stdin } = renderRouter({ client });
     stdin.write("r");
     stdin.write("r");
@@ -218,18 +218,20 @@ describe("Router", () => {
 
   it("enters docker rebuild view with R for docker service", async () => {
     const statuses = [makeStatus({ isDocker: true })];
-    const servicesMeta: ServiceMeta[] = [{
-      name: "web",
-      dependsOn: [],
-      hasDocker: true,
-      dockerDefaults: {
-        build: true,
-        forceRecreate: false,
-        renewVolumes: false,
-        pull: false,
-        removeOrphans: false,
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "web",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: true,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
       },
-    }];
+    ];
     const { stdin, lastFrame } = renderRouter({ statuses, servicesMeta });
     stdin.write("R");
     await tick();
@@ -277,9 +279,7 @@ describe("Router", () => {
   // ── dashboard input: tasks view (t) ──────────────────────────
 
   it("navigates to tasks view with t key", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
     await tick();
@@ -329,9 +329,7 @@ describe("Router", () => {
   // ── tasks view input ─────────────────────────────────────────
 
   it("returns to dashboard from tasks on escape", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
     await tick();
@@ -342,9 +340,7 @@ describe("Router", () => {
   });
 
   it("triggers task run on enter in tasks view", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-    ];
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
     await tick();
@@ -388,18 +384,20 @@ describe("Router", () => {
   describe("docker rebuild view", () => {
     function enterDockerRebuild() {
       const statuses = [makeStatus({ isDocker: true })];
-      const servicesMeta: ServiceMeta[] = [{
-        name: "web",
-        dependsOn: [],
-        hasDocker: true,
-        dockerDefaults: {
-          build: false,
-          forceRecreate: false,
-          renewVolumes: false,
-          pull: false,
-          removeOrphans: false,
+      const servicesMeta: ServiceMeta[] = [
+        {
+          name: "web",
+          dependsOn: [],
+          hasDocker: true,
+          dockerDefaults: {
+            build: false,
+            forceRecreate: false,
+            renewVolumes: false,
+            pull: false,
+            removeOrphans: false,
+          },
         },
-      }];
+      ];
       const client = createMockClient();
       const result = renderRouter({ statuses, servicesMeta, client });
       result.stdin.write("R");
@@ -439,7 +437,7 @@ describe("Router", () => {
       stdin.write("k");
       await tick();
       expect(lastFrame()).toBeDefined();
-      for (let i = 0; i < DOCKER_REBUILD_FLAGS.length + 2; i++) {
+      for (let i = 0; i < DOCKER_REBUILD_FLAGS.length + 2; i += 1) {
         stdin.write("j");
       }
       await tick();
@@ -470,18 +468,20 @@ describe("Router", () => {
 
   it("builds overrides from toggled flags", async () => {
     const statuses = [makeStatus({ isDocker: true })];
-    const servicesMeta: ServiceMeta[] = [{
-      name: "web",
-      dependsOn: [],
-      hasDocker: true,
-      dockerDefaults: {
-        build: false,
-        forceRecreate: false,
-        renewVolumes: false,
-        pull: false,
-        removeOrphans: false,
+    const servicesMeta: ServiceMeta[] = [
+      {
+        name: "web",
+        dependsOn: [],
+        hasDocker: true,
+        dockerDefaults: {
+          build: false,
+          forceRecreate: false,
+          renewVolumes: false,
+          pull: false,
+          removeOrphans: false,
+        },
       },
-    }];
+    ];
     const client = createMockClient();
     const { stdin } = renderRouter({ statuses, servicesMeta, client });
 
@@ -594,9 +594,13 @@ describe("Router", () => {
 
   it("ignores q when busy", () => {
     const client = createMockClient();
-    client.restartService = vi.fn().mockReturnValue(new Promise(() => {}));
+    client.restartService = vi.fn().mockReturnValue(
+      new Promise(() => {
+        /* Noop */
+      }),
+    );
     const { stdin } = renderRouter({ client });
-    stdin.write("r"); // makes busyRef true (restartService never resolves)
+    stdin.write("r"); // Makes busyRef true (restartService never resolves)
     stdin.write("q");
     expect(client.disconnect).not.toHaveBeenCalled();
   });
@@ -605,9 +609,13 @@ describe("Router", () => {
 
   it("ignores ctrl+d when busy", () => {
     const client = createMockClient();
-    client.restartService = vi.fn().mockReturnValue(new Promise(() => {}));
+    client.restartService = vi.fn().mockReturnValue(
+      new Promise(() => {
+        /* Noop */
+      }),
+    );
     const { stdin } = renderRouter({ client });
-    stdin.write("r"); // makes busyRef true
+    stdin.write("r"); // Makes busyRef true
     stdin.write("\x04");
     expect(client.destroySession).not.toHaveBeenCalled();
   });

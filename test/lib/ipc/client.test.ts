@@ -129,10 +129,7 @@ describe("ipcRequest", () => {
     const req = JSON.parse(written.replace("\n", ""));
 
     // Send empty line followed by response
-    mockSocket.emit(
-      "data",
-      Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`),
-    );
+    mockSocket.emit("data", Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`));
 
     const res = await promise;
     expect(res.result).toBe("ok");
@@ -220,10 +217,7 @@ describe("ipcStream", () => {
     const req = JSON.parse(written.replace("\n", ""));
 
     // Empty line followed by response
-    mockSocket.emit(
-      "data",
-      Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`),
-    );
+    mockSocket.emit("data", Buffer.from(`\n${JSON.stringify({ id: req.id, result: "ok" })}\n`));
 
     const res = await promise;
     expect(res.result).toBe("ok");
@@ -238,17 +232,11 @@ describe("ipcStream", () => {
     const req = JSON.parse(written.replace("\n", ""));
 
     // Send message with matching id but neither event nor result
-    mockSocket.emit(
-      "data",
-      Buffer.from(`${JSON.stringify({ id: req.id, something: "else" })}\n`),
-    );
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, something: "else" })}\n`));
     expect(onEvent).not.toHaveBeenCalled();
 
     // Then send valid response
-    mockSocket.emit(
-      "data",
-      Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`),
-    );
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`));
     const res = await promise;
     expect(res.result).toBe("done");
   });
@@ -381,13 +369,13 @@ describe("ipcSubscribe", () => {
     const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
     mockSocket.emit("connect");
     sub.send("session.detach");
-    // subscribe request + send = 2 writes
+    // Subscribe request + send = 2 writes
     expect(mockSocket.write).toHaveBeenCalledTimes(2);
     sub.close();
   });
 
   it("close event without onClose callback does not throw", () => {
-    // ipcSubscribe called without onClose
+    // IpcSubscribe called without onClose
     const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
     mockSocket.emit("connect");
     mockSocket.emit("close"); // Should not throw
