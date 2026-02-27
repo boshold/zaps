@@ -9,6 +9,10 @@ description: Use when interacting with local dev sessions - start/stop services,
 
 Activate when user asks to start/stop/manage local development sessions, run tasks, view logs, or interact with running services (not config authoring).
 
+## Output
+
+All commands automatically output TOON when `CLAUDECODE` is set.
+
 ## Usage
 
 ### Services
