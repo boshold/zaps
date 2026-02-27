@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import type { ResolvedConfig } from "#src/config/types.js";
@@ -6,7 +7,6 @@ import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
-import type net from "node:net";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";

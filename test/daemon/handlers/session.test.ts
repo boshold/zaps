@@ -1,7 +1,7 @@
-import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
+import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 

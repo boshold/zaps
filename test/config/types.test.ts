@@ -1,6 +1,6 @@
-import type { LayoutNode, ProjectConfig, ReadyConfig } from "../../src/config/types.js";
 import { describe, expect, it } from "vitest";
 
+import type { LayoutNode, ProjectConfig, ReadyConfig } from "../../src/config/types.js";
 import {
   isLayoutLeaf,
   isLayoutSplit,

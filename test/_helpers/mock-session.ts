@@ -1,8 +1,8 @@
-import type { SessionStore } from "../../src/daemon/server.js";
-import type { Session } from "../../src/daemon/session.js";
 import { vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
+import type { SessionStore } from "../../src/daemon/server.js";
+import type { Session } from "../../src/daemon/session.js";
 
 export interface MockSession {
   id: string;

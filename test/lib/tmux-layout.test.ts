@@ -1,5 +1,6 @@
-import type { ServiceConfig } from "../../src/config/types.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { ServiceConfig } from "../../src/config/types.js";
 
 // Mock tmux functions
 vi.mock("../../src/lib/tmux.js", () => ({

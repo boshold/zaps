@@ -78,22 +78,18 @@ const mockCreateLayout = vi.mocked(layoutModule.createLayout);
 const tmux = vi.mocked(await import("#src/lib/tmux.js"));
 
 vi.mock("#src/lib/service/manager.js", () => {
-  // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
+  // eslint-disable-next-line no-require-imports, global-require, no-var-requires, unicorn/prefer-module -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
-  return {
-    ServiceManager: vi.fn(() => {
-      const emitter = new EE();
-      return Object.assign(emitter, {
-        startAll: vi.fn().mockResolvedValue(undefined),
-        stopAll: vi.fn().mockResolvedValue(undefined),
-        startService: vi.fn().mockResolvedValue(undefined),
-        stopService: vi.fn().mockResolvedValue(undefined),
-        restartService: vi.fn().mockResolvedValue(undefined),
-        getAllStatuses: vi.fn(() => []),
-        getStatus: vi.fn(),
-      });
-    }),
-  };
+  class MockServiceManager extends EE {
+    startAll = vi.fn().mockResolvedValue(undefined);
+    stopAll = vi.fn().mockResolvedValue(undefined);
+    startService = vi.fn().mockResolvedValue(undefined);
+    stopService = vi.fn().mockResolvedValue(undefined);
+    restartService = vi.fn().mockResolvedValue(undefined);
+    getAllStatuses = vi.fn(() => []);
+    getStatus = vi.fn();
+  }
+  return { ServiceManager: MockServiceManager };
 });
 
 const { DaemonServer } = await import("../../src/daemon/server.js");

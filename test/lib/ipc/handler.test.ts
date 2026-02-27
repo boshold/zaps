@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 
-import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
-import type { ServiceManager } from "../../../src/lib/service/manager.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleRequest } from "../../../src/lib/ipc/handler.js";
+import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
+import type { ServiceManager } from "../../../src/lib/service/manager.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
 vi.mock("../../../src/lib/exec.js", () => ({

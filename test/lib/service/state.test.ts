@@ -1,7 +1,7 @@
-import type { ServiceState } from "../../../src/lib/service/types.js";
 import { describe, expect, it } from "vitest";
 
 import { canTransition, createServiceStatus, transition } from "../../../src/lib/service/state.js";
+import type { ServiceState } from "../../../src/lib/service/types.js";
 
 describe("canTransition", () => {
   const validTransitions: [ServiceState, ServiceState][] = [

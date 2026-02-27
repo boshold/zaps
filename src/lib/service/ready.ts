@@ -1,6 +1,6 @@
 import { isReady } from "#src/lib/docker.js";
-import type { ReadyConfig, ReadyDeps } from "./types.js";
 
+import type { ReadyConfig, ReadyDeps } from "./types.js";
 import { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "./types.js";
 
 const POLL_INTERVAL = 500;

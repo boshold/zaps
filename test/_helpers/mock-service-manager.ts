@@ -1,7 +1,8 @@
 import { EventEmitter } from "node:events";
 
-import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { vi } from "vitest";
+
+import type { ServiceManager } from "../../src/lib/service/manager.js";
 
 export function createMockServiceManager(): ServiceManager {
   const emitter = new EventEmitter();

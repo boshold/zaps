@@ -6,10 +6,9 @@ import path from "node:path";
 import { DaemonClient } from "#src/client/daemon-client.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import type { TestDaemon } from "../helpers/daemon.js";
-import type { TestSession } from "../helpers/tmux.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { TestDaemon } from "../helpers/daemon.js";
 import {
   createTestDaemon,
   waitForAllServices,
@@ -18,6 +17,7 @@ import {
 } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
+import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("DaemonClient integration", () => {

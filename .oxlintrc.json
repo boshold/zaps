@@ -46,6 +46,7 @@
     "typescript/await-thenable": "error",
     "typescript/no-explicit-any": "warn",
     "typescript/no-non-null-assertion": "warn",
+    "typescript/no-invalid-void-type": "off",
     "no-magic-numbers": "off",
     "no-ternary": "off",
     "id-length": "off",
@@ -69,7 +70,8 @@
         "import/no-relative-parent-imports": "off",
         "import/first": "off",
         "promise/prefer-await-to-then": "off",
-        "init-declarations": "off"
+        "init-declarations": "off",
+        "unicorn/prefer-module": "off"
       }
     },
     {

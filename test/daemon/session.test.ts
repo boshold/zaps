@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 
-import type { SessionCreateParams } from "../../src/daemon/session.js";
-import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SessionCreateParams } from "../../src/daemon/session.js";
 import { Session, sessionId } from "../../src/daemon/session.js";
+import type { ServiceManager } from "../../src/lib/service/manager.js";
 
 vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),

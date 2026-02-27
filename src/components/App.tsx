@@ -2,9 +2,9 @@ import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 import { Router } from "./Router.js";
+import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 type PaneMap = Record<string, string>;
 

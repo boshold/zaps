@@ -1,12 +1,12 @@
 import { EventEmitter } from "node:events";
 
-import type { DaemonClient } from "../src/client/daemon-client.js";
-import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
-import type { ServiceStatus } from "../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+import type { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
+import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
+import type { ServiceStatus } from "../src/lib/service/types.js";
 
 // Flush React/Ink reconciler
 async function act(fn?: () => void): Promise<void> {

@@ -1,6 +1,7 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import type { TaskConfig, TaskRunContext } from "../../../src/config/types.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock execCommand and execCommandWithResult
 vi.mock("#src/lib/exec.js", () => ({
@@ -18,9 +19,8 @@ vi.mock("#src/lib/tmux.js", () => ({
   displayPopup: vi.fn().mockResolvedValue(undefined),
 }));
 
-import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
-
 import { execCommand, execCommandWithResult } from "../../../src/lib/exec.js";
+import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
 import { displayPopup } from "../../../src/lib/tmux.js";
 

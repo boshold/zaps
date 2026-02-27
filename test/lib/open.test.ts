@@ -9,11 +9,11 @@ import { openInBrowser } from "../../src/lib/open.js";
 const mockOpen = vi.mocked(open);
 
 beforeEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  vi.clearAllMocks();
 });
 
 describe("openInBrowser", () => {

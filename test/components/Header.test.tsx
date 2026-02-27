@@ -1,8 +1,8 @@
-import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { Header } from "../../src/components/Header.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 function makeStatus(name: string, state: ServiceStatus["state"] = "ready"): ServiceStatus {
   return { name, state, ports: [], retryCount: 0 };

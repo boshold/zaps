@@ -1,10 +1,10 @@
 import { EventEmitter } from "node:events";
 
-import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
+import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { useLogs } from "../../src/hooks/useLogs.js";
 
 function createMockClient(): DaemonClient {

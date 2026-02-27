@@ -111,6 +111,23 @@ export function formatTable(rows: string[][]): string {
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
 }
 
+export async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
+  if (!getEnv("TMUX")) {
+    throw new CliError("Must be inside a tmux session.");
+  }
+  const tmuxSession = await currentSession();
+  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
+  if (!legacySock) {
+    throw new CliError("No running zaps instance found in this session.");
+  }
+  const ipc: SessionIpc = {
+    sessionId: "",
+    request: async (method, params?) => ipcRequest(legacySock, method, params),
+    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
+  };
+  return fn(ipc);
+}
+
 export async function withDaemon<T>(
   fn: (ipc: SessionIpc) => Promise<T>,
   sessionArg?: string,
@@ -149,23 +166,6 @@ export async function withDaemon<T>(
     request: async (method, params?) => ipcRequest(sock, method, params, 30_000, id),
     stream: async (method, params, onEvent) =>
       ipcStream(sock, method, params, onEvent, 120_000, id),
-  };
-  return fn(ipc);
-}
-
-export async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
-  if (!getEnv("TMUX")) {
-    throw new CliError("Must be inside a tmux session.");
-  }
-  const tmuxSession = await currentSession();
-  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
-  if (!legacySock) {
-    throw new CliError("No running zaps instance found in this session.");
-  }
-  const ipc: SessionIpc = {
-    sessionId: "",
-    request: async (method, params?) => ipcRequest(legacySock, method, params),
-    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
   };
   return fn(ipc);
 }

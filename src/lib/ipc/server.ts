@@ -3,9 +3,9 @@ import net from "node:net";
 
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
-import type { IpcRequest } from "./protocol.js";
 
 import { handleRequest } from "./handler.js";
+import type { IpcRequest } from "./protocol.js";
 
 export class IpcServer {
   private server: net.Server | null = null;

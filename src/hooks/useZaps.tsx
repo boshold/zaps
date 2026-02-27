@@ -2,7 +2,7 @@
 import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import type { ReactNode } from "react";
-import { createContext, useContext } from "react";
+import { createContext, useContext, useMemo } from "react";
 
 type PaneMap = Record<string, string>;
 
@@ -31,11 +31,12 @@ export function AppProvider({
   servicesMeta: ServiceMeta[];
   children: ReactNode;
 }) {
-  return (
-    <AppContext.Provider value={{ client, paneMap, projectName, tasks, servicesMeta }}>
-      {children}
-    </AppContext.Provider>
+  const value = useMemo(
+    () => ({ client, paneMap, projectName, tasks, servicesMeta }),
+    [client, paneMap, projectName, tasks, servicesMeta],
   );
+
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useZaps(): AppContextValue {

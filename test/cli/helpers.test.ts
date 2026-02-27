@@ -1,6 +1,6 @@
-import type { SessionInfo } from "../../src/cli/helpers.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SessionInfo } from "../../src/cli/helpers.js";
 import {
   CliError,
   formatTable,

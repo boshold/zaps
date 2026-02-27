@@ -1,6 +1,6 @@
-import type { IpcEvent, IpcMessage, IpcResponse } from "../../../src/lib/ipc/protocol.js";
 import { describe, expect, it } from "vitest";
 
+import type { IpcEvent, IpcMessage, IpcResponse } from "../../../src/lib/ipc/protocol.js";
 import {
   ipcErr,
   ipcOk,

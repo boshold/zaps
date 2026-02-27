@@ -1,8 +1,7 @@
 #!/usr/bin/env node
-import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
-import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { program } from "commander";
 
+import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
   CliError,
   formatTable,
@@ -21,6 +20,7 @@ import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
+import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import {
   currentPaneId,
   currentSession,
@@ -149,14 +149,9 @@ async function upFlow(detach?: boolean): Promise<void> {
   const tuiPaneId = session.paneMap["@tui"];
   await selectPane(tuiPaneId);
 
-  if (tuiPaneId === originPane) {
-    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
-  } else {
-    await sendKeys(
-      tuiPaneId,
-      `${command} ui --session ${session.id} --socket ${sock} --start; exit`,
-    );
-  }
+  await (tuiPaneId === originPane
+    ? runTui({ sessionId: session.id, socketPath: sock, autoStart: true })
+    : sendKeys(tuiPaneId, `${command} ui --session ${session.id} --socket ${sock} --start; exit`));
 }
 
 // --- Smart default: attach if running, else up ---

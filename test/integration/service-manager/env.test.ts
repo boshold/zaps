@@ -10,13 +10,13 @@ import {
   sendKeys,
   setWindowOption,
 } from "#src/lib/tmux.js";
-import type { TestSession } from "../helpers/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
+import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
 
 const deps = {

@@ -1,8 +1,8 @@
-import type { ServiceState } from "../../src/lib/service/types.js";
 import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { StatusIndicator } from "../../src/components/StatusIndicator.js";
+import type { ServiceState } from "../../src/lib/service/types.js";
 
 describe("StatusIndicator", () => {
   it("renders green circle for ready state", () => {

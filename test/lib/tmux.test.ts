@@ -1,7 +1,7 @@
+import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
-import type { ChildProcess } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock child_process.spawn before importing tmux

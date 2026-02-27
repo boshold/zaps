@@ -34,6 +34,43 @@ export async function currentSession(): Promise<string> {
   return run(["display-message", "-p", "#{session_name}"]);
 }
 
+export async function showEnv(session: string, key: string): Promise<string | null> {
+  try {
+    const out = await run(["show-environment", "-t", session, key]);
+    return out.replace(`${key}=`, "");
+  } catch {
+    return null;
+  }
+}
+
+export interface PaneInfo {
+  id: string;
+  pid: number;
+  width: number;
+  height: number;
+}
+
+export async function listPanes(session: string, allWindows = false): Promise<PaneInfo[]> {
+  const args = ["list-panes"];
+  if (allWindows) {
+    args.push("-s");
+  }
+  args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
+  const out = await run(args);
+  if (!out) {
+    return [];
+  }
+  return out.split("\n").map((line) => {
+    const [id, pid, width, height] = line.split(":");
+    return {
+      id,
+      pid: Number.parseInt(pid, 10),
+      width: Number.parseInt(width, 10),
+      height: Number.parseInt(height, 10),
+    };
+  });
+}
+
 export async function listZapsSessions(): Promise<{ session: string; panes: number }[]> {
   try {
     const out = await run(["list-sessions", "-F", "#{session_name}"]);
@@ -133,15 +170,6 @@ export async function removeEnv(session: string, key: string): Promise<void> {
   await run(["set-environment", "-u", "-t", session, key]);
 }
 
-export async function showEnv(session: string, key: string): Promise<string | null> {
-  try {
-    const out = await run(["show-environment", "-t", session, key]);
-    return out.replace(`${key}=`, "");
-  } catch {
-    return null;
-  }
-}
-
 export async function selectPane(target: string): Promise<void> {
   await run(["select-pane", "-t", target]);
 }
@@ -221,33 +249,5 @@ export async function editPaneCapture(target: string, title: string): Promise<vo
     title,
     width: "90%",
     height: "90%",
-  });
-}
-
-export interface PaneInfo {
-  id: string;
-  pid: number;
-  width: number;
-  height: number;
-}
-
-export async function listPanes(session: string, allWindows = false): Promise<PaneInfo[]> {
-  const args = ["list-panes"];
-  if (allWindows) {
-    args.push("-s");
-  }
-  args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
-  const out = await run(args);
-  if (!out) {
-    return [];
-  }
-  return out.split("\n").map((line) => {
-    const [id, pid, width, height] = line.split(":");
-    return {
-      id,
-      pid: Number.parseInt(pid, 10),
-      width: Number.parseInt(width, 10),
-      height: Number.parseInt(height, 10),
-    };
   });
 }
