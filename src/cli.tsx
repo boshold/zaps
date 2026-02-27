@@ -885,21 +885,21 @@ program
   .option("-s, --session <id>", "Target session (auto-detected from CWD)")
   .action(async (opts: { session?: string }) => {
     const sock = socketPath();
-    let sessionId = "";
+    let targetSessionId = "";
     try {
       const res = await ipcRequest(sock, "session.list");
       if (!res.error) {
         // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
         const sessions = res.result as SessionInfo[];
         if (sessions.length > 0) {
-          sessionId = resolveTargetSession(sessions, opts.session).id;
+          targetSessionId = resolveTargetSession(sessions, opts.session).id;
         }
       }
     } catch {
       // Daemon not running — MCP server will report errors per-tool call
     }
     const { startMcpServer } = await import("./mcp/server.js");
-    await startMcpServer(sock, sessionId);
+    await startMcpServer(sock, targetSessionId);
   });
 
 if (process.argv.length === 2) {
