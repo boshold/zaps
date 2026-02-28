@@ -623,7 +623,32 @@ services: {
 }
 ```
 
-## MCP Server
+## AI Integration
+
+ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (recommended) and **MCP**. Skills are more token-efficient since they load context on-demand, while MCP provides a protocol-level interface usable by any MCP-compatible client.
+
+### Claude Code Skills
+
+ZAPS ships two [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) in `.claude/skills/`:
+
+| Skill | Description |
+| --- | --- |
+| `zaps-usage` | Interact with dev sessions — start/stop services, run tasks, view logs |
+| `zaps-config` | Author and edit ZAPS config files (`.zaps.mts`, `.zaps.ts`, `local.zaps.ts`) |
+
+Skills are **recommended over MCP** because they load reference docs on-demand rather than occupying persistent context, resulting in significantly lower token usage.
+
+#### Installation
+
+Copy the `.claude/skills/` directory into your project:
+
+```bash
+cp -r node_modules/zaps/.claude/skills/ .claude/skills/
+```
+
+Claude Code will automatically discover and use the skills when relevant.
+
+### MCP Server
 
 ZAPS exposes an [MCP](https://modelcontextprotocol.io/) server that lets AI agents manage services, run tasks, and read logs.
 
@@ -632,7 +657,7 @@ zaps mcp                   # auto-detects session from CWD
 zaps mcp --session my-app  # target specific session
 ```
 
-### Available Tools
+#### Available Tools
 
 | Tool                   | Description                          |
 | ---------------------- | ------------------------------------ |
@@ -648,13 +673,13 @@ zaps mcp --session my-app  # target specific session
 | `tasks_list`           | List available tasks                 |
 | `tasks_run`            | Run a task and return its output     |
 
-### Resources
+#### Resources
 
 | URI                         | Description                    |
 | --------------------------- | ------------------------------ |
 | `zaps://logs/{serviceName}` | Live log output (subscribable) |
 
-### Claude Code Setup
+#### Claude Code Setup
 
 ```bash
 claude mcp add zaps -- zaps mcp
@@ -671,6 +696,17 @@ Or manually add to `.mcp.json` in your project root:
     }
   }
 }
+```
+
+### CLAUDE.md Setup
+
+Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectively:
+
+```markdown
+## ZAPS
+
+- Use the `zaps-usage` skill to manage dev sessions (start/stop services, run tasks, view logs)
+- Use the `zaps-config` skill when editing ZAPS config files
 ```
 
 ## License
