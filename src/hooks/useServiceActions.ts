@@ -1,12 +1,11 @@
 import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { DockerConfig } from "#src/config/types.js";
 
-// Docker rebuild not yet supported via daemon — stub
-async function rebuildDocker(_name: string, _overrides: Partial<DockerConfig>) {
-  // TODO: Add docker rebuild support to daemon protocol
-}
-
 export function useServiceActions(client: DaemonClient) {
+  async function rebuildDocker(name: string, overrides: Partial<DockerConfig>) {
+    await client.rebuildDocker(name, overrides);
+  }
+
   async function restart(name: string) {
     await client.restartService(name);
   }

@@ -631,9 +631,9 @@ ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (
 
 ZAPS ships two [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) in `.claude/skills/`:
 
-| Skill | Description |
-| --- | --- |
-| `zaps-usage` | Interact with dev sessions — start/stop services, run tasks, view logs |
+| Skill         | Description                                                                  |
+| ------------- | ---------------------------------------------------------------------------- |
+| `zaps-usage`  | Interact with dev sessions — start/stop services, run tasks, view logs       |
 | `zaps-config` | Author and edit ZAPS config files (`.zaps.mts`, `.zaps.ts`, `local.zaps.ts`) |
 
 Skills are **recommended over MCP** because they load reference docs on-demand rather than occupying persistent context, resulting in significantly lower token usage.

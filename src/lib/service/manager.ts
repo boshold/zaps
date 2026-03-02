@@ -320,7 +320,9 @@ export class ServiceManager extends EventEmitter {
     // Build command
     const resolvedCommand = resolveCommand(serviceConfig);
     const envPrefix = formatEnvForShell(env);
-    const command = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
+    const cwd = serviceConfig.cwd ?? this.config.projectDir;
+    const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
+    const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
 
     // Send to pane
     await this.deps.sendKeys(paneTarget, command);

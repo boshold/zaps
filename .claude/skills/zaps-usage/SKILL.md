@@ -1,5 +1,4 @@
 ---
-name: zaps-usage
 description: Use when interacting with local dev sessions/services - start/stop/inspect services, run tasks, view logs via CLI
 ---
 
