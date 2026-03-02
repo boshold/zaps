@@ -8,6 +8,10 @@ description: Use when interacting with local dev sessions/services - start/stop/
 
 Activate when user asks to start/stop/manage local development sessions, run tasks, view logs, or interact with running services (not config authoring).
 
+## First Action
+
+When this skill loads, immediately run `zaps prime-agent` to get the current project overview (services with runtime state/ports + tasks). This primes your context before executing the user's request.
+
 ## Output
 
 All commands automatically output TOON when `CLAUDECODE` is set.
@@ -46,6 +50,12 @@ zaps events       # stream daemon events (--filter <type>)
 zaps --help # see all functions
 ```
 
+### AI
+
+```
+zaps prime-agent  # TOON overview of services (runtime state/ports) + tasks
+```
+
 ## Core Workflow
 
 Restart dev after package install:
@@ -68,3 +78,5 @@ Run prisma migration:
 ```
 zaps run prisma:migrate
 ```
+
+Now run `zaps prime-agent` to prime your context.
