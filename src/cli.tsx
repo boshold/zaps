@@ -11,7 +11,7 @@ import {
   resolveTargetSession,
   withDaemon,
 } from "./cli/helpers.js";
-import { resolveFormat, writeData } from "./cli/output.js";
+import { isCodingAgent, resolveFormat, writeData } from "./cli/output.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -699,6 +699,61 @@ program
       for (const [key, t] of Object.entries(config.project.tasks)) {
         process.stdout.write(`  ${key}  ${t.name}\n`);
       }
+    }
+  });
+
+program
+  .command("prime-agent", { hidden: !isCodingAgent() })
+  .description("Print project overview for AI agent priming")
+  .action(async () => {
+    try {
+      await withDaemon(async (ipc) => {
+        const [svcRes, taskRes] = await Promise.all([
+          ipc.request("services.list"),
+          ipc.request("tasks.list"),
+        ]);
+        if (svcRes.error) {
+          process.stderr.write(`Error: ${svcRes.error}\n`);
+          process.exit(1);
+        }
+        if (taskRes.error) {
+          process.stderr.write(`Error: ${taskRes.error}\n`);
+          process.exit(1);
+        }
+
+        const services = (
+          svcRes.result as {
+            name: string;
+            state: string;
+            ports: number[];
+            url?: string;
+          }[]
+        ).map((s) => ({
+          name: s.name,
+          state: s.state,
+          ports: s.ports,
+        }));
+
+        const tasks = (
+          taskRes.result as {
+            key: string;
+            name: string;
+            description: string | null;
+          }[]
+        ).map((t) => ({
+          key: t.key,
+          name: t.name,
+          description: t.description,
+        }));
+
+        writeData({ services, tasks }, "toon");
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
     }
   });
 

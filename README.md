@@ -627,6 +627,10 @@ services: {
 
 ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (recommended) and **MCP**. Skills are more token-efficient since they load context on-demand, while MCP provides a protocol-level interface usable by any MCP-compatible client.
 
+### Agent Priming
+
+Use `zaps prime-agent` to get a concise TOON overview of all services (with runtime state and ports) and tasks. Useful for bootstrapping an AI agent's context about the current project.
+
 ### Claude Code Skills
 
 ZAPS ships two [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) in `.claude/skills/`:
