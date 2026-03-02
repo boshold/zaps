@@ -1,5 +1,4 @@
 ---
-name: zaps-config
 description: Use when working on ZAPS config files (.zaps.mts/.zaps.ts/local.zaps.ts) - provides service definitions, ready detection, docker integration, tasks, layout, hooks, dependencies, and environment configuration.
 ---
 

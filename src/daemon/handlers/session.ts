@@ -1,6 +1,6 @@
 import type { Socket } from "node:net";
 
-import type { ResolvedConfig } from "#src/config/types.js";
+import type { DockerConfig, ResolvedConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
@@ -158,6 +158,20 @@ export const sessionHandlers: Record<
     try {
       await session.manager.restartService(name);
       return ipcOk(req.id, { restarted: name });
+    } catch (error) {
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+    }
+  },
+
+  async "services.rebuild"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { name, overrides } = req.params as { name: string; overrides: Partial<DockerConfig> };
+    try {
+      await session.manager.restartWithDockerOverrides(name, overrides);
+      return ipcOk(req.id, { rebuilt: name });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }

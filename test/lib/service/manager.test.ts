@@ -345,7 +345,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "PORT='3000' npm run dev");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
   });
 
   it("transitions through stopped -> starting -> ready and emits stateChange", async () => {
@@ -441,7 +441,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "dynamic-cmd");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && dynamic-cmd');
   });
 
   it("guards against double-start when already starting", async () => {
@@ -499,7 +499,23 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "run-cmd");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && run-cmd');
+  });
+
+  it("uses service-level cwd instead of projectDir when set", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", cwd: "/custom/path" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/custom/path" && start-svc');
   });
 });
 
@@ -1162,7 +1178,7 @@ describe("docker config", () => {
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%db",
-      "docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres",
+      'cd "/test" && docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres',
     );
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
@@ -1191,7 +1207,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "custom-start");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", 'cd "/test" && custom-start');
 
     spy.mockRestore();
   });

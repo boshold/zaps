@@ -27,6 +27,7 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
     restartAll: vi.fn().mockResolvedValue(undefined),
+    rebuildDocker: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
   return client as unknown as DaemonClient;

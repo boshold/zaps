@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import type { DockerConfig } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
@@ -104,6 +105,13 @@ export class DaemonClient extends EventEmitter {
 
   async restartService(name: string): Promise<void> {
     const res = await this.request("services.restart", { name });
+    if (res.error) {
+      throw new Error(res.error);
+    }
+  }
+
+  async rebuildDocker(name: string, overrides: Partial<DockerConfig>): Promise<void> {
+    const res = await this.request("services.rebuild", { name, overrides });
     if (res.error) {
       throw new Error(res.error);
     }
