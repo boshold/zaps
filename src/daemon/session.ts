@@ -2,11 +2,14 @@ import { createHash } from "node:crypto";
 import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
+import { loadConfig } from "#src/config/loader.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
+import { createLayout } from "#src/lib/tmux-layout.js";
+import { killPane } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
@@ -51,19 +54,21 @@ export function sessionId(configPath: string): string {
 
 export class Session {
   readonly id: string;
-  readonly name: string;
   readonly configPath: string;
   readonly projectDir: string;
-  readonly config: ResolvedConfig;
-  readonly paneMap: PaneMap;
   readonly tmuxSession: string;
   readonly originPane: string;
-  readonly manager: ServiceManager;
-  readonly logBuffers: Map<string, LogBuffer>;
-  readonly logMonitor: LogMonitor;
   readonly subscribers = new Set<net.Socket>();
   readonly createdAt = Date.now();
   readonly taskHistory: TaskRunRecord[] = [];
+  readonly deps: ServiceManagerDeps;
+
+  name: string;
+  config: ResolvedConfig;
+  paneMap: PaneMap;
+  manager: ServiceManager;
+  logBuffers: Map<string, LogBuffer>;
+  logMonitor: LogMonitor;
 
   constructor(params: SessionCreateParams, manager: ServiceManager) {
     this.id = sessionId(params.configPath);
@@ -74,6 +79,7 @@ export class Session {
     this.paneMap = params.paneMap;
     this.tmuxSession = params.tmuxSession;
     this.originPane = params.originPane;
+    this.deps = params.deps;
     this.manager = manager;
 
     // Create log buffers per service
@@ -95,8 +101,12 @@ export class Session {
       },
     );
 
+    this.wireManagerEvents(manager);
+  }
+
+  private wireManagerEvents(manager: ServiceManager): void {
     // Forward service stateChange events to subscribers
-    this.manager.on("stateChange", (svcName, status) => {
+    manager.on("stateChange", (svcName: string, status: ServiceStatus) => {
       this.broadcast({
         session: this.id,
         event: "service.stateChange",
@@ -104,7 +114,7 @@ export class Session {
       });
     });
 
-    this.manager.on("taskStart", (taskKey, taskName) => {
+    manager.on("taskStart", (taskKey: string, taskName: string) => {
       this.pushTaskRecord({ taskKey, taskName, result: "running", timestamp: Date.now() });
       this.broadcast({
         session: this.id,
@@ -113,7 +123,7 @@ export class Session {
       });
     });
 
-    this.manager.on("taskComplete", (taskKey, taskName, result) => {
+    manager.on("taskComplete", (taskKey: string, taskName: string, result: "success" | "error") => {
       this.pushTaskRecord({ taskKey, taskName, result, timestamp: Date.now() });
       this.broadcast({
         session: this.id,
@@ -156,6 +166,81 @@ export class Session {
         this.logMonitor.start(svcName, paneId);
       }
     }
+  }
+
+  /**
+   * Reload config, recreate layout, and restart services.
+   */
+  async reload(): Promise<void> {
+    // 1. Stop all services and log monitors
+    this.logMonitor.stopAll();
+    await this.manager.stopAll();
+
+    // 2. Remove old manager listeners
+    this.manager.removeAllListeners();
+
+    // 3. Kill all non-TUI panes
+    const tuiPaneId = this.paneMap["@tui"];
+    for (const [name, paneId] of Object.entries(this.paneMap)) {
+      if (name !== "@tui") {
+        await killPane(paneId).catch(() => {
+          /* Best-effort cleanup */
+        });
+      }
+    }
+
+    // 4. Reload config (cache-busted import)
+    const newConfig = await loadConfig(this.configPath, this.projectDir);
+
+    // 5. Recreate tmux layout from TUI pane
+    const { paneMap } = await createLayout(
+      tuiPaneId,
+      newConfig.project.layout,
+      newConfig.project.services,
+    );
+
+    // 6. Create new ServiceManager
+    const { ServiceManager } = await import("#src/lib/service/manager.js");
+    const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.tmuxSession);
+
+    // 7. Swap references
+    this.config = newConfig;
+    this.paneMap = paneMap;
+    this.name = newConfig.project.name ?? "unnamed";
+    this.manager = newManager;
+
+    // 8. Recreate log buffers + monitor
+    this.logBuffers = new Map<string, LogBuffer>();
+    for (const svcName of Object.keys(newConfig.project.services)) {
+      this.logBuffers.set(svcName, new LogBuffer());
+    }
+    this.logMonitor = new LogMonitor(
+      { capturePane: this.deps.capturePane },
+      this.logBuffers,
+      (serviceName, lines) => {
+        this.broadcast({
+          session: this.id,
+          event: "log.lines",
+          data: { service: serviceName, lines },
+        });
+      },
+    );
+
+    // 9. Wire up event forwarding on new manager
+    this.wireManagerEvents(newManager);
+
+    // 10. Broadcast reload event with full snapshot
+    this.broadcast({
+      session: this.id,
+      event: "session.configReloaded",
+      data: this.attachSnapshot(),
+    });
+
+    // 11. Start all services in background
+    // eslint-disable-next-line promise/prefer-await-to-then -- Fire-and-forget background start
+    void this.startAll().catch(() => {
+      /* Errors surfaced via stateChange */
+    });
   }
 
   /**

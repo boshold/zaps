@@ -13,6 +13,7 @@ export interface DaemonClientEvents {
   "task.start": (key: string, name: string) => void;
   "task.complete": (key: string, name: string, result: "success" | "error") => void;
   "session.destroyed": () => void;
+  "session.configReloaded": (snapshot: SessionSnapshot) => void;
   disconnect: () => void;
 }
 
@@ -63,6 +64,13 @@ export class DaemonClient extends EventEmitter {
   }
 
   // --- Session operations ---
+
+  async reloadConfig(): Promise<void> {
+    const res = await this.request("session.reload");
+    if (res.error) {
+      throw new Error(res.error);
+    }
+  }
 
   async attach(): Promise<SessionSnapshot> {
     const res = await this.request("session.attach");
@@ -188,6 +196,10 @@ export class DaemonClient extends EventEmitter {
       }
       case "session.destroyed": {
         this.emit("session.destroyed");
+        break;
+      }
+      case "session.configReloaded": {
+        this.emit("session.configReloaded", data);
         break;
       }
       default: {

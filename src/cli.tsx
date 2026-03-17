@@ -33,11 +33,12 @@ import {
 } from "./lib/tmux.js";
 
 declare const __BUILD_TIME__: string;
+declare const __BUILD_BRANCH__: string;
 
 program
   .name("zaps")
   .version(
-    `0.1.0 (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}`,
+    `0.1.0 (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`,
   )
   .description("Terminal session manager")
   .option("-s, --session <session>", "Target session by id/name prefix");
@@ -747,6 +748,28 @@ program
         }));
 
         writeData({ services, tasks }, "toon");
+      }, globalSession());
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
+    }
+  });
+
+program
+  .command("reload")
+  .description("Reload config for running session")
+  .action(async () => {
+    try {
+      await withDaemon(async (ipc) => {
+        const res = await ipc.request("session.reload");
+        if (res.error) {
+          process.stderr.write(`Error: ${res.error}\n`);
+          process.exit(1);
+        }
+        process.stdout.write("Config reloaded.\n");
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {

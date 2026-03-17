@@ -1,4 +1,5 @@
 import type { DaemonClient } from "#src/client/daemon-client.js";
+import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { useEffect, useState } from "react";
 
@@ -10,16 +11,22 @@ export function useServices(client: DaemonClient, initialStatuses: ServiceStatus
       setStatuses((prev) => {
         const idx = prev.findIndex((s) => s.name === status.name);
         if (idx === -1) {
-          return prev;
+          // New service (from config reload) — append
+          return [...prev, status];
         }
         const next = [...prev];
         next[idx] = status;
         return next;
       });
     }
+    function onReload(snapshot: SessionSnapshot) {
+      setStatuses(snapshot.statuses);
+    }
     client.on("service.stateChange", onStateChange);
+    client.on("session.configReloaded", onReload);
     return () => {
       client.off("service.stateChange", onStateChange);
+      client.off("session.configReloaded", onReload);
     };
   }, [client]);
 

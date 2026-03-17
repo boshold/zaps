@@ -1,8 +1,8 @@
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
 import type { DaemonClient } from "#src/client/daemon-client.js";
-import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
+import type { ServiceMeta, SessionSnapshot, TaskInfo } from "#src/daemon/session.js";
 import type { ReactNode } from "react";
-import { createContext, useContext, useMemo } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 type PaneMap = Record<string, string>;
 
@@ -18,10 +18,10 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({
   client,
-  paneMap,
-  projectName,
-  tasks,
-  servicesMeta,
+  paneMap: initialPaneMap,
+  projectName: initialProjectName,
+  tasks: initialTasks,
+  servicesMeta: initialServicesMeta,
   children,
 }: {
   client: DaemonClient;
@@ -31,6 +31,24 @@ export function AppProvider({
   servicesMeta: ServiceMeta[];
   children: ReactNode;
 }) {
+  const [paneMap, setPaneMap] = useState(initialPaneMap);
+  const [projectName, setProjectName] = useState(initialProjectName);
+  const [tasks, setTasks] = useState(initialTasks);
+  const [servicesMeta, setServicesMeta] = useState(initialServicesMeta);
+
+  useEffect(() => {
+    function handleReload(snapshot: SessionSnapshot) {
+      setPaneMap(snapshot.paneMap);
+      setProjectName(snapshot.name);
+      setTasks(snapshot.tasks);
+      setServicesMeta(snapshot.servicesMeta);
+    }
+    client.on("session.configReloaded", handleReload);
+    return () => {
+      client.off("session.configReloaded", handleReload);
+    };
+  }, [client]);
+
   const value = useMemo(
     () => ({ client, paneMap, projectName, tasks, servicesMeta }),
     [client, paneMap, projectName, tasks, servicesMeta],

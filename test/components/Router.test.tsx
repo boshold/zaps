@@ -539,7 +539,7 @@ describe("Router", () => {
       expect(lastFrame()).toBe("");
     });
 
-    it("renders empty when only timer elapsed (no activity)", async () => {
+    it("renders dashboard after timer elapsed (no activity needed)", async () => {
       vi.useFakeTimers();
       const client = createMockClient();
       const { lastFrame } = renderRouter({
@@ -548,13 +548,13 @@ describe("Router", () => {
         client,
       });
 
-      // Advance past MIN_SPLASH_MS but don't emit activity
+      // Advance past MIN_SPLASH_MS — should render even without activity
       await vi.advanceTimersByTimeAsync(1300);
-      // Still not ready (needs activity too)
-      expect(lastFrame()).toBe("");
+      const frame = lastFrame() ?? "";
+      expect(frame.length).toBeGreaterThan(0);
     });
 
-    it("renders empty when only activity detected (timer not elapsed)", () => {
+    it("renders empty before timer elapsed", () => {
       vi.useFakeTimers();
       const client = createMockClient();
       const { lastFrame } = renderRouter({
@@ -563,8 +563,7 @@ describe("Router", () => {
         client,
       });
 
-      // Emit activity but don't advance timer
-      client.emit("service.stateChange", "web", makeStatus());
+      // Timer not yet elapsed — should still be empty
       expect(lastFrame()).toBe("");
     });
 
@@ -590,9 +589,9 @@ describe("Router", () => {
     expect(client.destroySession).toHaveBeenCalled();
   });
 
-  // ── q does not quit when busy ────────────────────────────────
+  // ── q still works during per-service busy ───────────────────
 
-  it("ignores q when busy", () => {
+  it("allows q even when a service is busy", () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -600,14 +599,14 @@ describe("Router", () => {
       }),
     );
     const { stdin } = renderRouter({ client });
-    stdin.write("r"); // Makes busyRef true (restartService never resolves)
+    stdin.write("r"); // Makes service busy (per-service, not global)
     stdin.write("q");
-    expect(client.disconnect).not.toHaveBeenCalled();
+    expect(client.disconnect).toHaveBeenCalled();
   });
 
-  // ── ctrl+d ignored when busy ─────────────────────────────────
+  // ── ctrl+d still works during per-service busy ────────────
 
-  it("ignores ctrl+d when busy", () => {
+  it("allows ctrl+d even when a service is busy", () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -615,8 +614,8 @@ describe("Router", () => {
       }),
     );
     const { stdin } = renderRouter({ client });
-    stdin.write("r"); // Makes busyRef true
+    stdin.write("r"); // Makes service busy
     stdin.write("\x04");
-    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(client.destroySession).toHaveBeenCalled();
   });
 });

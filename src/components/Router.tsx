@@ -28,12 +28,13 @@ function handleDashboardInput(
   ctx: {
     statuses: ServiceStatus[];
     index: number;
-    busyRef: React.RefObject<boolean>;
+    busyServices: React.RefObject<Set<string>>;
     moveUp: () => void;
     moveDown: () => void;
     restart: (name: string) => Promise<void>;
     toggle: (name: string) => Promise<void>;
     restartAll: () => Promise<void>;
+    reloadConfig: () => Promise<void>;
     goToLogs: (name: string) => void;
     goToTasks: () => void;
     goToDockerRebuild: (name: string) => void;
@@ -47,54 +48,58 @@ function handleDashboardInput(
   if (key.downArrow || input === "j") {
     ctx.moveDown();
   }
-  if (input === "r" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
-    ctx.busyRef.current = true;
+  const selected = ctx.statuses[ctx.index];
+  const selectedName = selected?.name;
+  const isBusy = selectedName ? ctx.busyServices.current.has(selectedName) : true;
+
+  if (input === "r" && selected && !isBusy) {
+    ctx.busyServices.current.add(selectedName);
     void ctx
-      .restart(ctx.statuses[ctx.index].name)
+      .restart(selectedName)
       .catch(() => {
         /* IPC error — ignore */
       })
       .finally(() => {
-        ctx.busyRef.current = false;
+        ctx.busyServices.current.delete(selectedName);
       });
   }
-  if (input === "s" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
-    ctx.busyRef.current = true;
+  if (input === "s" && selected && !isBusy) {
+    ctx.busyServices.current.add(selectedName);
     void ctx
-      .toggle(ctx.statuses[ctx.index].name)
+      .toggle(selectedName)
       .catch(() => {
         /* IPC error — ignore */
       })
       .finally(() => {
-        ctx.busyRef.current = false;
+        ctx.busyServices.current.delete(selectedName);
       });
   }
-  if (input === "l" && ctx.statuses[ctx.index]) {
-    ctx.goToLogs(ctx.statuses[ctx.index].name);
+  if (input === "l" && selected) {
+    ctx.goToLogs(selectedName);
   }
-  const selectedUrl = ctx.statuses[ctx.index]?.url;
+  const selectedUrl = selected?.url;
   if (input === "o" && selectedUrl) {
     void openInBrowser(selectedUrl);
   }
-  if (input === "R" && ctx.statuses[ctx.index]?.isDocker) {
-    ctx.goToDockerRebuild(ctx.statuses[ctx.index].name);
+  if (input === "R" && selected?.isDocker) {
+    ctx.goToDockerRebuild(selectedName);
   }
-  if (input === "z" && ctx.statuses[ctx.index]) {
-    const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
+  if (input === "z" && selected) {
+    const paneId = ctx.paneMap[selectedName];
     if (paneId) {
       void zoomPane(paneId);
     }
   }
-  if (input === "E" && ctx.statuses[ctx.index] && !ctx.busyRef.current) {
-    const paneId = ctx.paneMap[ctx.statuses[ctx.index].name];
+  if (input === "E" && selected && !isBusy) {
+    const paneId = ctx.paneMap[selectedName];
     if (paneId) {
-      ctx.busyRef.current = true;
-      void editPaneCapture(paneId, ctx.statuses[ctx.index].name)
+      ctx.busyServices.current.add(selectedName);
+      void editPaneCapture(paneId, selectedName)
         .catch(() => {
           /* IPC error — ignore */
         })
         .finally(() => {
-          ctx.busyRef.current = false;
+          ctx.busyServices.current.delete(selectedName);
         });
     }
   }
@@ -105,15 +110,30 @@ function handleDashboardInput(
   if (input === "t") {
     ctx.goToTasks();
   }
-  if (input === "a" && !ctx.busyRef.current) {
-    ctx.busyRef.current = true;
+  if (input === "a" && ctx.busyServices.current.size === 0) {
+    for (const s of ctx.statuses) {
+      ctx.busyServices.current.add(s.name);
+    }
     void ctx
       .restartAll()
       .catch(() => {
         /* IPC error — ignore */
       })
       .finally(() => {
-        ctx.busyRef.current = false;
+        ctx.busyServices.current.clear();
+      });
+  }
+  if (input === "c" && ctx.busyServices.current.size === 0) {
+    for (const s of ctx.statuses) {
+      ctx.busyServices.current.add(s.name);
+    }
+    void ctx
+      .reloadConfig()
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        ctx.busyServices.current.clear();
       });
   }
 }
@@ -203,7 +223,7 @@ function handleDockerRebuildInput(
     dockerFlags: Record<DockerFlagKey, boolean>;
     setDockerFlags: React.Dispatch<React.SetStateAction<Record<DockerFlagKey, boolean>>>;
     dockerRebuildTarget: string;
-    busyRef: React.RefObject<boolean>;
+    busyServices: React.RefObject<Set<string>>;
     rebuildDocker: (name: string, overrides: Partial<DockerConfig>) => Promise<void>;
     goToDashboard: () => void;
   },
@@ -225,8 +245,8 @@ function handleDockerRebuildInput(
     ctx.setDockerFlags((prev) => ({ ...prev, [flagKey]: !prev[flagKey] }));
     return;
   }
-  if (key.return && !ctx.busyRef.current) {
-    ctx.busyRef.current = true;
+  if (key.return && !ctx.busyServices.current.has(ctx.dockerRebuildTarget)) {
+    ctx.busyServices.current.add(ctx.dockerRebuildTarget);
     const overrides = buildDockerOverrides(ctx.dockerFlags);
     ctx.goToDashboard();
     void ctx
@@ -235,7 +255,7 @@ function handleDockerRebuildInput(
         /* IPC error — ignore */
       })
       .finally(() => {
-        ctx.busyRef.current = false;
+        ctx.busyServices.current.delete(ctx.dockerRebuildTarget);
       });
   }
 }
@@ -267,7 +287,8 @@ export function Router({
   const { index, setIndex, moveUp, moveDown } = useSelection(itemCount);
 
   const { exit } = useInkApp();
-  const busyRef = useRef(false);
+  const busyServices = useRef(new Set<string>());
+  const globalBusyRef = useRef(false);
 
   // Logs state — now uses daemon client event stream
   const {
@@ -329,53 +350,16 @@ export function Router({
     };
   }, [client]);
 
-  // Ready gate: delay rendering until minimum splash time
+  // Ready gate: delay rendering for minimum splash time only
   const [ready, setReady] = useState(!autoStart);
 
   useEffect(() => {
     if (!autoStart) {
       return;
     }
-
-    const MIN_SPLASH_MS = 1200;
-    let activityDetected = false;
-    let timerElapsed = false;
-
-    // Check if services are already starting/ready (daemon started them before TUI connected)
-    const alreadyActive = statuses.some((s) => s.state !== "stopped");
-    if (alreadyActive) {
-      activityDetected = true;
-    }
-
-    function tryReady() {
-      if (activityDetected && timerElapsed) {
-        setReady(true);
-      }
-    }
-
-    function onFirstAction() {
-      activityDetected = true;
-      client.off("service.stateChange", onFirstAction);
-      client.off("task.start", onFirstAction);
-      tryReady();
-    }
-
-    if (!activityDetected) {
-      client.on("service.stateChange", onFirstAction);
-      client.on("task.start", onFirstAction);
-    }
-
-    const timer = setTimeout(() => {
-      timerElapsed = true;
-      tryReady();
-    }, MIN_SPLASH_MS);
-
-    return () => {
-      client.off("service.stateChange", onFirstAction);
-      client.off("task.start", onFirstAction);
-      clearTimeout(timer);
-    };
-  }, [autoStart, client]); // eslint-disable-line react-hooks/exhaustive-deps -- statuses read once on mount
+    const timer = setTimeout(() => setReady(true), 1200);
+    return () => clearTimeout(timer);
+  }, [autoStart]);
 
   // Build service metadata lookup
   const svcMetaMap = new Map(servicesMeta.map((m) => [m.name, m]));
@@ -388,10 +372,10 @@ export function Router({
   useInput((input, key) => {
     // Q / ctrl+c: detach from any view (services keep running)
     if (input === "q" || (key.ctrl && input === "c")) {
-      if (busyRef.current) {
+      if (globalBusyRef.current) {
         return;
       }
-      busyRef.current = true;
+      globalBusyRef.current = true;
       client.disconnect();
       exit();
       return;
@@ -399,10 +383,10 @@ export function Router({
 
     // Ctrl+d: shut down — destroy session from any view
     if (key.ctrl && input === "d") {
-      if (busyRef.current) {
+      if (globalBusyRef.current) {
         return;
       }
-      busyRef.current = true;
+      globalBusyRef.current = true;
       client
         .destroySession()
         .catch(() => {
@@ -419,19 +403,20 @@ export function Router({
       handleDashboardInput(input, key, {
         statuses,
         index,
-        busyRef,
+        busyServices,
         moveUp,
         moveDown,
         restart,
         toggle,
         restartAll,
+        reloadConfig: async () => client.reloadConfig(),
         goToLogs,
         goToTasks,
         destroySession: () => {
-          if (busyRef.current) {
+          if (globalBusyRef.current) {
             return;
           }
-          busyRef.current = true;
+          globalBusyRef.current = true;
           client
             .destroySession()
             .catch(() => {
@@ -482,7 +467,7 @@ export function Router({
         dockerFlags,
         setDockerFlags,
         dockerRebuildTarget,
-        busyRef,
+        busyServices,
         rebuildDocker,
         goToDashboard,
       });
