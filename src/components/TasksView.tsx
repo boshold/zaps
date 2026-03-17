@@ -1,6 +1,7 @@
+import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
-import { Box, useStdout } from "ink";
+import { Box } from "ink";
 import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
@@ -22,8 +23,7 @@ export function TasksView({
   taskHistory,
 }: TasksViewProps) {
   const { client, tasks } = useZaps();
-  const { stdout } = useStdout();
-  const termCols = stdout?.columns ?? 80;
+  const { cols, rows, compact, narrow } = useDimensions();
   const [runningTask, setRunningTask] = useState<string | null>(null);
   const [taskOutput, setTaskOutput] = useState<string[]>([]);
   const [taskResults, setTaskResults] = useState<Record<string, "success" | "error">>({});
@@ -32,7 +32,7 @@ export function TasksView({
 
   async function runTask(taskKey: string) {
     if (runningRef.current) {
-      return; // Prevent concurrent task execution
+      return;
     }
     runningRef.current = true;
     setRunningTask(taskKey);
@@ -56,7 +56,6 @@ export function TasksView({
     runningRef.current = false;
   }
 
-  // Trigger task run when runTrigger changes (from Router Enter key)
   const prevTrigger = useRef(runTrigger);
   useEffect(() => {
     if (runTrigger === prevTrigger.current) {
@@ -72,12 +71,13 @@ export function TasksView({
     void runTask(task.key);
   }, [runTrigger]); // eslint-disable-line react-hooks/exhaustive-deps -- Only trigger on runTrigger
 
-  const termHeight = stdout?.rows ?? 24;
-  const visibleLines = termHeight - 6; // Header + help bar + padding + borders
+  // Chrome: Header(1-2) + padding(2) + margin(1) + help(1) = 5-6
+  const chromeRows = compact ? 4 : 6;
+  const visibleLines = Math.max(1, rows - chromeRows);
 
   return (
-    <Box height={termHeight} flexDirection="column" padding={1}>
-      <Header projectName="Tasks" statuses={[]} width={termCols - 2} />
+    <Box height={rows} flexDirection="column" padding={1}>
+      <Header projectName="Tasks" statuses={[]} width={cols - 2} compact={compact} />
       <Box flexDirection="row" flexGrow={1} marginTop={1}>
         <TaskListPanel
           tasks={tasks}
@@ -86,8 +86,11 @@ export function TasksView({
           runningTask={runningTask}
           taskShortcuts={taskShortcuts}
           taskHistory={taskHistory}
+          maxRows={visibleLines}
+          compact={compact}
+          cols={narrow ? cols - 2 : undefined}
         />
-        <TaskOutputPanel lines={taskOutput} visibleLines={visibleLines} />
+        {!narrow && <TaskOutputPanel lines={taskOutput} visibleLines={visibleLines} />}
       </Box>
     </Box>
   );

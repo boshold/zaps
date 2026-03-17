@@ -7,6 +7,7 @@ import { StatusCell } from "./StatusCell.js";
 interface ServiceRowProps {
   status: ServiceStatus;
   isSelected: boolean;
+  cols: number;
 }
 
 function formatPorts(ports: number[]): string {
@@ -39,23 +40,88 @@ function stateLabel(status: ServiceStatus): string {
   return status.state;
 }
 
-export function ServiceRow({ status, isSelected }: ServiceRowProps) {
-  const portsStr = formatPorts(status.ports);
+// 4 chars: selector(2) + status(1) + space(1)
+const PREFIX_WIDTH = 4;
 
+export function ServiceRow({ status, isSelected, cols }: ServiceRowProps) {
+  const portsStr = formatPorts(status.ports);
+  const available = cols - PREFIX_WIDTH;
+
+  // Cols >= 80: NAME(24) STATUS(10) PORTS(24) URL(rest)
+  // Cols >= 50: NAME(20) STATUS(10) PORTS(rest)
+  // Cols >= 30: NAME(rest) STATUS(8)
+  // Cols < 30:  NAME only (truncated)
+
+  if (cols >= 80) {
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text>{isSelected ? "> " : "  "}</Text>
+          <StatusCell status={status} />
+          <Text> </Text>
+          <Text bold={isSelected}>{status.name.padEnd(24)}</Text>
+          <Text>{stateLabel(status).padEnd(10)}</Text>
+          <Text dimColor>{portsStr.padEnd(24)}</Text>
+          <Text dimColor wrap="truncate">
+            {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(
+              Math.max(0, available - 24 - 10 - 24),
+            )}
+          </Text>
+        </Box>
+        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+      </Box>
+    );
+  }
+
+  if (cols >= 50) {
+    const nameWidth = 20;
+    const statusWidth = 10;
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text>{isSelected ? "> " : "  "}</Text>
+          <StatusCell status={status} />
+          <Text> </Text>
+          <Text bold={isSelected}>{status.name.padEnd(nameWidth)}</Text>
+          <Text>{stateLabel(status).padEnd(statusWidth)}</Text>
+          <Text dimColor wrap="truncate">
+            {portsStr}
+          </Text>
+        </Box>
+        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+      </Box>
+    );
+  }
+
+  if (cols >= 30) {
+    const statusWidth = 8;
+    const nameWidth = Math.max(4, available - statusWidth);
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text>{isSelected ? "> " : "  "}</Text>
+          <StatusCell status={status} />
+          <Text> </Text>
+          <Text bold={isSelected}>{status.name.slice(0, nameWidth).padEnd(nameWidth)}</Text>
+          <Text wrap="truncate">{stateLabel(status).slice(0, statusWidth)}</Text>
+        </Box>
+        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+      </Box>
+    );
+  }
+
+  // Tiny: name only
+  const nameWidth = Math.max(1, available);
   return (
     <Box flexDirection="column">
       <Box>
         <Text>{isSelected ? "> " : "  "}</Text>
         <StatusCell status={status} />
         <Text> </Text>
-        <Text bold={isSelected}>{status.name.padEnd(24)}</Text>
-        <Text>{stateLabel(status).padEnd(10)}</Text>
-        <Text dimColor>{portsStr.padEnd(24)}</Text>
-        <Text dimColor>
-          {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(38)}
+        <Text bold={isSelected} wrap="truncate">
+          {status.name.slice(0, nameWidth)}
         </Text>
       </Box>
-      {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
     </Box>
   );
 }

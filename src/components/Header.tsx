@@ -7,13 +7,14 @@ interface HeaderProps {
   projectName: string;
   statuses: ServiceStatus[];
   width: number;
+  compact?: boolean;
 }
 
-export function Header({ projectName, statuses, width }: HeaderProps) {
+export function Header({ projectName, statuses, width, compact }: HeaderProps) {
   return (
     <Box flexDirection="column">
       <HeaderRow projectName={projectName} statuses={statuses} />
-      <Text dimColor>{"─".repeat(width)}</Text>
+      {!compact && <Text dimColor>{"─".repeat(width)}</Text>}
     </Box>
   );
 }

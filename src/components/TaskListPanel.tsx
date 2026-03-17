@@ -13,6 +13,17 @@ interface TaskListPanelProps {
   runningTask: string | null;
   taskShortcuts: TaskShortcut[];
   taskHistory: TaskRunRecord[];
+  maxRows?: number;
+  compact?: boolean;
+  cols?: number;
+}
+
+function computeScrollOffset(selectedIndex: number, total: number, maxRows: number): number {
+  if (total <= maxRows) {
+    return 0;
+  }
+  const half = Math.floor(maxRows / 2);
+  return Math.max(0, Math.min(selectedIndex - half, total - maxRows));
 }
 
 export function TaskListPanel({
@@ -22,27 +33,64 @@ export function TaskListPanel({
   runningTask,
   taskShortcuts,
   taskHistory,
+  maxRows,
+  compact,
+  cols,
 }: TaskListPanelProps) {
   const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
 
+  // Help text takes 1 row, history takes 2+ rows
+  const helpRows = compact ? 0 : 1;
+  const historyRows =
+    compact || taskHistory.length === 0 ? 0 : Math.min(taskHistory.length, 10) + 2;
+  const taskMaxRows =
+    maxRows !== undefined ? Math.max(1, maxRows - helpRows - historyRows) : undefined;
+
+  const total = tasks.length;
+  const needsScroll = taskMaxRows !== undefined && total > taskMaxRows;
+  const offset = needsScroll ? computeScrollOffset(selectedIndex, total, taskMaxRows) : 0;
+
+  // Adjust for scroll indicators
+  const hasAbove = offset > 0;
+  const hasBelow = needsScroll && offset + taskMaxRows < total;
+  const indicatorRows = (hasAbove ? 1 : 0) + (hasBelow ? 1 : 0);
+  const visibleCount = needsScroll ? Math.max(1, taskMaxRows - indicatorRows) : total;
+  const adjOffset = needsScroll ? computeScrollOffset(selectedIndex, total, visibleCount) : 0;
+  const visible = tasks.slice(adjOffset, adjOffset + visibleCount);
+  const above = adjOffset;
+  const below = total - adjOffset - visibleCount;
+
   return (
-    <Box flexDirection="column" flexShrink={0} marginRight={1}>
+    <Box flexDirection="column" flexShrink={0} marginRight={compact ? 0 : 1}>
       <Box flexDirection="column" flexGrow={1}>
-        {tasks.map((task, i) => (
+        {above > 0 && (
+          <Text dimColor>
+            {"  "}↑ {above} more
+          </Text>
+        )}
+        {visible.map((task, i) => (
           <TaskRow
             key={task.key}
             task={task}
-            isSelected={i === selectedIndex}
+            isSelected={i + adjOffset === selectedIndex}
             result={taskResults[task.key]}
             isRunning={runningTask === task.key}
             shortcut={shortcutMap.get(task.name)}
+            maxWidth={cols}
           />
         ))}
+        {below > 0 && (
+          <Text dimColor>
+            {"  "}↓ {below} more
+          </Text>
+        )}
       </Box>
-      <TaskHistorySection title="History" history={taskHistory} limit={10} />
-      <Box marginTop={1}>
-        <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [esc] back</Text>
-      </Box>
+      {!compact && <TaskHistorySection title="History" history={taskHistory} limit={10} />}
+      {!compact && (
+        <Box marginTop={1}>
+          <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [esc] back</Text>
+        </Box>
+      )}
     </Box>
   );
 }

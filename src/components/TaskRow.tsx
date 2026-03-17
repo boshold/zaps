@@ -7,6 +7,7 @@ interface TaskRowProps {
   result?: "success" | "error";
   isRunning: boolean;
   shortcut?: string;
+  maxWidth?: number;
 }
 
 function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
@@ -22,8 +23,19 @@ function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
   return { icon: "○", color: "gray" } as const;
 }
 
-export function TaskRow({ task, isSelected, result, isRunning, shortcut }: TaskRowProps) {
+export function TaskRow({ task, isSelected, result, isRunning, shortcut, maxWidth }: TaskRowProps) {
   const { icon, color } = getIconAndColor(isRunning, result);
+
+  if (maxWidth !== undefined && maxWidth < 40) {
+    // Narrow: just icon + name, truncated
+    return (
+      <Box>
+        <Text>{isSelected ? ">" : " "} </Text>
+        <Text color={color}>{icon}</Text>
+        <Text wrap="truncate"> {task.name}</Text>
+      </Box>
+    );
+  }
 
   return (
     <Box>

@@ -1,4 +1,5 @@
-import { Box, Text, useStdout } from "ink";
+import { useDimensions } from "#src/hooks/useDimensions.js";
+import { Box, Text } from "ink";
 
 import { DockerFlagRow } from "./DockerFlagRow.js";
 
@@ -19,23 +20,21 @@ interface DockerRebuildPopupProps {
 }
 
 const POPUP_WIDTH = 52;
-// 1 border top + 1 title + 1 blank + 5 flags + 1 blank + 1 hint + 1 border bottom
 const POPUP_HEIGHT = 12;
 
 export function DockerRebuildPopup({ serviceName, flags, flagIndex }: DockerRebuildPopupProps) {
-  const { stdout } = useStdout();
-  const termHeight = stdout?.rows ?? 24;
-  const termCols = stdout?.columns ?? 80;
+  const { cols: termCols, rows: termHeight } = useDimensions();
 
+  const popupWidth = Math.min(POPUP_WIDTH, Math.max(20, termCols - 2));
   const marginTop = Math.max(0, Math.floor((termHeight - POPUP_HEIGHT) / 2));
-  const marginLeft = Math.max(0, Math.floor((termCols - POPUP_WIDTH) / 2));
+  const marginLeft = Math.max(0, Math.floor((termCols - popupWidth) / 2));
 
   return (
     <Box
       position="absolute"
       marginTop={marginTop}
       marginLeft={marginLeft}
-      width={POPUP_WIDTH}
+      width={popupWidth}
       flexDirection="column"
       borderStyle="round"
       borderColor="cyan"
