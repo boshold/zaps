@@ -10,7 +10,12 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
-  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __BUILD_BRANCH__: JSON.stringify(
+      execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim(),
+    ),
+  },
 });
 
 // Emit declarations

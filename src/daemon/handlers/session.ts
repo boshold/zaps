@@ -94,6 +94,19 @@ export const sessionHandlers: Record<
     return ipcOk(req.id, { subscribed: true });
   },
 
+  async "session.reload"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    try {
+      await session.reload();
+      return ipcOk(req.id, { reloaded: true });
+    } catch (error) {
+      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+    }
+  },
+
   async "services.list"(req, store) {
     const session = getSession(req, store);
     if (!session) {

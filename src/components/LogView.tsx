@@ -1,4 +1,5 @@
-import { Box, Text, useStdout } from "ink";
+import { useDimensions } from "#src/hooks/useDimensions.js";
+import { Box, Text } from "ink";
 
 import { Header } from "./Header.js";
 
@@ -10,10 +11,8 @@ export interface LogViewProps {
 }
 
 export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps) {
-  const { stdout } = useStdout();
-  const termHeight = stdout?.rows ?? 24;
-  const termCols = stdout?.columns ?? 80;
-  const visibleLines = termHeight - 4; // Header + help bar + padding
+  const { cols, rows, compact } = useDimensions();
+  const visibleLines = Math.max(1, rows - 4);
 
   const displayLines = autoScroll
     ? lines.slice(-visibleLines)
@@ -21,11 +20,13 @@ export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps
 
   return (
     <Box flexDirection="column" padding={1} height="100%">
-      <Header projectName={serviceName} statuses={[]} width={termCols} />
+      <Header projectName={serviceName} statuses={[]} width={cols} compact={compact} />
       <Box flexDirection="column" flexGrow={1} marginTop={1}>
         {displayLines.map((line, i) => (
           // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
-          <Text key={i}>{line}</Text>
+          <Text key={i} wrap="truncate">
+            {line}
+          </Text>
         ))}
       </Box>
       <Box marginTop={1}>

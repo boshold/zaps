@@ -27,6 +27,10 @@ export function envEchoServerCmd(port: number, envVar: string): string {
   return `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end(process.env['${envVar}']||'')}).listen(${port},()=>console.log('ready on port ${port}'))"`;
 }
 
+export function wrapperStartCmd(port: number, delayMs: number): string {
+  return `sh -c 'node -e "setTimeout(()=>require('"'"'http'"'"').createServer((_,r)=>{r.writeHead(200);r.end('"'"'ok'"'"')}).listen(${port},()=>console.log('"'"'ready on port ${port}'"'"')),${delayMs})" &'`;
+}
+
 export function longRunningCmd(): string {
   return `node -e "setInterval(()=>{},60000)"`;
 }

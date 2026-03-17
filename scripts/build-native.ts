@@ -58,13 +58,18 @@ export * from "./generated/YGEnums.js";
 };
 
 // Step 1 – bundle to single ESM file (TLA-free thanks to plugins)
+const branchOutput = await $`git rev-parse --abbrev-ref HEAD`.text();
+const branchName = branchOutput.trim();
 const result = await Bun.build({
   entrypoints: ["./src/cli.tsx"],
   target: "bun",
   outdir: "./dist",
   naming: "cli.js",
   plugins: [tlaFixPlugin],
-  define: { __BUILD_TIME__: JSON.stringify(new Date().toISOString()) },
+  define: {
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __BUILD_BRANCH__: JSON.stringify(branchName),
+  },
 });
 
 if (!result.success) {

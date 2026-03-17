@@ -80,6 +80,29 @@ describe("useServices", () => {
     expect(lastFrame()).toContain("api:stopped");
   });
 
+  it("resets statuses on session.configReloaded event", async () => {
+    const initial = [makeStatus("db", "ready"), makeStatus("api", "ready")];
+    const client = createMockClient(initial);
+
+    function TestWrapper() {
+      const statuses = useServices(client, initial);
+      return <Text>{statuses.map((s) => `${s.name}:${s.state}`).join(",")}</Text>;
+    }
+
+    const { lastFrame } = render(<TestWrapper />);
+    expect(lastFrame()).toContain("db:ready");
+
+    // Emit config reload with new service set
+    const newStatuses = [makeStatus("web", "stopped"), makeStatus("worker", "stopped")];
+    await act(() => {
+      client.emit("session.configReloaded", { statuses: newStatuses });
+    });
+
+    expect(lastFrame()).toContain("web:stopped");
+    expect(lastFrame()).toContain("worker:stopped");
+    expect(lastFrame()).not.toContain("db");
+  });
+
   it("cleans up event listener on unmount", () => {
     const initial = [makeStatus("db")];
     const client = createMockClient(initial);

@@ -252,7 +252,7 @@ describe("Keyboard routing — View switching", () => {
     });
 
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("Tasks");
+    expect(frame).toContain("[enter] run");
     expect(frame).toContain("[m]");
     expect(frame).toContain("Run migrations");
   });
@@ -270,7 +270,7 @@ describe("Keyboard routing — View switching", () => {
     await act(() => {
       stdin.write("t");
     });
-    expect(lastFrame()).toContain("Tasks");
+    expect(lastFrame()).toContain("[enter] run");
 
     // Go back
     await act(() => {
@@ -524,7 +524,7 @@ describe("Keyboard routing — Tasks view", () => {
     });
 
     // Should show tasks view with second task selected
-    expect(lastFrame()).toContain("Tasks");
+    expect(lastFrame()).toContain("[enter] run");
   });
 });
 

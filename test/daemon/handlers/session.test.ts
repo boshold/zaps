@@ -55,6 +55,36 @@ describe("session handlers", () => {
     });
   });
 
+  describe("session.reload", () => {
+    it("calls reload on session", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = { id: "r-reload", method: "session.reload", session: session.id };
+      const res = await sessionHandlers["session.reload"](req, store, socket as never);
+      expect(res.result).toEqual({ reloaded: true });
+      expect(session.reload).toHaveBeenCalled();
+    });
+
+    it("returns error for unknown session", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = { id: "r-reload2", method: "session.reload", session: "bad" };
+      const res = await sessionHandlers["session.reload"](req, store, socket as never);
+      expect(res.error).toBe("Unknown session");
+    });
+
+    it("returns error when reload fails", async () => {
+      const session = createMockSession();
+      session.reload = vi.fn().mockRejectedValue(new Error("Config invalid"));
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = { id: "r-reload3", method: "session.reload", session: session.id };
+      const res = await sessionHandlers["session.reload"](req, store, socket as never);
+      expect(res.error).toBe("Config invalid");
+    });
+  });
+
   describe("session.detach", () => {
     it("removes socket from subscribers", async () => {
       const session = createMockSession();

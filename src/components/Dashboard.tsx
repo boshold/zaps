@@ -1,6 +1,7 @@
+import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { Box, useStdout } from "ink";
+import { Box } from "ink";
 
 import { ActionHints } from "./ActionHints.js";
 import { ColumnHeaders } from "./ColumnHeaders.js";
@@ -18,19 +19,29 @@ interface DashboardProps {
 
 export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardProps) {
   const { projectName } = useZaps();
-  const { stdout } = useStdout();
-  const rows = stdout?.rows ?? 24;
-  const cols = Math.min(stdout?.columns ?? 100, 100);
+  const { cols, rows, compact } = useDimensions();
+  const width = Math.min(cols, 100);
+
+  // Compute chrome rows to determine maxRows for service list
+  // Normal: Header(2) + ColumnHeaders(2) + ActionHints(2) + HelpBar(1) = 7
+  // Compact: Header(1) + HelpBar(1) = 2
+  const chromeRows = compact ? 2 : 7;
+  const maxRows = Math.max(1, rows - chromeRows);
 
   return (
     <Box height={rows} alignItems="center" justifyContent="center">
-      <Box flexDirection="column" width={cols}>
-        <Header projectName={projectName} statuses={statuses} width={cols} />
-        <ColumnHeaders />
-        <ServiceList statuses={statuses} selectedIndex={selectedIndex} />
-        <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
-        <ActionHints status={statuses[selectedIndex]} />
-        <HelpBar />
+      <Box flexDirection="column" width={width}>
+        <Header projectName={projectName} statuses={statuses} width={width} compact={compact} />
+        {!compact && <ColumnHeaders cols={width} />}
+        <ServiceList
+          statuses={statuses}
+          selectedIndex={selectedIndex}
+          maxRows={maxRows}
+          cols={width}
+        />
+        {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
+        {!compact && <ActionHints status={statuses[selectedIndex]} />}
+        <HelpBar compact={compact} status={statuses[selectedIndex]} />
       </Box>
     </Box>
   );

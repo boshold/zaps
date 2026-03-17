@@ -43,6 +43,7 @@ export interface MockSession {
   taskHistory: unknown[];
   attachSnapshot: ReturnType<typeof vi.fn>;
   startAll: ReturnType<typeof vi.fn>;
+  reload: ReturnType<typeof vi.fn>;
   destroy: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   pushTaskRecord: ReturnType<typeof vi.fn>;
@@ -107,6 +108,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       taskHistory: [],
     })),
     startAll: vi.fn().mockResolvedValue(undefined),
+    reload: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
     broadcast: vi.fn(),
     pushTaskRecord: vi.fn(),

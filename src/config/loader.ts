@@ -91,7 +91,9 @@ function resolveProjectDir(
  */
 export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
   const absolutePath = new URL(configPath, `file://${process.cwd()}/`).href;
-  const mod = await import(absolutePath);
+  // Cache-bust: append unique query param to force re-import on reload
+  const importUrl = `${absolutePath}?t=${Date.now()}`;
+  const mod = await import(importUrl);
 
   const configFn = mod.config ?? mod.default;
   if (typeof configFn !== "function") {

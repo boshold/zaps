@@ -122,6 +122,23 @@ describe("DaemonClient", () => {
       await expect(client.attach()).rejects.toThrow("Unknown session");
     });
 
+    it("reloadConfig", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: { reloaded: true } });
+      await client.reloadConfig();
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "session.reload",
+        undefined,
+        30_000,
+        "sess1",
+      );
+    });
+
+    it("reloadConfig throws on error", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Config invalid" });
+      await expect(client.reloadConfig()).rejects.toThrow("Config invalid");
+    });
+
     it("destroySession", async () => {
       mockIpcRequest.mockResolvedValue({ id: "r1", result: { destroyed: true } });
       await client.destroySession();
@@ -300,6 +317,21 @@ describe("DaemonClient", () => {
       });
 
       expect(spy).toHaveBeenCalled();
+    });
+
+    it("routes session.configReloaded", () => {
+      const spy = vi.fn();
+      client.on("session.configReloaded", spy);
+      client.connect();
+
+      const snapshot = { id: "sess1", name: "test", statuses: [] };
+      eventHandler({
+        session: "sess1",
+        event: "session.configReloaded",
+        data: snapshot,
+      });
+
+      expect(spy).toHaveBeenCalledWith(snapshot);
     });
 
     it("ignores unknown events", () => {

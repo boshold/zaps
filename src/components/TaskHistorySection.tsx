@@ -7,20 +7,32 @@ interface TaskHistorySectionProps {
   title: string;
   history: TaskRunRecord[];
   limit: number;
+  maxWidth?: number;
+  width?: number;
 }
 
-export function TaskHistorySection({ title, history, limit }: TaskHistorySectionProps) {
+export function TaskHistorySection({
+  title,
+  history,
+  limit,
+  maxWidth,
+  width,
+}: TaskHistorySectionProps) {
   if (history.length === 0) {
     return null;
   }
 
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={1} width={width} overflow={width ? "hidden" : undefined}>
       <Text bold dimColor>
         {title}
       </Text>
       {history.slice(0, limit).map((record) => (
-        <TaskHistoryRow key={`${record.taskKey}-${String(record.timestamp)}`} record={record} />
+        <TaskHistoryRow
+          key={`${record.taskKey}-${String(record.timestamp)}`}
+          record={record}
+          maxWidth={maxWidth}
+        />
       ))}
     </Box>
   );
