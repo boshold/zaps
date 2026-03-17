@@ -45,7 +45,7 @@ async function walkLayout(
     const paneIds: string[] = [currentPaneId];
 
     // Children 2..N: split from the *previous* pane so tmux inserts each
-    // new pane after its predecessor, preserving the declared order.
+    // New pane after its predecessor, preserving the declared order.
     let splitTarget = currentPaneId;
     let parentRemaining = 100;
 

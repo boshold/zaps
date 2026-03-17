@@ -536,6 +536,8 @@ describe("Router", () => {
   // ── ready gate with autoStart ────────────────────────────────
 
   describe("autoStart ready gate", () => {
+    afterEach(() => vi.useRealTimers());
+
     it("renders empty when autoStart and no activity yet", () => {
       vi.useFakeTimers();
       const client = createMockClient();
@@ -559,6 +561,9 @@ describe("Router", () => {
 
       // Advance past MIN_SPLASH_MS — should render even without activity
       await vi.advanceTimersByTimeAsync(1300);
+      // Flush React microtasks without relying on fake setTimeout
+      await Promise.resolve();
+      await Promise.resolve();
       const frame = lastFrame() ?? "";
       expect(frame.length).toBeGreaterThan(0);
     });
