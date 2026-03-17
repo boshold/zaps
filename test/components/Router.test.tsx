@@ -267,6 +267,15 @@ describe("Router", () => {
     expect(zoomPane).not.toHaveBeenCalled();
   });
 
+  // ── dashboard input: zoom TUI pane (Z) ─────────────────────
+
+  it("zooms TUI pane with Z key", () => {
+    const paneMap = { "@tui": "%0", web: "%1" };
+    const { stdin } = renderRouter({ paneMap });
+    stdin.write("Z");
+    expect(zoomPane).toHaveBeenCalledWith("%0");
+  });
+
   // ── dashboard input: edit pane capture (E) ───────────────────
 
   it("captures pane with E key", () => {
@@ -284,7 +293,7 @@ describe("Router", () => {
     stdin.write("t");
     await tick();
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("Tasks");
+    expect(frame).toContain("[enter] run");
   });
 
   // ── dashboard input: restart all (a) ─────────────────────────
@@ -333,7 +342,7 @@ describe("Router", () => {
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
     await tick();
-    expect(lastFrame()).toContain("Tasks");
+    expect(lastFrame()).toContain("[enter] run");
     stdin.write("\x1B");
     await tick();
     expect(lastFrame()).toContain("zaps");
@@ -347,7 +356,7 @@ describe("Router", () => {
     stdin.write("\r");
     await tick();
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("Tasks");
+    expect(frame).toContain("[enter] run");
   });
 
   it("matches task shortcut in tasks view", async () => {
@@ -361,7 +370,7 @@ describe("Router", () => {
     stdin.write("s");
     await tick();
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("Tasks");
+    expect(frame).toContain("[enter] run");
   });
 
   it("navigates tasks list with j/k in tasks view", async () => {

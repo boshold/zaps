@@ -66,11 +66,15 @@ function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
   return undefined;
 }
 
-function buildReadyDeps(serviceConfig: ServiceConfig, deps: ServiceManagerDeps): ReadyDeps {
+function buildReadyDeps(
+  serviceConfig: ServiceConfig,
+  deps: ServiceManagerDeps,
+  projectDir: string,
+): ReadyDeps {
   return {
     detectPorts: deps.detectPorts,
     capturePane: deps.capturePane,
-    cwd: serviceConfig.cwd,
+    cwd: serviceConfig.cwd ?? projectDir,
     composeFile: serviceConfig.docker?.file,
     dockerStatus: getContainerInfo,
   };
@@ -329,7 +333,7 @@ export class ServiceManager extends EventEmitter {
 
     // Wait for ready
     try {
-      const readyDeps = buildReadyDeps(serviceConfig, this.deps);
+      const readyDeps = buildReadyDeps(serviceConfig, this.deps, this.config.projectDir);
       const readyPorts = await waitForReady(
         resolveReadyConfig(serviceConfig),
         paneTarget,

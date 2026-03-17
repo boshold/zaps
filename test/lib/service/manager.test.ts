@@ -1257,7 +1257,7 @@ describe("docker config", () => {
     await promise;
 
     // GetContainerInfo should be called with the composeFile
-    expect(spy).toHaveBeenCalledWith("postgres", undefined, "my-compose.yml");
+    expect(spy).toHaveBeenCalledWith("postgres", "/test", "my-compose.yml");
 
     spy.mockRestore();
   });

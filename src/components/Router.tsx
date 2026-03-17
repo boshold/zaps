@@ -90,6 +90,12 @@ function handleDashboardInput(
       void zoomPane(paneId);
     }
   }
+  if (input === "Z") {
+    const tuiPaneId = ctx.paneMap["@tui"];
+    if (tuiPaneId) {
+      void zoomPane(tuiPaneId);
+    }
+  }
   if (input === "E" && selected && !isBusy) {
     const paneId = ctx.paneMap[selectedName];
     if (paneId) {

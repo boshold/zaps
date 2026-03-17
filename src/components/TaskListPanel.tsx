@@ -15,7 +15,8 @@ interface TaskListPanelProps {
   taskHistory: TaskRunRecord[];
   maxRows?: number;
   compact?: boolean;
-  cols?: number;
+  width: number;
+  showHistory?: boolean;
 }
 
 function computeScrollOffset(selectedIndex: number, total: number, maxRows: number): number {
@@ -35,14 +36,15 @@ export function TaskListPanel({
   taskHistory,
   maxRows,
   compact,
-  cols,
+  width,
+  showHistory = true,
 }: TaskListPanelProps) {
   const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
 
   // Help text takes 1 row, history takes 2+ rows
   const helpRows = compact ? 0 : 1;
   const historyRows =
-    compact || taskHistory.length === 0 ? 0 : Math.min(taskHistory.length, 10) + 2;
+    !showHistory || compact || taskHistory.length === 0 ? 0 : Math.min(taskHistory.length, 10) + 2;
   const taskMaxRows =
     maxRows !== undefined ? Math.max(1, maxRows - helpRows - historyRows) : undefined;
 
@@ -61,7 +63,7 @@ export function TaskListPanel({
   const below = total - adjOffset - visibleCount;
 
   return (
-    <Box flexDirection="column" flexShrink={0} marginRight={compact ? 0 : 1}>
+    <Box flexDirection="column" width={width} overflow="hidden" marginRight={compact ? 0 : 1}>
       <Box flexDirection="column" flexGrow={1}>
         {above > 0 && (
           <Text dimColor>
@@ -76,7 +78,7 @@ export function TaskListPanel({
             result={taskResults[task.key]}
             isRunning={runningTask === task.key}
             shortcut={shortcutMap.get(task.name)}
-            maxWidth={cols}
+            maxWidth={width}
           />
         ))}
         {below > 0 && (
@@ -85,10 +87,14 @@ export function TaskListPanel({
           </Text>
         )}
       </Box>
-      {!compact && <TaskHistorySection title="History" history={taskHistory} limit={10} />}
+      {showHistory && !compact && (
+        <TaskHistorySection title="History" history={taskHistory} limit={10} maxWidth={width} />
+      )}
       {!compact && (
         <Box marginTop={1}>
-          <Text dimColor>[j/k/↑/↓] select [enter] run [key] shortcut [esc] back</Text>
+          <Text dimColor wrap="truncate">
+            [j/k/↑/↓] select [enter] run [key] shortcut [esc] back
+          </Text>
         </Box>
       )}
     </Box>

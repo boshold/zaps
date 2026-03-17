@@ -44,17 +44,19 @@ async function walkLayout(
     // First child inherits the current pane
     const paneIds: string[] = [currentPaneId];
 
-    // Children 2..N: split from the current pane (must be sequential)
-    // Tmux -p is relative to the current physical pane size, so we track
-    // How much of the logical 100% remains after each split.
-    let currentPaneSize = 100;
+    // Children 2..N: split from the *previous* pane so tmux inserts each
+    // new pane after its predecessor, preserving the declared order.
+    let splitTarget = currentPaneId;
+    let parentRemaining = 100;
 
     for (let i = 1; i < children.length; i += 1) {
-      const tmuxPercent = Math.round((sizes[i] / currentPaneSize) * 100);
+      const childRemaining = parentRemaining - sizes[i - 1];
+      const tmuxPercent = Math.round((childRemaining / parentRemaining) * 100);
 
-      const newPaneId = await splitPane(currentPaneId, dir, tmuxPercent);
+      const newPaneId = await splitPane(splitTarget, dir, tmuxPercent);
       paneIds.push(newPaneId);
-      currentPaneSize -= sizes[i];
+      splitTarget = newPaneId;
+      parentRemaining = childRemaining;
     }
 
     // Recurse into each child (must be sequential for tmux ordering)

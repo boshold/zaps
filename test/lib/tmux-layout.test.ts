@@ -127,10 +127,10 @@ describe("createLayout", () => {
     expect(paneMap["api"]).toBe("%1");
     expect(paneMap["web"]).toBe("%2");
 
-    // Child 1 (api): currentPaneSize = 100, tmux = round(30/100*100) = 30
-    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 30);
-    // Child 2 (web): currentPaneSize = 70, tmux = round(30/70*100) = 43
-    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%0", "h", 43);
+    // Child 1 (api): split from %0, remaining = 60, tmux = round(60/100*100) = 60
+    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 60);
+    // Child 2 (web): split from %1, remaining = 30, tmux = round(30/60*100) = 50
+    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", 50);
   });
 
   it("services not in layout get split panes", async () => {
