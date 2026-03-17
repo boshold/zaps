@@ -98,21 +98,23 @@ function parseDarwinLsof(output: string, pidSet: Set<number>): number[] {
  * Returns array including rootPid itself.
  */
 async function getDescendantPidsImpl(rootPid: number): Promise<number[]> {
-  const output = await exec("ps", ["-eo", "pid,ppid"]);
+  const output = await exec("ps", ["-eo", "pid,ppid,sid"]);
   if (!output) {
     return [];
   }
 
-  // Build parent -> children map
+  // Build parent -> children map and collect SID matches
   const childrenMap = new Map<number, number[]>();
+  const sidMatches = new Set<number>();
   const lines = output.trim().split("\n");
 
   // Skip header
   for (let i = 1; i < lines.length; i += 1) {
     const parts = lines[i].trim().split(/\s+/);
-    if (parts.length >= 2) {
+    if (parts.length >= 3) {
       const pid = Number.parseInt(parts[0], 10);
       const ppid = Number.parseInt(parts[1], 10);
+      const sid = Number.parseInt(parts[2], 10);
       if (!Number.isNaN(pid) && !Number.isNaN(ppid)) {
         const existing = childrenMap.get(ppid);
         if (existing) {
@@ -120,12 +122,19 @@ async function getDescendantPidsImpl(rootPid: number): Promise<number[]> {
         } else {
           childrenMap.set(ppid, [pid]);
         }
+        // Collect processes sharing the same session as rootPid.
+        // Tmux panes run in their own session, so SID == pane shell PID.
+        // This catches child processes reparented to PID 1 when their
+        // Parent exits (e.g., wrapper scripts that background a server).
+        if (!Number.isNaN(sid) && sid === rootPid) {
+          sidMatches.add(pid);
+        }
       }
     }
   }
 
   // BFS walk from rootPid
-  const result: number[] = [rootPid];
+  const result = new Set<number>([rootPid]);
   const queue: number[] = [rootPid];
 
   while (queue.length > 0) {
@@ -135,12 +144,17 @@ async function getDescendantPidsImpl(rootPid: number): Promise<number[]> {
     }
     const kids = childrenMap.get(current) ?? [];
     for (const kid of kids) {
-      result.push(kid);
+      result.add(kid);
       queue.push(kid);
     }
   }
 
-  return result;
+  // Union BFS descendants with SID-matched processes
+  for (const pid of sidMatches) {
+    result.add(pid);
+  }
+
+  return [...result];
 }
 
 /**

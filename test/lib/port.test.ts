@@ -37,12 +37,12 @@ beforeEach(() => {
 describe("getDescendantPids", () => {
   it("collects descendants from ps output", async () => {
     const psOutput = [
-      "  PID  PPID",
-      " 1000     1",
-      " 2000  1000",
-      " 3000  2000",
-      " 4000  1000",
-      " 5000     1",
+      "  PID  PPID   SID",
+      " 1000     1  1000",
+      " 2000  1000  1000",
+      " 3000  2000  1000",
+      " 4000  1000  1000",
+      " 5000     1  5000",
     ].join("\n");
 
     mockExecFileOutput(psOutput);
@@ -56,6 +56,24 @@ describe("getDescendantPids", () => {
     expect(result).toHaveLength(4);
   });
 
+  it("finds reparented child via SID match", async () => {
+    // PID 3000 was reparented to PID 1 (parent exited) but retains SID 1000
+    const psOutput = [
+      "  PID  PPID   SID",
+      " 1000     1  1000",
+      " 3000     1  1000",
+      " 5000     1  5000",
+    ].join("\n");
+
+    mockExecFileOutput(psOutput);
+
+    const result = await getDescendantPids(1000);
+    expect(result).toContain(1000);
+    expect(result).toContain(3000);
+    expect(result).not.toContain(5000);
+    expect(result).toHaveLength(2);
+  });
+
   it("returns empty array when ps fails", async () => {
     mockExecFileError();
     const result = await getDescendantPids(1000);
@@ -63,7 +81,7 @@ describe("getDescendantPids", () => {
   });
 
   it("returns just root when no children", async () => {
-    const psOutput = ["  PID  PPID", " 1000     1", " 2000     1"].join("\n");
+    const psOutput = ["  PID  PPID   SID", " 1000     1  1000", " 2000     1  2000"].join("\n");
 
     mockExecFileOutput(psOutput);
 
@@ -239,7 +257,7 @@ describe("detectPorts", () => {
       callCount += 1;
       if (callCount === 1) {
         // Ps output
-        return { stdout: "  PID  PPID\n 1000     1\n 2000  1000\n", stderr: "" };
+        return { stdout: "  PID  PPID   SID\n 1000     1  1000\n 2000  1000  1000\n", stderr: "" };
       }
       // Ss output — same port from two PIDs
       return {
