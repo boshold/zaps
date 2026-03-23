@@ -2,7 +2,12 @@ import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { HelpBar } from "../../src/components/HelpBar.js";
+import type { ServiceStatus } from "../../src/lib/service/types.js";
 import { getTaskShortcuts } from "../../src/lib/taskShortcuts.js";
+
+function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
+  return { name: "api", state: "ready", ports: [], retryCount: 0, ...overrides };
+}
 
 describe("HelpBar", () => {
   it("renders global shortcut hints only", () => {
@@ -19,6 +24,21 @@ describe("HelpBar", () => {
     expect(frame).not.toContain("[r]estart");
     expect(frame).not.toContain("[l]ogs");
     expect(frame).not.toContain("[o]pen");
+  });
+
+  it("renders compact mode with status: shows restart/stop hints", () => {
+    const { lastFrame } = render(<HelpBar compact status={makeStatus()} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[r]estart");
+    expect(frame).toContain("[s]top");
+    expect(frame).toContain("[q]uit");
+  });
+
+  it("renders default mode when compact=true but no status", () => {
+    const { lastFrame } = render(<HelpBar compact />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("[t]asks");
+    expect(frame).not.toContain("[r]estart");
   });
 });
 

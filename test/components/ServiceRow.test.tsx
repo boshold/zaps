@@ -115,4 +115,71 @@ describe("ServiceRow", () => {
     const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
     expect(lastFrame()).toBeTruthy();
   });
+
+  it("renders medium layout (cols >= 50 < 80) with name and status", () => {
+    const status = makeStatus({ name: "api", ports: [3000] });
+    const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected={false} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("api");
+    expect(frame).toContain(":3000");
+  });
+
+  it("renders medium layout selected with lastError", () => {
+    const status = makeStatus({ state: "error", lastError: "connection refused" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("│ Error: connection refused");
+  });
+
+  it("renders narrow layout (cols >= 30 < 50) with name and status", () => {
+    const status = makeStatus({ name: "api" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={40} isSelected={false} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("api");
+  });
+
+  it("renders narrow layout selected with lastError", () => {
+    const status = makeStatus({ state: "error", lastError: "timeout" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={40} isSelected />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("│ Error: timeout");
+  });
+
+  it("renders tiny layout (cols < 30) with name only", () => {
+    const status = makeStatus({ name: "api" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={20} isSelected={false} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("api");
+  });
+
+  it("renders tiny layout selected", () => {
+    const status = makeStatus({ name: "api" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={20} isSelected />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain(">");
+  });
+
+  it("applies indent in wide layout", () => {
+    const status = makeStatus({ name: "api" });
+    const { lastFrame } = render(
+      <ServiceRow status={status} cols={100} isSelected={false} indent />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("api");
+  });
+
+  it("applies indent in medium layout", () => {
+    const status = makeStatus({ name: "api" });
+    const { lastFrame } = render(
+      <ServiceRow status={status} cols={60} isSelected={false} indent />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("api");
+  });
+
+  it("shows retry count in medium layout", () => {
+    const status = makeStatus({ state: "starting", retryCount: 3 });
+    const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected={false} />);
+    expect(lastFrame()).toBeTruthy();
+  });
 });

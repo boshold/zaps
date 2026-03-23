@@ -387,3 +387,135 @@ describe("loadConfig", () => {
     );
   });
 });
+
+describe("docker expand", () => {
+  it("expands docker services with expand: true", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: { service: ["postgres", "redis"], expand: true },
+              restart: { maxRetries: 3 },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+
+    // Parent "infra" should be removed
+    expect(result.project.services.infra).toBeUndefined();
+    // Children should exist
+    expect(result.project.services.postgres).toBeDefined();
+    expect(result.project.services.redis).toBeDefined();
+    // Children inherit restart config
+    expect(result.project.services.postgres.restart?.maxRetries).toBe(3);
+    // Children have _combined metadata
+    expect(result.project.services.postgres._combined?.group).toBe("infra");
+    expect(result.project.services.postgres._combined?.isOwner).toBe(true);
+    expect(result.project.services.redis._combined?.isOwner).toBe(false);
+    expect(result.project.services.redis._combined?.allServices).toEqual(["postgres", "redis"]);
+    // Non-owner implicitly depends on owner
+    expect(result.project.services.redis.dependsOn).toContain("postgres");
+    // Groups map
+    expect(result.groups.get("infra")).toEqual(["postgres", "redis"]);
+  });
+
+  it("rewrites dependsOn referencing group name", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: { service: ["postgres", "redis"], expand: true },
+            },
+            api: {
+              start: "node server.js",
+              dependsOn: ["infra"],
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+    // DependsOn: ["infra"] should expand to ["postgres", "redis"]
+    expect(result.project.services.api.dependsOn).toEqual(["postgres", "redis"]);
+  });
+
+  it("throws on naming collision", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: { service: ["api"], expand: true },
+            },
+            api: {
+              start: "node server.js",
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath)).rejects.toThrow("Docker expand collision");
+  });
+
+  it("layout accepts group name as valid pane", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: { service: ["postgres", "redis"], expand: true },
+            },
+          },
+          layout: {
+            direction: "columns",
+            children: [
+              { pane: "@tui", size: "30" },
+              { pane: "infra", size: "70" },
+            ],
+          },
+        });
+      }
+    `,
+    );
+
+    // Should not throw — "infra" is a valid group name in layout
+    const result = await loadConfig(configPath);
+    expect(result.groups.get("infra")).toEqual(["postgres", "redis"]);
+  });
+
+  it("returns empty groups when no expand used", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            api: { start: "node server.js" },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+    expect(result.groups.size).toBe(0);
+  });
+});

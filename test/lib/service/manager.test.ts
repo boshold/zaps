@@ -1929,3 +1929,253 @@ describe("cascadeRestart", () => {
     expect(targets.filter((t: string) => t === "%frontend")).toHaveLength(1);
   });
 });
+
+// === Combined (expanded docker) services ===
+
+describe("combined docker services", () => {
+  let dockerSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    probePort.mockResolvedValue(undefined);
+    // Mock getContainerInfo to return a ready container
+    const dockerModule = await import("../../../src/lib/docker.js");
+    dockerSpy = vi.spyOn(dockerModule, "getContainerInfo").mockResolvedValue({
+      state: "running",
+      health: "",
+      ports: [5432],
+    }) as unknown as ReturnType<typeof vi.fn>;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    dockerSpy?.mockRestore();
+  });
+
+  function makeCombinedConfig() {
+    return makeConfig({
+      postgres: {
+        docker: { service: "postgres" },
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: true },
+      },
+      redis: {
+        docker: { service: "redis" },
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: false },
+      },
+    });
+  }
+
+  it("owner sends docker compose up with all services", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const p = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p;
+
+    const sentCommand = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
+    expect(sentCommand).toContain("postgres");
+    expect(sentCommand).toContain("redis");
+  });
+
+  it("non-owner skips sendKeys when owner is not running", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const p = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p;
+
+    expect(deps.sendKeys).not.toHaveBeenCalled();
+  });
+
+  it("non-owner calls exec when owner is ready", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start owner first
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+
+    // Now start non-owner
+    const p2 = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p2;
+
+    expect(deps.exec).toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["start", "redis"]),
+      expect.any(String),
+    );
+  });
+
+  it("sets group on status", () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const statuses = mgr.getAllStatuses();
+    expect(statuses.find((s) => s.name === "postgres")?.group).toBe("infra");
+    expect(statuses.find((s) => s.name === "redis")?.group).toBe("infra");
+  });
+
+  it("stop combined uses docker compose stop", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start both
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+    const p2 = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p2;
+
+    // Stop redis
+    const pStop = mgr.stopService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await pStop;
+
+    expect(deps.exec).toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["stop", "redis"]),
+      expect.any(String),
+    );
+    // Pane NOT Ctrl-C'd since postgres still running
+    expect(deps.sendCtrlC).not.toHaveBeenCalled();
+  });
+
+  it("stop last sibling Ctrl-C's pane", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start owner only
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+
+    // Stop postgres (redis is stopped → all stopped)
+    const pStop = mgr.stopService("postgres");
+    await vi.advanceTimersByTimeAsync(5500);
+    await pStop;
+
+    expect(deps.exec).toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["stop", "postgres"]),
+      expect.any(String),
+    );
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("%infra");
+  });
+
+  it("restart combined non-owner uses docker compose restart", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start both
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+    const p2 = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p2;
+
+    (deps.exec as ReturnType<typeof vi.fn>).mockClear();
+
+    // Restart redis
+    const pRestart = mgr.restartService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await pRestart;
+
+    expect(deps.exec).toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["restart", "redis"]),
+      expect.any(String),
+    );
+  });
+
+  it("crash monitor checks docker container status for combined services", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    // Keep processes alive initially
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start owner
+    const p = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p;
+
+    expect(mgr.getStatus("postgres").state).toBe("ready");
+
+    // Crash monitor polls every 2s — simulate container still running
+    await vi.advanceTimersByTimeAsync(2500);
+
+    // Now simulate container crash
+    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [] });
+    await vi.advanceTimersByTimeAsync(2500);
+
+    // Should transition to error (no restart config)
+    expect(mgr.getStatus("postgres").state).toBe("error");
+    expect(mgr.getStatus("postgres").lastError).toBe("Process exited unexpectedly");
+  });
+
+  it("crash monitor restarts combined service on crash with restart config", async () => {
+    const config = makeConfig({
+      postgres: {
+        docker: { service: "postgres" },
+        restart: { maxRetries: 2, backoff: 100 },
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: true },
+      },
+      redis: {
+        docker: { service: "redis" },
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: false },
+      },
+    });
+    const deps = createMockDeps();
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start owner
+    const p = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p;
+
+    // Simulate crash — container exits
+    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [] });
+    await vi.advanceTimersByTimeAsync(2500);
+
+    // Should have detected crash and retried
+    expect(mgr.getStatus("postgres").retryCount).toBe(1);
+
+    // Restore container and advance to let restart complete
+    dockerSpy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(mgr.getStatus("postgres").state).toBe("ready");
+  });
+});

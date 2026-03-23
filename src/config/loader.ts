@@ -57,6 +57,7 @@ function expandDockerServices(project: ProjectConfig): Map<string, string[]> {
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- removing expanded parent
     delete project.services[groupName];
 
+    const [ownerName] = childNames;
     for (let i = 0; i < childNames.length; i += 1) {
       const childName = childNames[i];
       const combined: CombinedServiceMeta = {
@@ -65,8 +66,12 @@ function expandDockerServices(project: ProjectConfig): Map<string, string[]> {
         isOwner: i === 0,
       };
 
+      // Non-owners implicitly depend on the owner (must wait for docker compose up)
+      const childDeps = i === 0 ? inherited.dependsOn : [...(inherited.dependsOn ?? []), ownerName];
+
       project.services[childName] = {
         ...inherited,
+        dependsOn: childDeps,
         docker: { ...dockerFlags, service: childName },
         _combined: combined,
       };
