@@ -27,6 +27,8 @@ export interface ServiceStatus {
   lastError?: string;
   readySince?: number;
   isDocker?: boolean;
+  /** Group name for expanded docker services */
+  group?: string;
 }
 
 // === Dependency injection interfaces ===

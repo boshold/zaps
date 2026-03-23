@@ -29,6 +29,9 @@ const deps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  exec: async () => {
+    /* No-op */
+  },
 };
 
 describe.skipIf(!hasTmux())("ready-output integration", () => {

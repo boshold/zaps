@@ -33,6 +33,9 @@ const deps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  exec: async () => {
+    /* No-op */
+  },
 };
 
 describe.skipIf(!hasTmux() || !hasDocker())("docker-ready integration", () => {

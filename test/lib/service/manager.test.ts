@@ -28,6 +28,7 @@ function createMockDeps(): ServiceManagerDeps {
     getWindowName: vi.fn<ServiceManagerDeps["getWindowName"]>().mockResolvedValue("bash"),
     getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
+    exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
   };
 }
 
@@ -45,6 +46,7 @@ function makeConfig(
     },
     configPath: "/test/.zaps.ts",
     projectDir: "/test",
+    groups: new Map(),
   };
 }
 

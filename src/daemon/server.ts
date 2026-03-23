@@ -1,5 +1,7 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import { promisify } from "node:util";
 
 import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
@@ -23,6 +25,8 @@ import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
 import type { SessionCreateParams } from "./session.js";
 import { Session, sessionId } from "./session.js";
+
+const execFileAsync = promisify(execFile);
 
 interface SessionStore {
   list(): Session[];
@@ -129,6 +133,7 @@ class DaemonServer implements SessionStore {
       params.originPane,
       config.project.layout,
       config.project.services,
+      config.groups,
     );
     await selectPane(focusPane);
 
@@ -144,6 +149,9 @@ class DaemonServer implements SessionStore {
       getWindowName,
       getWindowOption,
       setWindowOption,
+      exec: async (cmd: string, args: string[], cwd?: string) => {
+        await execFileAsync(cmd, args, cwd ? { cwd } : {});
+      },
     };
 
     // Create ServiceManager

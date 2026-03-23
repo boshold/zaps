@@ -47,6 +47,14 @@ async function sleep(ms: number): Promise<void> {
 
 function resolveCommand(config: ServiceConfig): string {
   if (config.docker && !config.start && !config.run) {
+    // For combined owner: build command with ALL services in the group
+    if (config._combined?.isOwner) {
+      const groupDocker: DockerConfig = {
+        ...config.docker,
+        service: config._combined.allServices,
+      };
+      return buildDockerCommand(groupDocker);
+    }
     return buildDockerCommand(config.docker);
   }
   const cmd = config.start ?? config.run;
@@ -54,6 +62,22 @@ function resolveCommand(config: ServiceConfig): string {
     return cmd();
   }
   return cmd ?? "";
+}
+
+/**
+ * Build docker compose args for operating on a single service in a combined group.
+ */
+function buildDockerComposeArgs(
+  action: "stop" | "start" | "restart",
+  serviceName: string,
+  composeFile?: string,
+): string[] {
+  const args = ["compose"];
+  if (composeFile) {
+    args.push("-f", composeFile);
+  }
+  args.push(action, serviceName);
+  return args;
 }
 
 function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
@@ -153,6 +177,9 @@ export class ServiceManager extends EventEmitter {
       const status = createServiceStatus(name);
       if (svc.docker) {
         status.isDocker = true;
+      }
+      if (svc._combined) {
+        status.group = svc._combined.group;
       }
       this.statuses.set(name, status);
     }
@@ -317,19 +344,7 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
-    // Resolve env
-    const ctx = buildServiceContext(this.statuses, this.config.projectDir);
-    const env = resolveEnv(serviceConfig.env, ctx);
-
-    // Build command
-    const resolvedCommand = resolveCommand(serviceConfig);
-    const envPrefix = formatEnvForShell(env);
-    const cwd = serviceConfig.cwd ?? this.config.projectDir;
-    const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
-    const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
-
-    // Send to pane
-    await this.deps.sendKeys(paneTarget, command);
+    await this.sendStartCommand(name, serviceConfig, paneTarget);
 
     // Wait for ready
     try {
@@ -349,6 +364,7 @@ export class ServiceManager extends EventEmitter {
       status.ports = ports;
       status.readySince = Date.now();
 
+      const ctx = buildServiceContext(this.statuses, this.config.projectDir);
       await this.onServiceReady(name, serviceConfig, status, ports, ctx);
     } catch (error) {
       // If aborted during stop, don't transition to error
@@ -360,6 +376,42 @@ export class ServiceManager extends EventEmitter {
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
+  }
+
+  /**
+   * Send the start command for a service — handles combined vs regular.
+   */
+  private async sendStartCommand(
+    name: string,
+    serviceConfig: ServiceConfig,
+    paneTarget: string,
+  ): Promise<void> {
+    const combined = serviceConfig._combined;
+
+    if (combined && !combined.isOwner) {
+      // Combined non-owner: start individual container via docker compose
+      const [ownerName] = combined.allServices;
+      const ownerStatus = this.statuses.get(ownerName);
+      if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
+        await this.deps.exec(
+          "docker",
+          buildDockerComposeArgs("start", name, serviceConfig.docker?.file),
+          serviceConfig.cwd ?? this.config.projectDir,
+        );
+      }
+      // If owner not running, skip — the owner will start all containers
+      return;
+    }
+
+    // Regular or combined owner: send command to pane
+    const ctx = buildServiceContext(this.statuses, this.config.projectDir);
+    const env = resolveEnv(serviceConfig.env, ctx);
+    const resolvedCommand = resolveCommand(serviceConfig);
+    const envPrefix = formatEnvForShell(env);
+    const cwd = serviceConfig.cwd ?? this.config.projectDir;
+    const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
+    const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
+    await this.deps.sendKeys(paneTarget, command);
   }
 
   private async onServiceReady(
@@ -417,43 +469,39 @@ export class ServiceManager extends EventEmitter {
     status.state = transition(status.state, "stopping");
     this.emit("stateChange", name, status);
 
-    // Send Ctrl-C
-    await this.deps.sendCtrlC(paneTarget);
-
     // Abort any pending ready poll
     const controller = this.abortControllers.get(name);
     if (controller) {
       controller.abort();
     }
 
-    // Poll for process exit with 5s timeout
-    const stopStart = Date.now();
-    const STOP_TIMEOUT = 5000;
-    let exited = false;
+    const combined = serviceConfig._combined;
 
-    while (Date.now() - stopStart < STOP_TIMEOUT) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const descendants = await this.deps.getDescendantPids(rootPid);
-      if (descendants.length <= 1) {
-        exited = true;
-        break;
-      }
-      await sleep(200);
-    }
+    if (combined) {
+      // Combined service: stop individual container via docker compose stop
+      await this.deps.exec(
+        "docker",
+        buildDockerComposeArgs("stop", name, serviceConfig.docker?.file),
+        serviceConfig.cwd ?? this.config.projectDir,
+      );
 
-    // Force kill if not exited
-    if (!exited) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const pids = await this.deps.getDescendantPids(rootPid);
-      for (const pid of pids) {
-        if (pid !== rootPid) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Process may have already exited
-          }
+      // If ALL siblings are now stopped, Ctrl-C the pane to clean up docker compose up
+      const allStopped = combined.allServices.every((sib) => {
+        if (sib === name) {
+          return true;
         }
+        const sibStatus = this.statuses.get(sib);
+        return !sibStatus || sibStatus.state === "stopped" || sibStatus.state === "error";
+      });
+
+      if (allStopped) {
+        await this.deps.sendCtrlC(paneTarget);
+        await this.waitForPaneExit(paneTarget);
       }
+    } else {
+      // Regular service: Ctrl-C and wait for exit
+      await this.deps.sendCtrlC(paneTarget);
+      await this.waitForPaneExit(paneTarget);
     }
 
     // Transition: stopping -> stopped
@@ -472,6 +520,39 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Wait for pane process to exit with 5s timeout, force kill if needed.
+   */
+  private async waitForPaneExit(paneTarget: string): Promise<void> {
+    const stopStart = Date.now();
+    const STOP_TIMEOUT = 5000;
+    let exited = false;
+
+    while (Date.now() - stopStart < STOP_TIMEOUT) {
+      const rootPid = await this.deps.panePid(paneTarget);
+      const descendants = await this.deps.getDescendantPids(rootPid);
+      if (descendants.length <= 1) {
+        exited = true;
+        break;
+      }
+      await sleep(200);
+    }
+
+    if (!exited) {
+      const rootPid = await this.deps.panePid(paneTarget);
+      const pids = await this.deps.getDescendantPids(rootPid);
+      for (const pid of pids) {
+        if (pid !== rootPid) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // Process may have already exited
+          }
+        }
+      }
+    }
+  }
+
+  /**
    * Restart a single service.
    */
   async restartService(name: string): Promise<void> {
@@ -480,16 +561,49 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Unknown service: ${name}`);
     }
 
-    // Stop if running
-    if (status.state === "ready" || status.state === "starting") {
-      await this.stopService(name);
+    const serviceConfig = this.config.project.services[name];
+    const combined = serviceConfig?._combined;
+
+    // For combined non-owner: use docker compose restart directly
+    if (
+      combined &&
+      !combined.isOwner &&
+      (status.state === "ready" || status.state === "starting")
+    ) {
+      // Abort any pending ready poll
+      const controller = this.abortControllers.get(name);
+      if (controller) {
+        controller.abort();
+      }
+
+      status.state = transition(status.state, "stopping");
+      this.emit("stateChange", name, status);
+
+      await this.deps.exec(
+        "docker",
+        buildDockerComposeArgs("restart", name, serviceConfig.docker?.file),
+        serviceConfig.cwd ?? this.config.projectDir,
+      );
+
+      status.state = transition(status.state, "stopped");
+      delete status.readySince;
+      delete status.url;
+      this.emit("stateChange", name, status);
+
+      status.retryCount = 0;
+      await this.startService(name);
+    } else {
+      // Stop if running
+      if (status.state === "ready" || status.state === "starting") {
+        await this.stopService(name);
+      }
+
+      // Reset retry count
+      status.retryCount = 0;
+
+      // Start
+      await this.startService(name);
     }
-
-    // Reset retry count
-    status.retryCount = 0;
-
-    // Start
-    await this.startService(name);
 
     // Cascade restart dependents
     if (!this.cascadingTriggers.has(name)) {
@@ -569,8 +683,9 @@ export class ServiceManager extends EventEmitter {
       return;
     }
     const config = this.config.project.services[name];
+    const combined = config._combined;
 
-    // Poll every 2s: check if process still alive
+    // Poll every 2s: check if process/container still alive
     while (status.state === "ready") {
       await sleep(2000);
       // Re-check state after sleep (stopService may have changed it)
@@ -578,11 +693,24 @@ export class ServiceManager extends EventEmitter {
         return;
       }
 
-      const rootPid = await this.deps.panePid(this.paneMap[name]);
-      const descendants = await this.deps.getDescendantPids(rootPid);
+      let crashed = false;
 
-      // If only shell PID left (no child), service has crashed
-      if (descendants.length <= 1) {
+      if (combined) {
+        // Combined docker service: check container status
+        const info = await getContainerInfo(
+          name,
+          config.cwd ?? this.config.projectDir,
+          config.docker?.file,
+        );
+        crashed = !info || info.state !== "running";
+      } else {
+        const rootPid = await this.deps.panePid(this.paneMap[name]);
+        const descendants = await this.deps.getDescendantPids(rootPid);
+        // If only shell PID left (no child), service has crashed
+        crashed = descendants.length <= 1;
+      }
+
+      if (crashed) {
         const restartConfig = config.restart;
         if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
           status.state = transition(status.state, "restarting");
@@ -729,6 +857,7 @@ export interface ServiceManagerDeps {
   getWindowName: (target: string) => Promise<string>;
   getWindowOption: (target: string, option: string) => Promise<string>;
   setWindowOption: (target: string, option: string, value: string) => Promise<void>;
+  exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
 }
 
 export { diffOutput };

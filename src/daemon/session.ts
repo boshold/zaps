@@ -29,6 +29,7 @@ export interface ServiceMeta {
   name: string;
   dependsOn: string[];
   hasDocker: boolean;
+  group?: string;
   dockerDefaults: {
     build: boolean;
     forceRecreate: boolean;
@@ -160,10 +161,29 @@ export class Session {
   async startAll(): Promise<void> {
     await this.manager.startAll();
 
-    // Start log monitoring for each service pane
+    // Start log monitoring for each service pane.
+    // For combined groups, start one monitor per shared pane and route to all children.
+    const monitoredPanes = new Set<string>();
     for (const [svcName, paneId] of Object.entries(this.paneMap)) {
-      if (svcName !== "@tui") {
+      if (svcName !== "@tui" && !monitoredPanes.has(paneId)) {
+        monitoredPanes.add(paneId);
         this.logMonitor.start(svcName, paneId);
+      }
+    }
+
+    // For combined children that share a pane, create buffer aliases
+    // So logs requested by child name return the shared pane's output
+    for (const [svcName] of Object.entries(this.paneMap)) {
+      if (svcName !== "@tui" && !this.logBuffers.has(svcName)) {
+        // Find which service's buffer covers this pane
+        const paneId = this.paneMap[svcName];
+        for (const [existingName, existingPaneId] of Object.entries(this.paneMap)) {
+          const existingBuffer = this.logBuffers.get(existingName);
+          if (existingPaneId === paneId && existingBuffer) {
+            this.logBuffers.set(svcName, existingBuffer);
+            break;
+          }
+        }
       }
     }
   }
@@ -197,6 +217,7 @@ export class Session {
       tuiPaneId,
       newConfig.project.layout,
       newConfig.project.services,
+      newConfig.groups,
     );
 
     // 6. Create new ServiceManager
@@ -288,6 +309,7 @@ export class Session {
         name: svcName,
         dependsOn: svc.dependsOn ?? [],
         hasDocker: Boolean(svc.docker),
+        group: svc._combined?.group,
         dockerDefaults: {
           build: svc.docker?.build ?? false,
           forceRecreate: svc.docker?.forceRecreate ?? false,

@@ -31,6 +31,9 @@ const deps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  exec: async () => {
+    /* No-op */
+  },
 };
 
 async function waitForState(
