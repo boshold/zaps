@@ -429,13 +429,16 @@ program
         }
         const details = res.result as Record<string, unknown>;
         for (const [k, v] of Object.entries(details)) {
-          const val = Array.isArray(v)
-            ? v.join(", ") || "-"
-            : v === null
-              ? "-"
-              : typeof v === "object"
-                ? JSON.stringify(v)
-                : `${v as string | number | boolean}`; // eslint-disable-line no-nested-ternary -- Compact value formatting
+          let val = "";
+          if (Array.isArray(v)) {
+            val = v.join(", ") || "-";
+          } else if (v === null) {
+            val = "-";
+          } else if (typeof v === "object") {
+            val = JSON.stringify(v);
+          } else {
+            val = `${v as string | number | boolean}`;
+          }
           process.stdout.write(`${k}: ${val}\n`);
         }
       }, globalSession());
