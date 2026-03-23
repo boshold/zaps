@@ -2,19 +2,12 @@ import { EventEmitter } from "node:events";
 
 import { Text } from "ink";
 import { render } from "ink-testing-library";
+import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { useServices } from "../../src/hooks/useServices.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
-
-// Minimal act()
-async function act(fn: () => void): Promise<void> {
-  fn();
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
 
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
@@ -72,7 +65,7 @@ describe("useServices", () => {
 
     // Emit state change event
     const updated = makeStatus("db", "ready");
-    await act(() => {
+    act(() => {
       client.emit("service.stateChange", "db", updated);
     });
 
@@ -94,7 +87,7 @@ describe("useServices", () => {
 
     // Emit config reload with new service set
     const newStatuses = [makeStatus("web", "stopped"), makeStatus("worker", "stopped")];
-    await act(() => {
+    act(() => {
       client.emit("session.configReloaded", { statuses: newStatuses });
     });
 

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { Text } from "ink";
 import { render } from "ink-testing-library";
+import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
@@ -28,14 +29,6 @@ function createMockClient(): DaemonClient {
     getLogSnapshot: vi.fn().mockResolvedValue([]),
   });
   return client as unknown as DaemonClient;
-}
-
-// Flush React/Ink reconciler
-async function act(fn: () => void): Promise<void> {
-  fn();
-  return new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
 }
 
 describe("useLogs", () => {
@@ -69,13 +62,13 @@ describe("useLogs", () => {
     expect(lastFrame()).toContain("autoScroll:true");
     expect(lastFrame()).toContain("offset:0");
 
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
     expect(lastFrame()).toContain("autoScroll:false");
     expect(lastFrame()).toContain("offset:1");
 
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
     expect(lastFrame()).toContain("offset:2");
@@ -98,24 +91,24 @@ describe("useLogs", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Scroll up twice
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
     expect(lastFrame()).toContain("offset:2");
     expect(lastFrame()).toContain("autoScroll:false");
 
     // Scroll down once
-    await act(() => {
+    act(() => {
       hookRef!.scrollDown();
     });
     expect(lastFrame()).toContain("offset:1");
     expect(lastFrame()).toContain("autoScroll:false");
 
     // Scroll down to 0 -> autoScroll re-enabled
-    await act(() => {
+    act(() => {
       hookRef!.scrollDown();
     });
     expect(lastFrame()).toContain("offset:0");
@@ -139,16 +132,16 @@ describe("useLogs", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Scroll up
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
-    await act(() => {
+    act(() => {
       hookRef!.scrollUp();
     });
     expect(lastFrame()).toContain("offset:2");
 
     // Reset
-    await act(() => {
+    act(() => {
       hookRef!.resetScroll();
     });
     expect(lastFrame()).toContain("offset:0");
@@ -169,15 +162,15 @@ describe("useLogs event streaming", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Wait for snapshot to load
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
+    await act(async () => {
+      /* Flush */
     });
 
     expect(vi.mocked(client.getLogSnapshot)).toHaveBeenCalledWith("api");
     expect(lastFrame()).toContain("line1|line2");
 
     // Emit new lines via client event
-    await act(() => {
+    act(() => {
       client.emit("log.lines", "api", ["line3"]);
     });
     expect(lastFrame()).toContain("line1|line2|line3");
@@ -194,13 +187,13 @@ describe("useLogs event streaming", () => {
 
     const { lastFrame } = render(<Wrapper />);
 
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
+    await act(async () => {
+      /* Flush */
     });
     expect(lastFrame()).toContain("line1");
 
     // Emit lines for a different service
-    await act(() => {
+    act(() => {
       client.emit("log.lines", "db", ["db-line"]);
     });
     expect(lastFrame()).not.toContain("db-line");

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { render } from "ink-testing-library";
+import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 // Mock tmux functions to prevent real tmux commands
@@ -30,16 +31,6 @@ import type { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
 import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
 import type { ServiceStatus } from "../src/lib/service/types.js";
-
-// Flush React/Ink reconciler
-async function act(fn?: () => void): Promise<void> {
-  if (fn) {
-    fn();
-  }
-  return new Promise((resolve) => {
-    setTimeout(resolve, 150);
-  });
-}
 
 // ANSI escape sequences for special keys
 const ARROW_UP = "\x1B[A";
@@ -134,7 +125,7 @@ describe("Keyboard routing — Dashboard", () => {
     const { lastFrame, stdin } = renderApp({ statuses });
 
     // Move down — api should be selected
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
     const frame = lastFrame() ?? "";
@@ -151,10 +142,12 @@ describe("Keyboard routing — Dashboard", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("r");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.restartService)).toHaveBeenCalledWith("db");
   });
@@ -166,10 +159,12 @@ describe("Keyboard routing — Dashboard", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("s");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     // Toggle tries stopService first (succeeds for running service)
     expect(vi.mocked(client.stopService)).toHaveBeenCalledWith("db");
@@ -182,10 +177,12 @@ describe("Keyboard routing — Dashboard", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("a");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.restartAll)).toHaveBeenCalledTimes(1);
   });
@@ -197,10 +194,12 @@ describe("Keyboard routing — Dashboard", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("q");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
@@ -212,10 +211,12 @@ describe("Keyboard routing — Dashboard", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("d");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
@@ -229,7 +230,7 @@ describe("Keyboard routing — Dashboard", () => {
     const { stdin, lastFrame } = renderApp({ statuses });
 
     // Should not throw
-    await act(() => {
+    act(() => {
       stdin.write("o");
     });
     expect(lastFrame()).toContain("db");
@@ -247,7 +248,7 @@ describe("Keyboard routing — View switching", () => {
 
     const { lastFrame, stdin } = renderApp({ statuses, tasks, projectName: "test" });
 
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
 
@@ -267,13 +268,13 @@ describe("Keyboard routing — View switching", () => {
 
     const { lastFrame, stdin } = renderApp({ statuses, tasks, projectName: "test" });
 
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
     expect(lastFrame()).toContain("[enter] run");
 
     // Go back
-    await act(() => {
+    await act(async () => {
       stdin.write(ESCAPE);
     });
     expect(lastFrame()).toContain("[t]asks");
@@ -291,10 +292,10 @@ describe("Keyboard routing — View switching", () => {
     });
 
     // Select api (index 1) then press l
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
-    await act(() => {
+    act(() => {
       stdin.write("l");
     });
 
@@ -315,13 +316,13 @@ describe("Keyboard routing — View switching", () => {
     });
 
     // Go to logs
-    await act(() => {
+    act(() => {
       stdin.write("l");
     });
     expect(lastFrame()).toContain("[esc] back");
 
     // Go back
-    await act(() => {
+    await act(async () => {
       stdin.write(ESCAPE);
     });
     expect(lastFrame()).toContain("[t]asks");
@@ -333,10 +334,10 @@ describe("Keyboard routing — Edge cases", () => {
     const { lastFrame, stdin } = renderApp({});
 
     // Should not throw
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_UP);
     });
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
     expect(lastFrame()).toContain("zaps");
@@ -345,13 +346,15 @@ describe("Keyboard routing — Edge cases", () => {
   it("r/s with no services is a no-op", async () => {
     const { stdin, client } = renderApp({});
 
-    await act(() => {
+    act(() => {
       stdin.write("r");
     });
-    await act(() => {
+    act(() => {
       stdin.write("s");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.restartService)).not.toHaveBeenCalled();
     expect(vi.mocked(client.stopService)).not.toHaveBeenCalled();
@@ -375,10 +378,10 @@ describe("Keyboard routing — Edge cases", () => {
     const { stdin } = renderApp({ statuses, client });
 
     // Press r twice rapidly
-    await act(() => {
+    act(() => {
       stdin.write("r");
     });
-    await act(() => {
+    act(() => {
       stdin.write("r");
     });
 
@@ -387,7 +390,9 @@ describe("Keyboard routing — Edge cases", () => {
 
     // Resolve to clean up
     resolveRestart();
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
   });
 });
 
@@ -399,10 +404,12 @@ describe("Keyboard routing — ctrl keys", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("\x03"); // Ctrl+c
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
@@ -414,10 +421,12 @@ describe("Keyboard routing — ctrl keys", () => {
 
     const { stdin, client } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("\x04"); // Ctrl+d
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
   });
@@ -431,14 +440,16 @@ describe("Keyboard routing — ctrl keys", () => {
     const { stdin, client } = renderApp({ statuses, tasks });
 
     // Switch to tasks view
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
     // Then ctrl+d
-    await act(() => {
+    act(() => {
       stdin.write("\x04");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
   });
@@ -450,13 +461,15 @@ describe("Keyboard routing — ctrl keys", () => {
 
     const { stdin, client } = renderApp({ statuses, paneMap: { db: "%0" } });
 
-    await act(() => {
+    act(() => {
       stdin.write("l");
     });
-    await act(() => {
+    act(() => {
       stdin.write("\x03");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
@@ -471,13 +484,15 @@ describe("Keyboard routing — Tasks view", () => {
 
     const { stdin, client } = renderApp({ statuses, tasks });
 
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
-    await act(() => {
+    act(() => {
       stdin.write("\r"); // Enter
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.runTask)).toHaveBeenCalled();
   });
@@ -493,14 +508,16 @@ describe("Keyboard routing — Tasks view", () => {
 
     const { stdin, client } = renderApp({ statuses, tasks });
 
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
     // Press shortcut for second task
-    await act(() => {
+    act(() => {
       stdin.write("x");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     expect(vi.mocked(client.runTask)).toHaveBeenCalled();
   });
@@ -516,10 +533,10 @@ describe("Keyboard routing — Tasks view", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses, tasks });
 
-    await act(() => {
+    act(() => {
       stdin.write("t");
     });
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
 
@@ -550,7 +567,7 @@ describe("Keyboard routing — Docker rebuild", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
 
-    await act(() => {
+    act(() => {
       stdin.write("R");
     });
 
@@ -566,7 +583,7 @@ describe("Keyboard routing — Docker rebuild", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("R");
     });
 
@@ -596,22 +613,24 @@ describe("Keyboard routing — Docker rebuild", () => {
     const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
 
     // Open docker rebuild
-    await act(() => {
+    act(() => {
       stdin.write("R");
     });
     // Toggle first flag (build)
-    await act(() => {
+    act(() => {
       stdin.write(" ");
     });
     // Move down to next flag
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
     // Press enter to submit
-    await act(() => {
+    act(() => {
       stdin.write("\r");
     });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     // After enter, view returns to dashboard
     expect(lastFrame()).toContain("[t]asks");
@@ -638,10 +657,10 @@ describe("Keyboard routing — Docker rebuild", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
 
-    await act(() => {
+    act(() => {
       stdin.write("R");
     });
-    await act(() => {
+    act(() => {
       stdin.write(ESCAPE);
     });
 
@@ -670,16 +689,16 @@ describe("Keyboard routing — Docker rebuild", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses, servicesMeta });
 
-    await act(() => {
+    act(() => {
       stdin.write("R");
     });
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_UP);
     });
 
@@ -696,24 +715,24 @@ describe("Keyboard routing — Logs scroll", () => {
     const { lastFrame, stdin } = renderApp({ statuses, paneMap: { db: "%0" } });
 
     // Go to logs
-    await act(() => {
+    act(() => {
       stdin.write("l");
     });
     expect(lastFrame()).toContain("[esc] back");
 
     // Scroll up
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_UP);
     });
     // Scroll down
-    await act(() => {
+    act(() => {
       stdin.write(ARROW_DOWN);
     });
     // K/j also scroll
-    await act(() => {
+    act(() => {
       stdin.write("k");
     });
-    await act(() => {
+    act(() => {
       stdin.write("j");
     });
 
@@ -731,7 +750,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
 
     const { stdin } = renderApp({ statuses });
 
-    await act(() => {
+    act(() => {
       stdin.write("o");
     });
     expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("http://localhost:3000");
@@ -745,7 +764,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
 
     const { stdin } = renderApp({ statuses, paneMap: { api: "%1" } });
 
-    await act(() => {
+    act(() => {
       stdin.write("z");
     });
     expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
@@ -759,7 +778,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
 
     const { stdin, lastFrame } = renderApp({ statuses, paneMap: { api: "%1" } });
 
-    await act(() => {
+    act(() => {
       stdin.write("E");
     });
     expect(vi.mocked(editPaneCapture)).toHaveBeenCalledWith("%1", "api");
@@ -775,15 +794,21 @@ describe("Router — task event handling", () => {
     const client = createMockClient(statuses);
 
     const { lastFrame } = renderApp({ statuses, client });
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     // Simulate daemon task.start event
     (client as unknown as EventEmitter).emit("task.start", "build", "Build");
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     // Simulate daemon task.complete event
     (client as unknown as EventEmitter).emit("task.complete", "build", "Build", "success");
-    await act();
+    await act(async () => {
+      /* Flush */
+    });
 
     // Dashboard should reflect task history
     expect(lastFrame()).toBeDefined();

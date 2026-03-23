@@ -1,16 +1,9 @@
 import { Text } from "ink";
 import { render } from "ink-testing-library";
+import { act } from "react";
 import { describe, expect, it } from "vitest";
 
 import { useRouter } from "../../src/hooks/useRouter.js";
-
-// Minimal act() for Ink — triggers React batch update
-async function act(fn: () => void): Promise<void> {
-  fn();
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
-}
 
 // Helper: renders hook in a minimal component and returns getters/actions
 function renderRouter() {
@@ -60,7 +53,7 @@ describe("useRouter", () => {
     expect(lastFrame()).toContain("view:dashboard");
 
     // Call goToLogs via the hook ref
-    await act(() => {
+    act(() => {
       hookRef!.goToLogs("api");
     });
 
@@ -84,13 +77,13 @@ describe("useRouter", () => {
     const { lastFrame } = render(<Wrapper />);
 
     // Go to logs first
-    await act(() => {
+    act(() => {
       hookRef!.goToLogs("db");
     });
     expect(lastFrame()).toContain("view:logs");
 
     // Go back to dashboard
-    await act(() => {
+    act(() => {
       hookRef!.goToDashboard();
     });
     expect(lastFrame()).toContain("view:dashboard");
@@ -106,7 +99,7 @@ describe("useRouter", () => {
 
     const { lastFrame } = render(<Wrapper />);
 
-    await act(() => {
+    act(() => {
       hookRef!.goToTasks();
     });
     expect(lastFrame()).toContain("view:tasks");
@@ -128,7 +121,7 @@ describe("useRouter", () => {
     const { lastFrame } = render(<Wrapper />);
     expect(lastFrame()).toContain("target:null");
 
-    await act(() => {
+    act(() => {
       hookRef!.goToDockerRebuild("postgres");
     });
     expect(lastFrame()).toContain("view:dockerRebuild");
