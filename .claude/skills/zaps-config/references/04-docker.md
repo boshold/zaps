@@ -177,6 +177,22 @@ Creates 3 individual services (`postgres`, `redis`, `mailpit`) that:
 
 Layout references use the group name: `{ pane: "infra" }`.
 
+Use `expand: { ... }` for per-child overrides:
+
+```ts
+infra: {
+  docker: {
+    service: ["caddy", "postgres", "bugsink"],
+    expand: {
+      postgres: { onReady: () => runTask("prisma:deploy") },
+      bugsink: { ready: { http: "http://localhost:8000/health" } },
+    },
+  },
+}
+```
+
+Children without overrides inherit parent config. Overrides can set `ready`, `env`, hooks, `url`, `flags`, `restart`, etc.
+
 ### Docker with Dependencies
 
 ```ts

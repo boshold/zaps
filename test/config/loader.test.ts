@@ -501,6 +501,72 @@ describe("docker expand", () => {
     expect(result.groups.get("infra")).toEqual(["postgres", "redis"]);
   });
 
+  it("expand with per-child overrides merges onto children", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: {
+                service: ["caddy", "postgres", "bugsink"],
+                expand: {
+                  postgres: {
+                    onReady: () => console.log("migrated"),
+                  },
+                  bugsink: {
+                    ready: { http: "http://localhost:8000/health" },
+                  },
+                },
+              },
+              restart: { maxRetries: 3 },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+    // All children exist
+    expect(result.project.services.caddy).toBeDefined();
+    expect(result.project.services.postgres).toBeDefined();
+    expect(result.project.services.bugsink).toBeDefined();
+    // Caddy has no overrides — inherits parent restart
+    expect(result.project.services.caddy.restart?.maxRetries).toBe(3);
+    expect(result.project.services.caddy.onReady).toBeUndefined();
+    // Postgres has onReady override
+    expect(result.project.services.postgres.onReady).toBeTypeOf("function");
+    expect(result.project.services.postgres.restart?.maxRetries).toBe(3);
+    // Bugsink has ready override
+    expect(result.project.services.bugsink.ready).toEqual({ http: "http://localhost:8000/health" });
+  });
+
+  it("expand override for unknown child throws", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: {
+                service: ["caddy"],
+                expand: {
+                  unknown: { ready: { port: 3000 } },
+                },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath)).rejects.toThrow("Docker expand override 'unknown'");
+  });
+
   it("returns empty groups when no expand used", async () => {
     const configPath = writeConfig(
       ".zaps.ts",

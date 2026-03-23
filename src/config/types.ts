@@ -31,8 +31,14 @@ export interface DockerConfig {
   removeOrphans?: boolean;
   pull?: "always" | "missing" | "never";
   noDeps?: boolean;
-  expand?: boolean;
+  expand?: boolean | Record<string, ExpandChildOverrides>;
 }
+
+/** Per-child overrides for expanded docker services */
+export type ExpandChildOverrides = Omit<
+  Partial<ServiceConfig>,
+  "docker" | "start" | "run" | "_combined"
+>;
 
 // === Combined Service Metadata ===
 export interface CombinedServiceMeta {

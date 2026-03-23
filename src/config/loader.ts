@@ -16,6 +16,28 @@ function collectPaneNames(node: LayoutNode): string[] {
   return [];
 }
 
+function validateExpandNames(
+  groupName: string,
+  childNames: string[],
+  overrides: Record<string, unknown>,
+  services: Record<string, unknown>,
+): void {
+  for (const childName of childNames) {
+    if (childName !== groupName && services[childName]) {
+      throw new Error(
+        `Docker expand collision: '${groupName}' expands '${childName}' which already exists as a service`,
+      );
+    }
+  }
+  for (const key of Object.keys(overrides)) {
+    if (!childNames.includes(key)) {
+      throw new Error(
+        `Docker expand override '${key}' in '${groupName}' is not a valid service name. Valid: ${childNames.join(", ")}`,
+      );
+    }
+  }
+}
+
 /**
  * Expand docker services with `expand: true` into individual child services.
  * Each child shares a pane but has independent lifecycle and status.
@@ -37,21 +59,11 @@ function expandDockerServices(project: ProjectConfig): Map<string, string[]> {
       // eslint-disable-next-line no-continue -- guarded by filter above
       continue;
     }
-    const { expand: _, service: svcNames, ...dockerFlags } = parentDocker;
+    const { expand: expandVal, service: svcNames, ...dockerFlags } = parentDocker;
     const childNames = Array.isArray(svcNames) ? svcNames : [svcNames];
+    const overrides = typeof expandVal === "object" ? expandVal : {};
 
-    // Validate no naming collisions
-    for (const childName of childNames) {
-      if (childName === groupName) {
-        // eslint-disable-next-line no-continue -- skip self-reference
-        continue;
-      }
-      if (project.services[childName]) {
-        throw new Error(
-          `Docker expand collision: '${groupName}' expands '${childName}' which already exists as a service`,
-        );
-      }
-    }
+    validateExpandNames(groupName, childNames, overrides, project.services);
 
     // Remove parent service
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- removing expanded parent
@@ -69,9 +81,15 @@ function expandDockerServices(project: ProjectConfig): Map<string, string[]> {
       // Non-owners implicitly depend on the owner (must wait for docker compose up)
       const childDeps = i === 0 ? inherited.dependsOn : [...(inherited.dependsOn ?? []), ownerName];
 
+      // Merge per-child overrides (ready, hooks, env, etc.)
+      const childOverride = overrides[childName] ?? {};
+
       project.services[childName] = {
         ...inherited,
-        dependsOn: childDeps,
+        ...childOverride,
+        dependsOn: childOverride.dependsOn
+          ? [...(childDeps ?? []), ...childOverride.dependsOn]
+          : childDeps,
         docker: { ...dockerFlags, service: childName },
         _combined: combined,
       };
