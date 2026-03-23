@@ -87,12 +87,31 @@ function collectFocusedPanes(node: LayoutNode): string[] {
   return [];
 }
 
-export function validateLayout(layout: LayoutNode, serviceNames: string[]): void {
+/**
+ * After layout walk, expand group pane mappings so each child service
+ * in an expanded docker group shares the same tmux pane as the group.
+ */
+function expandGroupPanes(paneMap: PaneMap, groups: Map<string, string[]>): void {
+  for (const [groupName, children] of groups) {
+    const groupPaneId = paneMap[groupName];
+    if (groupPaneId) {
+      for (const child of children) {
+        paneMap[child] = groupPaneId;
+      }
+    }
+  }
+}
+
+export function validateLayout(
+  layout: LayoutNode,
+  serviceNames: string[],
+  groups?: Map<string, string[]>,
+): void {
   const paneNames = collectPaneNames(layout);
   const seen = new Set<string>();
 
   for (const pane of paneNames) {
-    if (pane !== "@tui" && !serviceNames.includes(pane)) {
+    if (pane !== "@tui" && !serviceNames.includes(pane) && !groups?.has(pane)) {
       throw new Error(`Layout references unknown pane '${pane}'`);
     }
     if (seen.has(pane)) {
@@ -119,16 +138,37 @@ export async function createLayout(
   startPaneId: string,
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
+  groups?: Map<string, string[]>,
 ): Promise<{ paneMap: PaneMap; focusPane: string }> {
   const paneMap: PaneMap = {};
   const serviceNames = Object.keys(services);
+  // Collect all child names from groups that are already individual services
+  const groupChildNames = new Set<string>();
+  if (groups) {
+    for (const children of groups.values()) {
+      for (const child of children) {
+        groupChildNames.add(child);
+      }
+    }
+  }
 
   if (!layout) {
     // Case 1: No layout — @tui gets start pane, each service gets a split pane
     paneMap["@tui"] = startPaneId;
 
+    // Create one pane per group (shared by all children)
+    if (groups) {
+      for (const [groupName, children] of groups) {
+        const paneId = await splitPane(startPaneId, "v");
+        paneMap[groupName] = paneId;
+        for (const child of children) {
+          paneMap[child] = paneId;
+        }
+      }
+    }
+
     for (const name of serviceNames) {
-      if (!services[name].detached) {
+      if (!services[name].detached && !(name in paneMap)) {
         const paneId = await splitPane(startPaneId, "v");
         paneMap[name] = paneId;
       }
@@ -140,7 +180,12 @@ export async function createLayout(
   // Case 2: Layout tree provided
   const focusName = await walkLayout(layout, startPaneId, paneMap);
 
-  // Services not in layout get split panes (skip detached)
+  // Expand group panes: map child services to their group's pane
+  if (groups) {
+    expandGroupPanes(paneMap, groups);
+  }
+
+  // Services not in layout get split panes (skip detached and group children already mapped)
   for (const name of serviceNames) {
     if (!services[name].detached && !(name in paneMap)) {
       const paneId = await splitPane(startPaneId, "v");

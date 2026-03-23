@@ -56,6 +56,9 @@ const dockerConfigSchema = z.object({
   removeOrphans: z.optional(z.boolean()),
   pull: z.optional(z.enum(["always", "missing", "never"])),
   noDeps: z.optional(z.boolean()),
+  expand: z.optional(
+    z.union([z.boolean(), z.record(z.string(), z.record(z.string(), z.unknown()))]),
+  ),
 });
 
 // === Env Config ===

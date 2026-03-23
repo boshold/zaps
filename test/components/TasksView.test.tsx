@@ -7,7 +7,22 @@ import { describe, expect, it, vi } from "vitest";
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { TasksView } from "../../src/components/TasksView.js";
 import type { TaskInfo } from "../../src/daemon/session.js";
+import type { Dimensions } from "../../src/hooks/useDimensions.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
+
+vi.mock("../../src/hooks/useDimensions.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../src/hooks/useDimensions.js")>();
+  return {
+    ...original,
+    useDimensions: vi.fn().mockReturnValue({
+      cols: 100,
+      rows: 24,
+      compact: false,
+      narrow: false,
+      medium: true,
+    } satisfies Dimensions),
+  };
+});
 
 function createMockClient(overrides?: Partial<Record<string, unknown>>): DaemonClient {
   const emitter = new EventEmitter();
@@ -271,6 +286,40 @@ describe("TasksView", () => {
     // The task result status should be reflected in the rendered output
     const frame = lastFrame() ?? "";
     // TaskListPanel renders task results — just verify no crash and task is shown
+    expect(frame).toContain("Run migrations");
+  });
+});
+
+describe("TasksView layout branches", () => {
+  it("renders wide layout (showHeader=true) when not medium", async () => {
+    const { useDimensions } = await import("../../src/hooks/useDimensions.js");
+    vi.mocked(useDimensions).mockReturnValue({
+      cols: 130,
+      rows: 24,
+      compact: false,
+      narrow: false,
+      medium: false,
+    });
+
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { lastFrame } = renderTasksView({ tasks });
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Run migrations");
+  });
+
+  it("renders compact layout (compact=true, medium=true) without header", async () => {
+    const { useDimensions } = await import("../../src/hooks/useDimensions.js");
+    vi.mocked(useDimensions).mockReturnValue({
+      cols: 100,
+      rows: 8,
+      compact: true,
+      narrow: false,
+      medium: true,
+    });
+
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { lastFrame } = renderTasksView({ tasks });
+    const frame = lastFrame() ?? "";
     expect(frame).toContain("Run migrations");
   });
 });

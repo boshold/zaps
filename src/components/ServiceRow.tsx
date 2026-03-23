@@ -8,6 +8,7 @@ interface ServiceRowProps {
   status: ServiceStatus;
   isSelected: boolean;
   cols: number;
+  indent?: boolean;
 }
 
 function formatPorts(ports: number[]): string {
@@ -42,20 +43,24 @@ function stateLabel(status: ServiceStatus): string {
 
 // 4 chars: selector(2) + status(1) + space(1)
 const PREFIX_WIDTH = 4;
+const INDENT_WIDTH = 2;
 
-export function ServiceRow({ status, isSelected, cols }: ServiceRowProps) {
+export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps) {
   const portsStr = formatPorts(status.ports);
-  const available = cols - PREFIX_WIDTH;
+  const indentStr = indent ? "  " : "";
+  const effectiveCols = indent ? cols - INDENT_WIDTH : cols;
+  const available = effectiveCols - PREFIX_WIDTH;
 
   // Cols >= 80: NAME(24) STATUS(10) PORTS(24) URL(rest)
   // Cols >= 50: NAME(20) STATUS(10) PORTS(rest)
   // Cols >= 30: NAME(rest) STATUS(8)
   // Cols < 30:  NAME only (truncated)
 
-  if (cols >= 80) {
+  if (effectiveCols >= 80) {
     return (
       <Box flexDirection="column">
         <Box>
+          <Text>{indentStr}</Text>
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
@@ -73,12 +78,13 @@ export function ServiceRow({ status, isSelected, cols }: ServiceRowProps) {
     );
   }
 
-  if (cols >= 50) {
+  if (effectiveCols >= 50) {
     const nameWidth = 20;
     const statusWidth = 10;
     return (
       <Box flexDirection="column">
         <Box>
+          <Text>{indentStr}</Text>
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
@@ -93,12 +99,13 @@ export function ServiceRow({ status, isSelected, cols }: ServiceRowProps) {
     );
   }
 
-  if (cols >= 30) {
+  if (effectiveCols >= 30) {
     const statusWidth = 8;
     const nameWidth = Math.max(4, available - statusWidth);
     return (
       <Box flexDirection="column">
         <Box>
+          <Text>{indentStr}</Text>
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
@@ -115,6 +122,7 @@ export function ServiceRow({ status, isSelected, cols }: ServiceRowProps) {
   return (
     <Box flexDirection="column">
       <Box>
+        <Text>{indentStr}</Text>
         <Text>{isSelected ? "> " : "  "}</Text>
         <StatusCell status={status} />
         <Text> </Text>

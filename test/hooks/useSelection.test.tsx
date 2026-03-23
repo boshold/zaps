@@ -1,17 +1,9 @@
 import { Text } from "ink";
 import { render } from "ink-testing-library";
-import { useState } from "react";
+import { act, useState } from "react";
 import { describe, expect, it } from "vitest";
 
 import { useSelection } from "../../src/hooks/useSelection.js";
-
-// Flush React/Ink reconciler — 50ms is enough for batched updates to process
-async function act(fn: () => void): Promise<void> {
-  fn();
-  return new Promise((resolve) => {
-    setTimeout(resolve, 50);
-  });
-}
 
 function renderSelection(itemCount: number) {
   let hookRef: ReturnType<typeof useSelection> | null = null;
@@ -34,12 +26,12 @@ describe("useSelection", () => {
   it("moveDown increments index", async () => {
     const { lastFrame, hookRef } = renderSelection(5);
 
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
     expect(lastFrame()).toContain("index:1");
 
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
     expect(lastFrame()).toContain("index:2");
@@ -48,16 +40,16 @@ describe("useSelection", () => {
   it("moveDown clamps at last index", async () => {
     const { lastFrame, hookRef } = renderSelection(3);
 
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
     expect(lastFrame()).toContain("index:2");
 
     // Past the end
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
     expect(lastFrame()).toContain("index:2");
@@ -66,15 +58,15 @@ describe("useSelection", () => {
   it("moveUp decrements index", async () => {
     const { lastFrame, hookRef } = renderSelection(5);
 
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
-    await act(() => {
+    act(() => {
       hookRef().moveDown();
     });
     expect(lastFrame()).toContain("index:2");
 
-    await act(() => {
+    act(() => {
       hookRef().moveUp();
     });
     expect(lastFrame()).toContain("index:1");
@@ -84,7 +76,7 @@ describe("useSelection", () => {
     const { lastFrame, hookRef } = renderSelection(3);
     expect(lastFrame()).toContain("index:0");
 
-    await act(() => {
+    act(() => {
       hookRef().moveUp();
     });
     expect(lastFrame()).toContain("index:0");
@@ -105,7 +97,7 @@ describe("useSelection", () => {
 
     // Move to index 4
     for (let i = 0; i < 4; i += 1) {
-      await act(() => {
+      act(() => {
         hookRef?.moveDown();
       });
     }
@@ -113,12 +105,12 @@ describe("useSelection", () => {
 
     // Reduce itemCount to 2 -> index should clamp to 1
     // SetCount re-renders, then useEffect fires setIndex clamp
-    await act(() => {
+    act(() => {
       setCount?.(2);
     });
-    // Extra wait for useEffect -> second setState
-    await new Promise((resolve) => {
-      setTimeout(resolve, 50);
+    // Flush useEffect -> second setState
+    await act(async () => {
+      /* Flush */
     });
     expect(lastFrame()).toContain("index:1");
   });
@@ -126,7 +118,7 @@ describe("useSelection", () => {
   it("setIndex sets index directly", async () => {
     const { lastFrame, hookRef } = renderSelection(5);
 
-    await act(() => {
+    act(() => {
       hookRef().setIndex(3);
     });
     expect(lastFrame()).toContain("index:3");

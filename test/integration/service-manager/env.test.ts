@@ -30,6 +30,9 @@ const deps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  exec: async () => {
+    /* No-op */
+  },
 };
 
 describe.skipIf(!hasTmux())("env integration", () => {

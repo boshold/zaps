@@ -31,6 +31,20 @@ export interface DockerConfig {
   removeOrphans?: boolean;
   pull?: "always" | "missing" | "never";
   noDeps?: boolean;
+  expand?: boolean | Record<string, ExpandChildOverrides>;
+}
+
+/** Per-child overrides for expanded docker services */
+export type ExpandChildOverrides = Omit<
+  Partial<ServiceConfig>,
+  "docker" | "start" | "run" | "_combined"
+>;
+
+// === Combined Service Metadata ===
+export interface CombinedServiceMeta {
+  group: string;
+  allServices: string[];
+  isOwner: boolean;
 }
 
 // === Service Context ===
@@ -74,6 +88,8 @@ export interface ServiceConfig {
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onOutput?: (line: string) => void | Promise<void>;
+  /** @internal Set by loader for expanded docker services */
+  _combined?: CombinedServiceMeta;
 }
 
 // === Task Run Context ===
@@ -167,6 +183,8 @@ export interface ResolvedConfig {
   configPath: string;
   projectDir: string;
   bindActions?: (actions: LibraryActions) => void;
+  /** Maps group name → expanded child service names (from docker expand) */
+  groups: Map<string, string[]>;
 }
 
 // === Type Guards ===

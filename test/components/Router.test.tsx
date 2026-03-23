@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { render } from "ink-testing-library";
+import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
@@ -26,9 +27,6 @@ const { openInBrowser } = await import("../../src/lib/open.js");
 const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
 
 // ── helpers ────────────────────────────────────────────────────────────
-
-/** Let ink's React reconciler flush state updates */
-const tick = async () => new Promise<void>((resolve) => setTimeout(resolve, 100));
 
 function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();
@@ -134,7 +132,9 @@ describe("Router", () => {
     const statuses = [makeStatus({ name: "web" }), makeStatus({ name: "api" })];
     const { stdin, lastFrame } = renderRouter({ statuses });
     stdin.write("j");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("api");
   });
@@ -144,7 +144,9 @@ describe("Router", () => {
     const { stdin, lastFrame } = renderRouter({ statuses });
     stdin.write("j");
     stdin.write("k");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("web");
   });
@@ -193,7 +195,9 @@ describe("Router", () => {
   it("navigates to log view with l key", async () => {
     const { stdin, lastFrame } = renderRouter();
     stdin.write("l");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("web");
   });
@@ -234,13 +238,17 @@ describe("Router", () => {
     ];
     const { stdin, lastFrame } = renderRouter({ statuses, servicesMeta });
     stdin.write("R");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     // Dashboard still renders underneath popup
     expect(frame).toContain("web");
     // Pressing escape proves we were in docker rebuild view
     stdin.write("\x1B");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toContain("web");
   });
 
@@ -291,7 +299,9 @@ describe("Router", () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[enter] run");
   });
@@ -328,9 +338,13 @@ describe("Router", () => {
   it("returns to dashboard from logs on escape", async () => {
     const { stdin, lastFrame } = renderRouter();
     stdin.write("l");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write("\x1B");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("zaps");
   });
@@ -341,10 +355,14 @@ describe("Router", () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toContain("[enter] run");
     stdin.write("\x1B");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toContain("zaps");
   });
 
@@ -352,9 +370,13 @@ describe("Router", () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write("\r");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[enter] run");
   });
@@ -366,9 +388,13 @@ describe("Router", () => {
     ];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write("s");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[enter] run");
   });
@@ -380,10 +406,14 @@ describe("Router", () => {
     ];
     const { stdin, lastFrame } = renderRouter({ tasks });
     stdin.write("t");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write("j");
     stdin.write("k");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Run migrations");
   });
@@ -415,60 +445,88 @@ describe("Router", () => {
 
     it("exits with escape", async () => {
       const { stdin, lastFrame } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("\x1B");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       const frame = lastFrame() ?? "";
       expect(frame).toContain("zaps");
     });
 
     it("toggles flag with space without crashing", async () => {
       const { stdin, lastFrame } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write(" ");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       expect(lastFrame()).toBeDefined();
     });
 
     it("navigates flags with j/k without crashing", async () => {
       const { stdin, lastFrame } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("j");
       stdin.write("k");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       expect(lastFrame()).toBeDefined();
     });
 
     it("clamps flag index at boundaries", async () => {
       const { stdin, lastFrame } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("k");
       stdin.write("k");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       expect(lastFrame()).toBeDefined();
       for (let i = 0; i < DOCKER_REBUILD_FLAGS.length + 2; i += 1) {
         stdin.write("j");
       }
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       expect(lastFrame()).toBeDefined();
     });
 
     it("rebuilds on enter and returns to dashboard", async () => {
       const { stdin, lastFrame } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("\r");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       const frame = lastFrame() ?? "";
       expect(frame).toContain("zaps");
     });
 
     it("ignores enter when busy", async () => {
       const { stdin, client } = enterDockerRebuild();
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("\r");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       stdin.write("R");
-      await tick();
+      await act(async () => {
+        /* Flush */
+      });
       expect(client.disconnect).not.toHaveBeenCalled();
     });
   });
@@ -495,13 +553,19 @@ describe("Router", () => {
     const { stdin } = renderRouter({ statuses, servicesMeta, client });
 
     stdin.write("R");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write(" ");
     stdin.write("j");
     stdin.write(" ");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     stdin.write("\r");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(client.disconnect).not.toHaveBeenCalled();
   });
 
@@ -511,7 +575,9 @@ describe("Router", () => {
     const client = createMockClient();
     const { lastFrame } = renderRouter({ client });
     client.emit("task.start", "migrate", "Run migrations");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toBeDefined();
   });
 
@@ -519,9 +585,13 @@ describe("Router", () => {
     const client = createMockClient();
     const { lastFrame } = renderRouter({ client });
     client.emit("task.start", "migrate", "Run migrations");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     client.emit("task.complete", "migrate", "Run migrations", "success");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toBeDefined();
   });
 
@@ -529,7 +599,9 @@ describe("Router", () => {
     const client = createMockClient();
     const { lastFrame } = renderRouter({ client });
     client.emit("task.complete", "seed", "Seed DB", "error");
-    await tick();
+    await act(async () => {
+      /* Flush */
+    });
     expect(lastFrame()).toBeDefined();
   });
 

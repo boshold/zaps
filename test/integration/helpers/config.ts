@@ -19,5 +19,6 @@ export function makeConfig(
     },
     configPath: path.join(os.tmpdir(), ".zaps.ts"),
     projectDir: os.tmpdir(),
+    groups: new Map(),
   };
 }

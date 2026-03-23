@@ -18,15 +18,55 @@ function computeScrollOffset(selectedIndex: number, total: number, maxRows: numb
   return Math.max(0, Math.min(selectedIndex - half, total - maxRows));
 }
 
+/**
+ * Track which groups have been seen to render group headers.
+ * Returns the group name if this service is the first in its group, else undefined.
+ */
+function getGroupHeader(
+  status: ServiceStatus,
+  index: number,
+  statuses: ServiceStatus[],
+): string | undefined {
+  if (!status.group) {
+    return undefined;
+  }
+  // Show header if this is the first service in this group
+  if (index === 0 || statuses[index - 1].group !== status.group) {
+    return status.group;
+  }
+  return undefined;
+}
+
+function renderRow(
+  s: ServiceStatus,
+  i: number,
+  statuses: ServiceStatus[],
+  selectedIndex: number,
+  cols: number,
+) {
+  const groupHeader = getGroupHeader(s, i, statuses);
+  const isGrouped = Boolean(s.group);
+
+  return (
+    <Box key={s.name} flexDirection="column">
+      {groupHeader && (
+        <Text dimColor>
+          {"  "}
+          {groupHeader}
+        </Text>
+      )}
+      <ServiceRow status={s} isSelected={i === selectedIndex} cols={cols} indent={isGrouped} />
+    </Box>
+  );
+}
+
 export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceListProps) {
   const total = statuses.length;
 
   if (maxRows === undefined || maxRows <= 0 || total <= maxRows) {
     return (
       <Box flexDirection="column">
-        {statuses.map((s, i) => (
-          <ServiceRow key={s.name} status={s} isSelected={i === selectedIndex} cols={cols} />
-        ))}
+        {statuses.map((s, i) => renderRow(s, i, statuses, selectedIndex, cols))}
       </Box>
     );
   }
@@ -51,14 +91,7 @@ export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceL
           {"  "}↑ {above} more
         </Text>
       )}
-      {visible.map((s, i) => (
-        <ServiceRow
-          key={s.name}
-          status={s}
-          isSelected={i + adjOffset === selectedIndex}
-          cols={cols}
-        />
-      ))}
+      {visible.map((s, i) => renderRow(s, i + adjOffset, statuses, i + adjOffset, cols))}
       {below > 0 && (
         <Text dimColor>
           {"  "}↓ {below} more

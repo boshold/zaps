@@ -14,6 +14,7 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 | `removeOrphans` | `boolean`                          | `false`      | Remove orphan containers (`--remove-orphans`) |
 | `pull`          | `"always" \| "missing" \| "never"` | `undefined`  | Image pull policy (`--pull`)                  |
 | `noDeps`        | `boolean`                          | `false`      | Skip dependency services (`--no-deps`)        |
+| `expand`        | `boolean`                          | `false`      | Expand array services into individual entries |
 
 ## Command Generation
 
@@ -146,6 +147,51 @@ services: {
   },
 }
 ```
+
+### Expanded Docker Services
+
+Use `expand: true` with `service: string[]` to create individually addressable services sharing one pane:
+
+```ts
+services: {
+  infra: {
+    docker: {
+      service: ["postgres", "redis", "mailpit"],
+      expand: true,
+    },
+  },
+  api: {
+    start: "pnpm dev",
+    dependsOn: ["postgres"],  // reference expanded child
+  },
+}
+```
+
+Creates 3 individual services (`postgres`, `redis`, `mailpit`) that:
+
+- Share a single pane (one `docker compose up` command)
+- Have independent status, ready detection, lifecycle
+- Can be started/stopped/restarted individually
+- Can be referenced individually in `dependsOn`
+- Appear grouped under "infra" in the TUI
+
+Layout references use the group name: `{ pane: "infra" }`.
+
+Use `expand: { ... }` for per-child overrides:
+
+```ts
+infra: {
+  docker: {
+    service: ["caddy", "postgres", "bugsink"],
+    expand: {
+      postgres: { onReady: () => runTask("prisma:deploy") },
+      bugsink: { ready: { http: "http://localhost:8000/health" } },
+    },
+  },
+}
+```
+
+Children without overrides inherit parent config. Overrides can set `ready`, `env`, hooks, `url`, `flags`, `restart`, etc.
 
 ### Docker with Dependencies
 

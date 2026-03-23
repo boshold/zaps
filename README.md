@@ -340,16 +340,69 @@ When a service has `docker` config and no `start`/`run`, ZAPS auto-generates a `
 
 If no `ready` config is provided, ZAPS defaults to checking the docker container state (running + healthy).
 
-| Option          | Type                               | Default | Description                               |
-| --------------- | ---------------------------------- | ------- | ----------------------------------------- |
-| `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required) |
-| `file`          | `string`                           | —       | Path to compose file                      |
-| `build`         | `boolean`                          | —       | `--build` flag                            |
-| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                   |
-| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)              |
-| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                   |
-| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                         |
-| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                          |
+| Option          | Type                               | Default | Description                                 |
+| --------------- | ---------------------------------- | ------- | ------------------------------------------- |
+| `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required)   |
+| `file`          | `string`                           | —       | Path to compose file                        |
+| `build`         | `boolean`                          | —       | `--build` flag                              |
+| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                     |
+| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)                |
+| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                     |
+| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                           |
+| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                            |
+| `expand`        | `boolean`                          | —       | Expand into individual services (see below) |
+
+### Expanded Docker Services
+
+When you have multiple Docker Compose services that can share a single tmux pane, use `expand: true` to split them into individually addressable services:
+
+```typescript
+services: {
+  infra: {
+    docker: {
+      service: ["postgres", "redis", "mailpit"],
+      expand: true,
+    },
+    restart: { maxRetries: 3 },
+  },
+  api: {
+    start: "npm run dev",
+    dependsOn: ["postgres"],  // reference individual expanded service
+  },
+}
+```
+
+This creates three individual services (`postgres`, `redis`, `mailpit`) that:
+
+- Share a single tmux pane (one `docker compose up` command)
+- Each have independent status, ready detection, and lifecycle
+- Can be started/stopped/restarted individually
+- Can be referenced individually in `dependsOn`
+- Appear as grouped rows in the TUI dashboard
+
+Layout references use the group name: `{ pane: "infra" }`.
+
+Use `expand: { ... }` instead of `expand: true` to provide per-child overrides:
+
+```typescript
+services: {
+  infra: {
+    docker: {
+      service: ["caddy", "postgres", "mailpit", "bugsink"],
+      expand: {
+        postgres: {
+          onReady: () => runTask("prisma:deploy"),
+        },
+        bugsink: {
+          ready: { http: "http://localhost:8000/health/ready" },
+        },
+      },
+    },
+  },
+}
+```
+
+Children without overrides inherit the parent config. Overrides can set `ready`, `env`, `onReady`, `onStop`, `onBeforeStart`, `url`, `flags`, `restart`, etc.
 
 ### Dependencies
 
