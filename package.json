@@ -49,6 +49,9 @@
   },
   "packageManager": "pnpm@10.32.1",
   "pnpm": {
+    "overrides": {
+      "archiver-utils>glob": "^13.0.0"
+    },
     "onlyBuiltDependencies": [
       "cpu-features",
       "esbuild",
