@@ -1,0 +1,56 @@
+import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+import {
+  capturePane,
+  getWindowName,
+  getWindowOption,
+  panePid,
+  renameWindow,
+  sendCtrlC,
+  sendKeys,
+  setWindowOption,
+} from "#src/lib/tmux.js";
+
+export const tmuxDeps = {
+  sendKeys,
+  sendCtrlC,
+  panePid,
+  detectPorts,
+  capturePane,
+  getDescendantPids,
+  renameWindow,
+  getWindowName,
+  getWindowOption,
+  setWindowOption,
+  exec: async () => {
+    /* No-op */
+  },
+};
+
+export async function waitForState(
+  mgr: ServiceManager,
+  name: string,
+  target: string,
+  timeoutMs = 30_000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (mgr.getStatus(name).state === target) {
+      resolve();
+      return;
+    }
+    function listener(n: string, status: ServiceStatus) {
+      if (n === name && status.state === target) {
+        clearTimeout(timer); // eslint-disable-line no-use-before-define -- circular timer/listener
+        mgr.removeListener("stateChange", listener);
+        resolve();
+      }
+    }
+
+    const timer = setTimeout(() => {
+      mgr.removeListener("stateChange", listener);
+      reject(new Error(`Timed out waiting for ${name} to reach ${target}`));
+    }, timeoutMs);
+    mgr.on("stateChange", listener);
+  });
+}

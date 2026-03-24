@@ -4,23 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  panePid,
-  renameWindow,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-  splitPane,
-} from "#src/lib/tmux.js";
+import { splitPane } from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { composeDown, writeComposeFile } from "../helpers/docker.js";
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasDocker, hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession } from "../helpers/tmux.js";
@@ -28,16 +18,7 @@ import { createTestSession } from "../helpers/tmux.js";
 const execFileAsync = promisify(execFile);
 
 const deps = {
-  sendKeys,
-  sendCtrlC,
-  panePid,
-  detectPorts,
-  capturePane,
-  getDescendantPids,
-  renameWindow,
-  getWindowName,
-  getWindowOption,
-  setWindowOption,
+  ...tmuxDeps,
   exec: async (cmd: string, args: string[], cwd?: string) => {
     await execFileAsync(cmd, args, cwd ? { cwd } : {});
   },

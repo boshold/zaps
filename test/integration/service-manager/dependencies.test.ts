@@ -1,40 +1,14 @@
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  panePid,
-  renameWindow,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-} from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
-
-const deps = {
-  sendKeys,
-  sendCtrlC,
-  panePid,
-  detectPorts,
-  capturePane,
-  getDescendantPids,
-  renameWindow,
-  getWindowName,
-  getWindowOption,
-  setWindowOption,
-  exec: async () => {
-    /* No-op */
-  },
-};
 
 describe.skipIf(!hasTmux())("dependencies integration", () => {
   let session: TestSession;
@@ -60,7 +34,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -89,7 +63,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -118,7 +92,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       a: { start: httpServerCmd(portA), ready: { port: portA }, dependsOn: ["b", "c"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -150,7 +124,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     const stopOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -165,5 +139,31 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
     // Fe depends on api depends on db → stop fe first, then api, then db
     expect(stopOrder.indexOf("fe")).toBeLessThan(stopOrder.indexOf("api"));
     expect(stopOrder.indexOf("api")).toBeLessThan(stopOrder.indexOf("db"));
+  });
+
+  it("dependency failure prevents dependent from starting", async () => {
+    session = await createTestSession();
+    const apiPort = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["db", "api"]);
+
+    // Db uses a ready function that always rejects — simulates fast startup failure
+    const config = makeConfig({
+      db: {
+        start: 'node -e "process.exit(1)"',
+        ready: async () => Promise.reject(new Error("db startup failed")),
+      },
+      api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
+    });
+
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+
+    // StartAll catches the error for db, then skips api (dep not ready)
+    await mgr.startAll();
+
+    // Db should be in error state (ready check rejected)
+    expect(mgr.getStatus("db").state).toBe("error");
+
+    // Api should NOT have started — dependency not ready
+    expect(mgr.getStatus("api").state).toBe("stopped");
   });
 });

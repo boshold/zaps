@@ -177,10 +177,10 @@ describe("Session", () => {
       const mockSocket = { destroyed: false, destroy: vi.fn(), write: vi.fn() };
       session.subscribers.add(mockSocket as never);
 
-      const stopAllSpy = vi.spyOn(session.logMonitor, "stopAll");
+      const flushAllSpy = vi.spyOn(session.logMonitor, "flushAll").mockResolvedValue();
       await session.destroy();
 
-      expect(stopAllSpy).toHaveBeenCalled();
+      expect(flushAllSpy).toHaveBeenCalled();
       expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
       expect(session.subscribers.size).toBe(0);
     });

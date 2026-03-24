@@ -117,7 +117,7 @@ export async function waitForServiceState(
         return;
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   /* eslint-enable no-await-in-loop */
   throw new Error(`Service '${service}' did not reach '${targetState}' within ${timeoutMs}ms`);
@@ -147,7 +147,7 @@ export async function waitForAllServices(
         return;
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   /* eslint-enable no-await-in-loop */
   throw new Error(

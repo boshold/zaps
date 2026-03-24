@@ -66,12 +66,13 @@ class DaemonServer implements SessionStore {
             }
           }
         });
-        socket.on("error", () => {
-          // Client disconnected — clean up subscriptions
+        const cleanupSubscriptions = () => {
           for (const session of this.sessions.values()) {
             session.subscribers.delete(socket);
           }
-        });
+        };
+        socket.on("error", cleanupSubscriptions);
+        socket.on("close", cleanupSubscriptions);
       });
 
       this.server.on("error", reject);
