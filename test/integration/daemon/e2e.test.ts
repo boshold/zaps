@@ -90,8 +90,6 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
           /* Best-effort cleanup */
         }
       }
-      // Let in-flight LogMonitor capturePane calls settle
-      await new Promise((resolve) => setTimeout(resolve, 600));
       await daemon.cleanup();
       await tmux.cleanup();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -187,8 +185,6 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
       } catch {
         /* Best-effort cleanup */
       }
-      // Let in-flight LogMonitor capturePane calls settle
-      await new Promise((resolve) => setTimeout(resolve, 600));
       await daemon.cleanup();
       await tmux.cleanup();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -247,18 +243,25 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
     });
 
     it("logs.snapshot returns captured pane output", async () => {
-      // Wait for LogMonitor to capture at least one cycle (polls every 500ms)
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-
-      const res = await ipcRequest(
-        daemon.socketPath,
-        "logs.snapshot",
-        { service: "web" },
-        5000,
-        sid,
-      );
-      expect(res.error).toBeUndefined();
-      const lines = res.result as string[];
+      // Poll until LogMonitor has captured at least one line
+      const start = Date.now();
+      let lines: string[] = [];
+      while (Date.now() - start < 10_000) {
+        const res = await ipcRequest(
+          daemon.socketPath,
+          "logs.snapshot",
+          { service: "web" },
+          5000,
+          sid,
+        );
+        if (!res.error) {
+          lines = res.result as string[];
+          if (lines.length > 0) {
+            break;
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
       expect(lines.length).toBeGreaterThan(0);
     });
 
@@ -274,46 +277,69 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
     });
 
     it("subscribe receives stateChange events on stop", async () => {
+      // Ensure service is ready first
+      await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
       const events: DaemonEvent[] = [];
       const sub = ipcSubscribe(daemon.socketPath, sid, ["service.stateChange"], (event) =>
         events.push(event),
       );
 
-      // Wait for subscription to be established
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Confirm subscription is live via a ping round-trip
+      await ipcRequest(daemon.socketPath, "daemon.ping");
 
       // Stop the service — triggers stateChange events
       await ipcRequest(daemon.socketPath, "services.stop", { name: "web" }, 10_000, sid);
 
       // Allow time for events to propagate
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 300));
       sub.close();
 
-      const stateEvents = events.filter((e) => e.event === "service.stateChange");
-      expect(stateEvents.length).toBeGreaterThan(0);
-
-      const webEvents = stateEvents.filter((e) => {
+      const webEvents = events.filter((e) => {
+        if (e.event !== "service.stateChange") {
+          return false;
+        }
         const data = e.data as { name: string };
         return data.name === "web";
       });
       expect(webEvents.length).toBeGreaterThan(0);
+
+      // Re-start for other tests
+      await ipcRequest(daemon.socketPath, "services.start", { name: "web" }, 15_000, sid);
+      await waitForServiceState(daemon.socketPath, sid, "web", "ready");
     });
 
-    it("services.start transitions stopped service back to ready", async () => {
-      // Service was stopped by previous test
-      const res = await ipcRequest(
+    it("services.stop + start transitions service back to ready", async () => {
+      // Ensure service is ready first
+      await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
+      // Stop
+      const stopRes = await ipcRequest(
+        daemon.socketPath,
+        "services.stop",
+        { name: "web" },
+        10_000,
+        sid,
+      );
+      expect(stopRes.error).toBeUndefined();
+      await waitForServiceState(daemon.socketPath, sid, "web", "stopped");
+
+      // Start
+      const startRes = await ipcRequest(
         daemon.socketPath,
         "services.start",
         { name: "web" },
         15_000,
         sid,
       );
-      expect(res.error).toBeUndefined();
-
+      expect(startRes.error).toBeUndefined();
       await waitForServiceState(daemon.socketPath, sid, "web", "ready");
     });
 
     it("services.restart cycles the service back to ready", async () => {
+      // Ensure service is ready first
+      await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
       const res = await ipcRequest(
         daemon.socketPath,
         "services.restart",
@@ -324,6 +350,47 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
       expect(res.error).toBeUndefined();
 
       await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+    });
+
+    it("concurrent IPC requests all resolve correctly", async () => {
+      const requests = Array.from({ length: 10 }, async () =>
+        ipcRequest(daemon.socketPath, "services.list", undefined, 5000, sid),
+      );
+      const results = await Promise.all(requests);
+
+      for (const res of results) {
+        expect(res.error).toBeUndefined();
+        const statuses = res.result as { name: string; state: string }[];
+        expect(statuses).toHaveLength(1);
+        expect(statuses[0].name).toBe("web");
+      }
+    });
+  });
+
+  // ── Validation errors ─────────────────────────────────────────────
+
+  describe("config validation errors", () => {
+    let daemon: TestDaemon;
+    let tmux: TestSession;
+
+    beforeEach(async () => {
+      daemon = await createTestDaemon();
+      tmux = await createTestSession();
+    });
+
+    afterEach(async () => {
+      await daemon.cleanup();
+      await tmux.cleanup();
+    });
+
+    it("session.create with nonexistent config returns error", async () => {
+      const res = await ipcRequest(daemon.socketPath, "session.create", {
+        configPath: "/tmp/nonexistent-zaps-config.mjs",
+        projectDir: "/tmp",
+        tmuxSession: tmux.name,
+        originPane: tmux.initialPaneId,
+      });
+      expect(res.error).toBeDefined();
     });
   });
 });

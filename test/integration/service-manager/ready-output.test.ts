@@ -1,38 +1,12 @@
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  panePid,
-  renameWindow,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-} from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { outputOnlyCmd } from "../helpers/fixtures.js";
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
-
-const deps = {
-  sendKeys,
-  sendCtrlC,
-  panePid,
-  detectPorts,
-  capturePane,
-  getDescendantPids,
-  renameWindow,
-  getWindowName,
-  getWindowOption,
-  setWindowOption,
-  exec: async () => {
-    /* No-op */
-  },
-};
 
 describe.skipIf(!hasTmux())("ready-output integration", () => {
   let session: TestSession;
@@ -58,7 +32,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startService("svc");
 
     expect(mgr.getStatus("svc").state).toBe("ready");
@@ -75,7 +49,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startService("svc");
 
     expect(mgr.getStatus("svc").state).toBe("ready");

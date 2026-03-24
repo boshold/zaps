@@ -189,10 +189,6 @@ export function ipcSubscribe(
           return;
         }
 
-        const timer = setTimeout(() => {
-          reject(new Error("Request timed out"));
-        }, 30_000);
-
         let reqBuffer = "";
         function onData(chunk: Buffer) {
           reqBuffer += chunk.toString();
@@ -205,13 +201,18 @@ export function ipcSubscribe(
             }
             const responseMsg = JSON.parse(dataLine) as IpcMessage;
             if (isIpcResponse(responseMsg) && responseMsg.id === id) {
-              clearTimeout(timer);
+              clearTimeout(timer); // eslint-disable-line no-use-before-define -- circular timer/listener
               socket.off("data", onData);
               resolve(responseMsg);
               return;
             }
           }
         }
+
+        const timer = setTimeout(() => {
+          socket.off("data", onData);
+          reject(new Error("Request timed out"));
+        }, 30_000);
 
         socket.on("data", onData);
         socket.write(`${JSON.stringify(req)}\n`);

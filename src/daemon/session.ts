@@ -70,6 +70,7 @@ export class Session {
   manager: ServiceManager;
   logBuffers: Map<string, LogBuffer>;
   logMonitor: LogMonitor;
+  private reloading = false;
 
   constructor(params: SessionCreateParams, manager: ServiceManager) {
     this.id = sessionId(params.configPath);
@@ -192,8 +193,21 @@ export class Session {
    * Reload config, recreate layout, and restart services.
    */
   async reload(): Promise<void> {
+    if (this.reloading) {
+      return;
+    }
+    this.reloading = true;
+
+    try {
+      await this._reload();
+    } finally {
+      this.reloading = false;
+    }
+  }
+
+  private async _reload(): Promise<void> {
     // 1. Stop all services and log monitors
-    this.logMonitor.stopAll();
+    await this.logMonitor.flushAll();
     await this.manager.stopAll();
 
     // 2. Remove old manager listeners
@@ -268,7 +282,7 @@ export class Session {
    * Stop all services and clean up.
    */
   async destroy(): Promise<void> {
-    this.logMonitor.stopAll();
+    await this.logMonitor.flushAll();
     await this.manager.stopAll();
 
     // Notify subscribers of session destruction

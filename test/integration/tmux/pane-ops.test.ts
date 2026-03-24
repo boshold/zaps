@@ -37,17 +37,35 @@ describe.skipIf(!hasTmux())("tmux pane-ops integration", () => {
     session = await createTestSession();
     const paneId = await splitPane(session.initialPaneId, "v");
 
+    // Wait for shell to initialize in the new pane before sending commands
+    await new Promise((resolve) => setTimeout(resolve, 500));
     await sendKeys(paneId, longRunningCmd());
-    await new Promise((resolve) => setTimeout(resolve, 1000));
 
+    // Poll until process starts (generous timeout — shared tmux server under parallel load)
     const rootPid = await panePid(paneId);
-    const before = await getDescendantPids(rootPid);
+    const startDeadline = Date.now() + 30_000;
+    let before: number[] = [];
+    while (Date.now() < startDeadline) {
+      before = await getDescendantPids(rootPid);
+      if (before.length > 1) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     expect(before.length).toBeGreaterThan(1);
 
     await sendCtrlC(paneId);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
 
-    const after = await getDescendantPids(rootPid);
+    // Poll until process exits (generous timeout)
+    let after: number[] = [];
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      after = await getDescendantPids(rootPid);
+      if (after.length <= 1) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     expect(after.length).toBeLessThanOrEqual(1);
   });
 

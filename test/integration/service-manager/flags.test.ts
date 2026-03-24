@@ -1,39 +1,13 @@
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  panePid,
-  renameWindow,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-} from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
-
-const deps = {
-  sendKeys,
-  sendCtrlC,
-  panePid,
-  detectPorts,
-  capturePane,
-  getDescendantPids,
-  renameWindow,
-  getWindowName,
-  getWindowOption,
-  setWindowOption,
-  exec: async () => {
-    /* No-op */
-  },
-};
 
 describe.skipIf(!hasTmux())("flags integration", () => {
   let session: TestSession;
@@ -61,7 +35,7 @@ describe.skipIf(!hasTmux())("flags integration", () => {
       svc3: { start: httpServerCmd(port3), ready: { port: port3 } },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startAll();
 
     expect(mgr.getStatus("svc1").state).toBe("ready");
@@ -80,7 +54,7 @@ describe.skipIf(!hasTmux())("flags integration", () => {
       svc2: { start: httpServerCmd(port2), ready: { port: port2 }, flags: { start: false } },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startAll();
 
     expect(mgr.getStatus("svc2").state).toBe("stopped");

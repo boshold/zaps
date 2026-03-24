@@ -62,7 +62,6 @@ describe.skipIf(!hasTmux())("DaemonClient integration", () => {
     } catch {
       /* Best-effort cleanup */
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
     await daemon.cleanup();
     await tmux.cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });
