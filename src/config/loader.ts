@@ -7,6 +7,7 @@ import { createZapsLib } from "./builder.js";
 import type {
   CombinedServiceMeta,
   LayoutNode,
+  OptionalContext,
   ProjectConfig,
   ResolvedConfig,
   ServiceConfig,
@@ -206,6 +207,7 @@ function extractBinary(svc: ServiceConfig): string {
 async function resolveOptionalServices(
   services: Record<string, ServiceConfig>,
 ): Promise<Map<string, UnavailableServiceInfo>> {
+  const optionalCtx: OptionalContext = { hasBinary: checkBinaryAvailable };
   const unavailable = new Map<string, UnavailableServiceInfo>();
   const checks = Object.entries(services)
     .filter(([, svc]) => svc.optional === true || typeof svc.optional === "function")
@@ -214,7 +216,7 @@ async function resolveOptionalServices(
       if (typeof svc.optional === "function") {
         try {
           available = await Promise.race([
-            svc.optional(),
+            Promise.resolve(svc.optional(optionalCtx)),
             new Promise<boolean>((_resolve, reject) =>
               setTimeout(() => reject(new Error("timeout")), 5000),
             ),

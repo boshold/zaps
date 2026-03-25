@@ -60,6 +60,11 @@ export interface ServiceContext {
   projectDir: string;
 }
 
+// === Optional Context ===
+export interface OptionalContext {
+  hasBinary(name: string): Promise<boolean>;
+}
+
 // === Env Config ===
 export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
 
@@ -89,7 +94,7 @@ export interface ServiceConfig {
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onOutput?: (line: string) => void | Promise<void>;
-  optional?: boolean | (() => Promise<boolean>);
+  optional?: boolean | ((ctx: OptionalContext) => boolean | Promise<boolean>);
   /** @internal Set by loader for expanded docker services */
   _combined?: CombinedServiceMeta;
 }

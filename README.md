@@ -292,19 +292,26 @@ services: {
 }
 ```
 
-When `optional: true`, ZAPS checks if the binary exists (first word of `start`/`run` via `command -v`). For custom checks, use an async function:
+When `optional: true`, ZAPS checks if the binary exists (first word of `start`/`run` via `command -v`). For function commands or custom checks, use the context helper:
 
 ```typescript
 services: {
-  "custom-tool": {
-    optional: async () => {
-      const { execSync } = await import("child_process");
-      try { execSync("docker image inspect my-tool"); return true; }
-      catch { return false; }
-    },
-    docker: { service: "my-tool" },
+  rainfrog: {
+    optional: (ctx) => ctx.hasBinary("rainfrog"),
+    start: (ctx) => `rainfrog --url postgres://localhost:${ctx.services.db.ports[0]}`,
+    dependsOn: ["db"],
   },
 }
+```
+
+The `optional` predicate receives a context with helpers:
+
+- `ctx.hasBinary(name)` — checks if a binary exists via `command -v`
+
+Combine checks naturally:
+
+```typescript
+optional: async (ctx) => await ctx.hasBinary("grafana") && await ctx.hasBinary("prometheus"),
 ```
 
 **Behavior when unavailable:**
@@ -314,7 +321,7 @@ services: {
 - `dependsOn`/`restartWith` references silently dropped
 - Layout automatically adjusts (empty splits collapsed)
 
-> **Note:** `optional: true` requires `start` or `run` as a string (not a function). Docker-only services must use the function form.
+> **Note:** `optional: true` requires `start` or `run` as a string (not a function). Use the function form with `ctx.hasBinary()` for function commands or docker-only services.
 
 ### Ready Detection
 
