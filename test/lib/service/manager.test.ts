@@ -764,7 +764,7 @@ describe("restartService", () => {
 describe("crash recovery", () => {
   it("auto-restarts crashed service with backoff", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 } },
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -812,7 +812,7 @@ describe("crash recovery", () => {
 
   it("transitions to error when retries exhausted", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 1, backoff: 100 } },
+      svc: { start: "start-svc", restart: { maxRetries: 1, backoff: 100 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -858,7 +858,7 @@ describe("crash recovery", () => {
 
   it("manual restart after error works and resets counter", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 0 } },
+      svc: { start: "start-svc", restart: { maxRetries: 0 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -2173,6 +2173,9 @@ describe("combined docker services", () => {
 
   it("crash monitor checks docker container status for combined services", async () => {
     const config = makeCombinedConfig();
+    // Use raw mode for 2s poll interval in crash monitor tests
+    config.project.services.postgres.raw = true;
+    config.project.services.redis.raw = true;
     const deps = createMockDeps();
     // Keep processes alive initially
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
@@ -2204,10 +2207,12 @@ describe("combined docker services", () => {
       postgres: {
         docker: { service: "postgres" },
         restart: { maxRetries: 2, backoff: 100 },
+        raw: true,
         _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: true },
       },
       redis: {
         docker: { service: "redis" },
+        raw: true,
         _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: false },
       },
     });
