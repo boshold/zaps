@@ -22,6 +22,12 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   const { cols, rows, compact } = useDimensions();
   const width = Math.min(cols, 100);
 
+  // Sort unavailable services to bottom so index is consistent across all components
+  const sorted = [
+    ...statuses.filter((s) => s.state !== "unavailable"),
+    ...statuses.filter((s) => s.state === "unavailable"),
+  ];
+
   // Compute chrome rows to determine maxRows for service list
   // Normal: Header(2) + ColumnHeaders(2) + ActionHints(2) + HelpBar(1) = 7
   // Compact: Header(1) + HelpBar(1) = 2
@@ -31,17 +37,17 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   return (
     <Box height={rows} alignItems="center" justifyContent="center">
       <Box flexDirection="column" width={width}>
-        <Header projectName={projectName} statuses={statuses} width={width} compact={compact} />
+        <Header projectName={projectName} statuses={sorted} width={width} compact={compact} />
         {!compact && <ColumnHeaders cols={width} />}
         <ServiceList
-          statuses={statuses}
+          statuses={sorted}
           selectedIndex={selectedIndex}
           maxRows={maxRows}
           cols={width}
         />
         {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
-        {!compact && <ActionHints status={statuses[selectedIndex]} />}
-        <HelpBar compact={compact} status={statuses[selectedIndex]} />
+        {!compact && <ActionHints status={sorted[selectedIndex]} />}
+        <HelpBar compact={compact} status={sorted[selectedIndex]} />
       </Box>
     </Box>
   );
