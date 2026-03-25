@@ -208,7 +208,7 @@ async function resolveOptionalServices(
 ): Promise<Map<string, UnavailableServiceInfo>> {
   const unavailable = new Map<string, UnavailableServiceInfo>();
   const checks = Object.entries(services)
-    .filter(([, svc]) => svc.optional !== undefined)
+    .filter(([, svc]) => svc.optional === true || typeof svc.optional === "function")
     .map(async ([name, svc]) => {
       let available = false;
       if (typeof svc.optional === "function") {
