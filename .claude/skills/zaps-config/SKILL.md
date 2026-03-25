@@ -127,6 +127,32 @@ layout: {
 }
 ```
 
+### Optional service (binary check)
+
+```ts
+services: {
+  rainfrog: {
+    optional: true,
+    start: "rainfrog -u postgres://localhost:5432",
+    ready: { port: 5432 },
+  },
+}
+```
+
+### Optional service (custom predicate)
+
+```ts
+services: {
+  "custom-tool": {
+    optional: async () => {
+      try { execSync("docker image inspect my-tool"); return true; }
+      catch { return false; }
+    },
+    docker: { service: "my-tool" },
+  },
+}
+```
+
 ### Hook that triggers a task
 
 ```ts

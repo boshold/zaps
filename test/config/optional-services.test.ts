@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LayoutNode, ProjectConfig, ServiceConfig } from "../../src/config/types.js";
 
@@ -8,7 +12,7 @@ vi.mock("node:child_process", () => ({
   spawn: mockSpawn,
 }));
 
-const { resolveOptionalServices, stripUnavailableServices, collapseLayoutTree } =
+const { resolveOptionalServices, stripUnavailableServices, collapseLayoutTree, loadConfig } =
   await import("../../src/config/loader.js");
 
 function fakeProc(event: "close" | "error", value: unknown) {
@@ -117,7 +121,7 @@ describe("resolveOptionalServices", () => {
       db: {
         start: "pg",
         // eslint-disable-next-line no-empty-function -- intentionally never resolves
-        optional:  async () => new Promise<boolean>(() => {}),
+        optional: async () => new Promise<boolean>(() => {}),
       },
     };
     const promise = resolveOptionalServices(services);
@@ -364,5 +368,104 @@ describe("collapseLayoutTree", () => {
       direction: "rows",
       children: [{ pane: "@tui" }, { pane: "api" }],
     });
+  });
+});
+
+// === loadConfig integration ===
+
+describe("loadConfig with optional services", () => {
+  let tmpDir = "";
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-optional-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function writeConfig(filename: string, content: string): string {
+    const filePath = path.join(tmpDir, filename);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content);
+    return filePath;
+  }
+
+  it("strips unavailable service when binary not found", async () => {
+    mockSpawn.mockReturnValue(fakeProc("close", 1));
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            api: { start: "node server.js" },
+            db: { start: "rainfrog -u pg", optional: true },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.api).toBeDefined();
+    expect(result.project.services.db).toBeUndefined();
+    expect(result.unavailableServices.size).toBe(1);
+    expect(result.unavailableServices.get("db")).toEqual({
+      name: "db",
+      reason: "binary 'rainfrog' not found",
+    });
+  });
+
+  it("keeps available service when binary found", async () => {
+    mockSpawn.mockReturnValue(fakeProc("close", 0));
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            api: { start: "node server.js" },
+            db: { start: "rainfrog -u pg", optional: true },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.api).toBeDefined();
+    expect(result.project.services.db).toBeDefined();
+    expect(result.unavailableServices.size).toBe(0);
+  });
+
+  it("strips dependsOn references to unavailable service", async () => {
+    mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
+      const [, cmdStr] = args;
+      if (cmdStr.includes("rainfrog")) {
+        return fakeProc("close", 1);
+      }
+      return fakeProc("close", 0);
+    });
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            api: { start: "node server.js", dependsOn: ["db"] },
+            db: { start: "rainfrog -u pg", optional: true },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.api.dependsOn).toEqual([]);
+    expect(result.project.services.db).toBeUndefined();
   });
 });

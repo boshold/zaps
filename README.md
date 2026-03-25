@@ -276,6 +276,45 @@ export function config({ defineProject, node }: Library) {
 | `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
 | `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
 | `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
+| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                             |
+
+### Optional Services
+
+Mark services as optional when the binary may not be installed on all machines:
+
+```typescript
+services: {
+  rainfrog: {
+    optional: true,
+    start: "rainfrog -u postgres://localhost:5432",
+    ready: { port: 5432 },
+  },
+}
+```
+
+When `optional: true`, ZAPS checks if the binary exists (first word of `start`/`run` via `command -v`). For custom checks, use an async function:
+
+```typescript
+services: {
+  "custom-tool": {
+    optional: async () => {
+      const { execSync } = await import("child_process");
+      try { execSync("docker image inspect my-tool"); return true; }
+      catch { return false; }
+    },
+    docker: { service: "my-tool" },
+  },
+}
+```
+
+**Behavior when unavailable:**
+
+- No tmux pane allocated
+- Shown greyed out in TUI dashboard
+- `dependsOn`/`restartWith` references silently dropped
+- Layout automatically adjusts (empty splits collapsed)
+
+> **Note:** `optional: true` requires `start` or `run` as a string (not a function). Docker-only services must use the function form.
 
 ### Ready Detection
 
@@ -644,6 +683,7 @@ stopped ──> starting ──> ready ──> stopping ──> stopped
 | `starting` / `stopping` / `restarting` | Yellow spinner |
 | `error`                                | Red `✖`        |
 | `stopped`                              | Gray `○`       |
+| `unavailable`                          | Gray `○`       |
 
 ## Hooks
 
