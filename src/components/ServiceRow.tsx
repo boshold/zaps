@@ -36,7 +36,7 @@ function formatUptime(readySince: number | undefined): string {
 
 function stateLabel(status: ServiceStatus): string {
   if (status.state === "unavailable") {
-    return "unavailable";
+    return "n/a";
   }
   if (status.state === "ready") {
     return formatUptime(status.readySince);
