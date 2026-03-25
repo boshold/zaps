@@ -12,7 +12,7 @@ async function sleep(ms: number): Promise<void> {
 
 async function poll(checkFn: () => Promise<boolean>, signal: AbortSignal): Promise<void> {
   if (signal.aborted) {
-    throw new Error("Ready check aborted");
+    return;
   }
 
   const start = Date.now();
@@ -26,7 +26,7 @@ async function poll(checkFn: () => Promise<boolean>, signal: AbortSignal): Promi
     }
     await sleep(POLL_INTERVAL);
   }
-  throw new Error("Ready check aborted");
+  // Aborted — return silently, caller checks controller.signal.aborted
 }
 
 /**

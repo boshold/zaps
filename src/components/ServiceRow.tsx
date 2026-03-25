@@ -35,6 +35,9 @@ function formatUptime(readySince: number | undefined): string {
 }
 
 function stateLabel(status: ServiceStatus): string {
+  if (status.state === "unavailable") {
+    return "n/a";
+  }
   if (status.state === "ready") {
     return formatUptime(status.readySince);
   }
@@ -46,6 +49,8 @@ const PREFIX_WIDTH = 4;
 const INDENT_WIDTH = 2;
 
 export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps) {
+  const dim = status.state === "unavailable";
+  const bold = isSelected && !dim;
   const portsStr = formatPorts(status.ports);
   const indentStr = indent ? "  " : "";
   const effectiveCols = indent ? cols - INDENT_WIDTH : cols;
@@ -64,8 +69,10 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
-          <Text bold={isSelected}>{status.name.padEnd(24)}</Text>
-          <Text>{stateLabel(status).padEnd(10)}</Text>
+          <Text bold={bold} dimColor={dim}>
+            {status.name.padEnd(24)}
+          </Text>
+          <Text dimColor={dim}>{stateLabel(status).padEnd(10)}</Text>
           <Text dimColor>{portsStr.padEnd(24)}</Text>
           <Text dimColor wrap="truncate">
             {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(
@@ -88,8 +95,10 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
-          <Text bold={isSelected}>{status.name.padEnd(nameWidth)}</Text>
-          <Text>{stateLabel(status).padEnd(statusWidth)}</Text>
+          <Text bold={bold} dimColor={dim}>
+            {status.name.padEnd(nameWidth)}
+          </Text>
+          <Text dimColor={dim}>{stateLabel(status).padEnd(statusWidth)}</Text>
           <Text dimColor wrap="truncate">
             {portsStr}
           </Text>
@@ -109,8 +118,12 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
           <Text>{isSelected ? "> " : "  "}</Text>
           <StatusCell status={status} />
           <Text> </Text>
-          <Text bold={isSelected}>{status.name.slice(0, nameWidth).padEnd(nameWidth)}</Text>
-          <Text wrap="truncate">{stateLabel(status).slice(0, statusWidth)}</Text>
+          <Text bold={bold} dimColor={dim}>
+            {status.name.slice(0, nameWidth).padEnd(nameWidth)}
+          </Text>
+          <Text dimColor={dim} wrap="truncate">
+            {stateLabel(status).slice(0, statusWidth)}
+          </Text>
         </Box>
         {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
       </Box>
@@ -126,7 +139,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
         <Text>{isSelected ? "> " : "  "}</Text>
         <StatusCell status={status} />
         <Text> </Text>
-        <Text bold={isSelected} wrap="truncate">
+        <Text bold={bold} dimColor={dim} wrap="truncate">
           {status.name.slice(0, nameWidth)}
         </Text>
       </Box>

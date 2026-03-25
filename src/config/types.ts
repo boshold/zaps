@@ -2,7 +2,7 @@ import type { NodeModules } from "./node.js";
 export type { NodeModules } from "./node.js";
 
 // === Commands ===
-export type Command = string | (() => string);
+export type Command = string | ((ctx: ServiceContext) => string);
 
 // === Ready Detection ===
 export type ReadyFn = () => Promise<boolean>;
@@ -60,6 +60,11 @@ export interface ServiceContext {
   projectDir: string;
 }
 
+// === Optional Context ===
+export interface OptionalContext {
+  hasBinary(name: string): Promise<boolean>;
+}
+
 // === Env Config ===
 export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
 
@@ -89,8 +94,15 @@ export interface ServiceConfig {
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onOutput?: (line: string) => void | Promise<void>;
+  optional?: boolean | ((ctx: OptionalContext) => boolean | Promise<boolean>);
   /** @internal Set by loader for expanded docker services */
   _combined?: CombinedServiceMeta;
+}
+
+// === Unavailable Service Info ===
+export interface UnavailableServiceInfo {
+  name: string;
+  reason: string;
 }
 
 // === Task Run Context ===
@@ -186,6 +198,7 @@ export interface ResolvedConfig {
   bindActions?: (actions: LibraryActions) => void;
   /** Maps group name → expanded child service names (from docker expand) */
   groups: Map<string, string[]>;
+  unavailableServices: Map<string, UnavailableServiceInfo>;
 }
 
 // === Type Guards ===

@@ -44,6 +44,7 @@ describe("StatusIndicator", () => {
       restarting: "◐",
       error: "✖",
       stopped: "○",
+      unavailable: "○",
     };
 
     for (const [state, symbol] of Object.entries(expected)) {

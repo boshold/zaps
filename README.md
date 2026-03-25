@@ -276,6 +276,52 @@ export function config({ defineProject, node }: Library) {
 | `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
 | `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
 | `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
+| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                             |
+
+### Optional Services
+
+Mark services as optional when the binary may not be installed on all machines:
+
+```typescript
+services: {
+  rainfrog: {
+    optional: true,
+    start: "rainfrog -u postgres://localhost:5432",
+    ready: { port: 5432 },
+  },
+}
+```
+
+When `optional: true`, ZAPS checks if the binary exists (first word of `start`/`run` via `command -v`). For function commands or custom checks, use the context helper:
+
+```typescript
+services: {
+  rainfrog: {
+    optional: (ctx) => ctx.hasBinary("rainfrog"),
+    start: (ctx) => `rainfrog --url postgres://localhost:${ctx.services.db.ports[0]}`,
+    dependsOn: ["db"],
+  },
+}
+```
+
+The `optional` predicate receives a context with helpers:
+
+- `ctx.hasBinary(name)` — checks if a binary exists via `command -v`
+
+Combine checks naturally:
+
+```typescript
+optional: async (ctx) => await ctx.hasBinary("grafana") && await ctx.hasBinary("prometheus"),
+```
+
+**Behavior when unavailable:**
+
+- No tmux pane allocated
+- Shown greyed out in TUI dashboard
+- `dependsOn`/`restartWith` references silently dropped
+- Layout automatically adjusts (empty splits collapsed)
+
+> **Note:** `optional: true` requires `start` or `run` as a string (not a function). Use the function form with `ctx.hasBinary()` for function commands or docker-only services.
 
 ### Ready Detection
 
@@ -644,6 +690,7 @@ stopped ──> starting ──> ready ──> stopping ──> stopped
 | `starting` / `stopping` / `restarting` | Yellow spinner |
 | `error`                                | Red `✖`        |
 | `stopped`                              | Gray `○`       |
+| `unavailable`                          | Gray `○`       |
 
 ## Hooks
 

@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import type { CwdContext, LayoutSplit, ServiceContext, TaskRunContext } from "./types.js";
+import type {
+  CwdContext,
+  LayoutSplit,
+  OptionalContext,
+  ServiceContext,
+  TaskRunContext,
+} from "./types.js";
 
 // === Commands ===
 const commandSchema = z.union([z.string(), z.custom<() => string>((v) => typeof v === "function")]);
@@ -101,6 +107,14 @@ const serviceConfigBaseSchema = z.object({
       backoff: z.optional(z.number()),
     }),
   ),
+  optional: z.optional(
+    z.union([
+      z.boolean(),
+      z.custom<(ctx: OptionalContext) => boolean | Promise<boolean>>(
+        (v) => typeof v === "function",
+      ),
+    ]),
+  ),
   onBeforeStart: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onReady: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStop: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
@@ -126,6 +140,16 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
         message: `Service '${name}' must have 'start', 'run', or 'docker' config`,
         input: svc,
       });
+    }
+    if (svc.optional === true) {
+      const cmd = svc.start ?? svc.run;
+      if (!cmd || typeof cmd !== "string") {
+        ctx.addIssue({
+          code: "custom",
+          message: `Service '${name}' has optional: true but requires 'start' or 'run' as a string; use optional: (ctx) => ctx.hasBinary('name') for function commands`,
+          input: svc,
+        });
+      }
     }
   }
 });

@@ -44,7 +44,9 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
     });
   } else if (t.commands) {
     const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
-    const resolvedCommands = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
+    const resolvedCommands = commands.map((cmd) =>
+      typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd,
+    );
 
     if (t.popup) {
       const popupCfg = typeof t.popup === "object" ? t.popup : {};

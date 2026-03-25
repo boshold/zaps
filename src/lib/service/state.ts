@@ -7,6 +7,7 @@ const VALID_TRANSITIONS: Record<ServiceState, ServiceState[]> = {
   stopping: ["stopped"],
   error: ["starting"],
   restarting: ["starting"],
+  unavailable: [],
 };
 
 /**

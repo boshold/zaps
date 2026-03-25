@@ -35,11 +35,11 @@ async function runPopupTaskNonInteractive(
     return false;
   }
 
-  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
-  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd() : cmd));
-
   const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
   const serviceCtx = buildServiceContext(statuses, config.projectDir);
+
+  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
+  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
   const resolvedEnv = resolveEnv(task.env, serviceCtx);
   const taskCwd = task.cwd ?? config.projectDir;
 

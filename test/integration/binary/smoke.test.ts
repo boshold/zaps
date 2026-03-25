@@ -6,7 +6,7 @@ import path from "node:path";
 import { killSession, newSession, sendKeys } from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { getFreePort } from "../helpers/port.js";
+import { reservePort } from "../helpers/port.js";
 import { hasBinary, hasTmux, isCI } from "../helpers/skip.js";
 
 const binaryPath = path.resolve("dist/zaps");
@@ -71,7 +71,7 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 9
   it("starts services and TUI is visible", async () => {
     cleanStaleConfigs();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-smoke-"));
-    const port = await getFreePort();
+    const { port, release } = await reservePort();
 
     // Write a .zaps.mts config (discovery supports .mts/.ts only)
     const configContent = `export function config({ defineProject }) {
@@ -92,8 +92,14 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 9
     sessionName = `zaps-smoke-${Date.now()}`;
     const initialPane = await newSession(sessionName);
 
+    // Release the reserved port just before launching zaps (minimizes race window)
+    await release();
+
     // Need to run inside tmux, so zaps dev is run from within this session
     await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} up`);
+
+    // Let tmux process the command before polling
+    await sleep(2000);
 
     // Poll for the service becoming ready (port open) — may take a while under parallel load
     await pollUntil(

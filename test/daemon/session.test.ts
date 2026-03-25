@@ -35,6 +35,7 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
       configPath: "/test/.zaps.mts",
       projectDir: "/test",
       groups: new Map(),
+      unavailableServices: new Map(),
     } as SessionCreateParams["config"],
     paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "main",
@@ -220,6 +221,7 @@ describe("Session", () => {
           configPath: "/test/.zaps.mts",
           projectDir: "/test",
           groups: new Map(),
+          unavailableServices: new Map(),
         } as SessionCreateParams["config"],
       });
 

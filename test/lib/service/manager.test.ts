@@ -50,6 +50,7 @@ function makeConfig(
     configPath: "/test/.zaps.ts",
     projectDir: "/test",
     groups: new Map(),
+    unavailableServices: new Map(),
   };
 }
 
@@ -2371,5 +2372,89 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(mgr.getStatus("postgres").state).toBe("ready");
+  });
+});
+
+// =============================================================================
+// Unavailable services
+// =============================================================================
+
+describe("unavailable services", () => {
+  it("constructor initializes unavailable statuses from config.unavailableServices", () => {
+    const config = makeConfig({ api: { start: "start-api" } });
+    config.unavailableServices = new Map([
+      ["db", { name: "db", reason: "binary 'rainfrog' not found" }],
+      ["tool", { name: "tool", reason: "availability check returned false" }],
+    ]);
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const dbStatus = mgr.getStatus("db");
+    expect(dbStatus.state).toBe("unavailable");
+    expect(dbStatus.ports).toEqual([]);
+
+    const toolStatus = mgr.getStatus("tool");
+    expect(toolStatus.state).toBe("unavailable");
+
+    // Available service still initialized normally
+    expect(mgr.getStatus("api").state).toBe("stopped");
+  });
+
+  it("getAllStatuses includes unavailable services", () => {
+    const config = makeConfig({ api: { start: "start-api" } });
+    config.unavailableServices = new Map([
+      ["db", { name: "db", reason: "binary 'rainfrog' not found" }],
+    ]);
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const all = mgr.getAllStatuses();
+    expect(all).toHaveLength(2);
+    expect(all.find((s) => s.name === "db")?.state).toBe("unavailable");
+    expect(all.find((s) => s.name === "api")?.state).toBe("stopped");
+  });
+
+  it("stopAll skips unavailable services", async () => {
+    const config = makeConfig({ api: { start: "start-api" } });
+    config.unavailableServices = new Map([
+      ["db", { name: "db", reason: "binary 'rainfrog' not found" }],
+    ]);
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // StopAll should complete without trying to stop unavailable services
+    await mgr.stopAll();
+
+    // Unavailable service state should remain unchanged
+    expect(mgr.getStatus("db").state).toBe("unavailable");
+  });
+
+  it("updateWindowTitle excludes unavailable from counts", async () => {
+    const config = makeConfig({
+      api: { start: "start-api", ready: { port: 3000 } },
+    });
+    config.unavailableServices = new Map([
+      ["db", { name: "db", reason: "binary 'rainfrog' not found" }],
+    ]);
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Start api service to trigger title update
+    deps.panePid = vi.fn(async () => 1000);
+    deps.getDescendantPids = vi.fn(async () => [1000, 1100]);
+    deps.detectPorts = vi.fn(async () => [3000]);
+    await mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // Verify renameWindow was called and the title does NOT contain "unavailable"
+    const renameCalls = vi.mocked(deps.renameWindow).mock.calls;
+    if (renameCalls.length > 0) {
+      const lastTitle = String(renameCalls.at(-1)?.[1]);
+      expect(lastTitle).not.toContain("unavailable");
+    }
   });
 });

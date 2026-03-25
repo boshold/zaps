@@ -45,7 +45,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function resolveCommand(config: ServiceConfig): string {
+function resolveCommand(config: ServiceConfig, ctx: ServiceContext): string {
   if (config.docker && !config.start && !config.run) {
     // For combined owner: build command with ALL services in the group
     if (config._combined?.isOwner) {
@@ -59,7 +59,7 @@ function resolveCommand(config: ServiceConfig): string {
   }
   const cmd = config.start ?? config.run;
   if (typeof cmd === "function") {
-    return cmd();
+    return cmd(ctx);
   }
   return cmd ?? "";
 }
@@ -185,6 +185,13 @@ export class ServiceManager extends EventEmitter {
       this.statuses.set(name, status);
     }
 
+    // Initialize unavailable service statuses
+    for (const [name] of config.unavailableServices) {
+      const status = createServiceStatus(name);
+      status.state = "unavailable";
+      this.statuses.set(name, status);
+    }
+
     this.restartWithMap = buildRestartWithMap(config.project.services);
 
     this.on("stateChange", () => {
@@ -275,7 +282,12 @@ export class ServiceManager extends EventEmitter {
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
-          if (status && status.state !== "stopped" && status.state !== "error") {
+          if (
+            status &&
+            status.state !== "stopped" &&
+            status.state !== "error" &&
+            status.state !== "unavailable"
+          ) {
             try {
               await this.stopService(name);
             } catch {
@@ -357,6 +369,11 @@ export class ServiceManager extends EventEmitter {
         readyDeps,
       );
 
+      // If aborted during ready wait (e.g. stopService called), exit silently
+      if (controller.signal.aborted) {
+        return;
+      }
+
       // Detect ports — use docker-provided ports if available
       const ports = readyPorts.length > 0 ? readyPorts : await this.deps.detectPorts(paneTarget);
 
@@ -407,7 +424,7 @@ export class ServiceManager extends EventEmitter {
     // Regular or combined owner: send command to pane
     const ctx = buildServiceContext(this.statuses, this.config.projectDir);
     const env = resolveEnv(serviceConfig.env, ctx);
-    const resolvedCommand = resolveCommand(serviceConfig);
+    const resolvedCommand = resolveCommand(serviceConfig, ctx);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
 
     if (serviceConfig.raw) {
@@ -815,6 +832,9 @@ export class ServiceManager extends EventEmitter {
     }
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
+      if (status.state === "unavailable") {
+        continue;
+      }
       counts[status.state] = (counts[status.state] ?? 0) + 1;
     }
 

@@ -7,11 +7,19 @@ interface HelpBarProps {
 }
 
 export function HelpBar({ compact, status }: HelpBarProps) {
-  if (compact && status) {
+  const isUnavailable = status?.state === "unavailable";
+  if (compact && status && !isUnavailable) {
     // Compact: merge action hints + nav into one line
     return (
       <Box>
         <Text dimColor>[r]estart [s]top [t]asks [q]uit [d]own</Text>
+      </Box>
+    );
+  }
+  if (compact && isUnavailable) {
+    return (
+      <Box>
+        <Text dimColor>[t]asks [q]uit [d]own</Text>
       </Box>
     );
   }

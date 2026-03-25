@@ -1,9 +1,18 @@
+import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { detectCycles } from "#src/lib/service/graph.js";
 
 import { createZapsLib } from "./builder.js";
-import type { CombinedServiceMeta, LayoutNode, ProjectConfig, ResolvedConfig } from "./types.js";
+import type {
+  CombinedServiceMeta,
+  LayoutNode,
+  OptionalContext,
+  ProjectConfig,
+  ResolvedConfig,
+  ServiceConfig,
+  UnavailableServiceInfo,
+} from "./types.js";
 import { isLayoutLeaf, isLayoutSplit } from "./types.js";
 
 function collectPaneNames(node: LayoutNode): string[] {
@@ -181,6 +190,96 @@ function resolveProjectDir(
   return invokeDir;
 }
 
+async function checkBinaryAvailable(binary: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const proc = spawn("sh", ["-c", `command -v ${binary}`]);
+    proc.on("error", () => resolve(false));
+    proc.on("close", (code) => resolve(code === 0));
+  });
+}
+
+function extractBinary(svc: ServiceConfig): string {
+  const cmd = typeof svc.start === "string" ? svc.start : String(svc.run ?? "");
+  const [binary] = cmd.trim().split(/\s+/);
+  return binary;
+}
+
+async function resolveOptionalServices(
+  services: Record<string, ServiceConfig>,
+): Promise<Map<string, UnavailableServiceInfo>> {
+  const optionalCtx: OptionalContext = { hasBinary: checkBinaryAvailable };
+  const unavailable = new Map<string, UnavailableServiceInfo>();
+  const checks = Object.entries(services)
+    .filter(([, svc]) => svc.optional === true || typeof svc.optional === "function")
+    .map(async ([name, svc]) => {
+      let available = false;
+      if (typeof svc.optional === "function") {
+        try {
+          available = await Promise.race([
+            Promise.resolve(svc.optional(optionalCtx)),
+            new Promise<boolean>((_resolve, reject) =>
+              setTimeout(() => reject(new Error("timeout")), 5000),
+            ),
+          ]);
+        } catch {
+          available = false;
+        }
+      } else {
+        available = await checkBinaryAvailable(extractBinary(svc));
+      }
+      if (!available) {
+        const reason =
+          typeof svc.optional === "function"
+            ? "availability check returned false"
+            : `binary '${extractBinary(svc)}' not found`;
+        unavailable.set(name, { name, reason });
+      }
+    });
+  await Promise.all(checks);
+  return unavailable;
+}
+
+function collapseLayoutTree(node: LayoutNode, removedPanes: Set<string>): LayoutNode | null {
+  if (isLayoutLeaf(node)) {
+    return removedPanes.has(node.pane) ? null : node;
+  }
+  if (isLayoutSplit(node)) {
+    const children = node.children
+      .map((c) => collapseLayoutTree(c, removedPanes))
+      .filter((c): c is LayoutNode => c !== null);
+    if (children.length === 0) {
+      return null;
+    }
+    if (children.length === 1) {
+      return children[0];
+    }
+    return { ...node, children };
+  }
+  return node;
+}
+
+function stripUnavailableServices(project: ProjectConfig, unavailableNames: Set<string>): void {
+  // Remove unavailable services
+  for (const name of unavailableNames) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- removing unavailable service
+    delete project.services[name];
+  }
+  // Clean dependsOn and restartWith in remaining services
+  for (const svc of Object.values(project.services)) {
+    if (svc.dependsOn) {
+      svc.dependsOn = svc.dependsOn.filter((d) => !unavailableNames.has(d));
+    }
+    if (svc.restartWith) {
+      svc.restartWith = svc.restartWith.filter((d) => !unavailableNames.has(d));
+    }
+  }
+  // Collapse layout tree
+  if (project.layout) {
+    const collapsed = collapseLayoutTree(project.layout, unavailableNames);
+    project.layout = collapsed ?? undefined;
+  }
+}
+
 /**
  * Dynamically import and validate a zaps config file.
  */
@@ -200,6 +299,12 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
   const { lib, bindActions } = createZapsLib();
   const project: ProjectConfig = configFn(lib);
 
+  // Resolve optional services and strip unavailable ones before expansion
+  const unavailableServices = await resolveOptionalServices(project.services);
+  if (unavailableServices.size > 0) {
+    stripUnavailableServices(project, new Set(unavailableServices.keys()));
+  }
+
   const projectDir = resolveProjectDir(project.cwd, configDir, resolvedInvokeDir);
 
   // Expand docker services with expand: true before validation
@@ -216,5 +321,9 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
     projectDir,
     bindActions,
     groups,
+    unavailableServices,
   };
 }
+
+/** @internal Exported for testing */
+export { collapseLayoutTree, resolveOptionalServices, stripUnavailableServices };
