@@ -408,11 +408,22 @@ export class ServiceManager extends EventEmitter {
     const ctx = buildServiceContext(this.statuses, this.config.projectDir);
     const env = resolveEnv(serviceConfig.env, ctx);
     const resolvedCommand = resolveCommand(serviceConfig);
-    const envPrefix = formatEnvForShell(env);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
-    const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
-    const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
-    await this.deps.sendKeys(paneTarget, command);
+
+    if (serviceConfig.raw) {
+      // Raw mode: current inline env approach
+      const envPrefix = formatEnvForShell(env);
+      const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
+      const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
+      await this.deps.sendKeys(paneTarget, command);
+    } else {
+      // Wrapper mode: store exec info, send wrapper command
+      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env });
+      await this.deps.sendKeys(
+        paneTarget,
+        `zaps exec-service ${name} --session ${this.deps.sessionId}`,
+      );
+    }
   }
 
   private async onServiceReady(

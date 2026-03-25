@@ -327,13 +327,19 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await apiPromise;
 
-    // Check that sendKeys was called with env prefix
+    // In wrapper mode, env is stored via storeExecInfo, not in sendKeys
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "api",
+      expect.objectContaining({
+        command: "start-api",
+        env: expect.objectContaining({ DB_PORT: "5432" }),
+      }),
+    );
     const apiCall = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.find(
       (call: unknown[]) => (call[0] as string) === "%api",
     );
     expect(apiCall).toBeDefined();
-    expect(apiCall?.[1]).toContain("DB_PORT='5432'");
-    expect(apiCall?.[1]).toContain("start-api");
+    expect(apiCall?.[1]).toBe("zaps exec-service api --session test-session-id");
   });
 
   it("sends correct command string to pane", async () => {
@@ -349,7 +355,18 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "svc",
+      expect.objectContaining({
+        command: "npm run dev",
+        cwd: "/test",
+        env: { PORT: "3000" },
+      }),
+    );
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      "zaps exec-service svc --session test-session-id",
+    );
   });
 
   it("transitions through stopped -> starting -> ready and emits stateChange", async () => {
@@ -445,7 +462,10 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && dynamic-cmd');
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      "zaps exec-service svc --session test-session-id",
+    );
   });
 
   it("guards against double-start when already starting", async () => {
@@ -503,7 +523,10 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && run-cmd');
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      "zaps exec-service svc --session test-session-id",
+    );
   });
 
   it("uses service-level cwd instead of projectDir when set", async () => {
@@ -519,7 +542,31 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/custom/path" && start-svc');
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "svc",
+      expect.objectContaining({ cwd: "/custom/path" }),
+    );
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      "zaps exec-service svc --session test-session-id",
+    );
+  });
+
+  it("uses inline env when raw: true", async () => {
+    const config = makeConfig({
+      svc: { start: "npm run dev", env: { PORT: "3000" }, raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.storeExecInfo).not.toHaveBeenCalled();
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
   });
 });
 
@@ -1182,7 +1229,7 @@ describe("docker config", () => {
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%db",
-      'cd "/test" && docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres',
+      "zaps exec-service db --session test-session-id",
     );
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
@@ -1211,7 +1258,10 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", 'cd "/test" && custom-start');
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%db",
+      "zaps exec-service db --session test-session-id",
+    );
 
     spy.mockRestore();
   });
@@ -1979,9 +2029,14 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(500);
     await p;
 
-    const sentCommand = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
-    expect(sentCommand).toContain("postgres");
-    expect(sentCommand).toContain("redis");
+    // In wrapper mode, the docker compose command is stored via storeExecInfo
+    const storedInfo = (deps.storeExecInfo as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(storedInfo?.[1].command).toContain("postgres");
+    expect(storedInfo?.[1].command).toContain("redis");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%infra",
+      "zaps exec-service postgres --session test-session-id",
+    );
   });
 
   it("non-owner skips sendKeys when owner is not running", async () => {
