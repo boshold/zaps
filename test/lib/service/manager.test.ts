@@ -898,7 +898,7 @@ describe("crash recovery", () => {
 });
 
 // =============================================================================
-// crash monitor poll interval
+// Crash monitor poll interval
 // =============================================================================
 
 describe("crash monitor poll interval", () => {
@@ -950,7 +950,7 @@ describe("crash monitor poll interval", () => {
 });
 
 // =============================================================================
-// handleExecExited
+// HandleExecExited
 // =============================================================================
 
 describe("handleExecExited", () => {
@@ -1032,7 +1032,7 @@ describe("handleExecExited", () => {
     // Simulate crash detection: PID poll returns crashed state
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
 
-    // handleExecExited fires first — increments generation
+    // HandleExecExited fires first — increments generation
     mgr.handleExecExited("svc", 1, null);
     await vi.advanceTimersByTimeAsync(100);
 
@@ -2179,9 +2179,9 @@ describe("combined docker services", () => {
     await p;
 
     // In wrapper mode, the docker compose command is stored via storeExecInfo
-    const storedInfo = (deps.storeExecInfo as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(storedInfo?.[1].command).toContain("postgres");
-    expect(storedInfo?.[1].command).toContain("redis");
+    const [[, storedExecInfo]] = (deps.storeExecInfo as ReturnType<typeof vi.fn>).mock.calls;
+    expect(storedExecInfo?.command).toContain("postgres");
+    expect(storedExecInfo?.command).toContain("redis");
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%infra",
       "zaps exec-service postgres --session test-session-id",
