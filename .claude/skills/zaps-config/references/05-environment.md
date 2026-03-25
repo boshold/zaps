@@ -35,7 +35,9 @@ interface ServiceContext {
 
 ## How Env Vars Are Applied
 
-Env vars are **prepended as inline shell variables** to the service command:
+By default, env vars are passed to the service process via an internal wrapper — they are **not visible** in tmux pane scrollback. This prevents accidental credential leaks during screen shares.
+
+With `raw: true`, env vars are prepended as inline shell variables (visible in pane):
 
 ```sh
 NODE_ENV='development' PORT='3000' npm run dev
