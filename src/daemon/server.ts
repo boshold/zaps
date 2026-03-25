@@ -7,6 +7,7 @@ import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import {
   capturePane,
@@ -23,8 +24,6 @@ import {
 
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
-import type { ExecInfo } from "#src/lib/service/types.js";
-
 import type { SessionCreateParams } from "./session.js";
 import { Session, sessionId } from "./session.js";
 
