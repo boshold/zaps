@@ -421,7 +421,7 @@ export class ServiceManager extends EventEmitter {
       this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env });
       await this.deps.sendKeys(
         paneTarget,
-        `zaps exec-service ${name} --session ${this.deps.sessionId}`,
+        `${this.deps.zapsCommand} exec-service ${name} --sid ${this.deps.sessionId}`,
       );
     }
   }
@@ -908,6 +908,7 @@ export interface ServiceManagerDeps {
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
   storeExecInfo: (service: string, info: ExecInfo) => void;
   sessionId: string;
+  zapsCommand: string;
 }
 
 export { diffOutput };

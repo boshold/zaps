@@ -37,6 +37,7 @@ const deps = {
     /* No-op */
   },
   sessionId: "test-session-id",
+  zapsCommand: "zaps",
 };
 
 describe.skipIf(!hasTmux())("window-title integration", () => {

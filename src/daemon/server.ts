@@ -159,6 +159,7 @@ class DaemonServer implements SessionStore {
         ref.session?.execInfo.set(service, info);
       },
       sessionId: id,
+      zapsCommand: process.env["ZAPS_COMMAND"] ?? "zaps",
     };
 
     // Create ServiceManager

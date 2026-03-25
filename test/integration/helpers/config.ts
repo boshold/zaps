@@ -10,10 +10,17 @@ export function makeConfig(
     tasks?: Record<string, TaskConfig>;
   },
 ): ResolvedConfig {
+  // Raw mode default — these tests use ServiceManager directly without a daemon,
+  // So wrapper mode (which needs IPC to resolve exec info) would fail.
+  const rawServices: Record<string, ServiceConfig> = {};
+  for (const [name, svc] of Object.entries(services)) {
+    rawServices[name] = { raw: true, ...svc };
+  }
+
   return {
     project: {
       name: "integration-test",
-      services,
+      services: rawServices,
       hooks: opts?.hooks,
       tasks: opts?.tasks,
     },

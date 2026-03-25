@@ -30,6 +30,7 @@ export const tmuxDeps = {
     /* No-op */
   },
   sessionId: "test-session-id",
+  zapsCommand: "zaps",
 };
 
 export async function waitForState(

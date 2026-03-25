@@ -31,6 +31,7 @@ function createMockDeps(): ServiceManagerDeps {
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
     storeExecInfo: vi.fn(),
     sessionId: "test-session-id",
+    zapsCommand: "zaps",
   };
 }
 
@@ -339,7 +340,7 @@ describe("startService", () => {
       (call: unknown[]) => (call[0] as string) === "%api",
     );
     expect(apiCall).toBeDefined();
-    expect(apiCall?.[1]).toBe("zaps exec-service api --session test-session-id");
+    expect(apiCall?.[1]).toBe("zaps exec-service api --sid test-session-id");
   });
 
   it("sends correct command string to pane", async () => {
@@ -365,7 +366,7 @@ describe("startService", () => {
     );
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%svc",
-      "zaps exec-service svc --session test-session-id",
+      "zaps exec-service svc --sid test-session-id",
     );
   });
 
@@ -464,7 +465,7 @@ describe("startService", () => {
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%svc",
-      "zaps exec-service svc --session test-session-id",
+      "zaps exec-service svc --sid test-session-id",
     );
   });
 
@@ -525,7 +526,7 @@ describe("startService", () => {
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%svc",
-      "zaps exec-service svc --session test-session-id",
+      "zaps exec-service svc --sid test-session-id",
     );
   });
 
@@ -548,7 +549,7 @@ describe("startService", () => {
     );
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%svc",
-      "zaps exec-service svc --session test-session-id",
+      "zaps exec-service svc --sid test-session-id",
     );
   });
 
@@ -1376,10 +1377,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%db",
-      "zaps exec-service db --session test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps exec-service db --sid test-session-id");
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
 
@@ -1407,10 +1405,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%db",
-      "zaps exec-service db --session test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps exec-service db --sid test-session-id");
 
     spy.mockRestore();
   });
@@ -2184,7 +2179,7 @@ describe("combined docker services", () => {
     expect(storedExecInfo?.command).toContain("redis");
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%infra",
-      "zaps exec-service postgres --session test-session-id",
+      "zaps exec-service postgres --sid test-session-id",
     );
   });
 

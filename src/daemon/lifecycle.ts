@@ -17,6 +17,10 @@ export function daemonDir(): string {
 }
 
 export function socketPath(): string {
+  const override = process.env["ZAPS_SOCKET_PATH"];
+  if (override) {
+    return override;
+  }
   return path.join(daemonDir(), "daemon.sock");
 }
 

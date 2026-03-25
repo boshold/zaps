@@ -889,10 +889,10 @@ program
 program
   .command("exec-service <name>", { hidden: true })
   .description("Execute a service via wrapper (internal)")
-  .requiredOption("--session <id>", "Session ID")
-  .action(async (name: string, opts: { session: string }) => {
+  .requiredOption("--sid <id>", "Daemon session ID")
+  .action(async (name: string, opts: { sid: string }) => {
     const { execService } = await import("./cli/exec-service.js");
-    await execService(name, opts.session);
+    await execService(name, opts.sid);
   });
 
 // --- Daemon management ---

@@ -22,7 +22,7 @@ function writeConfig(
   const configPath = path.join(dir, ".zaps.mjs");
   const svcEntries = Object.entries(services).map(([svcName, { port }]) => {
     const cmd = `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port},()=>console.log('ready on port ${port}'))"`;
-    return `      ${svcName}: { start: ${JSON.stringify(cmd)}, ready: { port: ${port} } }`;
+    return `      ${svcName}: { start: ${JSON.stringify(cmd)}, ready: { port: ${port} }, raw: true }`;
   });
   fs.writeFileSync(
     configPath,
