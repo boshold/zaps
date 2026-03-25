@@ -800,6 +800,115 @@ describe("session handlers", () => {
     });
   });
 
+  describe("exec-service.resolve", () => {
+    it("returns exec info and deletes it", async () => {
+      const session = createMockSession();
+      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: { DB: "x" } });
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "re1",
+        method: "exec-service.resolve",
+        session: session.id,
+        params: { service: "dev" },
+      };
+      const res = await sessionHandlers["exec-service.resolve"](req, store, socket as never);
+      expect(res.result).toEqual({ command: "pnpm dev", cwd: "/test", env: { DB: "x" } });
+      expect(session.execInfo.has("dev")).toBe(false);
+    });
+
+    it("returns error when no exec info exists", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "re2",
+        method: "exec-service.resolve",
+        session: session.id,
+        params: { service: "dev" },
+      };
+      const res = await sessionHandlers["exec-service.resolve"](req, store, socket as never);
+      expect(res.error).toContain("No exec info");
+    });
+
+    it("returns error for second resolve (one-time delete)", async () => {
+      const session = createMockSession();
+      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: {} });
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "re3",
+        method: "exec-service.resolve",
+        session: session.id,
+        params: { service: "dev" },
+      };
+      await sessionHandlers["exec-service.resolve"](req, store, socket as never);
+      const res2 = await sessionHandlers["exec-service.resolve"](
+        { ...req, id: "re4" },
+        store,
+        socket as never,
+      );
+      expect(res2.error).toContain("No exec info");
+    });
+
+    it("returns error for unknown session", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "re5",
+        method: "exec-service.resolve",
+        session: "unknown",
+        params: { service: "dev" },
+      };
+      const res = await sessionHandlers["exec-service.resolve"](req, store, socket as never);
+      expect(res.error).toBe("Unknown session");
+    });
+  });
+
+  describe("exec-service.exited", () => {
+    it("calls handleExecExited with correct args", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rx1",
+        method: "exec-service.exited",
+        session: session.id,
+        params: { service: "dev", code: 1, signal: "SIGTERM" },
+      };
+      const res = await sessionHandlers["exec-service.exited"](req, store, socket as never);
+      expect(res.result).toEqual({ ok: true });
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 1, "SIGTERM");
+    });
+
+    it("defaults null signal when omitted", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rx2",
+        method: "exec-service.exited",
+        session: session.id,
+        params: { service: "dev", code: 0 },
+      };
+      await sessionHandlers["exec-service.exited"](req, store, socket as never);
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 0, null);
+    });
+
+    it("returns error for unknown session", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rx3",
+        method: "exec-service.exited",
+        session: "unknown",
+        params: { service: "dev", code: 1 },
+      };
+      const res = await sessionHandlers["exec-service.exited"](req, store, socket as never);
+      expect(res.error).toBe("Unknown session");
+    });
+  });
+
   describe("logs.snapshot", () => {
     it("returns log buffer snapshot", async () => {
       const session = createMockSession();

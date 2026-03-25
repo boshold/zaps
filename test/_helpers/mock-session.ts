@@ -21,6 +21,7 @@ export interface MockSession {
   paneMap: Record<string, string>;
   tmuxSession: string;
   originPane: string;
+  execInfo: Map<string, { command: string; cwd: string; env: Record<string, string> }>;
   manager: {
     getAllStatuses: ReturnType<typeof vi.fn>;
     getStatus: ReturnType<typeof vi.fn>;
@@ -29,6 +30,7 @@ export interface MockSession {
     restartService: ReturnType<typeof vi.fn>;
     startAll: ReturnType<typeof vi.fn>;
     stopAll: ReturnType<typeof vi.fn>;
+    handleExecExited: ReturnType<typeof vi.fn>;
     on: ReturnType<typeof vi.fn>;
     emit: ReturnType<typeof vi.fn>;
   };
@@ -68,6 +70,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "test-tmux",
     originPane: "%0",
+    execInfo: overrides.execInfo ?? new Map(),
     manager: {
       getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
       getStatus: vi.fn((name: string) => {
@@ -81,6 +84,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       restartService: vi.fn().mockResolvedValue(undefined),
       startAll: vi.fn().mockResolvedValue(undefined),
       stopAll: vi.fn().mockResolvedValue(undefined),
+      handleExecExited: vi.fn(),
       on: vi.fn(),
       emit: vi.fn(),
     },

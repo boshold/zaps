@@ -34,6 +34,36 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("service raw option", () => {
+    it("accepts raw: true", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", raw: true } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts raw: false", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", raw: false } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts omitted raw", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects non-boolean raw", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", raw: "yes" } },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe("task superRefine", () => {
     it("rejects task with both commands and run", () => {
       const result = projectConfigSchema.safeParse({
