@@ -348,6 +348,7 @@ export class Session {
       tasks,
       servicesMeta,
       taskHistory: this.taskHistory,
+      unavailableServices: [...this.config.unavailableServices.values()],
     };
   }
 
@@ -376,4 +377,5 @@ export interface SessionSnapshot {
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
   taskHistory: TaskRunRecord[];
+  unavailableServices: { name: string; reason: string }[];
 }

@@ -185,6 +185,13 @@ export class ServiceManager extends EventEmitter {
       this.statuses.set(name, status);
     }
 
+    // Initialize unavailable service statuses
+    for (const [name] of config.unavailableServices) {
+      const status = createServiceStatus(name);
+      status.state = "unavailable";
+      this.statuses.set(name, status);
+    }
+
     this.restartWithMap = buildRestartWithMap(config.project.services);
 
     this.on("stateChange", () => {
@@ -275,7 +282,12 @@ export class ServiceManager extends EventEmitter {
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
-          if (status && status.state !== "stopped" && status.state !== "error") {
+          if (
+            status &&
+            status.state !== "stopped" &&
+            status.state !== "error" &&
+            status.state !== "unavailable"
+          ) {
             try {
               await this.stopService(name);
             } catch {
@@ -815,6 +827,7 @@ export class ServiceManager extends EventEmitter {
     }
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
+      if (status.state === "unavailable") {continue;}
       counts[status.state] = (counts[status.state] ?? 0) + 1;
     }
 
