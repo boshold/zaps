@@ -21,7 +21,14 @@ export interface ExecInfo {
 }
 
 // === Service State ===
-export type ServiceState = "stopped" | "starting" | "ready" | "stopping" | "error" | "restarting";
+export type ServiceState =
+  | "stopped"
+  | "starting"
+  | "ready"
+  | "stopping"
+  | "error"
+  | "restarting"
+  | "unavailable";
 
 export interface ServiceStatus {
   name: string;

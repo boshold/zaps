@@ -101,6 +101,9 @@ const serviceConfigBaseSchema = z.object({
       backoff: z.optional(z.number()),
     }),
   ),
+  optional: z.optional(
+    z.union([z.boolean(), z.custom<() => Promise<boolean>>((v) => typeof v === "function")]),
+  ),
   onBeforeStart: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onReady: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
   onStop: z.optional(z.custom<() => void | Promise<void>>((v) => typeof v === "function")),
@@ -126,6 +129,16 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
         message: `Service '${name}' must have 'start', 'run', or 'docker' config`,
         input: svc,
       });
+    }
+    if (svc.optional === true) {
+      const cmd = svc.start ?? svc.run;
+      if (!cmd || typeof cmd !== "string") {
+        ctx.addIssue({
+          code: "custom",
+          message: `Service '${name}' has optional: true but requires 'start' or 'run' as a string (not a function)`,
+          input: svc,
+        });
+      }
     }
   }
 });

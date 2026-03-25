@@ -50,6 +50,7 @@ function makeConfig(
     configPath: "/test/.zaps.ts",
     projectDir: "/test",
     groups: new Map(),
+    unavailableServices: new Map(),
   };
 }
 

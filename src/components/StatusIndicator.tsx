@@ -12,6 +12,7 @@ const STATUS_MAP: Record<ServiceState, { symbol: string; color: string }> = {
   restarting: { symbol: "◐", color: "yellow" },
   error: { symbol: "✖", color: "red" },
   stopped: { symbol: "○", color: "gray" },
+  unavailable: { symbol: "○", color: "gray" },
 };
 
 function isSpinnerState(state: ServiceState): boolean {

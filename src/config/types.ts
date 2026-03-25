@@ -89,8 +89,15 @@ export interface ServiceConfig {
   onReady?: () => void | Promise<void>;
   onStop?: () => void | Promise<void>;
   onOutput?: (line: string) => void | Promise<void>;
+  optional?: boolean | (() => Promise<boolean>);
   /** @internal Set by loader for expanded docker services */
   _combined?: CombinedServiceMeta;
+}
+
+// === Unavailable Service Info ===
+export interface UnavailableServiceInfo {
+  name: string;
+  reason: string;
 }
 
 // === Task Run Context ===
@@ -186,6 +193,7 @@ export interface ResolvedConfig {
   bindActions?: (actions: LibraryActions) => void;
   /** Maps group name → expanded child service names (from docker expand) */
   groups: Map<string, string[]>;
+  unavailableServices: Map<string, UnavailableServiceInfo>;
 }
 
 // === Type Guards ===

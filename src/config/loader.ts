@@ -216,5 +216,6 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
     projectDir,
     bindActions,
     groups,
+    unavailableServices: new Map(),
   };
 }
