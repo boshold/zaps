@@ -340,7 +340,7 @@ describe("startService", () => {
       (call: unknown[]) => (call[0] as string) === "%api",
     );
     expect(apiCall).toBeDefined();
-    expect(apiCall?.[1]).toBe("zaps exec-service api --sid test-session-id");
+    expect(apiCall?.[1]).toBe("zaps -s test-session-id exec-service api");
   });
 
   it("sends correct command string to pane", async () => {
@@ -364,10 +364,7 @@ describe("startService", () => {
         env: { PORT: "3000" },
       }),
     );
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
-      "zaps exec-service svc --sid test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("transitions through stopped -> starting -> ready and emits stateChange", async () => {
@@ -463,10 +460,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
-      "zaps exec-service svc --sid test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("guards against double-start when already starting", async () => {
@@ -524,10 +518,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
-      "zaps exec-service svc --sid test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("uses service-level cwd instead of projectDir when set", async () => {
@@ -547,10 +538,7 @@ describe("startService", () => {
       "svc",
       expect.objectContaining({ cwd: "/custom/path" }),
     );
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
-      "zaps exec-service svc --sid test-session-id",
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("uses inline env when raw: true", async () => {
@@ -1377,7 +1365,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps exec-service db --sid test-session-id");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
 
@@ -1405,7 +1393,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps exec-service db --sid test-session-id");
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
 
     spy.mockRestore();
   });
@@ -2179,7 +2167,7 @@ describe("combined docker services", () => {
     expect(storedExecInfo?.command).toContain("redis");
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%infra",
-      "zaps exec-service postgres --sid test-session-id",
+      "zaps -s test-session-id exec-service postgres",
     );
   });
 

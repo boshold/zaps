@@ -421,7 +421,7 @@ export class ServiceManager extends EventEmitter {
       this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env });
       await this.deps.sendKeys(
         paneTarget,
-        `${this.deps.zapsCommand} exec-service ${name} --sid ${this.deps.sessionId}`,
+        `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
       );
     }
   }

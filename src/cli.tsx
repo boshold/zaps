@@ -889,10 +889,14 @@ program
 program
   .command("exec-service <name>", { hidden: true })
   .description("Execute a service via wrapper (internal)")
-  .requiredOption("--sid <id>", "Daemon session ID")
-  .action(async (name: string, opts: { sid: string }) => {
+  .action(async (name: string) => {
+    const session = globalSession();
+    if (!session) {
+      process.stderr.write("Error: -s/--session is required for exec-service\n");
+      process.exit(1);
+    }
     const { execService } = await import("./cli/exec-service.js");
-    await execService(name, opts.sid);
+    await execService(name, session);
   });
 
 // --- Daemon management ---
