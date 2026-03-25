@@ -886,6 +886,15 @@ program
     await runTui({ sessionId: opts.session, socketPath: opts.socket, autoStart: opts.start });
   });
 
+program
+  .command("exec-service <name>", { hidden: true })
+  .description("Execute a service via wrapper (internal)")
+  .requiredOption("--session <id>", "Session ID")
+  .action(async (name: string, opts: { session: string }) => {
+    const { execService } = await import("./cli/exec-service.js");
+    await execService(name, opts.session);
+  });
+
 // --- Daemon management ---
 
 const daemonCmd = program.command("daemon").description("Daemon management");
