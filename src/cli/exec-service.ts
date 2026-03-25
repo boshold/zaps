@@ -50,21 +50,21 @@ async function execService(name: string, sessionId: string): Promise<void> {
   child.on("exit", (code, signal) => {
     process.off("SIGTERM", forwardTerm);
     const exitCode = code ?? 1;
+    const sig = signal ?? null;
 
-    // Fire-and-forget exit notification
-    /* eslint-disable promise/prefer-await-to-then */
-    void ipcRequest(
-      socket,
-      "exec-service.exited",
-      { service: name, code: exitCode, signal: signal ?? null },
-      undefined,
-      sessionId,
-    ).catch(() => {
-      /* Best-effort */
-    });
-    /* eslint-enable promise/prefer-await-to-then */
-
-    process.exit(exitCode);
+    // Await exit notification with short timeout before exiting
+    void (async () => {
+      await ipcRequest(
+        socket,
+        "exec-service.exited",
+        { service: name, code: exitCode, signal: sig },
+        1000,
+        sessionId,
+      ).catch(() => {
+        /* Best-effort — daemon may be gone */
+      });
+      process.exit(exitCode);
+    })();
   });
 }
 
