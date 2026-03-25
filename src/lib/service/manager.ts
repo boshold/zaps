@@ -852,6 +852,11 @@ export class ServiceManager extends EventEmitter {
     });
     await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
+
+  // eslint-disable-next-line class-methods-use-this -- Stub, will use `this` in phase 2
+  handleExecExited(_service: string, _code: number, _signal: string | null): void {
+    // Stub -- will be implemented to handle wrapper exit notifications
+  }
 }
 
 export interface ServiceManagerEvents {

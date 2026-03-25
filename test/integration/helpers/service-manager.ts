@@ -26,7 +26,9 @@ export const tmuxDeps = {
   exec: async () => {
     /* No-op */
   },
-  storeExecInfo: () => {},
+  storeExecInfo: () => {
+    /* No-op */
+  },
   sessionId: "test-session-id",
 };
 

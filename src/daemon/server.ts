@@ -140,8 +140,8 @@ class DaemonServer implements SessionStore {
     );
     await selectPane(focusPane);
 
-    // Build deps (storeExecInfo closure captures `session` which is assigned below)
-    let session!: Session;
+    // Late-bound ref so storeExecInfo closure can capture session before it's created
+    const ref: { session: Session | null } = { session: null };
     const deps = {
       sendKeys,
       sendCtrlC,
@@ -157,7 +157,7 @@ class DaemonServer implements SessionStore {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
       storeExecInfo: (service: string, info: ExecInfo) => {
-        session.execInfo.set(service, info);
+        ref.session?.execInfo.set(service, info);
       },
       sessionId: id,
     };
@@ -176,7 +176,8 @@ class DaemonServer implements SessionStore {
       deps,
     };
 
-    session = new Session(sessionParams, manager);
+    const session = new Session(sessionParams, manager);
+    ref.session = session;
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 
