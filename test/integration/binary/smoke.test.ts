@@ -50,7 +50,7 @@ async function pollUntil(
   throw new Error("pollUntil timed out");
 }
 
-describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
+describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 90_000 }, () => {
   let sessionName: string;
   let tmpDir: string;
 
@@ -95,10 +95,7 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
     // Need to run inside tmux, so zaps dev is run from within this session
     await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} up`);
 
-    // Wait for layout creation — zaps creates panes and spawns TUI
-    await sleep(3000);
-
-    // Poll for either TUI output or the service becoming ready (port open)
+    // Poll for the service becoming ready (port open) — may take a while under parallel load
     await pollUntil(
       async () => {
         try {
@@ -110,7 +107,7 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", () => {
           return false;
         }
       },
-      30_000,
+      50_000,
       2000,
     );
 

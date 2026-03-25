@@ -1,40 +1,14 @@
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  panePid,
-  renameWindow,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-} from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
-import { httpServerCmd } from "../helpers/fixtures.js";
+import { httpServerCmd, slowStartCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
+import { tmuxDeps, waitForState } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
-
-const deps = {
-  sendKeys,
-  sendCtrlC,
-  panePid,
-  detectPorts,
-  capturePane,
-  getDescendantPids,
-  renameWindow,
-  getWindowName,
-  getWindowOption,
-  setWindowOption,
-  exec: async () => {
-    /* No-op */
-  },
-};
 
 describe.skipIf(!hasTmux())("edge-cases integration", () => {
   let session: TestSession;
@@ -58,7 +32,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
@@ -78,7 +52,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     await expect(mgr.startService("api")).rejects.toThrow(/not ready/);
   });
@@ -92,7 +66,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
     await mgr.startAll();
 
     await mgr.stopAll();
@@ -115,7 +89,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
 
     const stopOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -130,5 +104,54 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
     // Fe should stop before api, api before db
     expect(stopOrder.indexOf("fe")).toBeLessThan(stopOrder.indexOf("api"));
     expect(stopOrder.indexOf("api")).toBeLessThan(stopOrder.indexOf("db"));
+  });
+
+  it("stop during starting aborts cleanly", async () => {
+    session = await createTestSession();
+    const port = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+
+    const config = makeConfig({
+      svc: { start: slowStartCmd(port, 5000), ready: { port } },
+    });
+
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+
+    // Start in background (will take 5s to become ready)
+    const startPromise = mgr.startService("svc");
+
+    // Wait for "starting" state
+    await waitForState(mgr, "svc", "starting", 5000);
+
+    // Stop immediately — should abort the ready poll
+    await mgr.stopService("svc");
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+
+    // Original start should resolve (aborted, no throw)
+    await startPromise;
+  });
+
+  it("rapid start/stop cycling leaves clean state", async () => {
+    session = await createTestSession();
+    const port = await getFreePort();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+
+    const config = makeConfig({
+      svc: { start: httpServerCmd(port), ready: { port } },
+    });
+
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+
+    // Cycle 1
+    await mgr.startService("svc");
+    expect(mgr.getStatus("svc").state).toBe("ready");
+    await mgr.stopService("svc");
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+
+    // Cycle 2
+    await mgr.startService("svc");
+    expect(mgr.getStatus("svc").state).toBe("ready");
+    await mgr.stopService("svc");
+    expect(mgr.getStatus("svc").state).toBe("stopped");
   });
 });

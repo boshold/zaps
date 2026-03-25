@@ -53,7 +53,6 @@ describe.skipIf(!hasTmux())("multi-service operations", () => {
     } catch {
       /* Best-effort cleanup */
     }
-    await new Promise((resolve) => setTimeout(resolve, 600));
     await daemon.cleanup();
     await tmux.cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });

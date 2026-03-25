@@ -149,6 +149,7 @@ export class ServiceManager extends EventEmitter {
   private autoOpened = new Set<string>();
   private restartWithMap: Map<string, string[]>;
   private cascadingTriggers = new Set<string>();
+  private monitorGenerations = new Map<string, number>();
   private originalWindowTitle: Promise<string>;
   private originalAutoRename: Promise<string | null>;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
@@ -444,12 +445,13 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
-    // Start crash monitor in background
-    void this.monitorCrash(name);
+    // Start crash monitor in background with current generation
+    const gen = this.monitorGenerations.get(name) ?? 0;
+    void this.monitorCrash(name, gen);
 
     // Start output monitor if onOutput is configured
     if (serviceConfig.onOutput) {
-      void this.monitorOutput(name);
+      void this.monitorOutput(name, gen);
     }
   }
 
@@ -474,6 +476,9 @@ export class ServiceManager extends EventEmitter {
     if (controller) {
       controller.abort();
     }
+
+    // Invalidate any active crash/output monitors
+    this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
 
     const combined = serviceConfig._combined;
 
@@ -677,7 +682,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Monitor a service for crashes and auto-restart.
    */
-  private async monitorCrash(name: string): Promise<void> {
+  private async monitorCrash(name: string, generation: number): Promise<void> {
     const status = this.statuses.get(name);
     if (!status) {
       return;
@@ -690,6 +695,10 @@ export class ServiceManager extends EventEmitter {
       await sleep(2000);
       // Re-check state after sleep (stopService may have changed it)
       if (status.state !== "ready") {
+        return;
+      }
+      // Check if this monitor has been superseded by a newer generation
+      if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
         return;
       }
 
@@ -711,6 +720,10 @@ export class ServiceManager extends EventEmitter {
       }
 
       if (crashed) {
+        // Re-check state and generation after async crash detection — stopService may have run
+        if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
+          return;
+        }
         const restartConfig = config.restart;
         if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
           status.state = transition(status.state, "restarting");
@@ -767,7 +780,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Monitor service output and call onOutput for each new line.
    */
-  private async monitorOutput(name: string): Promise<void> {
+  private async monitorOutput(name: string, generation: number): Promise<void> {
     const status = this.statuses.get(name);
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
@@ -781,7 +794,7 @@ export class ServiceManager extends EventEmitter {
 
     while (status.state === "ready") {
       await sleep(1000);
-      if (status.state !== "ready") {
+      if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
         return;
       }
 
