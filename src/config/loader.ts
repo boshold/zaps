@@ -322,3 +322,6 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
     unavailableServices,
   };
 }
+
+/** @internal Exported for testing */
+export { collapseLayoutTree, resolveOptionalServices, stripUnavailableServices };
