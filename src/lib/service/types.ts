@@ -13,6 +13,13 @@ export type {
 } from "#src/config/types.js";
 export { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "#src/config/types.js";
 
+// === Exec Info ===
+export interface ExecInfo {
+  command: string;
+  cwd: string;
+  env: Record<string, string>;
+}
+
 // === Service State ===
 export type ServiceState = "stopped" | "starting" | "ready" | "stopping" | "error" | "restarting";
 

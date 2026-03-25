@@ -94,6 +94,7 @@ const serviceConfigBaseSchema = z.object({
   flags: z.optional(flagsSchema),
   url: z.optional(urlConfigSchema),
   cwd: z.optional(z.string()),
+  raw: z.optional(z.boolean()),
   restart: z.optional(
     z.object({
       maxRetries: z.optional(z.number()),
