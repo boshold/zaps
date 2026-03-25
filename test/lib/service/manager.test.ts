@@ -898,6 +898,58 @@ describe("crash recovery", () => {
 });
 
 // =============================================================================
+// crash monitor poll interval
+// =============================================================================
+
+describe("crash monitor poll interval", () => {
+  it("polls every 2s for raw-mode services", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    // Clear call count after startup
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance 2.5s — should have polled once (2s interval)
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(deps.getDescendantPids).toHaveBeenCalled();
+  });
+
+  it("polls every 10s for wrapper-mode services", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    // Clear call count after startup
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance 5s — should NOT have polled yet (10s interval)
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(deps.getDescendantPids).not.toHaveBeenCalled();
+
+    // Advance past 10s total — should have polled
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(deps.getDescendantPids).toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
 // handleExecExited
 // =============================================================================
 
