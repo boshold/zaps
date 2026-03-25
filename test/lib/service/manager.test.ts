@@ -29,6 +29,8 @@ function createMockDeps(): ServiceManagerDeps {
     getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
+    storeExecInfo: vi.fn(),
+    sessionId: "test-session-id",
   };
 }
 

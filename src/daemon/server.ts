@@ -23,6 +23,8 @@ import {
 
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
+import type { ExecInfo } from "#src/lib/service/types.js";
+
 import type { SessionCreateParams } from "./session.js";
 import { Session, sessionId } from "./session.js";
 
@@ -138,7 +140,8 @@ class DaemonServer implements SessionStore {
     );
     await selectPane(focusPane);
 
-    // Build deps
+    // Build deps (storeExecInfo closure captures `session` which is assigned below)
+    let session!: Session;
     const deps = {
       sendKeys,
       sendCtrlC,
@@ -153,6 +156,10 @@ class DaemonServer implements SessionStore {
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
+      storeExecInfo: (service: string, info: ExecInfo) => {
+        session.execInfo.set(service, info);
+      },
+      sessionId: id,
     };
 
     // Create ServiceManager
@@ -169,7 +176,7 @@ class DaemonServer implements SessionStore {
       deps,
     };
 
-    const session = new Session(sessionParams, manager);
+    session = new Session(sessionParams, manager);
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 

@@ -6,7 +6,7 @@ import { loadConfig } from "#src/config/loader.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
+import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { killPane } from "#src/lib/tmux.js";
@@ -62,6 +62,7 @@ export class Session {
   readonly subscribers = new Set<net.Socket>();
   readonly createdAt = Date.now();
   readonly taskHistory: TaskRunRecord[] = [];
+  readonly execInfo = new Map<string, ExecInfo>();
   readonly deps: ServiceManagerDeps;
 
   name: string;

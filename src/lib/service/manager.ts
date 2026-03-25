@@ -10,7 +10,7 @@ import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { createServiceStatus, transition } from "./state.js";
-import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
+import type { ExecInfo, ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 type PaneMap = Record<string, string>;
 
@@ -871,6 +871,8 @@ export interface ServiceManagerDeps {
   getWindowOption: (target: string, option: string) => Promise<string>;
   setWindowOption: (target: string, option: string, value: string) => Promise<void>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
+  storeExecInfo: (service: string, info: ExecInfo) => void;
+  sessionId: string;
 }
 
 export { diffOutput };
