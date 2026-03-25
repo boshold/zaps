@@ -827,7 +827,9 @@ export class ServiceManager extends EventEmitter {
     }
     const counts: Record<string, number> = {};
     for (const status of this.statuses.values()) {
-      if (status.state === "unavailable") {continue;}
+      if (status.state === "unavailable") {
+        continue;
+      }
       counts[status.state] = (counts[status.state] ?? 0) + 1;
     }
 
