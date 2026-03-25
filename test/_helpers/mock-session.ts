@@ -17,6 +17,7 @@ export interface MockSession {
     };
     projectDir: string;
     configPath: string;
+    unavailableServices: Map<string, { name: string; reason: string }>;
   };
   paneMap: Record<string, string>;
   tmuxSession: string;
@@ -66,6 +67,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       },
       projectDir: "/fake",
       configPath: "/fake/.zaps.mts",
+      unavailableServices: new Map(),
     },
     paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "test-tmux",
@@ -110,6 +112,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       tasks: [],
       servicesMeta: [],
       taskHistory: [],
+      unavailableServices: [],
     })),
     startAll: vi.fn().mockResolvedValue(undefined),
     reload: vi.fn().mockResolvedValue(undefined),
