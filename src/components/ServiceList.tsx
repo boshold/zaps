@@ -61,12 +61,17 @@ function renderRow(
 }
 
 export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceListProps) {
-  const total = statuses.length;
+  // Sort unavailable services to bottom
+  const sorted = [
+    ...statuses.filter((s) => s.state !== "unavailable"),
+    ...statuses.filter((s) => s.state === "unavailable"),
+  ];
+  const total = sorted.length;
 
   if (maxRows === undefined || maxRows <= 0 || total <= maxRows) {
     return (
       <Box flexDirection="column">
-        {statuses.map((s, i) => renderRow(s, i, statuses, selectedIndex, cols))}
+        {sorted.map((s, i) => renderRow(s, i, sorted, selectedIndex, cols))}
       </Box>
     );
   }
@@ -82,7 +87,7 @@ export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceL
   const adjOffset = computeScrollOffset(selectedIndex, total, visibleCount);
   const above = adjOffset;
   const below = total - adjOffset - visibleCount;
-  const visible = statuses.slice(adjOffset, adjOffset + visibleCount);
+  const visible = sorted.slice(adjOffset, adjOffset + visibleCount);
 
   return (
     <Box flexDirection="column">
@@ -91,7 +96,7 @@ export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceL
           {"  "}↑ {above} more
         </Text>
       )}
-      {visible.map((s, i) => renderRow(s, i + adjOffset, statuses, i + adjOffset, cols))}
+      {visible.map((s, i) => renderRow(s, i + adjOffset, sorted, i + adjOffset, cols))}
       {below > 0 && (
         <Text dimColor>
           {"  "}↓ {below} more

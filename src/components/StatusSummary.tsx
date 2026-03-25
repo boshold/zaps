@@ -14,6 +14,9 @@ function stateColor(state: string): string {
     case "error": {
       return "red";
     }
+    case "unavailable": {
+      return "gray";
+    }
     default: {
       return "gray";
     }
@@ -22,7 +25,8 @@ function stateColor(state: string): string {
 
 export function StatusSummary({ statuses }: { statuses: ServiceStatus[] }) {
   const counts: Record<string, { count: number; color: string }> = {};
-  for (const s of statuses) {
+  const filtered = statuses.filter((s) => s.state !== "unavailable");
+  for (const s of filtered) {
     const entry = counts[s.state];
     if (entry) {
       entry.count += 1;

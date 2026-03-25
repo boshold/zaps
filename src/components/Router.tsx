@@ -51,8 +51,9 @@ function handleDashboardInput(
   const selected = ctx.statuses[ctx.index];
   const selectedName = selected?.name;
   const isBusy = selectedName ? ctx.busyServices.current.has(selectedName) : true;
+  const isUnavailable = selected?.state === "unavailable";
 
-  if (input === "r" && selected && !isBusy) {
+  if (input === "r" && selected && !isBusy && !isUnavailable) {
     ctx.busyServices.current.add(selectedName);
     void ctx
       .restart(selectedName)
@@ -63,7 +64,7 @@ function handleDashboardInput(
         ctx.busyServices.current.delete(selectedName);
       });
   }
-  if (input === "s" && selected && !isBusy) {
+  if (input === "s" && selected && !isBusy && !isUnavailable) {
     ctx.busyServices.current.add(selectedName);
     void ctx
       .toggle(selectedName)
@@ -74,17 +75,17 @@ function handleDashboardInput(
         ctx.busyServices.current.delete(selectedName);
       });
   }
-  if (input === "l" && selected) {
+  if (input === "l" && selected && !isUnavailable) {
     ctx.goToLogs(selectedName);
   }
   const selectedUrl = selected?.url;
   if (input === "o" && selectedUrl) {
     void openInBrowser(selectedUrl);
   }
-  if (input === "R" && selected?.isDocker) {
+  if (input === "R" && selected?.isDocker && !isUnavailable) {
     ctx.goToDockerRebuild(selectedName);
   }
-  if (input === "z" && selected) {
+  if (input === "z" && selected && !isUnavailable) {
     const paneId = ctx.paneMap[selectedName];
     if (paneId) {
       void zoomPane(paneId);
@@ -96,7 +97,7 @@ function handleDashboardInput(
       void zoomPane(tuiPaneId);
     }
   }
-  if (input === "E" && selected && !isBusy) {
+  if (input === "E" && selected && !isBusy && !isUnavailable) {
     const paneId = ctx.paneMap[selectedName];
     if (paneId) {
       ctx.busyServices.current.add(selectedName);
