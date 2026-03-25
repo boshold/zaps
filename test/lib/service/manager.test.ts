@@ -898,6 +898,103 @@ describe("crash recovery", () => {
 });
 
 // =============================================================================
+// handleExecExited
+// =============================================================================
+
+describe("handleExecExited", () => {
+  it("triggers error when service is ready with no restart config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    mgr.handleExecExited("svc", 1, null);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(mgr.getStatus("svc").lastError).toBe("Process exited unexpectedly");
+  });
+
+  it("triggers restart when service is ready with restart config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 100 } },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    mgr.handleExecExited("svc", 1, "SIGTERM");
+
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+    expect(mgr.getStatus("svc").retryCount).toBe(1);
+  });
+
+  it("does nothing when service state is not ready", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Service is in "stopped" state initially
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+
+    mgr.handleExecExited("svc", 1, null);
+
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+  });
+
+  it("increments generation to prevent stale PID poll double-trigger", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    // Simulate crash detection: PID poll returns crashed state
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+
+    // handleExecExited fires first — increments generation
+    mgr.handleExecExited("svc", 1, null);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+
+    // Advance past PID poll interval — stale poll should NOT double-trigger
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // State remains error (not double-crashed)
+    expect(mgr.getStatus("svc").state).toBe("error");
+  });
+});
+
+// =============================================================================
 // URL resolution
 // =============================================================================
 
