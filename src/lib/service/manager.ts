@@ -369,6 +369,11 @@ export class ServiceManager extends EventEmitter {
         readyDeps,
       );
 
+      // If aborted during ready wait (e.g. stopService called), exit silently
+      if (controller.signal.aborted) {
+        return;
+      }
+
       // Detect ports — use docker-provided ports if available
       const ports = readyPorts.length > 0 ? readyPorts : await this.deps.detectPorts(paneTarget);
 

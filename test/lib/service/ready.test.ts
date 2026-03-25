@@ -157,14 +157,12 @@ describe("waitForReady", () => {
     expect(callCount).toBeGreaterThanOrEqual(2);
   });
 
-  it("throws abort error when signal is already aborted", async () => {
+  it("returns silently when signal is already aborted", async () => {
     const controller = new AbortController();
     controller.abort();
 
     const config: ReadyConfig = { port: 3000 };
-    await expect(waitForReady(config, "%0", controller.signal, createDeps())).rejects.toThrow(
-      "Ready check aborted",
-    );
+    await expect(waitForReady(config, "%0", controller.signal, createDeps())).resolves.toEqual([]);
   });
 
   it("handles port as function", async () => {
@@ -276,7 +274,7 @@ describe("waitForReady", () => {
     await expect(promise).rejects.toThrow("Ready check timed out after 60s");
   });
 
-  it("aborts docker mode when signal is aborted", async () => {
+  it("returns silently when docker mode signal is already aborted", async () => {
     const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
     mockDockerStatus.mockResolvedValue(null);
 
@@ -289,9 +287,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    await expect(waitForReady(config, "%0", controller.signal, deps)).rejects.toThrow(
-      "Ready check aborted",
-    );
+    await expect(waitForReady(config, "%0", controller.signal, deps)).resolves.toEqual([]);
   });
 
   it("passes config.file to dockerStatus", async () => {
@@ -478,14 +474,14 @@ describe("waitForReady", () => {
       await expect(promise).rejects.toThrow("Ready check timed out after 60s");
     });
 
-    it("aborts when signal is aborted", async () => {
+    it("returns silently when signal is already aborted", async () => {
       const controller = new AbortController();
       controller.abort();
 
       const config: ReadyConfig = { http: "http://localhost:3000/health" };
 
-      await expect(waitForReady(config, "%0", controller.signal, createDeps())).rejects.toThrow(
-        "Ready check aborted",
+      await expect(waitForReady(config, "%0", controller.signal, createDeps())).resolves.toEqual(
+        [],
       );
     });
 

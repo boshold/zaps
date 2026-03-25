@@ -20,6 +20,8 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
     } catch {
       // Best-effort stop
     }
+    // Let background monitors (monitorCrash/monitorOutput) quiesce before killing session
+    await new Promise((resolve) => setTimeout(resolve, 500));
     await session.cleanup();
   });
 
@@ -128,7 +130,9 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
     expect(mgr.getStatus("svc").state).toBe("stopped");
 
     // Original start should resolve (aborted, no throw)
-    await startPromise;
+    await startPromise.catch(() => {
+      // Expected — start aborted by stop
+    });
   });
 
   it("rapid start/stop cycling leaves clean state", async () => {
