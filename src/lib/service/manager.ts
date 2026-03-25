@@ -45,7 +45,7 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function resolveCommand(config: ServiceConfig): string {
+function resolveCommand(config: ServiceConfig, ctx: ServiceContext): string {
   if (config.docker && !config.start && !config.run) {
     // For combined owner: build command with ALL services in the group
     if (config._combined?.isOwner) {
@@ -59,7 +59,7 @@ function resolveCommand(config: ServiceConfig): string {
   }
   const cmd = config.start ?? config.run;
   if (typeof cmd === "function") {
-    return cmd();
+    return cmd(ctx);
   }
   return cmd ?? "";
 }
@@ -424,7 +424,7 @@ export class ServiceManager extends EventEmitter {
     // Regular or combined owner: send command to pane
     const ctx = buildServiceContext(this.statuses, this.config.projectDir);
     const env = resolveEnv(serviceConfig.env, ctx);
-    const resolvedCommand = resolveCommand(serviceConfig);
+    const resolvedCommand = resolveCommand(serviceConfig, ctx);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
 
     if (serviceConfig.raw) {

@@ -95,7 +95,7 @@ describe("config types", () => {
     const cmd = config.services.app.start;
     expect(typeof cmd).toBe("function");
     if (typeof cmd === "function") {
-      expect(cmd()).toBe("npm start");
+      expect(cmd({ services: {}, projectDir: "/tmp" })).toBe("npm start");
     }
   });
 

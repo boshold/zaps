@@ -2,7 +2,7 @@ import type { NodeModules } from "./node.js";
 export type { NodeModules } from "./node.js";
 
 // === Commands ===
-export type Command = string | (() => string);
+export type Command = string | ((ctx: ServiceContext) => string);
 
 // === Ready Detection ===
 export type ReadyFn = () => Promise<boolean>;
