@@ -10,7 +10,7 @@ import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { createServiceStatus, transition } from "./state.js";
-import type { ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
+import type { ExecInfo, ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 type PaneMap = Record<string, string>;
 
@@ -408,11 +408,22 @@ export class ServiceManager extends EventEmitter {
     const ctx = buildServiceContext(this.statuses, this.config.projectDir);
     const env = resolveEnv(serviceConfig.env, ctx);
     const resolvedCommand = resolveCommand(serviceConfig);
-    const envPrefix = formatEnvForShell(env);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
-    const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
-    const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
-    await this.deps.sendKeys(paneTarget, command);
+
+    if (serviceConfig.raw) {
+      // Raw mode: current inline env approach
+      const envPrefix = formatEnvForShell(env);
+      const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
+      const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
+      await this.deps.sendKeys(paneTarget, command);
+    } else {
+      // Wrapper mode: store exec info, send wrapper command
+      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env });
+      await this.deps.sendKeys(
+        paneTarget,
+        `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
+      );
+    }
   }
 
   private async onServiceReady(
@@ -690,9 +701,10 @@ export class ServiceManager extends EventEmitter {
     const config = this.config.project.services[name];
     const combined = config._combined;
 
-    // Poll every 2s: check if process/container still alive
+    // Poll interval: 2s for raw-mode, 10s for wrapper-mode (exit notification is primary)
+    const pollInterval = config.raw ? 2000 : 10_000;
     while (status.state === "ready") {
-      await sleep(2000);
+      await sleep(pollInterval);
       // Re-check state after sleep (stopService may have changed it)
       if (status.state !== "ready") {
         return;
@@ -724,25 +736,7 @@ export class ServiceManager extends EventEmitter {
         if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
           return;
         }
-        const restartConfig = config.restart;
-        if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
-          status.state = transition(status.state, "restarting");
-          status.retryCount += 1;
-          delete status.readySince;
-          this.emit("stateChange", name, status);
-
-          const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
-          await sleep(backoff);
-
-          // Transition: restarting -> starting (handled by startService)
-          await this.startService(name);
-          await this.cascadeRestart(name);
-        } else {
-          status.state = transition(status.state, "error");
-          status.lastError = "Process exited unexpectedly";
-          delete status.readySince;
-          this.emit("stateChange", name, status);
-        }
+        await this.handleCrash(name, config, status);
         return;
       }
     }
@@ -852,6 +846,47 @@ export class ServiceManager extends EventEmitter {
     });
     await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
+
+  handleExecExited(service: string, _code: number, _signal: string | null): void {
+    const status = this.statuses.get(service);
+    if (!status || status.state !== "ready") {
+      return;
+    }
+
+    const config = this.config.project.services[service];
+    const gen = this.monitorGenerations.get(service) ?? 0;
+
+    // Invalidate current crash monitor generation to prevent double-trigger
+    this.monitorGenerations.set(service, gen + 1);
+
+    void this.handleCrash(service, config, status);
+  }
+
+  private async handleCrash(
+    name: string,
+    config: ServiceConfig,
+    status: ServiceStatus,
+  ): Promise<void> {
+    const restartConfig = config.restart;
+    if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
+      status.state = transition(status.state, "restarting");
+      status.retryCount += 1;
+      delete status.readySince;
+      this.emit("stateChange", name, status);
+
+      const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
+      await sleep(backoff);
+
+      // Transition: restarting -> starting (handled by startService)
+      await this.startService(name);
+      await this.cascadeRestart(name);
+    } else {
+      status.state = transition(status.state, "error");
+      status.lastError = "Process exited unexpectedly";
+      delete status.readySince;
+      this.emit("stateChange", name, status);
+    }
+  }
 }
 
 export interface ServiceManagerEvents {
@@ -871,6 +906,9 @@ export interface ServiceManagerDeps {
   getWindowOption: (target: string, option: string) => Promise<string>;
   setWindowOption: (target: string, option: string, value: string) => Promise<void>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
+  storeExecInfo: (service: string, info: ExecInfo) => void;
+  sessionId: string;
+  zapsCommand: string;
 }
 
 export { diffOutput };

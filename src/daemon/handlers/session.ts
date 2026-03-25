@@ -341,6 +341,34 @@ export const sessionHandlers: Record<
     return ipcOk(req.id, { success });
   },
 
+  async "exec-service.resolve"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { service } = req.params as { service: string };
+    const info = session.execInfo.get(service);
+    if (!info) {
+      return ipcErr(req.id, `No exec info for service: ${service}`);
+    }
+    session.execInfo.delete(service);
+    return ipcOk(req.id, info);
+  },
+
+  async "exec-service.exited"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { service, code, signal } = req.params as {
+      service: string;
+      code: number;
+      signal?: string | null;
+    };
+    session.manager.handleExecExited(service, code, signal ?? null);
+    return ipcOk(req.id, { ok: true });
+  },
+
   async "logs.snapshot"(req, store) {
     const session = getSession(req, store);
     if (!session) {

@@ -83,6 +83,7 @@ export interface ServiceConfig {
   flags?: ServiceFlags;
   url?: string | false | ((ctx: ServiceContext) => string);
   cwd?: string;
+  raw?: boolean;
   restart?: { maxRetries?: number; backoff?: number };
   onBeforeStart?: () => void | Promise<void>;
   onReady?: () => void | Promise<void>;

@@ -33,6 +33,11 @@ const deps = {
   exec: async () => {
     /* No-op */
   },
+  storeExecInfo: () => {
+    /* No-op */
+  },
+  sessionId: "test-session-id",
+  zapsCommand: "zaps",
 };
 
 describe.skipIf(!hasTmux())("window-title integration", () => {

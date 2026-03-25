@@ -7,6 +7,7 @@ import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import {
   capturePane,
@@ -138,7 +139,8 @@ class DaemonServer implements SessionStore {
     );
     await selectPane(focusPane);
 
-    // Build deps
+    // Late-bound ref so storeExecInfo closure can capture session before it's created
+    const ref: { session: Session | null } = { session: null };
     const deps = {
       sendKeys,
       sendCtrlC,
@@ -153,6 +155,11 @@ class DaemonServer implements SessionStore {
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
+      storeExecInfo: (service: string, info: ExecInfo) => {
+        ref.session?.execInfo.set(service, info);
+      },
+      sessionId: id,
+      zapsCommand: process.env["ZAPS_COMMAND"] ?? "zaps",
     };
 
     // Create ServiceManager
@@ -170,6 +177,7 @@ class DaemonServer implements SessionStore {
     };
 
     const session = new Session(sessionParams, manager);
+    ref.session = session;
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 

@@ -270,6 +270,7 @@ export function config({ defineProject, node }: Library) {
 | `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                   |
 | `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
 | `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
+| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                    |
 | `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
 | `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                  |
 | `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |

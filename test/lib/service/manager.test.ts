@@ -29,6 +29,9 @@ function createMockDeps(): ServiceManagerDeps {
     getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
+    storeExecInfo: vi.fn(),
+    sessionId: "test-session-id",
+    zapsCommand: "zaps",
   };
 }
 
@@ -325,13 +328,19 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await apiPromise;
 
-    // Check that sendKeys was called with env prefix
+    // In wrapper mode, env is stored via storeExecInfo, not in sendKeys
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "api",
+      expect.objectContaining({
+        command: "start-api",
+        env: expect.objectContaining({ DB_PORT: "5432" }),
+      }),
+    );
     const apiCall = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.find(
       (call: unknown[]) => (call[0] as string) === "%api",
     );
     expect(apiCall).toBeDefined();
-    expect(apiCall?.[1]).toContain("DB_PORT='5432'");
-    expect(apiCall?.[1]).toContain("start-api");
+    expect(apiCall?.[1]).toBe("zaps -s test-session-id exec-service api");
   });
 
   it("sends correct command string to pane", async () => {
@@ -347,7 +356,15 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "svc",
+      expect.objectContaining({
+        command: "npm run dev",
+        cwd: "/test",
+        env: { PORT: "3000" },
+      }),
+    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("transitions through stopped -> starting -> ready and emits stateChange", async () => {
@@ -443,7 +460,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && dynamic-cmd');
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("guards against double-start when already starting", async () => {
@@ -501,7 +518,7 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/test" && run-cmd');
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
   });
 
   it("uses service-level cwd instead of projectDir when set", async () => {
@@ -517,7 +534,28 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", 'cd "/custom/path" && start-svc');
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "svc",
+      expect.objectContaining({ cwd: "/custom/path" }),
+    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
+  });
+
+  it("uses inline env when raw: true", async () => {
+    const config = makeConfig({
+      svc: { start: "npm run dev", env: { PORT: "3000" }, raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.storeExecInfo).not.toHaveBeenCalled();
+    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
   });
 });
 
@@ -715,7 +753,7 @@ describe("restartService", () => {
 describe("crash recovery", () => {
   it("auto-restarts crashed service with backoff", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 } },
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -763,7 +801,7 @@ describe("crash recovery", () => {
 
   it("transitions to error when retries exhausted", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 1, backoff: 100 } },
+      svc: { start: "start-svc", restart: { maxRetries: 1, backoff: 100 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -809,7 +847,7 @@ describe("crash recovery", () => {
 
   it("manual restart after error works and resets counter", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 0 } },
+      svc: { start: "start-svc", restart: { maxRetries: 0 }, raw: true },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -845,6 +883,155 @@ describe("crash recovery", () => {
 
     expect(mgr.getStatus("svc").state).toBe("ready");
     expect(mgr.getStatus("svc").retryCount).toBe(0);
+  });
+});
+
+// =============================================================================
+// Crash monitor poll interval
+// =============================================================================
+
+describe("crash monitor poll interval", () => {
+  it("polls every 2s for raw-mode services", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    // Clear call count after startup
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance 2.5s — should have polled once (2s interval)
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(deps.getDescendantPids).toHaveBeenCalled();
+  });
+
+  it("polls every 10s for wrapper-mode services", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    // Clear call count after startup
+    (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockClear();
+
+    // Advance 5s — should NOT have polled yet (10s interval)
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(deps.getDescendantPids).not.toHaveBeenCalled();
+
+    // Advance past 10s total — should have polled
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(deps.getDescendantPids).toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// HandleExecExited
+// =============================================================================
+
+describe("handleExecExited", () => {
+  it("triggers error when service is ready with no restart config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    mgr.handleExecExited("svc", 1, null);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(mgr.getStatus("svc").lastError).toBe("Process exited unexpectedly");
+  });
+
+  it("triggers restart when service is ready with restart config", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 100 } },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    mgr.handleExecExited("svc", 1, "SIGTERM");
+
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+    expect(mgr.getStatus("svc").retryCount).toBe(1);
+  });
+
+  it("does nothing when service state is not ready", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc" },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Service is in "stopped" state initially
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+
+    mgr.handleExecExited("svc", 1, null);
+
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+  });
+
+  it("increments generation to prevent stale PID poll double-trigger", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await p;
+
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    // Simulate crash detection: PID poll returns crashed state
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+
+    // HandleExecExited fires first — increments generation
+    mgr.handleExecExited("svc", 1, null);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+
+    // Advance past PID poll interval — stale poll should NOT double-trigger
+    await vi.advanceTimersByTimeAsync(3000);
+
+    // State remains error (not double-crashed)
+    expect(mgr.getStatus("svc").state).toBe("error");
   });
 });
 
@@ -1178,10 +1365,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%db",
-      'cd "/test" && docker compose -f local.docker-compose.yml up --build --force-recreate -V postgres',
-    );
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
 
@@ -1209,7 +1393,7 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", 'cd "/test" && custom-start');
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
 
     spy.mockRestore();
   });
@@ -1977,9 +2161,14 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(500);
     await p;
 
-    const sentCommand = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as string;
-    expect(sentCommand).toContain("postgres");
-    expect(sentCommand).toContain("redis");
+    // In wrapper mode, the docker compose command is stored via storeExecInfo
+    const [[, storedExecInfo]] = (deps.storeExecInfo as ReturnType<typeof vi.fn>).mock.calls;
+    expect(storedExecInfo?.command).toContain("postgres");
+    expect(storedExecInfo?.command).toContain("redis");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%infra",
+      "zaps -s test-session-id exec-service postgres",
+    );
   });
 
   it("non-owner skips sendKeys when owner is not running", async () => {
@@ -2116,6 +2305,9 @@ describe("combined docker services", () => {
 
   it("crash monitor checks docker container status for combined services", async () => {
     const config = makeCombinedConfig();
+    // Use raw mode for 2s poll interval in crash monitor tests
+    config.project.services.postgres.raw = true;
+    config.project.services.redis.raw = true;
     const deps = createMockDeps();
     // Keep processes alive initially
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
@@ -2147,10 +2339,12 @@ describe("combined docker services", () => {
       postgres: {
         docker: { service: "postgres" },
         restart: { maxRetries: 2, backoff: 100 },
+        raw: true,
         _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: true },
       },
       redis: {
         docker: { service: "redis" },
+        raw: true,
         _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: false },
       },
     });
