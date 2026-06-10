@@ -1,5 +1,6 @@
-import type { TaskInfo } from "#src/daemon/session.js";
 import { Text } from "ink";
+
+import type { TaskInfo } from "#src/daemon/session.js";
 
 interface TaskRowProps {
   task: TaskInfo;

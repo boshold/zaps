@@ -37,6 +37,14 @@ const ARROW_UP = "\x1B[A";
 const ARROW_DOWN = "\x1B[B";
 const ESCAPE = "\x1B";
 
+// Ink buffers a lone ESC for 20ms to disambiguate it from escape sequences
+async function pressEscape(stdin: { write: (data: string) => void }) {
+  await act(async () => {
+    stdin.write(ESCAPE);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+}
+
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
@@ -274,9 +282,7 @@ describe("Keyboard routing — View switching", () => {
     expect(lastFrame()).toContain("[enter] run");
 
     // Go back
-    await act(async () => {
-      stdin.write(ESCAPE);
-    });
+    await pressEscape(stdin);
     expect(lastFrame()).toContain("[t]asks");
   });
 
@@ -322,9 +328,7 @@ describe("Keyboard routing — View switching", () => {
     expect(lastFrame()).toContain("[esc] back");
 
     // Go back
-    await act(async () => {
-      stdin.write(ESCAPE);
-    });
+    await pressEscape(stdin);
     expect(lastFrame()).toContain("[t]asks");
   });
 });
@@ -660,9 +664,7 @@ describe("Keyboard routing — Docker rebuild", () => {
     act(() => {
       stdin.write("R");
     });
-    act(() => {
-      stdin.write(ESCAPE);
-    });
+    await pressEscape(stdin);
 
     // Should be back on dashboard
     expect(lastFrame()).toContain("[t]asks");

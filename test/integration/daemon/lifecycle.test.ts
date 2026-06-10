@@ -3,6 +3,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import {
   IdleTimer,
   daemonDir,
@@ -15,7 +17,6 @@ import {
   socketPath,
   writePid,
 } from "#src/daemon/lifecycle.js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import { createTestDaemon } from "../helpers/daemon.js";
@@ -49,16 +50,16 @@ describe("lifecycle helpers", () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    originalXdg = process.env["XDG_RUNTIME_DIR"];
+    originalXdg = process.env.XDG_RUNTIME_DIR;
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-lifecycle-"));
-    process.env["XDG_RUNTIME_DIR"] = tmpDir;
+    process.env.XDG_RUNTIME_DIR = tmpDir;
   });
 
   afterEach(() => {
     if (originalXdg === undefined) {
-      delete process.env["XDG_RUNTIME_DIR"];
+      delete process.env.XDG_RUNTIME_DIR;
     } else {
-      process.env["XDG_RUNTIME_DIR"] = originalXdg;
+      process.env.XDG_RUNTIME_DIR = originalXdg;
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });

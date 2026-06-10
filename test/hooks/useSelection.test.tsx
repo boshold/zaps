@@ -84,11 +84,11 @@ describe("useSelection", () => {
 
   it("clamps index when itemCount decreases", async () => {
     let hookRef: ReturnType<typeof useSelection> | null = null;
-    let setCount: ((n: number) => void) | null = null;
+    let setCountExternal: ((n: number) => void) | null = null;
 
     function TestWrapper() {
-      const [count, _setCount] = useState(5);
-      setCount = _setCount;
+      const [count, setCount] = useState(5);
+      setCountExternal = setCount;
       hookRef = useSelection(count);
       return <Text>index:{hookRef.index}</Text>;
     }
@@ -106,7 +106,7 @@ describe("useSelection", () => {
     // Reduce itemCount to 2 -> index should clamp to 1
     // SetCount re-renders, then useEffect fires setIndex clamp
     act(() => {
-      setCount?.(2);
+      setCountExternal?.(2);
     });
     // Flush useEffect -> second setState
     await act(async () => {

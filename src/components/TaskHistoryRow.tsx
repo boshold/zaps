@@ -1,6 +1,7 @@
-import { relativeTime } from "#src/lib/relativeTime.js";
 import { Text } from "ink";
 import { useEffect, useState } from "react";
+
+import { relativeTime } from "#src/lib/relativeTime.js";
 
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 

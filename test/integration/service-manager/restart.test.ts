@@ -1,5 +1,6 @@
-import { ServiceManager } from "#src/lib/service/manager.js";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { ServiceManager } from "#src/lib/service/manager.js";
 
 import { makeConfig } from "../helpers/config.js";
 import { crashingCmd, httpServerCmd } from "../helpers/fixtures.js";

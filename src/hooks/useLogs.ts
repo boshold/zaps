@@ -1,5 +1,6 @@
-import type { DaemonClient } from "#src/client/daemon-client.js";
 import { useEffect, useState } from "react";
+
+import type { DaemonClient } from "#src/client/daemon-client.js";
 
 export function useLogs(client: DaemonClient, serviceName: string | null) {
   const [lines, setLines] = useState<string[]>([]);

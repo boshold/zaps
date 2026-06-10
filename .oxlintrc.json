@@ -47,8 +47,10 @@
     "typescript/no-explicit-any": "warn",
     "typescript/no-non-null-assertion": "warn",
     "typescript/no-invalid-void-type": "off",
+    "typescript/method-signature-style": "off",
     "no-magic-numbers": "off",
     "no-ternary": "off",
+    "no-underscore-dangle": "off",
     "id-length": "off",
     "import/group-exports": "off",
     "import/no-default-export": "off",
@@ -71,7 +73,8 @@
         "import/first": "off",
         "promise/prefer-await-to-then": "off",
         "init-declarations": "off",
-        "unicorn/prefer-module": "off"
+        "unicorn/prefer-module": "off",
+        "unicorn/consistent-function-scoping": "off"
       }
     },
     {
@@ -92,7 +95,8 @@
       "files": ["src/components/**", "src/hooks/**"],
       "rules": {
         "promise/prefer-await-to-then": "off",
-        "promise/catch-or-return": "off"
+        "promise/catch-or-return": "off",
+        "typescript/consistent-return": "off"
       }
     },
     {

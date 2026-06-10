@@ -1,6 +1,6 @@
 import net from "node:net";
 
- async function closeServer(server: net.Server): Promise<void> {
+async function closeServer(server: net.Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
@@ -16,7 +16,7 @@ export async function reservePort(): Promise<{ port: number; release: () => Prom
       if (typeof addr === "object" && addr !== null) {
         resolve({
           port: addr.port,
-          release:  async () => closeServer(server),
+          release: async () => closeServer(server),
         });
       } else {
         server.close(() => reject(new Error("Failed to get port")));

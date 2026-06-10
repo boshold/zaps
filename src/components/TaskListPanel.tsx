@@ -1,6 +1,7 @@
+import { Box, Text } from "ink";
+
 import type { TaskInfo } from "#src/daemon/session.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
-import { Box, Text } from "ink";
 
 import { TaskHistorySection } from "./TaskHistorySection.js";
 import { TaskRow } from "./TaskRow.js";

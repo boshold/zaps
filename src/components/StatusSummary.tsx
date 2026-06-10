@@ -1,5 +1,6 @@
-import type { ServiceStatus } from "#src/lib/service/types.js";
 import { Box, Text } from "ink";
+
+import type { ServiceStatus } from "#src/lib/service/types.js";
 
 function stateColor(state: string): string {
   switch (state) {

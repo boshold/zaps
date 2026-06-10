@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
+
+import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
-import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
@@ -28,7 +29,7 @@ describe.skipIf(!hasTmux())("ready-fn integration", () => {
 
   it("ready: async function checks file existence", async () => {
     session = await createTestSession();
-    markerFile = join(tmpdir(), `zaps-ready-${randomUUID().slice(0, 8)}`);
+    markerFile = path.join(tmpdir(), `zaps-ready-${randomUUID().slice(0, 8)}`);
     const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
 
     const config = makeConfig({

@@ -45,9 +45,9 @@ function parseLinuxSs(output: string, pidSet: Set<number>): number[] {
       if (localAddr) {
         const port = parsePort(localAddr);
         if (!Number.isNaN(port)) {
-          const pidMatches = line.matchAll(/pid=(\d+)/g);
+          const pidMatches = line.matchAll(/pid=(?<pid>\d+)/g);
           for (const match of pidMatches) {
-            const linePid = Number.parseInt(match[1], 10);
+            const linePid = Number.parseInt(match.groups?.pid ?? "", 10);
             if (pidSet.has(linePid)) {
               ports.push(port);
               break;

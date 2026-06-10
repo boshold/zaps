@@ -102,6 +102,14 @@ function renderRouter(
   return { ...result, client };
 }
 
+// Ink buffers a lone ESC for 20ms to disambiguate it from escape sequences
+async function pressEscape(stdin: { write: (data: string) => void }) {
+  await act(async () => {
+    stdin.write("\x1B");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+}
+
 // ── tests ──────────────────────────────────────────────────────────────
 
 describe("Router", () => {
@@ -245,10 +253,7 @@ describe("Router", () => {
     // Dashboard still renders underneath popup
     expect(frame).toContain("web");
     // Pressing escape proves we were in docker rebuild view
-    stdin.write("\x1B");
-    await act(async () => {
-      /* Flush */
-    });
+    await pressEscape(stdin);
     expect(lastFrame()).toContain("web");
   });
 
@@ -341,10 +346,7 @@ describe("Router", () => {
     await act(async () => {
       /* Flush */
     });
-    stdin.write("\x1B");
-    await act(async () => {
-      /* Flush */
-    });
+    await pressEscape(stdin);
     const frame = lastFrame() ?? "";
     expect(frame).toContain("zaps");
   });
@@ -359,10 +361,7 @@ describe("Router", () => {
       /* Flush */
     });
     expect(lastFrame()).toContain("[enter] run");
-    stdin.write("\x1B");
-    await act(async () => {
-      /* Flush */
-    });
+    await pressEscape(stdin);
     expect(lastFrame()).toContain("zaps");
   });
 
@@ -448,10 +447,7 @@ describe("Router", () => {
       await act(async () => {
         /* Flush */
       });
-      stdin.write("\x1B");
-      await act(async () => {
-        /* Flush */
-      });
+      await pressEscape(stdin);
       const frame = lastFrame() ?? "";
       expect(frame).toContain("zaps");
     });

@@ -44,31 +44,31 @@ describe("resolveFormat", () => {
   });
 
   it("ZAPS_FORMAT=json overrides agent detection", () => {
-    process.env["ZAPS_FORMAT"] = "json";
+    process.env.ZAPS_FORMAT = "json";
     expect(resolveFormat({})).toBe("json");
   });
 
   it("ZAPS_FORMAT=toon overrides default text", () => {
     clearAgentVars();
-    process.env["ZAPS_FORMAT"] = "toon";
+    process.env.ZAPS_FORMAT = "toon";
     expect(resolveFormat({})).toBe("toon");
   });
 
   it("ignores invalid ZAPS_FORMAT values", () => {
     clearAgentVars();
-    process.env["ZAPS_FORMAT"] = "xml";
+    process.env.ZAPS_FORMAT = "xml";
     expect(resolveFormat({})).toBe("text");
   });
 
   it("returns toon when CLAUDECODE env is set", () => {
     clearAgentVars();
-    process.env["CLAUDECODE"] = "1";
+    process.env.CLAUDECODE = "1";
     expect(resolveFormat({})).toBe("toon");
   });
 
   it("returns toon when CURSOR_TRACE_DIR env is set", () => {
     clearAgentVars();
-    process.env["CURSOR_TRACE_DIR"] = "/tmp/cursor";
+    process.env.CURSOR_TRACE_DIR = "/tmp/cursor";
     expect(resolveFormat({})).toBe("toon");
   });
 
@@ -118,9 +118,9 @@ describe("isCodingAgent", () => {
 
   it("unknown env var does not trigger detection", () => {
     clearAgentVars();
-    process.env["SOME_RANDOM_AGENT"] = "1";
+    process.env.SOME_RANDOM_AGENT = "1";
     expect(isCodingAgent()).toBe(false);
-    delete process.env["SOME_RANDOM_AGENT"];
+    delete process.env.SOME_RANDOM_AGENT;
   });
 });
 

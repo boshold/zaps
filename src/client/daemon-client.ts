@@ -22,17 +22,17 @@ export interface DaemonClientEvents {
  * Subscribes to events and provides methods for all session-scoped operations.
  */
 export class DaemonClient extends EventEmitter {
-  private socketPath: string;
-  private sessionId: string;
+  private readonly socketPath: string;
+  private readonly sessionId: string;
   private sub: IpcSubscription | null = null;
 
-  constructor(socketPath: string, sessionId: string) {
+  public constructor(socketPath: string, sessionId: string) {
     super();
     this.socketPath = socketPath;
     this.sessionId = sessionId;
   }
 
-  connect(): void {
+  public connect(): void {
     this.sub = ipcSubscribe(
       this.socketPath,
       this.sessionId,
@@ -46,7 +46,7 @@ export class DaemonClient extends EventEmitter {
     );
   }
 
-  disconnect(): void {
+  public disconnect(): void {
     if (this.sub) {
       // Send detach before closing
       this.sub.send("session.detach");
@@ -55,24 +55,24 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  get connected(): boolean {
+  public get connected(): boolean {
     return this.sub?.connected ?? false;
   }
 
-  get session(): string {
+  public get session(): string {
     return this.sessionId;
   }
 
   // --- Session operations ---
 
-  async reloadConfig(): Promise<void> {
+  public async reloadConfig(): Promise<void> {
     const res = await this.request("session.reload");
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async attach(): Promise<SessionSnapshot> {
+  public async attach(): Promise<SessionSnapshot> {
     const res = await this.request("session.attach");
     if (res.error) {
       throw new Error(res.error);
@@ -80,7 +80,7 @@ export class DaemonClient extends EventEmitter {
     return res.result as SessionSnapshot;
   }
 
-  async destroySession(): Promise<void> {
+  public async destroySession(): Promise<void> {
     const res = await this.request("session.destroy");
     if (res.error) {
       throw new Error(res.error);
@@ -89,7 +89,7 @@ export class DaemonClient extends EventEmitter {
 
   // --- Service operations ---
 
-  async listServices(): Promise<ServiceStatus[]> {
+  public async listServices(): Promise<ServiceStatus[]> {
     const res = await this.request("services.list");
     if (res.error) {
       throw new Error(res.error);
@@ -97,42 +97,42 @@ export class DaemonClient extends EventEmitter {
     return res.result as ServiceStatus[];
   }
 
-  async startService(name: string): Promise<void> {
+  public async startService(name: string): Promise<void> {
     const res = await this.request("services.start", { name });
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async stopService(name: string): Promise<void> {
+  public async stopService(name: string): Promise<void> {
     const res = await this.request("services.stop", { name });
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async restartService(name: string): Promise<void> {
+  public async restartService(name: string): Promise<void> {
     const res = await this.request("services.restart", { name });
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async rebuildDocker(name: string, overrides: Partial<DockerConfig>): Promise<void> {
+  public async rebuildDocker(name: string, overrides: Partial<DockerConfig>): Promise<void> {
     const res = await this.request("services.rebuild", { name, overrides });
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async restartAll(): Promise<void> {
+  public async restartAll(): Promise<void> {
     const res = await this.request("services.restartAll");
     if (res.error) {
       throw new Error(res.error);
     }
   }
 
-  async getLogSnapshot(service: string): Promise<string[]> {
+  public async getLogSnapshot(service: string): Promise<string[]> {
     const res = await this.request("logs.snapshot", { service });
     if (res.error) {
       throw new Error(res.error);
@@ -141,7 +141,7 @@ export class DaemonClient extends EventEmitter {
   }
 
   // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-  async runTask(
+  public async runTask(
     key: string,
     callbacks: {
       onLine?: (line: string) => void;
@@ -179,19 +179,19 @@ export class DaemonClient extends EventEmitter {
     const data = (event.data ?? {}) as Record<string, unknown>;
     switch (event.event) {
       case "service.stateChange": {
-        this.emit("service.stateChange", data["name"], data["status"]);
+        this.emit("service.stateChange", data.name, data.status);
         break;
       }
       case "log.lines": {
-        this.emit("log.lines", data["service"], data["lines"]);
+        this.emit("log.lines", data.service, data.lines);
         break;
       }
       case "task.start": {
-        this.emit("task.start", data["key"], data["name"]);
+        this.emit("task.start", data.key, data.name);
         break;
       }
       case "task.complete": {
-        this.emit("task.complete", data["key"], data["name"], data["result"]);
+        this.emit("task.complete", data.key, data.name, data.result);
         break;
       }
       case "session.destroyed": {

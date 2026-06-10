@@ -13,15 +13,15 @@ export type LogMonitorListener = (serviceName: string, lines: string[]) => void;
  * Broadcasts new lines to a listener (for daemon event broadcasting).
  */
 export class LogMonitor {
-  private timers = new Map<string, ReturnType<typeof setInterval>>();
-  private prevCaptures = new Map<string, string[]>();
-  private inFlight = new Map<string, Promise<void>>();
-  private stopped = new Set<string>();
-  private deps: LogMonitorDeps;
-  private buffers: Map<string, LogBuffer>;
-  private listener?: LogMonitorListener;
+  private readonly timers = new Map<string, ReturnType<typeof setInterval>>();
+  private readonly prevCaptures = new Map<string, string[]>();
+  private readonly inFlight = new Map<string, Promise<void>>();
+  private readonly stopped = new Set<string>();
+  private readonly deps: LogMonitorDeps;
+  private readonly buffers: Map<string, LogBuffer>;
+  private readonly listener?: LogMonitorListener;
 
-  constructor(
+  public constructor(
     deps: LogMonitorDeps,
     buffers: Map<string, LogBuffer>,
     listener?: LogMonitorListener,
@@ -31,7 +31,7 @@ export class LogMonitor {
     this.listener = listener;
   }
 
-  start(serviceName: string, paneTarget: string, intervalMs = 500): void {
+  public start(serviceName: string, paneTarget: string, intervalMs = 500): void {
     if (this.timers.has(serviceName)) {
       return;
     }
@@ -81,7 +81,7 @@ export class LogMonitor {
   /**
    * Stop monitoring and wait for any in-flight capture to finish.
    */
-  async flush(serviceName: string): Promise<void> {
+  public async flush(serviceName: string): Promise<void> {
     this.stopped.add(serviceName);
     const timer = this.timers.get(serviceName);
     if (timer) {
@@ -96,7 +96,7 @@ export class LogMonitor {
     this.prevCaptures.delete(serviceName);
   }
 
-  stop(serviceName: string): void {
+  public stop(serviceName: string): void {
     this.stopped.add(serviceName);
     const timer = this.timers.get(serviceName);
     if (timer) {
@@ -106,12 +106,12 @@ export class LogMonitor {
     }
   }
 
-  async flushAll(): Promise<void> {
+  public async flushAll(): Promise<void> {
     const names = [...this.timers.keys()];
     await Promise.all(names.map(async (name) => this.flush(name)));
   }
 
-  stopAll(): void {
+  public stopAll(): void {
     for (const [name] of this.timers) {
       this.stop(name);
     }

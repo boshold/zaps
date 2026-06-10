@@ -34,8 +34,8 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", undefined, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["db"]).toBe("%1");
-    expect(paneMap["api"]).toBe("%2");
+    expect(paneMap.db).toBe("%1");
+    expect(paneMap.api).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -48,8 +48,8 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", undefined, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["api"]).toBe("%1");
-    expect(paneMap["db"]).toBeUndefined();
+    expect(paneMap.api).toBe("%1");
+    expect(paneMap.db).toBeUndefined();
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
   });
 
@@ -69,7 +69,7 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", layout, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap.api).toBe("%1");
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
     // Direction "rows" maps to "v"
     expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 50);
@@ -100,9 +100,9 @@ describe("createLayout", () => {
 
     expect(paneMap["@tui"]).toBe("%0");
     // First split creates %1 for the right column
-    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap.api).toBe("%1");
     // Second split creates %2 for frontend within the right column
-    expect(paneMap["frontend"]).toBe("%2");
+    expect(paneMap.frontend).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -124,8 +124,8 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", layout, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["api"]).toBe("%1");
-    expect(paneMap["web"]).toBe("%2");
+    expect(paneMap.api).toBe("%1");
+    expect(paneMap.web).toBe("%2");
 
     // Child 1 (api): split from %0, remaining = 60, tmux = round(60/100*100) = 60
     expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 60);
@@ -150,8 +150,8 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", layout, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["api"]).toBe("%1");
-    expect(paneMap["worker"]).toBe("%2");
+    expect(paneMap.api).toBe("%1");
+    expect(paneMap.worker).toBe("%2");
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
 
@@ -168,7 +168,7 @@ describe("createLayout", () => {
     const { paneMap } = await createLayout("%0", layout, services);
 
     expect(paneMap["@tui"]).toBe("%0");
-    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap.api).toBe("%1");
 
     // Implicit child gets remainder: 100 - 60 = 40
     // CurrentPaneSize = 100, tmux = round(40/100*100) = 40
@@ -190,7 +190,7 @@ describe("createLayout", () => {
 
     const { paneMap, focusPane } = await createLayout("%0", layout, services);
 
-    expect(paneMap["api"]).toBe("%1");
+    expect(paneMap.api).toBe("%1");
     expect(focusPane).toBe("%1");
   });
 

@@ -1,8 +1,9 @@
+import { Box } from "ink";
+import { useEffect, useRef, useState } from "react";
+
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
-import { Box } from "ink";
-import { useEffect, useRef, useState } from "react";
 
 import { Header } from "./Header.js";
 import { TaskHistorySection } from "./TaskHistorySection.js";

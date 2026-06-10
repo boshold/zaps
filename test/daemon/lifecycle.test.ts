@@ -24,7 +24,7 @@ const originalKill = process.kill;
 beforeEach(() => {
   vi.clearAllMocks();
   process.kill = mockKill as unknown as typeof process.kill;
-  delete process.env["XDG_RUNTIME_DIR"];
+  delete process.env.XDG_RUNTIME_DIR;
 });
 
 afterEach(() => {
@@ -46,7 +46,7 @@ const {
 
 describe("path helpers", () => {
   it("daemonDir uses XDG_RUNTIME_DIR when set", () => {
-    process.env["XDG_RUNTIME_DIR"] = "/run/user/1000";
+    process.env.XDG_RUNTIME_DIR = "/run/user/1000";
     const dir = daemonDir();
     expect(dir).toBe("/run/user/1000/zaps");
     expect(fs.mkdirSync).toHaveBeenCalledWith("/run/user/1000/zaps", { recursive: true });

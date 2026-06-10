@@ -53,11 +53,11 @@ describe("resolveCommand", () => {
 
   beforeEach(() => {
     process.argv = [...originalArgv];
-    delete process.env["ZAPS_COMMAND"];
+    delete process.env.ZAPS_COMMAND;
   });
 
   it("returns ZAPS_COMMAND env when set", () => {
-    process.env["ZAPS_COMMAND"] = "my-zaps";
+    process.env.ZAPS_COMMAND = "my-zaps";
     expect(resolveCommand()).toBe("my-zaps");
   });
 
@@ -80,11 +80,11 @@ describe("resolveRuntime", () => {
 
   beforeEach(() => {
     process.argv = [...originalArgv];
-    delete process.env["ZAPS_RUNTIME"];
+    delete process.env.ZAPS_RUNTIME;
   });
 
   it("returns env value when set", () => {
-    process.env["ZAPS_RUNTIME"] = "custom";
+    process.env.ZAPS_RUNTIME = "custom";
     expect(resolveRuntime()).toBe("custom");
   });
 
@@ -220,7 +220,7 @@ describe("resolveSessionId", () => {
 describe("withLegacyIpc", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env["TMUX"];
+    delete process.env.TMUX;
   });
 
   it("throws when not in tmux", async () => {
@@ -228,7 +228,7 @@ describe("withLegacyIpc", () => {
   });
 
   it("throws when no ZAPS_IPC_SOCKET found", async () => {
-    process.env["TMUX"] = "yes";
+    process.env.TMUX = "yes";
 
     const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
     vi.mocked(currentSession).mockResolvedValue("main");
@@ -238,7 +238,7 @@ describe("withLegacyIpc", () => {
   });
 
   it("calls fn with ipc when socket found", async () => {
-    process.env["TMUX"] = "yes";
+    process.env.TMUX = "yes";
 
     const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
     vi.mocked(currentSession).mockResolvedValue("main");
@@ -255,14 +255,14 @@ describe("withLegacyIpc", () => {
 describe("withDaemon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    delete process.env["TMUX"];
+    delete process.env.TMUX;
   });
 
   it("falls back to legacy when no daemon running and no sessionArg", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(false);
 
-    process.env["TMUX"] = "yes";
+    process.env.TMUX = "yes";
 
     const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
     vi.mocked(currentSession).mockResolvedValue("main");

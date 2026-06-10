@@ -1,5 +1,6 @@
-import { openInBrowser } from "#src/lib/open.js";
 import { z } from "zod";
+
+import { openInBrowser } from "#src/lib/open.js";
 
 import { nodeModules } from "./node.js";
 import { projectConfigSchema } from "./schema.js";

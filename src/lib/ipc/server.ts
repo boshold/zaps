@@ -9,17 +9,17 @@ import type { IpcRequest } from "./protocol.js";
 
 export class IpcServer {
   private server: net.Server | null = null;
-  private socketPath: string;
-  private manager: ServiceManager;
-  private config: ResolvedConfig;
+  private readonly socketPath: string;
+  private readonly manager: ServiceManager;
+  private readonly config: ResolvedConfig;
 
-  constructor(socketPath: string, manager: ServiceManager, config: ResolvedConfig) {
+  public constructor(socketPath: string, manager: ServiceManager, config: ResolvedConfig) {
     this.socketPath = socketPath;
     this.manager = manager;
     this.config = config;
   }
 
-  async start(): Promise<void> {
+  public async start(): Promise<void> {
     // Clean up stale socket file
     try {
       fs.unlinkSync(this.socketPath);
@@ -69,7 +69,7 @@ export class IpcServer {
     socket.write(`${JSON.stringify(response)}\n`);
   }
 
-  stop(): void {
+  public stop(): void {
     if (this.server) {
       this.server.close();
       this.server = null;

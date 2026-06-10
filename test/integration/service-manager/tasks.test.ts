@@ -1,7 +1,8 @@
+import { describe, expect, it } from "vitest";
+
 import type { TaskConfig } from "#src/config/types.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import { describe, expect, it } from "vitest";
 
 function makeStatuses(): Map<string, ServiceStatus> {
   return new Map();
