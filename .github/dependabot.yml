@@ -1,0 +1,58 @@
+# Update-PR cadence only — install-time supply-chain enforcement lives in
+# pnpm-workspace.yaml (minimumReleaseAge / trustPolicy). Keep cooldowns here
+# aligned with pnpm's minimumReleaseAge (7 days) so Dependabot never proposes
+# a version pnpm then refuses to install.
+version: 2
+
+updates:
+  - package-ecosystem: "npm" # reads pnpm-lock.yaml
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
+      semver-major-days: 14 # extra caution on majors
+      semver-minor-days: 7
+      semver-patch-days: 7
+    # First matching group wins — named groups before the catch-alls.
+    groups:
+      react-ink:
+        patterns:
+          - "react"
+          - "@types/react"
+          - "react-devtools-core"
+          - "ink"
+          - "ink-testing-library"
+          - "yoga-layout"
+      oxc:
+        patterns:
+          - "oxlint"
+          - "oxfmt"
+          - "oxlint-tsgolint"
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+      prod-minor-patch: # batch remaining prod deps; majors stay solo PRs
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-minor-patch:
+        dependency-type: "development"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Keeps the SHA pins in workflows current.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns:
+          - "*"
