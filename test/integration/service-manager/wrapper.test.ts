@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import { capturePane, setEnv } from "#src/lib/tmux.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import { createTestDaemon, waitForServiceState } from "../helpers/daemon.js";
@@ -50,7 +51,7 @@ describe.skipIf(!hasTmux())("wrapper lifecycle", () => {
 
   beforeEach(async () => {
     // Daemon reads ZAPS_COMMAND to build the wrapper command sent to panes
-    process.env["ZAPS_COMMAND"] = localZaps;
+    process.env.ZAPS_COMMAND = localZaps;
     daemon = await createTestDaemon();
     tmux = await createTestSession();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-wrapper-"));
@@ -70,7 +71,7 @@ describe.skipIf(!hasTmux())("wrapper lifecycle", () => {
     await daemon.cleanup();
     await tmux.cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    delete process.env["ZAPS_COMMAND"];
+    delete process.env.ZAPS_COMMAND;
   });
 
   it("starts service via wrapper and hides env vars from pane", async () => {

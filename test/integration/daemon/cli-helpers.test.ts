@@ -1,6 +1,7 @@
+import { describe, expect, it } from "vitest";
+
 import { CliError, formatTable, resolveTargetSession } from "#src/cli/helpers.js";
 import type { SessionInfo } from "#src/cli/helpers.js";
-import { describe, expect, it } from "vitest";
 
 const sessions: SessionInfo[] = [
   { id: "abc123def456", name: "my-app", projectDir: "/projects/my-app" },

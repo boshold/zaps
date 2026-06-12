@@ -54,26 +54,26 @@ export function sessionId(configPath: string): string {
 }
 
 export class Session {
-  readonly id: string;
-  readonly configPath: string;
-  readonly projectDir: string;
-  readonly tmuxSession: string;
-  readonly originPane: string;
-  readonly subscribers = new Set<net.Socket>();
-  readonly createdAt = Date.now();
-  readonly taskHistory: TaskRunRecord[] = [];
-  readonly execInfo = new Map<string, ExecInfo>();
-  readonly deps: ServiceManagerDeps;
+  public readonly id: string;
+  public readonly configPath: string;
+  public readonly projectDir: string;
+  public readonly tmuxSession: string;
+  public readonly originPane: string;
+  public readonly subscribers = new Set<net.Socket>();
+  public readonly createdAt = Date.now();
+  public readonly taskHistory: TaskRunRecord[] = [];
+  public readonly execInfo = new Map<string, ExecInfo>();
+  public readonly deps: ServiceManagerDeps;
 
-  name: string;
-  config: ResolvedConfig;
-  paneMap: PaneMap;
-  manager: ServiceManager;
-  logBuffers: Map<string, LogBuffer>;
-  logMonitor: LogMonitor;
+  public name: string;
+  public config: ResolvedConfig;
+  public paneMap: PaneMap;
+  public manager: ServiceManager;
+  public logBuffers: Map<string, LogBuffer>;
+  public logMonitor: LogMonitor;
   private reloading = false;
 
-  constructor(params: SessionCreateParams, manager: ServiceManager) {
+  public constructor(params: SessionCreateParams, manager: ServiceManager) {
     this.id = sessionId(params.configPath);
     this.name = params.config.project.name ?? "unnamed";
     this.configPath = params.configPath;
@@ -136,7 +136,7 @@ export class Session {
     });
   }
 
-  pushTaskRecord(record: TaskRunRecord): void {
+  public pushTaskRecord(record: TaskRunRecord): void {
     if (record.result === "running") {
       this.taskHistory.unshift(record);
       if (this.taskHistory.length > MAX_TASK_HISTORY) {
@@ -160,7 +160,7 @@ export class Session {
   /**
    * Start all services and begin log monitoring.
    */
-  async startAll(): Promise<void> {
+  public async startAll(): Promise<void> {
     await this.manager.startAll();
 
     // Start log monitoring for each service pane.
@@ -193,7 +193,7 @@ export class Session {
   /**
    * Reload config, recreate layout, and restart services.
    */
-  async reload(): Promise<void> {
+  public async reload(): Promise<void> {
     if (this.reloading) {
       return;
     }
@@ -282,7 +282,7 @@ export class Session {
   /**
    * Stop all services and clean up.
    */
-  async destroy(): Promise<void> {
+  public async destroy(): Promise<void> {
     await this.logMonitor.flushAll();
     await this.manager.stopAll();
 
@@ -299,7 +299,7 @@ export class Session {
   /**
    * Get attach snapshot: statuses + log snapshots for each service.
    */
-  attachSnapshot(): SessionSnapshot {
+  public attachSnapshot(): SessionSnapshot {
     const logSnapshots: Record<string, string[]> = {};
     for (const [svcName, buf] of this.logBuffers) {
       logSnapshots[svcName] = buf.snapshot();
@@ -352,7 +352,7 @@ export class Session {
     };
   }
 
-  broadcast(event: DaemonEvent): void {
+  public broadcast(event: DaemonEvent): void {
     const line = `${JSON.stringify(event)}\n`;
     for (const sock of this.subscribers) {
       if (sock.destroyed) {

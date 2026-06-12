@@ -1,5 +1,6 @@
-import { useDimensions } from "#src/hooks/useDimensions.js";
 import { Box, Text } from "ink";
+
+import { useDimensions } from "#src/hooks/useDimensions.js";
 
 import { Header } from "./Header.js";
 

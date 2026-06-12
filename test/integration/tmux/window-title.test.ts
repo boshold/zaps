@@ -1,3 +1,5 @@
+import { afterEach, describe, expect, it } from "vitest";
+
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import {
@@ -10,7 +12,6 @@ import {
   sendKeys,
   setWindowOption,
 } from "#src/lib/tmux.js";
-import { afterEach, describe, expect, it } from "vitest";
 
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";

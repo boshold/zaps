@@ -1,3 +1,7 @@
+import type { Key } from "ink";
+import { useApp as useInkApp, useInput } from "ink";
+import { useEffect, useRef, useState } from "react";
+
 import type { DockerConfig } from "#src/config/types.js";
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useRouter } from "#src/hooks/useRouter.js";
@@ -8,9 +12,6 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
-import type { Key } from "ink";
-import { useApp as useInkApp, useInput } from "ink";
-import { useEffect, useRef, useState } from "react";
 
 import { Dashboard } from "./Dashboard.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";

@@ -1,10 +1,11 @@
-import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
-import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
 /* eslint-disable no-unsafe-type-assertion -- IPC boundary */
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+
+import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
+import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
 
 async function startMcpServer(socketPath: string, sessionId: string): Promise<void> {
   const server = new McpServer(

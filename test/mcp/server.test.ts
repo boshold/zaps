@@ -36,17 +36,17 @@ let mcpServerCtorArgs: unknown[] = [];
 
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => {
   class MockMcpServer {
-    server = { sendResourceUpdated: mockSendResourceUpdated };
+    public server = { sendResourceUpdated: mockSendResourceUpdated };
 
-    constructor(...args: unknown[]) {
+    public constructor(...args: unknown[]) {
       mcpServerCtorArgs = args;
     }
 
-    registerTool(name: string, meta: unknown, handler: ToolCb) {
+    public registerTool(name: string, meta: unknown, handler: ToolCb) {
       registeredTools.set(name, { meta, cb: handler });
     }
 
-    registerResource(
+    public registerResource(
       name: string,
       template: { pattern: string; config: TemplateConfig },
       meta: unknown,
@@ -55,16 +55,16 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => {
       registeredResources.set(name, { template, meta, cb: handler });
     }
 
-    async connect(...args: unknown[]) {
+    public async connect(...args: unknown[]) {
       mockConnect(...args);
     }
   }
 
   class MockResourceTemplate {
-    pattern: string;
-    config: TemplateConfig;
+    public pattern: string;
+    public config: TemplateConfig;
 
-    constructor(pattern: string, config: TemplateConfig) {
+    public constructor(pattern: string, config: TemplateConfig) {
       this.pattern = pattern;
       this.config = config;
     }

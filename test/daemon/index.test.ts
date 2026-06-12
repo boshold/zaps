@@ -34,8 +34,8 @@ vi.mock("node:net", () => {
     default: {
       createConnection: vi.fn(() => {
         const socket = new EE();
-        (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
-        (socket as unknown as Record<string, unknown>)["destroy"] = vi.fn();
+        (socket as unknown as Record<string, unknown>).write = vi.fn();
+        (socket as unknown as Record<string, unknown>).destroy = vi.fn();
         // Auto-connect and respond with pong
         setTimeout(() => {
           socket.emit("connect");
@@ -47,13 +47,13 @@ vi.mock("node:net", () => {
       }),
       createServer: vi.fn(() => {
         const server = new EE();
-        (server as unknown as Record<string, unknown>)["listen"] = vi.fn(
+        (server as unknown as Record<string, unknown>).listen = vi.fn(
           // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
           (_path: string, cb: () => void) => {
             setTimeout(cb, 0);
           },
         );
-        (server as unknown as Record<string, unknown>)["close"] = vi.fn();
+        (server as unknown as Record<string, unknown>).close = vi.fn();
         return server;
       }),
     },
@@ -64,8 +64,9 @@ vi.mock("../../src/daemon/server.js", () => {
   // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   return {
-    // Must use `function` (not arrow) so `new DaemonServer()` works in runDaemon
-    DaemonServer: vi.fn(function daemonServer() {
+    // Must be constructible (not arrow) so `new DaemonServer()` works in runDaemon
+    // eslint-disable-next-line prefer-arrow-callback -- arrow functions cannot be constructed
+    DaemonServer: vi.fn(function mockDaemonServer() {
       const emitter = new EE();
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
@@ -86,7 +87,7 @@ describe("ensureDaemon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.kill = vi.fn() as unknown as typeof process.kill;
-    delete process.env["XDG_RUNTIME_DIR"];
+    delete process.env.XDG_RUNTIME_DIR;
   });
 
   afterEach(() => {
@@ -143,11 +144,12 @@ describe("runDaemon", () => {
     vi.useFakeTimers();
     process.exit = vi.fn() as unknown as typeof process.exit;
     processOnSpy = vi.spyOn(process, "on");
-    delete process.env["XDG_RUNTIME_DIR"];
+    delete process.env.XDG_RUNTIME_DIR;
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
     const { EventEmitter } = await import("node:events");
-    vi.mocked(DaemonServer).mockImplementation(function daemonServer() {
+    // eslint-disable-next-line prefer-arrow-callback -- arrow functions cannot be constructed
+    vi.mocked(DaemonServer).mockImplementation(function mockDaemonServer() {
       const emitter = new EventEmitter();
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
@@ -256,7 +258,7 @@ describe("pingSocket branches", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.kill = vi.fn() as unknown as typeof process.kill;
-    delete process.env["XDG_RUNTIME_DIR"];
+    delete process.env.XDG_RUNTIME_DIR;
   });
 
   afterEach(() => {

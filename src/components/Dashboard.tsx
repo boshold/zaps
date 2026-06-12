@@ -1,7 +1,8 @@
+import { Box } from "ink";
+
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { Box } from "ink";
 
 import { ActionHints } from "./ActionHints.js";
 import { ColumnHeaders } from "./ColumnHeaders.js";

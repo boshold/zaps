@@ -1,7 +1,8 @@
+import { afterEach, describe, expect, it } from "vitest";
+
 import type { ServiceConfig } from "#src/config/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { removeEnv, setEnv, showEnv } from "#src/lib/tmux.js";
-import { afterEach, describe, expect, it } from "vitest";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";

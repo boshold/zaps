@@ -59,7 +59,7 @@ async function runTui(opts: {
 
   // Parallel: load yoga + attach to daemon (no config loading needed)
   const [yogaMod, snapshot] = await Promise.all([import("yoga-layout"), client.attach()]);
-  await (yogaMod.default as unknown as Record<string, unknown>)["__yogaReady"];
+  await (yogaMod.default as unknown as Record<string, unknown>).__yogaReady;
 
   // Skip splash on reattach (services already running)
   const allStopped = snapshot.statuses.every((s) => s.state === "stopped");

@@ -3,8 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { ipcRequest } from "#src/lib/ipc/client.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { ipcRequest } from "#src/lib/ipc/client.js";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import { createTestDaemon, waitForServiceState, writeTestConfig } from "../helpers/daemon.js";

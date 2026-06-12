@@ -8,12 +8,12 @@ export class LogBuffer {
   private count = 0;
   private readonly capacity: number;
 
-  constructor(capacity = 10_000) {
+  public constructor(capacity = 10_000) {
     this.capacity = capacity;
     this.buffer = Array.from<string>({ length: capacity });
   }
 
-  append(line: string): void {
+  public append(line: string): void {
     this.buffer[this.head] = line;
     this.head = (this.head + 1) % this.capacity;
     if (this.count < this.capacity) {
@@ -21,13 +21,13 @@ export class LogBuffer {
     }
   }
 
-  appendLines(lines: string[]): void {
+  public appendLines(lines: string[]): void {
     for (const line of lines) {
       this.append(line);
     }
   }
 
-  snapshot(): string[] {
+  public snapshot(): string[] {
     if (this.count === 0) {
       return [];
     }
@@ -38,12 +38,12 @@ export class LogBuffer {
     return [...this.buffer.slice(this.head), ...this.buffer.slice(0, this.head)];
   }
 
-  clear(): void {
+  public clear(): void {
     this.head = 0;
     this.count = 0;
   }
 
-  get length(): number {
+  public get length(): number {
     return this.count;
   }
 }

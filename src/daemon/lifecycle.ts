@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 function getRuntimeDir(): string {
-  const xdg = process.env["XDG_RUNTIME_DIR"];
+  const xdg = process.env.XDG_RUNTIME_DIR;
   if (xdg) {
     return path.join(xdg, "zaps");
   }
@@ -17,7 +17,7 @@ export function daemonDir(): string {
 }
 
 export function socketPath(): string {
-  const override = process.env["ZAPS_SOCKET_PATH"];
+  const override = process.env.ZAPS_SOCKET_PATH;
   if (override) {
     return override;
   }
@@ -89,12 +89,12 @@ export class IdleTimer {
   private readonly timeoutMs: number;
   private readonly onIdle: () => void;
 
-  constructor(timeoutMs: number, onIdle: () => void) {
+  public constructor(timeoutMs: number, onIdle: () => void) {
     this.timeoutMs = timeoutMs;
     this.onIdle = onIdle;
   }
 
-  reset(): void {
+  public reset(): void {
     if (this.timer) {
       clearTimeout(this.timer);
     }
@@ -103,7 +103,7 @@ export class IdleTimer {
     }, this.timeoutMs);
   }
 
-  cancel(): void {
+  public cancel(): void {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;

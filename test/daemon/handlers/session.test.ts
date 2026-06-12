@@ -117,7 +117,7 @@ describe("session handlers", () => {
         session: session.id,
         params: { events: [] },
       };
-      const res = await sessionHandlers["subscribe"](req, store, socket as never);
+      const res = await sessionHandlers.subscribe(req, store, socket as never);
       expect(res.result).toEqual({ subscribed: true });
       expect(session.subscribers.has(socket)).toBe(true);
     });
@@ -132,7 +132,7 @@ describe("session handlers", () => {
         session: session.id,
         params: { events: [] },
       };
-      await sessionHandlers["subscribe"](req, store, socket as never);
+      await sessionHandlers.subscribe(req, store, socket as never);
       expect(session.subscribers.has(socket)).toBe(true);
 
       socket.emit("close");
@@ -166,7 +166,7 @@ describe("session handlers", () => {
       const res = await sessionHandlers["services.details"](req, store, socket as never);
       expect(res.error).toBeUndefined();
       const result = res.result as Record<string, unknown>;
-      expect(result["name"]).toBe("api");
+      expect(result.name).toBe("api");
     });
 
     it("returns error for unknown service", async () => {
@@ -391,7 +391,7 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.details"](req, store, socket as never);
       const result = res.result as Record<string, unknown>;
-      expect(result["dependsOn"]).toEqual(["db"]);
+      expect(result.dependsOn).toEqual(["db"]);
     });
   });
 
@@ -417,7 +417,7 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["services.details"](req, store, socket as never);
       const result = res.result as Record<string, unknown>;
-      expect(result["hasDocker"]).toBe(true);
+      expect(result.hasDocker).toBe(true);
     });
   });
 

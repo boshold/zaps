@@ -1,6 +1,7 @@
+import { afterEach, describe, expect, it } from "vitest";
+
 import { getDescendantPids } from "#src/lib/port.js";
 import { capturePane, panePid, sendCtrlC, sendKeys, splitPane } from "#src/lib/tmux.js";
-import { afterEach, describe, expect, it } from "vitest";
 
 import { longRunningCmd } from "../helpers/fixtures.js";
 import { hasTmux } from "../helpers/skip.js";

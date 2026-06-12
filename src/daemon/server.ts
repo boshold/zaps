@@ -44,10 +44,10 @@ interface SessionStore {
 
 class DaemonServer implements SessionStore {
   private server: net.Server | null = null;
-  private sessions = new Map<string, Session>();
-  onSessionChange?: (count: number) => void;
+  private readonly sessions = new Map<string, Session>();
+  public onSessionChange?: (count: number) => void;
 
-  async start(socketPath: string): Promise<void> {
+  public async start(socketPath: string): Promise<void> {
     try {
       fs.unlinkSync(socketPath);
     } catch {
@@ -83,28 +83,28 @@ class DaemonServer implements SessionStore {
     });
   }
 
-  stop(): void {
+  public stop(): void {
     if (this.server) {
       this.server.close();
       this.server = null;
     }
   }
 
-  get sessionCount(): number {
+  public get sessionCount(): number {
     return this.sessions.size;
   }
 
   // --- SessionStore ---
 
-  list(): Session[] {
+  public list(): Session[] {
     return [...this.sessions.values()];
   }
 
-  get(id: string): Session | undefined {
+  public get(id: string): Session | undefined {
     return this.sessions.get(id);
   }
 
-  getByProjectDir(dir: string): Session | undefined {
+  public getByProjectDir(dir: string): Session | undefined {
     for (const s of this.sessions.values()) {
       if (s.projectDir === dir) {
         return s;
@@ -113,7 +113,7 @@ class DaemonServer implements SessionStore {
     return undefined;
   }
 
-  async create(params: {
+  public async create(params: {
     configPath: string;
     projectDir: string;
     tmuxSession: string;
@@ -159,7 +159,7 @@ class DaemonServer implements SessionStore {
         ref.session?.execInfo.set(service, info);
       },
       sessionId: id,
-      zapsCommand: process.env["ZAPS_COMMAND"] ?? "zaps",
+      zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
     };
 
     // Create ServiceManager
@@ -189,7 +189,7 @@ class DaemonServer implements SessionStore {
     return session;
   }
 
-  async destroy(id: string): Promise<void> {
+  public async destroy(id: string): Promise<void> {
     const session = this.sessions.get(id);
     if (!session) {
       return;

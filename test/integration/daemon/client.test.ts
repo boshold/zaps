@@ -3,10 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
 import { DaemonClient } from "#src/client/daemon-client.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import {

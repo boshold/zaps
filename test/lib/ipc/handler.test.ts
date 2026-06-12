@@ -88,7 +88,7 @@ describe("handleRequest", () => {
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.error).toBeUndefined();
     const result = res.result as Record<string, unknown>;
-    expect(result["name"]).toBe("api");
+    expect(result.name).toBe("api");
   });
 
   it("handles services.details unknown service", async () => {
@@ -281,7 +281,7 @@ describe("handleRequest", () => {
     const req: IpcRequest = { id: "rd1", method: "services.details", params: { name: "api" } };
     const res = await handleRequest(req, manager, config as never, socket as never);
     const result = res.result as Record<string, unknown>;
-    expect(result["hasDocker"]).toBe(true);
+    expect(result.hasDocker).toBe(true);
   });
 
   it("popup task with no commands falls through to runTaskWithDeps", async () => {

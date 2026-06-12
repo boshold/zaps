@@ -1,6 +1,7 @@
-import type { ServiceState } from "#src/lib/service/types.js";
 import { Text } from "ink";
 import { useEffect, useState } from "react";
+
+import type { ServiceState } from "#src/lib/service/types.js";
 
 const SPINNER_FRAMES = ["◐", "◑", "◒", "◓"];
 const SPINNER_INTERVAL = 150;

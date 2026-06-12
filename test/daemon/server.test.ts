@@ -9,23 +9,23 @@ vi.mock("node:net", () => {
 
   class MockServer extends EE {
     // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
-    listen = vi.fn((_path: string, cb: () => void) => {
+    public listen = vi.fn((_path: string, cb: () => void) => {
       setTimeout(cb, 0);
     });
-    close = vi.fn();
+    public close = vi.fn();
   }
 
   class MockSocket extends EE {
-    write = vi.fn();
-    destroy = vi.fn();
-    destroyed = false;
+    public write = vi.fn();
+    public destroy = vi.fn();
+    public destroyed = false;
   }
 
   return {
     default: {
       createServer: vi.fn((handler: (socket: unknown) => void) => {
         const server = new MockServer();
-        (server as unknown as Record<string, unknown>)["_connectionHandler"] = handler;
+        (server as unknown as Record<string, unknown>)._connectionHandler = handler;
         return server;
       }),
       createConnection: vi.fn(() => new MockSocket()),
@@ -81,13 +81,13 @@ vi.mock("#src/lib/service/manager.js", () => {
   // eslint-disable-next-line no-require-imports, global-require, no-var-requires, unicorn/prefer-module -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   class MockServiceManager extends EE {
-    startAll = vi.fn().mockResolvedValue(undefined);
-    stopAll = vi.fn().mockResolvedValue(undefined);
-    startService = vi.fn().mockResolvedValue(undefined);
-    stopService = vi.fn().mockResolvedValue(undefined);
-    restartService = vi.fn().mockResolvedValue(undefined);
-    getAllStatuses = vi.fn(() => []);
-    getStatus = vi.fn();
+    public startAll = vi.fn().mockResolvedValue(undefined);
+    public stopAll = vi.fn().mockResolvedValue(undefined);
+    public startService = vi.fn().mockResolvedValue(undefined);
+    public stopService = vi.fn().mockResolvedValue(undefined);
+    public restartService = vi.fn().mockResolvedValue(undefined);
+    public getAllStatuses = vi.fn(() => []);
+    public getStatus = vi.fn();
   }
   return { ServiceManager: MockServiceManager };
 });
@@ -226,7 +226,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "p1", method: "daemon.ping" })}\n`;
@@ -249,7 +249,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       socket.emit("data", Buffer.from("not json\n"));
@@ -269,7 +269,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "u1", method: "unknown.method" })}\n`;
@@ -289,7 +289,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "bp1", method: "ping" })}\n`;
@@ -309,7 +309,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "s1", method: "services.list" })}\n`;
@@ -336,7 +336,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       // Add socket as subscriber
@@ -356,7 +356,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       // Split the JSON across two data events
@@ -381,7 +381,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       // Send data with empty lines between valid JSON
@@ -435,7 +435,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "se1", method: "services.list", session: session.id })}\n`;
@@ -467,7 +467,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "sne1", method: "services.list", session: session.id })}\n`;
@@ -492,7 +492,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       const req = `${JSON.stringify({ id: "dne1", method: "daemon.status" })}\n`;
@@ -526,7 +526,7 @@ describe("DaemonServer", () => {
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
       const socket = new EventEmitter();
-      (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+      (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
       // Daemon.sessions.create will throw because of invalid params

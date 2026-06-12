@@ -9,7 +9,7 @@ import type { IpcResponse } from "#src/lib/ipc/protocol.js";
 import { currentSession, showEnv } from "#src/lib/tmux.js";
 
 export class CliError extends Error {
-  constructor(message: string) {
+  public constructor(message: string) {
     super(message);
     this.name = "CliError";
   }

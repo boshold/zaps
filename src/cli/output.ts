@@ -18,7 +18,7 @@ export function resolveFormat(opts: { json?: boolean; toon?: boolean }): OutputF
   if (opts.toon) {
     return "toon";
   }
-  const envFormat = process.env["ZAPS_FORMAT"];
+  const envFormat = process.env.ZAPS_FORMAT;
   if (envFormat === "json" || envFormat === "toon") {
     return envFormat;
   }

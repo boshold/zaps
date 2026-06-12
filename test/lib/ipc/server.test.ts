@@ -7,10 +7,10 @@ vi.mock("node:net", () => {
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   class MockServer extends EE {
     // eslint-disable-next-line prefer-await-to-callbacks -- vi.mock callback pattern
-    listen = vi.fn((_path: string, cb: () => void) => {
+    public listen = vi.fn((_path: string, cb: () => void) => {
       setTimeout(cb, 0);
     });
-    close = vi.fn();
+    public close = vi.fn();
   }
 
   return {
@@ -86,7 +86,7 @@ describe("IpcServer", () => {
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>).write = vi.fn();
     connectionHandler(socket);
 
     const req = `${JSON.stringify({ id: "r1", method: "ping" })}\n`;
@@ -114,7 +114,7 @@ describe("IpcServer", () => {
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>).write = vi.fn();
     connectionHandler(socket);
 
     socket.emit("data", Buffer.from("bad json\n"));
@@ -136,7 +136,7 @@ describe("IpcServer", () => {
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>).write = vi.fn();
     connectionHandler(socket);
 
     socket.emit("data", Buffer.from("\n\n"));
@@ -154,7 +154,7 @@ describe("IpcServer", () => {
     ) => void;
 
     const socket = new EventEmitter();
-    (socket as unknown as Record<string, unknown>)["write"] = vi.fn();
+    (socket as unknown as Record<string, unknown>).write = vi.fn();
     connectionHandler(socket);
 
     // Should not throw

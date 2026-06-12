@@ -139,23 +139,28 @@ async function tryAutoOpen(
 }
 
 export class ServiceManager extends EventEmitter {
-  private statuses: Map<string, ServiceStatus>;
-  private abortControllers: Map<string, AbortController>;
-  private config: ResolvedConfig;
-  private paneMap: PaneMap;
-  private session: string;
+  private readonly statuses: Map<string, ServiceStatus>;
+  private readonly abortControllers: Map<string, AbortController>;
+  private readonly config: ResolvedConfig;
+  private readonly paneMap: PaneMap;
+  private readonly session: string;
   private shuttingDown = false;
-  private deps: ServiceManagerDeps;
-  private autoOpened = new Set<string>();
-  private restartWithMap: Map<string, string[]>;
-  private cascadingTriggers = new Set<string>();
-  private monitorGenerations = new Map<string, number>();
-  private originalWindowTitle: Promise<string>;
-  private originalAutoRename: Promise<string | null>;
+  private readonly deps: ServiceManagerDeps;
+  private readonly autoOpened = new Set<string>();
+  private readonly restartWithMap: Map<string, string[]>;
+  private readonly cascadingTriggers = new Set<string>();
+  private readonly monitorGenerations = new Map<string, number>();
+  private readonly originalWindowTitle: Promise<string>;
+  private readonly originalAutoRename: Promise<string | null>;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
   private pendingRename: Promise<void> = Promise.resolve();
 
-  constructor(config: ResolvedConfig, paneMap: PaneMap, deps: ServiceManagerDeps, session: string) {
+  public constructor(
+    config: ResolvedConfig,
+    paneMap: PaneMap,
+    deps: ServiceManagerDeps,
+    session: string,
+  ) {
     super();
     this.config = config;
     this.paneMap = paneMap;
@@ -236,7 +241,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Start all autostart services in topological order.
    */
-  async startAll(): Promise<void> {
+  public async startAll(): Promise<void> {
     const { services, hooks } = this.config.project;
 
     await fireHook(hooks?.onBeforeStart);
@@ -269,7 +274,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Stop all services in reverse topological order.
    */
-  async stopAll(): Promise<void> {
+  public async stopAll(): Promise<void> {
     if (this.shuttingDown) {
       return;
     }
@@ -318,7 +323,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Start a single service.
    */
-  async startService(name: string): Promise<void> {
+  public async startService(name: string): Promise<void> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -486,7 +491,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Stop a single service.
    */
-  async stopService(name: string): Promise<void> {
+  public async stopService(name: string): Promise<void> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -588,7 +593,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Restart a single service.
    */
-  async restartService(name: string): Promise<void> {
+  public async restartService(name: string): Promise<void> {
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);
@@ -674,7 +679,10 @@ export class ServiceManager extends EventEmitter {
   /**
    * Restart a docker service with temporary flag overrides.
    */
-  async restartWithDockerOverrides(name: string, overrides: Partial<DockerConfig>): Promise<void> {
+  public async restartWithDockerOverrides(
+    name: string,
+    overrides: Partial<DockerConfig>,
+  ): Promise<void> {
     const serviceConfig = this.config.project.services[name];
     if (!serviceConfig?.docker) {
       throw new Error(`Service "${name}" is not a docker service`);
@@ -692,7 +700,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Get status for a single service.
    */
-  getStatus(name: string): ServiceStatus {
+  public getStatus(name: string): ServiceStatus {
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);
@@ -703,7 +711,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Get all service statuses.
    */
-  getAllStatuses(): ServiceStatus[] {
+  public getAllStatuses(): ServiceStatus[] {
     return [...this.statuses.values()];
   }
 
@@ -867,7 +875,7 @@ export class ServiceManager extends EventEmitter {
     await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 
-  handleExecExited(service: string, _code: number, _signal: string | null): void {
+  public handleExecExited(service: string, _code: number, _signal: string | null): void {
     const status = this.statuses.get(service);
     if (!status || status.state !== "ready") {
       return;

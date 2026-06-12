@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import { capturePane, setEnv } from "#src/lib/tmux.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import { createTestDaemon, waitForServiceState } from "../helpers/daemon.js";
@@ -25,7 +26,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
   let sid: string | undefined;
 
   beforeEach(async () => {
-    process.env["ZAPS_COMMAND"] = localZaps;
+    process.env.ZAPS_COMMAND = localZaps;
     daemon = await createTestDaemon();
     tmux = await createTestSession();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-raw-crash-"));
@@ -43,7 +44,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
     await daemon.cleanup();
     await tmux.cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    delete process.env["ZAPS_COMMAND"];
+    delete process.env.ZAPS_COMMAND;
   });
 
   it("raw: true service shows inline env in pane", async () => {

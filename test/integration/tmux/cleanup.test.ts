@@ -1,5 +1,6 @@
-import { killPane, listPanes, removeEnv, setEnv, showEnv, splitPane } from "#src/lib/tmux.js";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { killPane, listPanes, removeEnv, setEnv, showEnv, splitPane } from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";

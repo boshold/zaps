@@ -3,9 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { TestDaemon } from "../helpers/daemon.js";
 import {

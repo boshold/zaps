@@ -1,7 +1,8 @@
+import { useEffect, useState } from "react";
+
 import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { useEffect, useState } from "react";
 
 export function useServices(client: DaemonClient, initialStatuses: ServiceStatus[]) {
   const [statuses, setStatuses] = useState<ServiceStatus[]>(initialStatuses);
