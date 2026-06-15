@@ -1071,9 +1071,33 @@ export class ServiceManager extends EventEmitter {
     await this.deps.renameWindow(this.paneMap["@tui"], title);
   }
 
-  public handleExecExited(service: string, _code: number, _signal: string | null): void {
+  public handleExecExited(
+    service: string,
+    _code: number,
+    _signal: string | null,
+    spawnError?: string,
+  ): void {
     const status = this.statuses.get(service);
-    if (!status || status.state !== "ready") {
+    if (!status) {
+      return;
+    }
+
+    // Wrapper failed to spawn the command (E11): abort any in-flight start and
+    // Fail fast with the spawn message instead of leaving the service stuck in
+    // `starting` until the 60s ready timeout.
+    if (spawnError !== undefined) {
+      this.abortControllers.get(service)?.abort();
+      this.monitorGenerations.set(service, (this.monitorGenerations.get(service) ?? 0) + 1);
+      if (canTransition(status.state, "error")) {
+        status.state = transition(status.state, "error");
+      }
+      status.lastError = spawnError;
+      delete status.readySince;
+      this.emit("stateChange", service, status);
+      return;
+    }
+
+    if (status.state !== "ready") {
       return;
     }
 
@@ -1118,6 +1142,13 @@ export class ServiceManager extends EventEmitter {
         // The restart must never reject out of handleCrash (a leaked rejection
         // Reaches Node and could kill the daemon — C2); on failure, go to error.
         try {
+          // Wait for the crashed pane process (and any orphans) to fully exit
+          // Before re-sending start keys, so the restart can't collide with a
+          // Lingering process on the same port (C3). Pane-based services only;
+          // Combined/docker services manage lifecycle via compose, not the pane.
+          if (!config._combined) {
+            await this.waitForPaneExit(this.paneMap[name]);
+          }
           await this.startServiceInternal(name);
           await this.cascadeRestart(name);
         } catch (error) {

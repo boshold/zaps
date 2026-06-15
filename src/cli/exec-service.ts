@@ -44,35 +44,61 @@ async function execService(name: string, sessionId: string): Promise<void> {
     process.exit(1);
   }
 
+  // Detached → `sh` becomes a process-group leader so we can signal the whole
+  // Group on stop (compound/env-prefixed commands aren't exec'd, so the real
+  // Process is a grandchild of `sh` — E11). Do NOT unref: the wrapper must keep
+  // Waiting on the child.
   const child = spawn("sh", ["-c", wrapCommand(result.command)], {
     stdio: "inherit",
     env: { ...process.env, ...result.env },
     cwd: result.cwd,
+    detached: true,
   });
 
   const forwardTerm = () => {
+    // Signal the whole process group so grandchildren die too (no orphans).
+    if (child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, "SIGTERM");
+        return;
+      } catch {
+        // Group gone or not permitted — fall back to a direct child signal.
+      }
+    }
     child.kill("SIGTERM");
   };
   process.on("SIGTERM", forwardTerm);
 
-  child.on("exit", (code, signal) => {
+  let notified = false;
+  const notifyExit = (code: number, signal: string | null, spawnError?: string): void => {
+    if (notified) {
+      return;
+    }
+    notified = true;
     process.off("SIGTERM", forwardTerm);
-    const exitCode = code ?? 1;
-    const sig = signal ?? null;
-
     // Await exit notification with short timeout before exiting
     void (async () => {
       await ipcRequest(
         socket,
         "exec-service.exited",
-        { service: name, code: exitCode, signal: sig },
+        { service: name, code, signal, ...(spawnError === undefined ? {} : { spawnError }) },
         1000,
         sessionId,
       ).catch(() => {
         /* Best-effort — daemon may be gone */
       });
-      process.exit(exitCode);
+      process.exit(code);
     })();
+  };
+
+  // Spawn failure (e.g. bad cwd, unspawnable shell): report it so the daemon can
+  // Set lastError and fail the service fast instead of leaving it in `starting`.
+  child.on("error", (err: Error) => {
+    notifyExit(127, null, err.message);
+  });
+
+  child.on("exit", (code, signal) => {
+    notifyExit(code ?? 1, signal ?? null);
   });
 }
 

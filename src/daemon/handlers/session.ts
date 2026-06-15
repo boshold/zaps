@@ -361,12 +361,13 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const { service, code, signal } = req.params as {
+    const { service, code, signal, spawnError } = req.params as {
       service: string;
       code: number;
       signal?: string | null;
+      spawnError?: string;
     };
-    session.manager.handleExecExited(service, code, signal ?? null);
+    session.manager.handleExecExited(service, code, signal ?? null, spawnError);
     return ipcOk(req.id, { ok: true });
   },
 

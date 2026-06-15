@@ -903,19 +903,16 @@ describe("crash recovery", () => {
     const deps = createMockDeps();
 
     let startCount = 0;
-    let crashed = false;
+    let running = true;
 
+    // The pane process is running only after a start command is sent; a crash
+    // Sets `running = false` and the restart's waitForPaneExit then passes.
     deps.sendKeys = vi.fn(async () => {
       startCount += 1;
+      running = true;
     });
 
-    deps.getDescendantPids = vi.fn(async () => {
-      // After first start, simulate crash after some time
-      if (crashed) {
-        return [1000]; // Only shell, no child = crashed
-      }
-      return [1000, 2000]; // Running
-    });
+    deps.getDescendantPids = vi.fn(async () => (running ? [1000, 2000] : [1000]));
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -927,15 +924,11 @@ describe("crash recovery", () => {
     expect(mgr.getStatus("svc").state).toBe("ready");
     expect(startCount).toBe(1);
 
-    // Simulate crash
-    crashed = true;
+    // Simulate crash — process gone
+    running = false;
 
-    // Wait for crash monitor poll (2s)
+    // Wait for crash monitor poll (2s), backoff (1000ms), pane-exit wait, restart
     await vi.advanceTimersByTimeAsync(2500);
-
-    // Crash detected, state becomes restarting, then backoff (1000ms)
-    // Then it restarts
-    crashed = false; // Service recovers on restart
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(startCount).toBe(2);
@@ -1057,6 +1050,9 @@ describe("crash recovery", () => {
 
     mgr.handleExecExited("svc", 1, null);
     expect(mgr.getStatus("svc").state).toBe("restarting");
+
+    // Crashed process is now gone, so the restart's waitForPaneExit returns fast.
+    vi.mocked(deps.getDescendantPids).mockResolvedValue([1000]);
 
     await vi.advanceTimersByTimeAsync(200);
 

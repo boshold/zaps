@@ -878,7 +878,7 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["exec-service.exited"](req, store, socket as never);
       expect(res.result).toEqual({ ok: true });
-      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 1, "SIGTERM");
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 1, "SIGTERM", undefined);
     });
 
     it("defaults null signal when omitted", async () => {
@@ -892,7 +892,26 @@ describe("session handlers", () => {
         params: { service: "dev", code: 0 },
       };
       await sessionHandlers["exec-service.exited"](req, store, socket as never);
-      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 0, null);
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 0, null, undefined);
+    });
+
+    it("forwards spawnError to handleExecExited", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rx3",
+        method: "exec-service.exited",
+        session: session.id,
+        params: { service: "dev", code: 127, signal: null, spawnError: "spawn cwd ENOENT" },
+      };
+      await sessionHandlers["exec-service.exited"](req, store, socket as never);
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith(
+        "dev",
+        127,
+        null,
+        "spawn cwd ENOENT",
+      );
     });
 
     it("returns error for unknown session", async () => {
