@@ -658,6 +658,9 @@ export class ServiceManager extends EventEmitter {
     const generation = this.monitorGenerations.get(name) ?? 0;
 
     const pid = this.detachedRunner.start({ service: name, command, cwd, env, generation });
+    // Surface the real child pid so `services.list` carries it (was always
+    // Undefined) and orphan/crash tooling can target the process group.
+    status.pid = pid;
 
     const detectPorts = async (): Promise<number[]> => this.deps.detectPortsForPid?.(pid) ?? [];
     const readyDeps: ReadyDeps = {

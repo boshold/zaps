@@ -3099,6 +3099,8 @@ describe("detached services (E4)", () => {
     const status = mgr.getStatus("worker");
     expect(status.state).toBe("ready");
     expect(status.isDetached).toBe(true);
+    // The real child pid is surfaced on the status (was always undefined).
+    expect(status.pid).toBe(7000);
     expect(status.ports).toEqual([4000]);
     expect(args[0]).toEqual({ file: "sh", args: ["-c", "node w.js"] });
     // Detached port detection is PID-based, not pane-based.

@@ -86,7 +86,8 @@ function handleDashboardInput(
   if (input === "R" && selected?.isDocker && !isUnavailable) {
     ctx.goToDockerRebuild(selectedName);
   }
-  if (input === "z" && selected && !isUnavailable) {
+  // Detached services have no pane, so zoom/edit-capture are disabled (E4).
+  if (input === "z" && selected && !isUnavailable && !selected.isDetached) {
     const paneId = ctx.paneMap[selectedName];
     if (paneId) {
       void zoomPane(paneId);
@@ -98,7 +99,7 @@ function handleDashboardInput(
       void zoomPane(tuiPaneId);
     }
   }
-  if (input === "E" && selected && !isBusy && !isUnavailable) {
+  if (input === "E" && selected && !isBusy && !isUnavailable && !selected.isDetached) {
     const paneId = ctx.paneMap[selectedName];
     if (paneId) {
       ctx.busyServices.current.add(selectedName);

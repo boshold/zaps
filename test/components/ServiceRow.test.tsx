@@ -116,6 +116,24 @@ describe("ServiceRow", () => {
     expect(lastFrame()).toBeTruthy();
   });
 
+  it("shows detached marker for a detached service (wide layout)", () => {
+    const status = makeStatus({ name: "worker", isDetached: true });
+    const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
+    expect(lastFrame()).toContain("detached");
+  });
+
+  it("shows detached marker for a detached service (medium layout)", () => {
+    const status = makeStatus({ name: "worker", isDetached: true });
+    const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected={false} />);
+    expect(lastFrame()).toContain("detached");
+  });
+
+  it("does not show detached marker for a pane service", () => {
+    const status = makeStatus({ name: "web" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
+    expect(lastFrame()).not.toContain("detached");
+  });
+
   it("renders medium layout (cols >= 50 < 80) with name and status", () => {
     const status = makeStatus({ name: "api", ports: [3000] });
     const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected={false} />);

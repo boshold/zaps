@@ -177,4 +177,17 @@ describe("Dashboard", () => {
     const frame = lastFrame() ?? "";
     expect(frame).not.toContain("Recent Tasks");
   });
+
+  it("marks only the detached service row as detached", () => {
+    const paneSvc = makeStatus("web", "ready", [3000]);
+    const detachedSvc: ServiceStatus = { ...makeStatus("worker", "ready"), isDetached: true };
+
+    const { lastFrame } = renderDashboard({ statuses: [paneSvc, detachedSvc] });
+
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("worker");
+    expect(frame).toContain("web");
+    // Exactly one row carries the marker — the detached one.
+    expect(frame.match(/detached/g)).toHaveLength(1);
+  });
 });

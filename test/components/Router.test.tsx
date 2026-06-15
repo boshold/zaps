@@ -298,6 +298,32 @@ describe("Router", () => {
     expect(editPaneCapture).toHaveBeenCalledWith("%1", "web");
   });
 
+  // ── dashboard input: detached services disable pane actions ──
+
+  it("does not zoom a detached service even if a pane is mapped", () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin } = renderRouter({ statuses, paneMap: { worker: "%1" } });
+    stdin.write("z");
+    expect(zoomPane).not.toHaveBeenCalled();
+  });
+
+  it("does not edit-capture a detached service even if a pane is mapped", () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin } = renderRouter({ statuses, paneMap: { worker: "%1" } });
+    stdin.write("E");
+    expect(editPaneCapture).not.toHaveBeenCalled();
+  });
+
+  it("still opens logs for a detached service with l key", async () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin, lastFrame } = renderRouter({ statuses });
+    stdin.write("l");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(lastFrame() ?? "").toContain("worker");
+  });
+
   // ── dashboard input: tasks view (t) ──────────────────────────
 
   it("navigates to tasks view with t key", async () => {
