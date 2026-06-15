@@ -195,6 +195,9 @@ export class ServiceManager extends EventEmitter {
   private readonly session: string;
   private shuttingDown = false;
   private startAllPromise: Promise<void> | null = null;
+  private stopAllPromise: Promise<void> | null = null;
+  /** Cooperative-abort flag for an in-flight `startAll` (reload/destroy). */
+  private startAllAborted = false;
   private readonly deps: ServiceManagerDeps;
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
@@ -327,7 +330,22 @@ export class ServiceManager extends EventEmitter {
     await this.startAllPromise;
   }
 
+  /**
+   * Cooperatively abort an in-flight `startAll`: `startAllServices` checks the
+   * flag between topo levels and before each service start, so a service already
+   * mid-start finishes its start op and is then stopped by the caller's teardown.
+   * Bumps every monitor generation so active crash/output monitors don't survive
+   * the subsequent config swap (A5).
+   */
+  public abortStartAll(): void {
+    this.startAllAborted = true;
+    for (const name of this.statuses.keys()) {
+      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+    }
+  }
+
   private async runStartAll(): Promise<void> {
+    this.startAllAborted = false;
     try {
       await this.startAllServices();
     } finally {
@@ -363,8 +381,14 @@ export class ServiceManager extends EventEmitter {
     const levels = topoSort(autostartServices);
 
     for (const level of levels) {
+      if (this.startAllAborted) {
+        return;
+      }
       await Promise.all(
         level.map(async (name) => {
+          if (this.startAllAborted) {
+            return;
+          }
           try {
             await this.startService(name, nonAutostartDeps);
           } catch (error) {
@@ -374,6 +398,10 @@ export class ServiceManager extends EventEmitter {
           }
         }),
       );
+    }
+
+    if (this.startAllAborted) {
+      return;
     }
 
     await fireHook(hooks?.onStart);
@@ -399,14 +427,27 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Stop all services in reverse topological order.
+   * Stop all services in reverse topological order. Concurrent callers join the
+   * same in-flight run and await its settlement (reload/destroy depend on the
+   * stop having completed, not merely started — A5); the shared promise is
+   * cleared on settle so a later call starts a fresh stop.
    */
   public async stopAll(): Promise<void> {
-    if (this.shuttingDown) {
-      return;
-    }
-    this.shuttingDown = true;
+    this.stopAllPromise ??= this.runStopAll();
+    await this.stopAllPromise;
+  }
 
+  private async runStopAll(): Promise<void> {
+    this.shuttingDown = true;
+    try {
+      await this.stopAllServices();
+    } finally {
+      this.shuttingDown = false;
+      this.stopAllPromise = null;
+    }
+  }
+
+  private async stopAllServices(): Promise<void> {
     const { services, hooks } = this.config.project;
     const levels = reverseTopoSort(services);
 
@@ -444,7 +485,6 @@ export class ServiceManager extends EventEmitter {
     ).catch(() => {
       // Session may already be gone
     });
-    this.shuttingDown = false;
   }
 
   /**

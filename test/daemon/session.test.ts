@@ -10,11 +10,24 @@ vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),
 }));
 
+vi.mock("#src/config/loader.js", () => ({
+  loadConfig: vi.fn(),
+}));
+
+vi.mock("#src/lib/tmux-layout.js", () => ({
+  createLayout: vi.fn(),
+}));
+
+vi.mock("#src/lib/tmux.js", () => ({
+  killPane: vi.fn().mockResolvedValue(undefined),
+}));
+
 function createMockManager(): ServiceManager {
   const emitter = new EventEmitter();
   return Object.assign(emitter, {
     startAll: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
+    abortStartAll: vi.fn(),
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
@@ -173,7 +186,87 @@ describe("Session", () => {
     });
   });
 
+  describe("reload", () => {
+    it("rejects with 'session destroyed' after the session was destroyed", async () => {
+      await session.destroy();
+      await expect(session.reload()).rejects.toThrow("session destroyed");
+    });
+
+    it("rejects a concurrent reload with 'reload already in progress'", async () => {
+      const { loadConfig } = await import("#src/config/loader.js");
+      let rejectLoad!: () => void;
+      vi.mocked(loadConfig).mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectLoad = () => reject(new Error("aborted load"));
+        }),
+      );
+
+      const first = session.reload();
+      await expect(session.reload()).rejects.toThrow("reload already in progress");
+      rejectLoad();
+      await expect(first).rejects.toThrow("aborted load");
+    });
+
+    it("leaves the running session intact when the new config fails to load (A1)", async () => {
+      const { loadConfig } = await import("#src/config/loader.js");
+      const { killPane } = await import("#src/lib/tmux.js");
+      vi.mocked(loadConfig).mockRejectedValue(new Error("Unexpected token }"));
+
+      const removeListenersSpy = vi.spyOn(manager, "removeAllListeners");
+      const origConfig = session.config;
+      const origManager = session.manager;
+      const origPaneMap = session.paneMap;
+      const origBuffers = session.logBuffers;
+
+      await expect(session.reload()).rejects.toThrow("Unexpected token }");
+
+      expect(session.config).toBe(origConfig);
+      expect(session.manager).toBe(origManager);
+      expect(session.paneMap).toBe(origPaneMap);
+      expect(session.logBuffers).toBe(origBuffers);
+      expect(vi.mocked(manager.stopAll)).not.toHaveBeenCalled();
+      expect(vi.mocked(manager.abortStartAll)).not.toHaveBeenCalled();
+      expect(removeListenersSpy).not.toHaveBeenCalled();
+      expect(vi.mocked(killPane)).not.toHaveBeenCalled();
+    });
+  });
+
   describe("destroy", () => {
+    it("sets destroyed and aborts the tracked start before tearing down", async () => {
+      await session.destroy();
+      expect(session.destroyed).toBe(true);
+      expect(vi.mocked(manager.abortStartAll)).toHaveBeenCalled();
+      expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
+    });
+
+    it("is idempotent — a second destroy does not tear down again", async () => {
+      await session.destroy();
+      await session.destroy();
+      expect(vi.mocked(manager.stopAll)).toHaveBeenCalledTimes(1);
+    });
+
+    it("serializes behind an in-flight reload via the shared op lock", async () => {
+      const { loadConfig } = await import("#src/config/loader.js");
+      let rejectLoad!: () => void;
+      vi.mocked(loadConfig).mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectLoad = () => reject(new Error("aborted load"));
+        }),
+      );
+
+      const order: string[] = [];
+      const reloadP = session.reload().catch(() => order.push("reload"));
+      const destroyP = session.destroy().then(() => order.push("destroy"));
+
+      // Reload holds the op lock while loadConfig is pending — destroy must wait.
+      await Promise.resolve();
+      expect(vi.mocked(manager.stopAll)).not.toHaveBeenCalled();
+
+      rejectLoad();
+      await Promise.all([reloadP, destroyP]);
+      expect(order).toEqual(["reload", "destroy"]);
+    });
+
     it("stops log monitor and all services", async () => {
       const mockSocket = { destroyed: false, destroy: vi.fn(), write: vi.fn() };
       session.subscribers.add(mockSocket as never);

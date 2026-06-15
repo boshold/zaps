@@ -20,7 +20,7 @@ function writeConfig(
   name: string,
   services: Record<string, { port: number }>,
 ): string {
-  const configPath = path.join(dir, ".zaps.mjs");
+  const configPath = path.join(dir, ".zaps.mts");
   const svcEntries = Object.entries(services).map(([svcName, { port }]) => {
     const cmd = `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port},()=>console.log('ready on port ${port}'))"`;
     return `      ${svcName}: { start: ${JSON.stringify(cmd)}, ready: { port: ${port} }, raw: true }`;
@@ -65,8 +65,9 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("reload restarts services from updated config", async () => {
+  it("reload picks up an edited config (fresh module graph) and restarts services", async () => {
     const port1 = await getFreePort();
+    const port2 = await getFreePort();
     const configPath = writeConfig(tmpDir, "test-reload", { web: { port: port1 } });
 
     const createRes = await ipcRequest(daemon.socketPath, "session.create", {
@@ -78,19 +79,21 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
 
-    // Reload the same config — services should restart
+    // Edit the config: add a second service. The fresh load must reflect it.
+    writeConfig(tmpDir, "test-reload", { web: { port: port1 }, api: { port: port2 } });
+
     const reloadRes = await ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid);
     expect(reloadRes.error).toBeUndefined();
 
-    // Services restart in background after reload — wait for them
     await waitForServiceState(daemon.socketPath, sid, "web", "ready", 30_000);
+    await waitForServiceState(daemon.socketPath, sid, "api", "ready", 30_000);
 
     const listRes = await ipcRequest(daemon.socketPath, "services.list", undefined, 5000, sid);
     expect(listRes.error).toBeUndefined();
     const statuses = listRes.result as { name: string; state: string }[];
-    expect(statuses).toHaveLength(1);
-    expect(statuses[0].name).toBe("web");
-    expect(statuses[0].state).toBe("ready");
+    const names = statuses.map((s) => s.name).toSorted();
+    expect(names).toEqual(["api", "web"]);
+    expect(statuses.every((s) => s.state === "ready")).toBe(true);
   });
 
   it("reload emits configReloaded event", async () => {
@@ -154,8 +157,12 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid),
     ]);
 
-    expect(res1.error).toBeUndefined();
-    expect(res2.error).toBeUndefined();
+    // At least one succeeds; any failure is only the concurrent-reload guard.
+    const errors = [res1.error, res2.error].filter(Boolean) as string[];
+    expect(errors.length).toBeLessThanOrEqual(1);
+    for (const err of errors) {
+      expect(err).toContain("reload already in progress");
+    }
 
     await waitForServiceState(daemon.socketPath, sid, "web", "ready", 30_000);
 
@@ -163,5 +170,63 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     expect(listRes.error).toBeUndefined();
     const statuses = listRes.result as { name: string; state: string }[];
     expect(statuses.length).toBeGreaterThan(0);
+  });
+
+  it("invalid config leaves the running session intact (A1)", async () => {
+    const port1 = await getFreePort();
+    const configPath = writeConfig(tmpDir, "test-reload", { web: { port: port1 } });
+
+    const createRes = await ipcRequest(daemon.socketPath, "session.create", {
+      configPath,
+      projectDir: tmpDir,
+      tmuxSession: tmux.name,
+      originPane: tmux.initialPaneId,
+    });
+    sid = (createRes.result as { id: string }).id;
+    await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
+    // Break the config: unterminated defineProject call.
+    fs.writeFileSync(configPath, "export function config(lib) { return lib.defineProject({ \n");
+
+    const reloadRes = await ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid);
+    expect(reloadRes.error).toBeDefined();
+
+    // The previously-running service must still be ready (untouched).
+    const listRes = await ipcRequest(daemon.socketPath, "services.list", undefined, 5000, sid);
+    expect(listRes.error).toBeUndefined();
+    const statuses = listRes.result as { name: string; state: string }[];
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].name).toBe("web");
+    expect(statuses[0].state).toBe("ready");
+  });
+
+  it("reload racing destroy neither orphans panes nor double-tears-down", async () => {
+    const port1 = await getFreePort();
+    const configPath = writeConfig(tmpDir, "test-reload", { web: { port: port1 } });
+
+    const createRes = await ipcRequest(daemon.socketPath, "session.create", {
+      configPath,
+      projectDir: tmpDir,
+      tmuxSession: tmux.name,
+      originPane: tmux.initialPaneId,
+    });
+    sid = (createRes.result as { id: string }).id;
+    await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
+    // Destroy while a reload is in flight — must settle cleanly either way.
+    const [reloadRes, destroyRes] = await Promise.all([
+      ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid),
+      ipcRequest(daemon.socketPath, "session.destroy", undefined, 30_000, sid),
+    ]);
+    expect(destroyRes.error).toBeUndefined();
+
+    // Reload either won the race (ok) or lost it (session destroyed / unknown).
+    if (reloadRes.error !== undefined) {
+      expect(reloadRes.error).toMatch(/session destroyed|Unknown session/u);
+    }
+
+    // The session is gone; a follow-up reload no longer resolves a live session.
+    const afterRes = await ipcRequest(daemon.socketPath, "session.reload", undefined, 10_000, sid);
+    expect(afterRes.error).toBeDefined();
   });
 });

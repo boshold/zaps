@@ -219,6 +219,77 @@ describe("startAll", () => {
       true,
     );
   });
+
+  it("abortStartAll stops launching subsequent topo levels", async () => {
+    const config = makeConfig({
+      db: { start: "start-db" },
+      api: { start: "start-api", dependsOn: ["db"] },
+    });
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    // Block db mid-start so the abort lands before level 1 (api) launches.
+    let releaseDb!: () => void;
+    const dbReleased = new Promise<void>((resolve) => {
+      releaseDb = resolve;
+    });
+    let dbReached!: () => void;
+    const dbStarted = new Promise<void>((resolve) => {
+      dbReached = resolve;
+    });
+    deps.sendKeys = vi.fn(async (target: string) => {
+      if (target === "%db") {
+        dbReached();
+        await dbReleased;
+      }
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startAll();
+    await dbStarted;
+    mgr.abortStartAll();
+    releaseDb();
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.sendKeys).toHaveBeenCalledWith("%db", expect.anything());
+    expect(deps.sendKeys).not.toHaveBeenCalledWith("%api", expect.anything());
+    expect(mgr.getStatus("api").state).toBe("stopped");
+  });
+
+  it("abortStartAll skips the onStart hook for the aborted run", async () => {
+    const onStart = vi.fn();
+    const config = makeConfig({ db: { start: "start-db" } }, { onStart });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    let releaseDb!: () => void;
+    const dbReleased = new Promise<void>((resolve) => {
+      releaseDb = resolve;
+    });
+    let dbReached!: () => void;
+    const dbStarted = new Promise<void>((resolve) => {
+      dbReached = resolve;
+    });
+    deps.sendKeys = vi.fn(async (target: string) => {
+      if (target === "%db") {
+        dbReached();
+        await dbReleased;
+      }
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startAll();
+    await dbStarted;
+    mgr.abortStartAll();
+    releaseDb();
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(onStart).not.toHaveBeenCalled();
+  });
 });
 
 // =============================================================================
@@ -340,7 +411,7 @@ describe("stopAll", () => {
     expect(deps.setWindowOption).not.toHaveBeenCalled();
   });
 
-  it("is idempotent — second call returns early", async () => {
+  it("dedupes concurrent calls and both await the single in-flight stop", async () => {
     const config = makeConfig({ db: { start: "start-db" } });
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
@@ -351,16 +422,17 @@ describe("stopAll", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
 
-    // Use a slow stopService to test idempotency
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
 
     const p1 = mgr.stopAll();
-    const p2 = mgr.stopAll(); // Should return early
+    const p2 = mgr.stopAll(); // Joins the in-flight run rather than returning early
     await vi.advanceTimersByTimeAsync(10_000);
     await Promise.all([p1, p2]);
 
-    // SendCtrlC should only be called once
+    // SendCtrlC should only be called once (single execution of the stop run)
     expect(deps.sendCtrlC).toHaveBeenCalledTimes(1);
+    // The joined caller waited for the stop to actually complete.
+    expect(mgr.getStatus("db").state).toBe("stopped");
   });
 });
 

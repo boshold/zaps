@@ -183,8 +183,9 @@ class DaemonServer implements SessionStore {
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 
-    // Start services in background — TUI connects and sees them starting
-    void session.startAll().catch(() => {
+    // Start services in background — TUI connects and sees them starting.
+    // Tracked so reload/destroy can cooperatively abort and await it (A5).
+    session.startPromise = session.startAll().catch(() => {
       /* Errors surfaced via stateChange */
     });
 
