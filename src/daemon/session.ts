@@ -262,6 +262,7 @@ export class Session {
         newConfig.project.layout,
         newConfig.project.services,
         newConfig.groups,
+        { reserveTuiPane: true },
       );
       return paneMap;
     } catch (error) {

@@ -5,6 +5,7 @@ import type { JitiOptions } from "jiti";
 import { createJiti } from "jiti";
 
 import { detectCycles } from "#src/lib/service/graph.js";
+import { validateLayoutSizes } from "#src/lib/tmux-layout.js";
 
 import { createZapsLib } from "./builder.js";
 import type {
@@ -192,6 +193,9 @@ function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>
         throw new Error(`Detached service '${pane}' must not appear in layout`);
       }
     }
+
+    // Reject split sizes that would produce zero/negative tmux percents (E15).
+    validateLayoutSizes(project.layout);
   }
 }
 

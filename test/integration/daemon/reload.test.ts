@@ -200,6 +200,49 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     expect(statuses[0].state).toBe("ready");
   });
 
+  it("reload with a first-leaf service keeps the TUI pane as @tui (A2)", async () => {
+    const port1 = await getFreePort();
+    const cmd = `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port1},()=>console.log('ready on port ${port1}'))"`;
+    const configPath = path.join(tmpDir, ".zaps.mts");
+    // Layout's FIRST leaf is a service, @tui second — the A2 trigger.
+    const configText = [
+      "export function config(lib) {",
+      "  return lib.defineProject({",
+      '    name: "layout-reload",',
+      "    services: {",
+      `      web: { start: ${JSON.stringify(cmd)}, ready: { port: ${port1} }, raw: true },`,
+      "    },",
+      '    layout: { direction: "rows", children: [{ pane: "web" }, { pane: "@tui" }] },',
+      "  });",
+      "}",
+      "",
+    ].join("\n");
+    fs.writeFileSync(configPath, configText);
+
+    const createRes = await ipcRequest(daemon.socketPath, "session.create", {
+      configPath,
+      projectDir: tmpDir,
+      tmuxSession: tmux.name,
+      originPane: tmux.initialPaneId,
+    });
+    sid = (createRes.result as { id: string }).id;
+    const tuiPaneBefore = (createRes.result as { paneMap: Record<string, string> }).paneMap["@tui"];
+    await waitForServiceState(daemon.socketPath, sid, "web", "ready");
+
+    // Touch the config so the reload reloads the same first-leaf-service layout.
+    fs.writeFileSync(configPath, configText);
+    const reloadRes = await ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid);
+    expect(reloadRes.error).toBeUndefined();
+    await waitForServiceState(daemon.socketPath, sid, "web", "ready", 30_000);
+
+    const attachRes = await ipcRequest(daemon.socketPath, "session.attach", undefined, 5000, sid);
+    const { paneMap } = attachRes.result as { paneMap: Record<string, string> };
+
+    // @tui stays on the pane the TUI runs in; the service never clobbers it.
+    expect(paneMap["@tui"]).toBe(tuiPaneBefore);
+    expect(paneMap.web).not.toBe(tuiPaneBefore);
+  });
+
   it("reload racing destroy neither orphans panes nor double-tears-down", async () => {
     const port1 = await getFreePort();
     const configPath = writeConfig(tmpDir, "test-reload", { web: { port: port1 } });
