@@ -1099,21 +1099,11 @@ program
   .option("-s, --session <id>", "Target session (auto-detected from CWD)")
   .action(async (opts: { session?: string }) => {
     const sock = socketPath();
-    let targetSessionId = "";
-    try {
-      const res = await ipcRequest(sock, "session.list");
-      if (!res.error) {
-        // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-        const sessions = res.result as SessionInfo[];
-        if (sessions.length > 0) {
-          targetSessionId = resolveTargetSession(sessions, opts.session).id;
-        }
-      }
-    } catch {
-      // Daemon not running — MCP server will report errors per-tool call
-    }
+    // Session binding is resolved per tool call inside the server (E9) — not
+    // Cached here — so an MCP server started before `zaps up`, or surviving a
+    // Session restart, picks up the current session on the next call.
     const { startMcpServer } = await import("./mcp/server.js");
-    await startMcpServer(sock, targetSessionId);
+    await startMcpServer(sock, opts.session);
   });
 
 if (process.argv.length === 2) {

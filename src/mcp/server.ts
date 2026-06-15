@@ -3,28 +3,68 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import type { SessionInfo } from "#src/cli/helpers.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
-async function startMcpServer(socketPath: string, sessionId: string): Promise<void> {
+function classifyDaemonError(error: unknown): Error {
+  const { code } = error as NodeJS.ErrnoException;
+  if (code === "ENOENT" || code === "ECONNREFUSED") {
+    return new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
+      cause: error,
+    });
+  }
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+async function startMcpServer(socketPath: string, sessionArg?: string): Promise<void> {
   const server = new McpServer(
     { name: "zaps", version: "0.1.0" },
     { capabilities: { resources: { subscribe: true, listChanged: true } } },
   );
 
+  /**
+   * Resolve the session binding fresh on every call (E9) — never cached, so a
+   * server started before `zaps up` (or surviving `zaps down && zaps up`) picks
+   * up the current session on the next tool call. An explicit `-s` override is
+   * matched verbatim (bad/ambiguous arg surfaces the CLI error); otherwise the
+   * cwd is matched against `session.list` exactly as the CLI does.
+   */
+  async function resolveSession(): Promise<string> {
+    let listRes: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
+    try {
+      listRes = await ipcRequest(socketPath, "session.list", undefined, 30_000);
+    } catch (error) {
+      throw classifyDaemonError(error);
+    }
+    if (listRes.error) {
+      throw new Error(listRes.error);
+    }
+    const sessions = listRes.result as SessionInfo[];
+    if (sessionArg) {
+      try {
+        return resolveTargetSession(sessions, sessionArg).id;
+      } catch (error) {
+        throw error instanceof CliError ? new Error(error.message) : error;
+      }
+    }
+    const dir = process.cwd();
+    const match = findSessionByDir(sessions, dir);
+    if (!match) {
+      throw new Error(`No running zaps session for ${dir}. Run 'zaps up' first.`);
+    }
+    return match.id;
+  }
+
   async function request(method: string, params?: unknown): Promise<unknown> {
+    const sessionId = await resolveSession();
     let res: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
     try {
       res = await ipcRequest(socketPath, method, params, 30_000, sessionId);
     } catch (error) {
-      const { code } = error as NodeJS.ErrnoException;
-      if (code === "ENOENT" || code === "ECONNREFUSED") {
-        throw new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
-          cause: error,
-        });
-      }
-      throw error;
+      throw classifyDaemonError(error);
     }
     if (res.error) {
       throw new Error(res.error);
@@ -207,7 +247,10 @@ async function startMcpServer(socketPath: string, sessionId: string): Promise<vo
       inputSchema: { key: z.string().describe("Task key") },
     },
     async (args) => {
+      const sessionId = await resolveSession();
       const lines: string[] = [];
+      // Inactivity-based timeout (E3, P05-T04): the 120s window resets on every
+      // Line/progress event, so a long task that keeps emitting completes.
       const res = await ipcStream(
         socketPath,
         "tasks.run",
@@ -264,14 +307,20 @@ async function startMcpServer(socketPath: string, sessionId: string): Promise<vo
     },
   );
 
-  // Subscribe to daemon log events → push resource update notifications
-  ipcSubscribe(socketPath, sessionId, ["log.lines"], (event: DaemonEvent) => {
-    if (event.event === "log.lines") {
-      const data = event.data as { service: string };
-      // eslint-disable-next-line no-void -- Fire-and-forget notification
-      void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
-    }
-  });
+  // Subscribe to daemon log events → push resource update notifications.
+  // Best-effort: bound to whichever session resolves at startup. Tool calls
+  // Re-resolve per call regardless; if no session exists yet, notifications are
+  // Simply unavailable until the server is restarted.
+  const subscriptionSessionId = await resolveSession().catch(() => "");
+  if (subscriptionSessionId) {
+    ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], (event: DaemonEvent) => {
+      if (event.event === "log.lines") {
+        const data = event.data as { service: string };
+        // eslint-disable-next-line no-void -- Fire-and-forget notification
+        void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
+      }
+    });
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

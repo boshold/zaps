@@ -74,6 +74,25 @@ export function resolveRuntime(): string {
   return "source";
 }
 
+/**
+ * Match a session by directory (E12): exact `projectDir === dir`, else the
+ * deepest projectDir that `dir` sits inside (path.sep guard so `/foo` never
+ * matches `/foobar`). Returns undefined when nothing matches. Shared by the CLI
+ * (resolveTargetSession) and the MCP server so both resolve cwd identically.
+ */
+export function findSessionByDir(sessions: SessionInfo[], dir: string): SessionInfo | undefined {
+  const exact = sessions.find((s) => s.projectDir === dir);
+  if (exact) {
+    return exact;
+  }
+  const prefixMatches = sessions.filter((s) => dir.startsWith(`${s.projectDir}${path.sep}`));
+  if (prefixMatches.length === 0) {
+    return undefined;
+  }
+  const [deepest] = prefixMatches.toSorted((a, b) => b.projectDir.length - a.projectDir.length);
+  return deepest;
+}
+
 export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
   if (sessionArg) {
     // Priority: exact id → exact name → id prefix → name prefix
@@ -100,16 +119,9 @@ export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: strin
   if (sessions.length === 1) {
     return sessions[0];
   }
-  const cwd = process.cwd();
-  const exact = sessions.find((s) => s.projectDir === cwd);
-  if (exact) {
-    return exact;
-  }
-  // Subdirectory match (E12): cwd is inside a session's projectDir. The path.sep guard stops `/foo` matching `/foobar`; the deepest (longest) projectDir wins for nested projects.
-  const prefixMatches = sessions.filter((s) => cwd.startsWith(`${s.projectDir}${path.sep}`));
-  if (prefixMatches.length > 0) {
-    const [deepest] = prefixMatches.toSorted((a, b) => b.projectDir.length - a.projectDir.length);
-    return deepest;
+  const match = findSessionByDir(sessions, process.cwd());
+  if (match) {
+    return match;
   }
   const lines = sessions.map((s) => `  ${s.id}  ${s.name}  ${s.projectDir}`).join("\n");
   throw new CliError(`Multiple sessions running. Specify one:\n${lines}`);
