@@ -9,8 +9,16 @@ interface ExecResult {
   env: Record<string, string>;
 }
 
+/**
+ * Prefix a command with `exec` so it replaces the wrapper shell (clean signal
+ * delivery). Skipped when the command contains shell metacharacters (exec only
+ * runs a single utility) or begins with a `NAME=value` env assignment — POSIX
+ * `exec` would treat the assignment as the utility name and fail 127 (B1).
+ */
 function wrapCommand(cmd: string): string {
-  return /[|&;()`]/.test(cmd) ? cmd : `exec ${cmd}`;
+  const hasMetachars = /[|&;()`]/u.test(cmd);
+  const hasEnvPrefix = /^\s*[A-Za-z_][A-Za-z0-9_]*=/u.test(cmd);
+  return hasMetachars || hasEnvPrefix ? cmd : `exec ${cmd}`;
 }
 
 async function execService(name: string, sessionId: string): Promise<void> {
