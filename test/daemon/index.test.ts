@@ -72,14 +72,17 @@ vi.mock("../../src/daemon/server.js", () => {
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
+        list: vi.fn(() => []),
+        destroy: vi.fn().mockResolvedValue(undefined),
         sessionCount: 0,
         onSessionChange: undefined,
+        requestShutdown: undefined,
       });
     }),
   };
 });
 
-const { ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
+const { createShutdownAll, ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
 
 describe("ensureDaemon", () => {
@@ -226,8 +229,11 @@ describe("runDaemon", () => {
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
+        list: vi.fn(() => []),
+        destroy: vi.fn().mockResolvedValue(undefined),
         sessionCount: 0,
         onSessionChange: undefined,
+        requestShutdown: undefined,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock instance
       }) as any;
     });
@@ -249,8 +255,11 @@ describe("runDaemon", () => {
     return vi.mocked(DaemonServer).mock.results[0].value as {
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
+      list: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
       sessionCount: number;
       onSessionChange?: (count: number) => void;
+      requestShutdown?: () => void;
     };
   }
 
@@ -295,6 +304,43 @@ describe("runDaemon", () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     expect(server.stop).not.toHaveBeenCalled();
+  });
+
+  it("arms the idle timer at startup with no session ever created (D5)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    // No onSessionChange(0) call — the idle timer must already be armed by the
+    // Startup `idle.reset()`, so a daemon that never gets a session still exits.
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(server.stop).toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("wires daemon.shutdown IPC to the same shutdownAll path (D1)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    expect(typeof server.requestShutdown).toBe("function");
+    server.requestShutdown!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(server.stop).toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("is re-entry safe: a signal during IPC shutdown does not double-destroy (D1)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    server.requestShutdown!(); // IPC-triggered shutdown
+    signalHandler("SIGTERM")(); // Signal arrives during teardown
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Re-entry guard: the server is stopped and the process exits exactly once.
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(process.exit).toHaveBeenCalledTimes(1);
   });
 
   it("shuts down on SIGTERM", async () => {
@@ -399,6 +445,88 @@ describe("runDaemon", () => {
     expect(written).toContain("uncaughtException");
     expect(written).toContain("kaboom");
     expect(process.exit).not.toHaveBeenCalled();
+  });
+});
+
+describe("createShutdownAll", () => {
+  it("destroys every session, then stops the server and finalizes", async () => {
+    const destroyed: string[] = [];
+    const order: string[] = [];
+    const server = {
+      list: () => [{ id: "a" }, { id: "b" }, { id: "c" }],
+      destroy: async (id: string) => {
+        destroyed.push(id);
+      },
+      stop: () => order.push("stop"),
+    };
+    const finalize = () => order.push("finalize");
+    const shutdownAll = createShutdownAll(server, vi.fn(), finalize);
+
+    await shutdownAll();
+
+    expect(destroyed).toEqual(["a", "b", "c"]);
+    // Server is stopped and finalize runs only after all sessions are destroyed.
+    expect(order).toEqual(["stop", "finalize"]);
+  });
+
+  it("isolates a failing session destroy: others, stop and finalize still run", async () => {
+    const destroyed: string[] = [];
+    const logs: string[] = [];
+    let stopped = false;
+    let finalized = false;
+    const server = {
+      list: () => [{ id: "a" }, { id: "bad" }, { id: "c" }],
+      destroy: async (id: string) => {
+        if (id === "bad") {
+          throw new Error("destroy boom");
+        }
+        destroyed.push(id);
+      },
+      stop: () => {
+        stopped = true;
+      },
+    };
+    const shutdownAll = createShutdownAll(
+      server,
+      (m) => logs.push(m),
+      () => {
+        finalized = true;
+      },
+    );
+
+    await shutdownAll();
+
+    expect(destroyed).toEqual(["a", "c"]);
+    expect(
+      logs.some((m) => m.includes("error destroying session bad") && m.includes("destroy boom")),
+    ).toBe(true);
+    expect(stopped).toBe(true);
+    expect(finalized).toBe(true);
+  });
+
+  it("is idempotent: a second call is a no-op (re-entry safe)", async () => {
+    let destroyCalls = 0;
+    let stopCalls = 0;
+    let finalizeCalls = 0;
+    const server = {
+      list: () => [{ id: "a" }],
+      destroy: async () => {
+        destroyCalls += 1;
+      },
+      stop: () => {
+        stopCalls += 1;
+      },
+    };
+    const shutdownAll = createShutdownAll(server, vi.fn(), () => {
+      finalizeCalls += 1;
+    });
+
+    await shutdownAll();
+    await shutdownAll();
+
+    expect(destroyCalls).toBe(1);
+    expect(stopCalls).toBe(1);
+    expect(finalizeCalls).toBe(1);
   });
 });
 

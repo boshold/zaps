@@ -25,10 +25,13 @@ export const daemonHandlers: Record<
     });
   },
 
-  async "daemon.shutdown"(req) {
-    // Graceful shutdown — let the caller handle process.exit
+  async "daemon.shutdown"(req, store) {
+    // Ack the caller first so `{ shuttingDown: true }` is written back before the
+    // Socket goes away, then defer the full teardown (destroy every session,
+    // Remove socket/pid, exit) so the ndjson response flushes before the server
+    // Closes (D1). The defer delegates to the shared `shutdownAll()` path.
     setTimeout(() => {
-      process.exit(0);
+      store.requestShutdown?.();
     }, 100);
     return ipcOk(req.id, { shuttingDown: true });
   },

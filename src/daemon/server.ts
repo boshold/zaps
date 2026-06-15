@@ -41,12 +41,19 @@ interface SessionStore {
     originPane: string;
   }): Promise<Session>;
   destroy(id: string): Promise<void>;
+  /**
+   * Trigger the full daemon teardown path (set by `runDaemon`). Lets the
+   * `daemon.shutdown` IPC handler delegate to the same `shutdownAll()` used by
+   * SIGTERM/SIGINT instead of doing a bare `process.exit` (D1).
+   */
+  requestShutdown?(): void;
 }
 
 class DaemonServer implements SessionStore {
   private server: net.Server | null = null;
   private readonly sessions = new Map<string, Session>();
   public onSessionChange?: (count: number) => void;
+  public requestShutdown?: () => void;
 
   public async start(socketPath: string): Promise<void> {
     try {

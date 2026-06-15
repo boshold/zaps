@@ -45,20 +45,38 @@ describe("daemon handlers", () => {
   });
 
   describe("daemon.shutdown", () => {
-    it("returns shuttingDown and schedules exit", async () => {
+    it("acks first, then defers to the store's shutdownAll path (D1)", async () => {
       vi.useFakeTimers();
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
 
       const store = createMockStore();
+      const requestShutdown = vi.fn();
+      (store as unknown as { requestShutdown: () => void }).requestShutdown = requestShutdown;
+
       const req: IpcRequest = { id: "r4", method: "daemon.shutdown" };
       const res = await daemonHandlers["daemon.shutdown"](req, store);
+
+      // The caller is acked before any teardown begins.
       expect(res).toEqual({ id: "r4", result: { shuttingDown: true } });
+      expect(requestShutdown).not.toHaveBeenCalled();
 
       vi.advanceTimersByTime(200);
-      expect(exitSpy).toHaveBeenCalledWith(0);
+      expect(requestShutdown).toHaveBeenCalledTimes(1);
 
       vi.useRealTimers();
-      exitSpy.mockRestore();
+    });
+
+    it("still acks when no shutdown hook is registered", async () => {
+      vi.useFakeTimers();
+
+      const store = createMockStore();
+      const req: IpcRequest = { id: "r4b", method: "daemon.shutdown" };
+      const res = await daemonHandlers["daemon.shutdown"](req, store);
+      expect(res).toEqual({ id: "r4b", result: { shuttingDown: true } });
+
+      // Missing hook must not throw when the timer fires.
+      expect(() => vi.advanceTimersByTime(200)).not.toThrow();
+
+      vi.useRealTimers();
     });
   });
 

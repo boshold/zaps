@@ -51,6 +51,49 @@ function formatReason(reason: unknown): string {
   return String(reason);
 }
 
+/** Minimal surface `shutdownAll` needs from the daemon server. */
+interface ShutdownTarget {
+  list(): { id: string }[];
+  destroy(id: string): Promise<void>;
+  stop(): void;
+}
+
+/**
+ * Build the single daemon teardown path shared by SIGTERM, SIGINT and the
+ * `daemon.shutdown` IPC method (D1). Destroys every session best-effort —
+ * services stopped reverse-topo, panes killed and `session.destroyed`
+ * broadcast by `Session.destroy()` — so one session failing to destroy is
+ * logged and does NOT skip the remaining sessions or the file cleanup. After
+ * all sessions are torn down it stops the socket server, then runs `finalize`
+ * (idle cancel + ownership-checked socket/pid removal + log close + exit).
+ *
+ * Re-entry safe: a signal arriving while an IPC-triggered shutdown is in flight
+ * is ignored, so sessions are never double-destroyed.
+ */
+function createShutdownAll(
+  server: ShutdownTarget,
+  log: (msg: string) => void,
+  finalize: () => void,
+): () => Promise<void> {
+  let shuttingDown = false;
+  return async () => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    log("shutting down");
+    for (const { id } of server.list()) {
+      try {
+        await server.destroy(id);
+      } catch (error) {
+        log(`error destroying session ${id}: ${formatReason(error)}`);
+      }
+    }
+    server.stop();
+    finalize();
+  };
+}
+
 /**
  * Run the daemon in the current process (called after fork+detach).
  */
@@ -66,10 +109,19 @@ async function runDaemon(): Promise<void> {
 
   const server = new DaemonServer();
 
-  function shutdown(): void {
-    log("shutting down");
-    idle.cancel(); // eslint-disable-line no-use-before-define -- circular: shutdown/idle
-    server.stop();
+  const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
+    if (server.sessionCount === 0) {
+      log("idle timeout, shutting down");
+      void shutdownAll(); // eslint-disable-line no-use-before-define -- circular: idle/shutdownAll
+    } else {
+      idle.reset();
+    }
+  });
+
+  // Shared teardown for signals + `daemon.shutdown` IPC; the finalize closure
+  // Cancels idle, removes only still-owned runtime files (D4), and exits.
+  const shutdownAll = createShutdownAll(server, log, () => {
+    idle.cancel();
     // Only remove runtime files we still own — a daemon that took over (pid file
     // Now names a different process) must not have its socket/pid unlinked (D4).
     if (ownsPidFile()) {
@@ -78,15 +130,6 @@ async function runDaemon(): Promise<void> {
     }
     fs.closeSync(logFile);
     process.exit(0);
-  }
-
-  const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
-    if (server.sessionCount === 0) {
-      log("idle timeout, shutting down");
-      shutdown();
-    } else {
-      idle.reset();
-    }
   });
 
   server.onSessionChange = (count: number) => {
@@ -97,8 +140,17 @@ async function runDaemon(): Promise<void> {
     }
   };
 
-  process.on("SIGTERM", shutdown);
-  process.on("SIGINT", shutdown);
+  // `daemon.shutdown` IPC delegates to the same path as the signals (D1).
+  server.requestShutdown = () => {
+    void shutdownAll();
+  };
+
+  process.on("SIGTERM", () => {
+    void shutdownAll();
+  });
+  process.on("SIGINT", () => {
+    void shutdownAll();
+  });
 
   process.on("unhandledRejection", (reason: unknown) => {
     log(`unhandledRejection: ${formatReason(reason)}`);
@@ -109,6 +161,10 @@ async function runDaemon(): Promise<void> {
 
   await server.start(socketPath());
   log(`listening on ${socketPath()}`);
+
+  // Arm the idle timer immediately so a daemon that never receives a session
+  // Still exits after the idle window instead of living forever (D5).
+  idle.reset();
 }
 
 /**
@@ -190,4 +246,4 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
   }
 }
 
-export { ensureDaemon, runDaemon };
+export { createShutdownAll, ensureDaemon, runDaemon };

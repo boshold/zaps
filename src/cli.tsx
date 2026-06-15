@@ -932,10 +932,21 @@ daemonCmd
       return;
     }
     const sock = socketPath();
+
+    // Gather counts before issuing shutdown so we can report what was torn down.
+    let sessionCount = 0;
+    let serviceCount = 0;
+    const statusRes = await ipcRequest(sock, "daemon.status").catch(() => null);
+    if (statusRes && !statusRes.error) {
+      const status = statusRes.result as { sessions: { serviceCount: number }[] };
+      sessionCount = status.sessions.length;
+      serviceCount = status.sessions.reduce((sum, s) => sum + s.serviceCount, 0);
+    }
+
     await ipcRequest(sock, "daemon.shutdown").catch(() => {
-      /* Best-effort */
+      /* Best-effort — daemon may close the socket as it tears down */
     });
-    process.stdout.write("Daemon stopped.\n");
+    process.stdout.write(`Stopped ${sessionCount} session(s), ${serviceCount} service(s).\n`);
   });
 
 daemonCmd
