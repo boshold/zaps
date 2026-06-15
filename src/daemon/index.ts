@@ -4,9 +4,12 @@ import net from "node:net";
 
 import {
   IdleTimer,
+  acquireSpawnLock,
   daemonDir,
   isDaemonRunning,
   logPath,
+  ownsPidFile,
+  releaseSpawnLock,
   removePid,
   removeSocket,
   socketPath,
@@ -67,8 +70,12 @@ async function runDaemon(): Promise<void> {
     log("shutting down");
     idle.cancel(); // eslint-disable-line no-use-before-define -- circular: shutdown/idle
     server.stop();
-    removeSocket();
-    removePid();
+    // Only remove runtime files we still own — a daemon that took over (pid file
+    // Now names a different process) must not have its socket/pid unlinked (D4).
+    if (ownsPidFile()) {
+      removeSocket();
+      removePid();
+    }
     fs.closeSync(logFile);
     process.exit(0);
   }
@@ -105,13 +112,37 @@ async function runDaemon(): Promise<void> {
 }
 
 /**
+ * Poll the socket until it answers, the deadline (5s) passes, or a spawn error
+ * is captured. `spawnFailure` carries an async `spawn` `error` event (E1).
+ */
+async function waitForSocketReady(
+  sock: string,
+  spawnFailure: { error?: Error },
+  fileName: string,
+): Promise<string> {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (spawnFailure.error) {
+      throw new Error(`Failed to start daemon ('${fileName}'): ${spawnFailure.error.message}`);
+    }
+    const alive = await pingSocket(sock);
+    if (alive) {
+      return sock;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Daemon failed to start within 5s");
+}
+
+/**
  * Ensure daemon is running. If not, fork+detach a new one.
  * Returns when daemon socket is accepting connections.
  *
  * `command` is the spawnable argv `{ file, args }` (E1 — never a joined string,
  * which spawn would treat as a literal filename). The resolved invocation is
  * forwarded as `ZAPS_COMMAND` so the daemon builds correct per-service wrapper
- * commands even when zaps isn't on PATH as `zaps` (E2).
+ * commands even when zaps isn't on PATH as `zaps` (E2). The fork is guarded by
+ * an O_EXCL spawn lock so concurrent CLIs don't both fork (D4).
  */
 async function ensureDaemon(command: { file: string; args: string[] }): Promise<string> {
   const sock = socketPath();
@@ -127,40 +158,36 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
     removePid();
   }
 
-  // Fork daemon as detached child
   daemonDir(); // Ensure dir exists
-  const logFile = fs.openSync(logPath(), "a");
 
-  const zapsCommand = [command.file, ...command.args].join(" ");
-  const child = spawn(command.file, [...command.args, "daemon", "run"], {
-    detached: true,
-    stdio: ["ignore", logFile, logFile],
-    env: { ...process.env, ZAPS_COMMAND: zapsCommand },
-  });
-
-  // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error
-  // Rather than crashing the process via an unhandled 'error' event (E1).
-  const spawnFailure: { error?: Error } = {};
-  child.on("error", (err: Error) => {
-    spawnFailure.error = err;
-  });
-  child.unref();
-  fs.closeSync(logFile);
-
-  // Wait for socket to become connectable
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    if (spawnFailure.error) {
-      throw new Error(`Failed to start daemon ('${command.file}'): ${spawnFailure.error.message}`);
-    }
-    const alive = await pingSocket(sock);
-    if (alive) {
-      return sock;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  // Serialize the spawn decision: if another CLI already holds the lock, don't
+  // Fork a second daemon — just wait for its socket to come up (D4).
+  if (!acquireSpawnLock()) {
+    return waitForSocketReady(sock, {}, command.file);
   }
 
-  throw new Error("Daemon failed to start within 5s");
+  try {
+    const logFile = fs.openSync(logPath(), "a");
+    const zapsCommand = [command.file, ...command.args].join(" ");
+    const child = spawn(command.file, [...command.args, "daemon", "run"], {
+      detached: true,
+      stdio: ["ignore", logFile, logFile],
+      env: { ...process.env, ZAPS_COMMAND: zapsCommand },
+    });
+
+    // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error
+    // Rather than crashing the process via an unhandled 'error' event (E1).
+    const spawnFailure: { error?: Error } = {};
+    child.on("error", (err: Error) => {
+      spawnFailure.error = err;
+    });
+    child.unref();
+    fs.closeSync(logFile);
+
+    return await waitForSocketReady(sock, spawnFailure, command.file);
+  } finally {
+    releaseSpawnLock();
+  }
 }
 
 export { ensureDaemon, runDaemon };

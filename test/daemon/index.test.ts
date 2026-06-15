@@ -17,6 +17,7 @@ vi.mock("node:fs", () => ({
     openSync: vi.fn(() => 3),
     writeSync: vi.fn(),
     closeSync: vi.fn(),
+    statSync: vi.fn(() => ({ mtimeMs: Date.now() })),
   },
 }));
 
@@ -131,6 +132,24 @@ describe("ensureDaemon", () => {
 
     const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
+  });
+
+  it("does not fork a second daemon when the spawn lock is held (D4)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    // ReadPid (daemon.pid) → garbage → isDaemonRunning false without calling kill;
+    // Then the spawn.lock read returns a live holder pid → lock is not stale.
+    vi.mocked(fs.readFileSync).mockReturnValueOnce("garbage").mockReturnValueOnce("12345");
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+    });
+    vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
+    expect(sock).toMatch(/daemon\.sock$/);
+
+    const { spawn } = await import("node:child_process");
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("spawns with split argv and forwards ZAPS_COMMAND for source runs (E1/E2)", async () => {
@@ -302,6 +321,31 @@ describe("runDaemon", () => {
 
     expect(fs.writeSync).toHaveBeenCalled();
     expect(fs.closeSync).toHaveBeenCalled();
+  });
+
+  it("removes runtime files on shutdown when it owns the pid file (D4)", async () => {
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.readFileSync).mockReturnValue(String(process.pid));
+
+    await runDaemon();
+    vi.mocked(fs.unlinkSync).mockClear();
+    signalHandler("SIGTERM")();
+
+    // Both daemon.sock and daemon.pid are unlinked.
+    const targets = vi.mocked(fs.unlinkSync).mock.calls.map(([p]) => String(p));
+    expect(targets.some((p) => p.includes("daemon.sock"))).toBe(true);
+    expect(targets.some((p) => p.includes("daemon.pid"))).toBe(true);
+  });
+
+  it("does not remove runtime files on shutdown when the pid file was taken over (D4)", async () => {
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.readFileSync).mockReturnValue(String(process.pid + 1));
+
+    await runDaemon();
+    vi.mocked(fs.unlinkSync).mockClear();
+    signalHandler("SIGTERM")();
+
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
   });
 
   function listener(event: string): (arg: unknown) => void {
