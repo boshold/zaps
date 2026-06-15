@@ -152,6 +152,7 @@ export class ServiceManager extends EventEmitter {
   private readonly paneMap: PaneMap;
   private readonly session: string;
   private shuttingDown = false;
+  private startAllPromise: Promise<void> | null = null;
   private readonly deps: ServiceManagerDeps;
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
@@ -250,9 +251,24 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Start all autostart services in topological order.
+   * Start all autostart services in topological order. Concurrent callers join
+   * the same in-flight run (hooks fire exactly once); the shared promise is
+   * cleared on settlement so a later call starts a fresh run.
    */
   public async startAll(): Promise<void> {
+    this.startAllPromise ??= this.runStartAll();
+    await this.startAllPromise;
+  }
+
+  private async runStartAll(): Promise<void> {
+    try {
+      await this.startAllServices();
+    } finally {
+      this.startAllPromise = null;
+    }
+  }
+
+  private async startAllServices(): Promise<void> {
     const { services, hooks } = this.config.project;
 
     await fireHook(hooks?.onBeforeStart);
@@ -265,21 +281,54 @@ export class ServiceManager extends EventEmitter {
       }
     }
 
+    // Deps pointing at non-autostart services are treated as satisfied (Q2):
+    // Dropped from topoSort ordering (avoids a spurious "Circular dependency
+    // Detected: unknown" — C1) and skipped in each startService dep check.
+    const nonAutostartDeps = new Set(
+      Object.keys(services).filter((n) => !(n in autostartServices)),
+    );
+    for (const entry of Object.values(autostartServices)) {
+      if (entry.dependsOn) {
+        entry.dependsOn = entry.dependsOn.filter((d) => d in autostartServices);
+      }
+    }
+
     const levels = topoSort(autostartServices);
 
     for (const level of levels) {
       await Promise.all(
         level.map(async (name) => {
           try {
-            await this.startService(name);
-          } catch {
-            // Let crash monitor handle retry; don't abort other services
+            await this.startService(name, nonAutostartDeps);
+          } catch (error) {
+            // Surface dependency-not-ready on the dependent so it isn't a silent
+            // "stopped" (C4); other failures are left to the crash monitor.
+            this.recordStartFailure(name, error);
           }
         }),
       );
     }
 
     await fireHook(hooks?.onStart);
+  }
+
+  /**
+   * Record a failed start so dependents don't show a bare "stopped" with no
+   * explanation. Dependency-not-ready maps to the `Dependency "X" not ready`
+   * lastError; other errors are left for the crash monitor.
+   */
+  private recordStartFailure(name: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const match = /^Dependency "(?<dep>.+)" is not ready/u.exec(message);
+    if (!match) {
+      return;
+    }
+    const status = this.statuses.get(name);
+    if (!status) {
+      return;
+    }
+    status.lastError = `Dependency "${match.groups?.dep ?? ""}" not ready`;
+    this.emit("stateChange", name, status);
   }
 
   /**
@@ -332,9 +381,34 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Start a single service.
+   * Throw if any dependency isn't ready, skipping those in `satisfiedDeps`.
    */
-  public async startService(name: string): Promise<ServiceActionResult> {
+  private assertDepsReady(
+    name: string,
+    serviceConfig: ServiceConfig,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): void {
+    for (const dep of serviceConfig.dependsOn ?? []) {
+      if (satisfiedDeps?.has(dep)) {
+        // eslint-disable-next-line no-continue -- non-autostart dep treated as satisfied
+        continue;
+      }
+      const depStatus = this.statuses.get(dep);
+      if (!depStatus || depStatus.state !== "ready") {
+        throw new Error(`Dependency "${dep}" is not ready for service "${name}"`);
+      }
+    }
+  }
+
+  /**
+   * Start a single service. `satisfiedDeps` lists dependencies to treat as
+   * already satisfied without a readiness check — used by `startAll` for
+   * non-autostart deps (Q2); explicit start calls enforce all deps.
+   */
+  public async startService(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -349,14 +423,7 @@ export class ServiceManager extends EventEmitter {
       return { noop: true };
     }
 
-    // Check dependencies are ready
-    const deps = serviceConfig.dependsOn ?? [];
-    for (const dep of deps) {
-      const depStatus = this.statuses.get(dep);
-      if (!depStatus || depStatus.state !== "ready") {
-        throw new Error(`Dependency "${dep}" is not ready for service "${name}"`);
-      }
-    }
+    this.assertDepsReady(name, serviceConfig, satisfiedDeps);
 
     // Create abort controller for this service
     const controller = new AbortController();

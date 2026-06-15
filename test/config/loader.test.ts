@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../src/config/loader.js";
 
@@ -250,6 +250,30 @@ describe("loadConfig", () => {
 
     const result = await loadConfig(configPath, hashDir);
     expect(result.project.name).toBe("hash-path");
+  });
+
+  it("warns when an autostart service depends on a non-autostart service", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            db: { start: "start-db", flags: { start: false } },
+            api: { start: "start-api", dependsOn: ["db"] },
+          },
+        });
+      }
+    `,
+    );
+
+    await loadConfig(configPath, tmpDir);
+
+    const warnings = writeSpy.mock.calls.map(([msg]) => String(msg)).join("");
+    expect(warnings).toContain("service 'api' depends on non-autostart service 'db'");
+    writeSpy.mockRestore();
   });
 
   it("throws when no export found", async () => {

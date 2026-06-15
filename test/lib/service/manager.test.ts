@@ -144,6 +144,79 @@ describe("startAll", () => {
     expect(mgr.getStatus("worker").state).toBe("stopped");
     expect(deps.sendKeys).toHaveBeenCalledTimes(1);
   });
+
+  it("treats a non-autostart dependency as satisfied (no circular-dependency throw)", async () => {
+    const config = makeConfig({
+      db: { start: "start-db", flags: { start: false } },
+      api: { start: "start-api", dependsOn: ["db"] },
+    });
+    const paneMap = makePaneMap(["db", "api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startAll();
+    await vi.advanceTimersByTimeAsync(2000);
+    await expect(promise).resolves.toBeUndefined();
+
+    expect(mgr.getStatus("api").state).toBe("ready");
+    expect(mgr.getStatus("db").state).toBe("stopped");
+  });
+
+  it("dedupes concurrent startAll calls so hooks fire once", async () => {
+    const onBeforeStart = vi.fn();
+    const onStart = vi.fn();
+    const config = makeConfig({ svc: { start: "start-svc" } }, { onBeforeStart, onStart });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const p1 = mgr.startAll();
+    const p2 = mgr.startAll();
+    await vi.advanceTimersByTimeAsync(2000);
+    await Promise.all([p1, p2]);
+
+    expect(onBeforeStart).toHaveBeenCalledTimes(1);
+    expect(onStart).toHaveBeenCalledTimes(1);
+    expect(deps.sendKeys).toHaveBeenCalledTimes(1);
+
+    // Promise cleared on settle: a later startAll runs the hooks again
+    await mgr.startAll();
+    expect(onBeforeStart).toHaveBeenCalledTimes(2);
+  });
+
+  it("records lastError + emits stateChange on a dependent when its dependency fails", async () => {
+    const config = makeConfig({
+      a: { start: "start-a", ready: { output: /NEVER_MATCHES/u } },
+      b: { start: "start-b", dependsOn: ["a"] },
+    });
+    const paneMap = makePaneMap(["a", "b"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.capturePane = vi.fn().mockResolvedValue("no match here");
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const changed: { name: string; lastError?: string }[] = [];
+    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
+      changed.push({ name, lastError: status.lastError });
+    });
+
+    const promise = mgr.startAll();
+    await vi.advanceTimersByTimeAsync(65_000);
+    await promise;
+
+    // A failed its ready check
+    expect(mgr.getStatus("a").state).toBe("error");
+    // B was never started; surfaced the dependency failure
+    expect(mgr.getStatus("b").state).toBe("stopped");
+    expect(mgr.getStatus("b").lastError).toBe('Dependency "a" not ready');
+    expect(changed.some((e) => e.name === "b" && e.lastError === 'Dependency "a" not ready')).toBe(
+      true,
+    );
+  });
 });
 
 // =============================================================================

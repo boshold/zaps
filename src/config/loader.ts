@@ -144,8 +144,25 @@ function validateServiceDeps(project: ProjectConfig): void {
   }
 }
 
+function warnNonAutostartDeps(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    if (svc.flags?.start === false) {
+      continue;
+    }
+    for (const dep of svc.dependsOn ?? []) {
+      if (project.services[dep]?.flags?.start === false) {
+        process.stderr.write(
+          `Warning: service '${name}' depends on non-autostart service '${dep}'; ` +
+            `'${dep}' is treated as satisfied during 'zaps up' (start it explicitly with 'zaps start ${dep}').\n`,
+        );
+      }
+    }
+  }
+}
+
 function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
   validateServiceDeps(project);
+  warnNonAutostartDeps(project);
 
   // Validate task dependsOn refs
   if (project.tasks) {
