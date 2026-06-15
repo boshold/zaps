@@ -134,6 +134,19 @@ describe("Router", () => {
     expect(lastFrame()).toBe("");
   });
 
+  it("ignores keyboard input during the splash (input gated until ready) (F5)", async () => {
+    const client = createMockClient();
+    const { stdin } = renderRouter({ autoStart: true, statuses: [], client });
+    // During the ~1.2s splash, destructive keys must do nothing.
+    stdin.write("d");
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(client.disconnect).not.toHaveBeenCalled();
+  });
+
   // ── dashboard input: navigation ──────────────────────────────
 
   it("navigates down with j key", async () => {

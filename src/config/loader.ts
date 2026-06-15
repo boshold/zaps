@@ -5,6 +5,7 @@ import type { JitiOptions } from "jiti";
 import { createJiti } from "jiti";
 
 import { detectCycles } from "#src/lib/service/graph.js";
+import { RESERVED_TASK_SHORTCUT_KEYS } from "#src/lib/taskShortcuts.js";
 import { validateLayoutSizes } from "#src/lib/tmux-layout.js";
 
 import { createZapsLib } from "./builder.js";
@@ -177,9 +178,23 @@ function validateDetachedGroups(project: ProjectConfig): void {
   }
 }
 
+// Explicit task shortcuts colliding with a reserved key (q/j/k) are dropped by getTaskShortcuts.
+// Warn at load time so the user knows their requested key was ignored.
+function warnReservedTaskShortcuts(project: ProjectConfig): void {
+  for (const [key, task] of Object.entries(project.tasks ?? {})) {
+    if (task.shortcut && RESERVED_TASK_SHORTCUT_KEYS.has(task.shortcut)) {
+      process.stderr.write(
+        `Warning: task '${key}' ('${task.name}') requests reserved shortcut '${task.shortcut}'; ` +
+          `'${task.shortcut}' is reserved (q=quit, j/k=navigation) and the shortcut is dropped.\n`,
+      );
+    }
+  }
+}
+
 function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
   validateServiceDeps(project);
   warnNonAutostartDeps(project);
+  warnReservedTaskShortcuts(project);
   validateDetachedGroups(project);
 
   // Validate task dependsOn refs

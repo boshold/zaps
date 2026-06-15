@@ -276,6 +276,34 @@ describe("loadConfig", () => {
     writeSpy.mockRestore();
   });
 
+  it("warns when a task requests a reserved shortcut (q/j/k) and drops it", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: { api: { start: "npm start" } },
+          tasks: {
+            kill: { name: "Kill", commands: "kill", shortcut: "q" },
+            build: { name: "Build", commands: "build", shortcut: "b" },
+          },
+        });
+      }
+    `,
+    );
+
+    await loadConfig(configPath, tmpDir);
+
+    const warnings = writeSpy.mock.calls.map(([msg]) => String(msg)).join("");
+    expect(warnings).toContain("task 'kill'");
+    expect(warnings).toContain("reserved shortcut 'q'");
+    // A non-reserved shortcut does not warn.
+    expect(warnings).not.toContain("task 'build'");
+    writeSpy.mockRestore();
+  });
+
   it("strips g/y flags from a ready.output regex and warns", async () => {
     const writeSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
     const configPath = writeConfig(

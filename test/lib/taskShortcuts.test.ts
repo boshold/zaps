@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { TaskConfig } from "../../src/config/types.js";
-import { getTaskShortcuts } from "../../src/lib/taskShortcuts.js";
+import { RESERVED_TASK_SHORTCUT_KEYS, getTaskShortcuts } from "../../src/lib/taskShortcuts.js";
 
 describe("getTaskShortcuts", () => {
   it("uses explicit shortcut when provided", () => {
@@ -47,5 +47,36 @@ describe("getTaskShortcuts", () => {
 
   it("returns empty array for empty tasks", () => {
     expect(getTaskShortcuts({})).toEqual([]);
+  });
+
+  it("reserves exactly q, j, k", () => {
+    expect([...RESERVED_TASK_SHORTCUT_KEYS].toSorted()).toEqual(["j", "k", "q"]);
+  });
+
+  it("never auto-assigns a reserved key (q/j/k)", () => {
+    const tasks: Record<string, TaskConfig> = {
+      quality: { name: "Quality", commands: "lint" },
+      jobs: { name: "Jobs", commands: "jobs" },
+      kill: { name: "Kill", commands: "kill" },
+    };
+    const result = getTaskShortcuts(tasks);
+    // "quality" skips reserved 'q' → 'u'; "jobs" skips 'j' → 'o'; "kill" skips 'k' → 'i'.
+    expect(result).toEqual([
+      { shortcut: "u", name: "Quality" },
+      { shortcut: "o", name: "Jobs" },
+      { shortcut: "i", name: "Kill" },
+    ]);
+  });
+
+  it("drops an explicit reserved shortcut with no fallback", () => {
+    const tasks: Record<string, TaskConfig> = {
+      kill: { name: "Kill", commands: "kill", shortcut: "q" },
+      jump: { name: "Jump", commands: "jump", shortcut: "j" },
+      kustom: { name: "Kustom", commands: "kustom", shortcut: "k" },
+      build: { name: "Build", commands: "build", shortcut: "b" },
+    };
+    const result = getTaskShortcuts(tasks);
+    // The three reserved-key requests are dropped entirely; only "build" keeps its shortcut.
+    expect(result).toEqual([{ shortcut: "b", name: "Build" }]);
   });
 });

@@ -325,6 +325,11 @@ export function Router({
   // Task run history — shared between Dashboard and TasksView
   const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>(initialTaskHistory);
 
+  // Running-task state lives here (not in TasksView) so it survives leaving/re-entering the
+  // Tasks view and blocks duplicate runs. Set optimistically on dispatch + by the task.start
+  // Event; cleared only by the task.complete event, never by unmount (F4).
+  const [runningTask, setRunningTask] = useState<string | null>(null);
+
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => {
       if (record.result === "running") {
@@ -347,9 +352,11 @@ export function Router({
   useEffect(() => {
     function handleTaskStart(taskKey: string, taskName: string) {
       onTaskComplete({ taskKey, taskName, result: "running", timestamp: Date.now() });
+      setRunningTask(taskKey);
     }
     function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
       onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
+      setRunningTask((cur) => (cur === taskKey ? null : cur));
     }
     client.on("task.start", handleTaskStart);
     client.on("task.complete", handleTaskComplete);
@@ -378,110 +385,114 @@ export function Router({
     t.shortcut ? [{ shortcut: t.shortcut, name: t.name }] : [],
   );
 
-  useInput((input, key) => {
-    // Q / ctrl+c: detach from any view (services keep running)
-    if (input === "q" || (key.ctrl && input === "c")) {
-      if (globalBusyRef.current) {
+  useInput(
+    (input, key) => {
+      // Q / ctrl+c: detach from any view (services keep running)
+      // Note: input is gated below by { isActive: ready } so splash keypresses are ignored (F5).
+      if (input === "q" || (key.ctrl && input === "c")) {
+        if (globalBusyRef.current) {
+          return;
+        }
+        globalBusyRef.current = true;
+        client.disconnect();
+        exit();
         return;
       }
-      globalBusyRef.current = true;
-      client.disconnect();
-      exit();
-      return;
-    }
 
-    // Ctrl+d: shut down — destroy session from any view
-    if (key.ctrl && input === "d") {
-      if (globalBusyRef.current) {
-        return;
-      }
-      globalBusyRef.current = true;
-      client
-        .destroySession()
-        .catch(() => {
-          /* Graceful shutdown */
-        })
-        .finally(() => {
-          client.disconnect();
-          exit();
-        });
-      return;
-    }
-
-    if (view === "dashboard") {
-      handleDashboardInput(input, key, {
-        statuses,
-        index,
-        busyServices,
-        moveUp,
-        moveDown,
-        restart,
-        toggle,
-        restartAll,
-        reloadConfig: async () => client.reloadConfig(),
-        goToLogs,
-        goToTasks,
-        destroySession: () => {
-          if (globalBusyRef.current) {
-            return;
-          }
-          globalBusyRef.current = true;
-          client
-            .destroySession()
-            .catch(() => {
-              /* Graceful shutdown */
-            })
-            .finally(() => {
-              client.disconnect();
-              exit();
-            });
-        },
-        paneMap,
-        goToDockerRebuild: (name: string) => {
-          const meta = svcMetaMap.get(name);
-          setDockerFlags({
-            build: meta?.dockerDefaults.build ?? false,
-            forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
-            renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
-            pull: meta?.dockerDefaults.pull ?? false,
-            removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
+      // Ctrl+d: shut down — destroy session from any view
+      if (key.ctrl && input === "d") {
+        if (globalBusyRef.current) {
+          return;
+        }
+        globalBusyRef.current = true;
+        client
+          .destroySession()
+          .catch(() => {
+            /* Graceful shutdown */
+          })
+          .finally(() => {
+            client.disconnect();
+            exit();
           });
-          setDockerFlagIndex(0);
-          goToDockerRebuild(name);
-        },
-      });
-    }
+        return;
+      }
 
-    if (view === "logs") {
-      handleLogsInput(input, key, { goToDashboard, scrollUp, scrollDown });
-    }
+      if (view === "dashboard") {
+        handleDashboardInput(input, key, {
+          statuses,
+          index,
+          busyServices,
+          moveUp,
+          moveDown,
+          restart,
+          toggle,
+          restartAll,
+          reloadConfig: async () => client.reloadConfig(),
+          goToLogs,
+          goToTasks,
+          destroySession: () => {
+            if (globalBusyRef.current) {
+              return;
+            }
+            globalBusyRef.current = true;
+            client
+              .destroySession()
+              .catch(() => {
+                /* Graceful shutdown */
+              })
+              .finally(() => {
+                client.disconnect();
+                exit();
+              });
+          },
+          paneMap,
+          goToDockerRebuild: (name: string) => {
+            const meta = svcMetaMap.get(name);
+            setDockerFlags({
+              build: meta?.dockerDefaults.build ?? false,
+              forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
+              renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
+              pull: meta?.dockerDefaults.pull ?? false,
+              removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
+            });
+            setDockerFlagIndex(0);
+            goToDockerRebuild(name);
+          },
+        });
+      }
 
-    if (view === "tasks") {
-      handleTasksInput(input, key, {
-        tasks,
-        taskShortcuts,
-        taskCount: tasks.length,
-        setIndex,
-        goToDashboard,
-        moveUp,
-        moveDown,
-        setRunTrigger,
-      });
-    }
+      if (view === "logs") {
+        handleLogsInput(input, key, { goToDashboard, scrollUp, scrollDown });
+      }
 
-    if (view === "dockerRebuild" && dockerRebuildTarget) {
-      handleDockerRebuildInput(input, key, {
-        flagIndex: dockerFlagIndex,
-        setFlagIndex: setDockerFlagIndex,
-        dockerFlags,
-        setDockerFlags,
-        dockerRebuildTarget,
-        busyServices,
-        rebuildDocker,
-        goToDashboard,
-      });
-    }
-  });
+      if (view === "tasks") {
+        handleTasksInput(input, key, {
+          tasks,
+          taskShortcuts,
+          taskCount: tasks.length,
+          setIndex,
+          goToDashboard,
+          moveUp,
+          moveDown,
+          setRunTrigger,
+        });
+      }
+
+      if (view === "dockerRebuild" && dockerRebuildTarget) {
+        handleDockerRebuildInput(input, key, {
+          flagIndex: dockerFlagIndex,
+          setFlagIndex: setDockerFlagIndex,
+          dockerFlags,
+          setDockerFlags,
+          dockerRebuildTarget,
+          busyServices,
+          rebuildDocker,
+          goToDashboard,
+        });
+      }
+    },
+    { isActive: ready },
+  );
 
   if (!ready) {
     return null;
@@ -505,6 +516,8 @@ export function Router({
         runTrigger={runTrigger}
         taskShortcuts={taskShortcuts}
         taskHistory={taskHistory}
+        runningTask={runningTask}
+        onRunStart={setRunningTask}
       />
     );
   }
