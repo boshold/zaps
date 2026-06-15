@@ -71,33 +71,6 @@ export async function listPanes(session: string, allWindows = false): Promise<Pa
   });
 }
 
-export async function listZapsSessions(): Promise<{ session: string; panes: number }[]> {
-  try {
-    const out = await run(["list-sessions", "-F", "#{session_name}"]);
-    const sessions = out ? out.split("\n") : [];
-    const results: { session: string; panes: number }[] = [];
-    for (const session of sessions) {
-      const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
-      if (paneMapRaw) {
-        const parsed: unknown = JSON.parse(paneMapRaw);
-        if (typeof parsed === "object" && parsed !== null) {
-          const keys = Object.keys(parsed);
-          const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
-          const livePanes = await listPanes(session, true).catch(() => [] as PaneInfo[]);
-          const liveIds = new Set(livePanes.map((p) => p.id));
-          const hasLive = values.some((id) => liveIds.has(id));
-          if (hasLive) {
-            results.push({ session, panes: keys.length });
-          }
-        }
-      }
-    }
-    return results;
-  } catch {
-    return [];
-  }
-}
-
 export async function hasSession(name: string): Promise<boolean> {
   try {
     await run(["has-session", "-t", name]);

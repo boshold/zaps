@@ -24,22 +24,18 @@ vi.mock("../../src/lib/ipc/client.js", () => ({
   ipcStream: vi.fn(),
 }));
 
-vi.mock("../../src/lib/tmux.js", () => ({
-  currentSession: vi.fn(),
-  showEnv: vi.fn(),
-}));
-
-import type { SessionInfo } from "../../src/cli/helpers.js";
+import type { DownDeps, SessionInfo } from "../../src/cli/helpers.js";
 import {
   CliError,
+  DAEMON_NOT_RUNNING,
   formatTable,
   resolveCommand,
   resolveCommandArgv,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
+  runDown,
   withDaemon,
-  withLegacyIpc,
 } from "../../src/cli/helpers.js";
 
 describe("CliError", () => {
@@ -246,68 +242,24 @@ describe("resolveSessionId", () => {
   });
 });
 
-describe("withLegacyIpc", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete process.env.TMUX;
-  });
-
-  it("throws when not in tmux", async () => {
-    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/tmux session/);
-  });
-
-  it("throws when no ZAPS_IPC_SOCKET found", async () => {
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("");
-
-    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/No running zaps instance/);
-  });
-
-  it("calls fn with ipc when socket found", async () => {
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
-
-    const result = await withLegacyIpc(async (ipc) => {
-      expect(ipc.sessionId).toBe("");
-      return "done";
-    });
-    expect(result).toBe("done");
-  });
-});
-
 describe("withDaemon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.TMUX;
   });
 
-  it("falls back to legacy when no daemon running and no sessionArg", async () => {
+  it("throws the accurate daemon-not-running error when no daemon and no sessionArg", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(false);
 
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
-
-    const result = await withDaemon(async () => "legacy-result");
-    expect(result).toBe("legacy-result");
+    await expect(withDaemon(async () => "result")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
-  it("throws when no daemon and sessionArg provided", async () => {
+  it("throws the accurate daemon-not-running error when no daemon and sessionArg provided", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(false);
 
-    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(
-      /No running daemon found/,
-    );
+    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
   it("resolves session from daemon with sessionArg", async () => {
@@ -386,5 +338,76 @@ describe("withDaemon", () => {
     vi.mocked(ipcRequest).mockResolvedValue({ id: "r1", error: "list error" });
 
     await expect(withDaemon(async () => "result")).rejects.toThrow(/list error/);
+  });
+});
+
+describe("runDown", () => {
+  const sessions = [{ id: "abc", name: "proj", projectDir: "/proj" }];
+
+  function makeDeps(over: Partial<DownDeps> = {}): {
+    deps: DownDeps;
+    out: string[];
+    err: string[];
+    destroy: ReturnType<typeof vi.fn>;
+  } {
+    const out: string[] = [];
+    const err: string[] = [];
+    const destroy = vi.fn(over.destroy ?? (async () => ({ id: "d1" })));
+    const deps: DownDeps = {
+      daemonRunning: over.daemonRunning ?? (() => true),
+      socket: over.socket ?? (() => "/tmp/sock"),
+      sessionArg: over.sessionArg,
+      listSessions: over.listSessions ?? (async () => ({ id: "l1", result: sessions })),
+      destroy,
+      resolveProjectSessionId: over.resolveProjectSessionId ?? (() => "abc"),
+      stdout: (text) => out.push(text),
+      stderr: (text) => err.push(text),
+    };
+    return { deps, out, err, destroy };
+  }
+
+  it("returns 1 with the accurate error when the daemon is not running", async () => {
+    const { deps, err } = makeDeps({ daemonRunning: () => false });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain(DAEMON_NOT_RUNNING);
+  });
+
+  it("returns 1 when session.list errors", async () => {
+    const { deps, err } = makeDeps({ listSessions: async () => ({ id: "l1", error: "boom" }) });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("boom");
+  });
+
+  it("returns 1 when nothing matches the current project (nothing to stop)", async () => {
+    const { deps, err, destroy } = makeDeps({ resolveProjectSessionId: () => "nope" });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("No running zaps session");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("returns 1 when an explicit session arg cannot be resolved", async () => {
+    const { deps, err, destroy } = makeDeps({ sessionArg: "ghost" });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("Session not found");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("returns 1 when destroy fails", async () => {
+    const { deps, err } = makeDeps({ destroy: async () => ({ id: "d1", error: "no" }) });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("no");
+  });
+
+  it("returns 0 and reports success when the project session is destroyed", async () => {
+    const { deps, out, destroy } = makeDeps();
+    expect(await runDown(deps)).toBe(0);
+    expect(out.join("")).toContain("Session destroyed.");
+    expect(destroy).toHaveBeenCalledWith("/tmp/sock", "abc");
+  });
+
+  it("returns 0 when a session resolved by arg is destroyed", async () => {
+    const { deps, destroy } = makeDeps({ sessionArg: "proj" });
+    expect(await runDown(deps)).toBe(0);
+    expect(destroy).toHaveBeenCalledWith("/tmp/sock", "abc");
   });
 });

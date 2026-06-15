@@ -4,12 +4,14 @@ import { program } from "commander";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
   CliError,
+  DAEMON_NOT_RUNNING,
   formatTable,
   resolveCommand,
   resolveCommandArgv,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
+  runDown,
   withDaemon,
 } from "./cli/helpers.js";
 import { isCodingAgent, resolveFormat, writeData } from "./cli/output.js";
@@ -25,15 +27,7 @@ import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import type { ServiceStatus } from "./lib/service/types.js";
-import {
-  currentPaneId,
-  currentSession,
-  killPane,
-  listZapsSessions,
-  selectPane,
-  sendKeys,
-  showEnv,
-} from "./lib/tmux.js";
+import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
@@ -332,66 +326,23 @@ program
   .command("down")
   .description("Stop all services and destroy session")
   .action(async () => {
-    const sock = socketPath();
-    if (isDaemonRunning()) {
-      const sessionOpt = globalSession();
-      const res = await ipcRequest(sock, "session.list");
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
-        process.exit(1);
-      }
-      const sessions = res.result as SessionInfo[];
-      const target = (() => {
-        try {
-          return sessionOpt
-            ? resolveTargetSession(sessions, sessionOpt)
-            : sessions.find((s) => s.id === resolveSessionId().id);
-        } catch (error) {
-          if (error instanceof CliError) {
-            process.stderr.write(`${error.message}\n`);
-            process.exit(1);
-          }
-          throw error;
-        }
-      })();
-      if (target) {
-        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, target.id);
-        if (destroyRes.error) {
-          process.stderr.write(`Error: ${destroyRes.error}\n`);
-        } else {
-          process.stdout.write("Session destroyed.\n");
-        }
-      } else {
-        process.stderr.write("No running zaps session for this project.\n");
-      }
-      return;
+    const code = await runDown({
+      daemonRunning: isDaemonRunning,
+      socket: socketPath,
+      sessionArg: globalSession(),
+      listSessions: async (sock) => ipcRequest(sock, "session.list"),
+      destroy: async (sock, id) => ipcRequest(sock, "session.destroy", null, 30_000, id),
+      resolveProjectSessionId: () => resolveSessionId().id,
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+    });
+    if (code !== 0) {
+      process.exit(code);
     }
-
-    if (!getEnv("TMUX")) {
-      process.stderr.write("zaps must be run from inside a tmux session.\n");
-      process.exit(1);
-    }
-
-    const tmuxSession = await currentSession();
-    const raw = await showEnv(tmuxSession, "ZAPS_PANE_MAP");
-    if (!raw) {
-      process.stderr.write("No active zaps panes found in this session.\n");
-      process.exit(1);
-    }
-
-    const paneMap = JSON.parse(raw) as Record<string, string>;
-    const originPane = await currentPaneId();
-
-    let killed = 0;
-    for (const paneId of Object.values(paneMap)) {
-      if (paneId !== originPane) {
-        await killPane(paneId).catch(() => {
-          /* Best-effort cleanup */
-        });
-        killed += 1;
-      }
-    }
-    process.stdout.write(`Killed ${killed} pane(s).\n`);
   });
 
 // --- Service Operations (flat, variadic) ---
@@ -484,19 +435,14 @@ program
   .action(async (opts: { json?: boolean; toon?: boolean }) => {
     const format = resolveFormat(opts);
     const sock = socketPath();
+    // No daemon → no sessions can exist; report it (E7) and emit an empty list
+    // For machine formats. Informational, so exit 0 (nothing errored).
     if (!isDaemonRunning()) {
-      const sessions = await listZapsSessions();
       if (format !== "text") {
-        writeData(sessions, format);
+        writeData([] as SessionInfo[], format);
         return;
       }
-      if (sessions.length === 0) {
-        process.stdout.write("No running zaps instances found.\n");
-        return;
-      }
-      for (const { session, panes } of sessions) {
-        process.stdout.write(`${session} (${panes} panes)\n`);
-      }
+      process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
       return;
     }
 
@@ -716,7 +662,7 @@ program
     const sock = socketPath();
 
     if (!isDaemonRunning()) {
-      process.stderr.write("No running daemon found.\n");
+      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
       process.exit(1);
     }
 
@@ -948,7 +894,7 @@ program
 
     const sock = socketPath();
     if (!isDaemonRunning()) {
-      process.stderr.write("No running daemon found.\n");
+      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
       process.exit(1);
     }
 

@@ -76,7 +76,3 @@ export interface ReadyDeps {
    */
   dockerRequireRecreate?: boolean;
 }
-
-export interface EnvDeps {
-  setEnv: (session: string, key: string, value: string) => Promise<void>;
-}

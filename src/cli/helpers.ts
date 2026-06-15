@@ -6,7 +6,13 @@ import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcStream } from "#src/lib/ipc/client.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
-import { currentSession, showEnv } from "#src/lib/tmux.js";
+
+/**
+ * Single source of truth for the "no daemon" error. Reused by every
+ * daemon-requiring command (down/ls/logs/services/…) so the message is
+ * identical everywhere (E7, P05-V01).
+ */
+export const DAEMON_NOT_RUNNING = "Daemon not running.";
 
 export class CliError extends Error {
   public constructor(message: string) {
@@ -126,33 +132,13 @@ export function formatTable(rows: string[][]): string {
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
 }
 
-export async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
-  if (!getEnv("TMUX")) {
-    throw new CliError("Must be inside a tmux session.");
-  }
-  const tmuxSession = await currentSession();
-  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
-  if (!legacySock) {
-    throw new CliError("No running zaps instance found in this session.");
-  }
-  const ipc: SessionIpc = {
-    sessionId: "",
-    request: async (method, params?) => ipcRequest(legacySock, method, params),
-    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
-  };
-  return fn(ipc);
-}
-
 export async function withDaemon<T>(
   fn: (ipc: SessionIpc) => Promise<T>,
   sessionArg?: string,
 ): Promise<T> {
   const sock = socketPath();
   if (!isDaemonRunning()) {
-    if (sessionArg) {
-      throw new CliError("No running daemon found.");
-    }
-    return withLegacyIpc(fn);
+    throw new CliError(DAEMON_NOT_RUNNING);
   }
 
   const id = await (async () => {
@@ -183,4 +169,60 @@ export async function withDaemon<T>(
       ipcStream(sock, method, params, onEvent, 120_000, id),
   };
   return fn(ipc);
+}
+
+export interface DownDeps {
+  daemonRunning: () => boolean;
+  socket: () => string;
+  sessionArg?: string;
+  listSessions: (sock: string) => Promise<IpcResponse>;
+  destroy: (sock: string, id: string) => Promise<IpcResponse>;
+  resolveProjectSessionId: () => string;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+/**
+ * Core of `zaps down`, decoupled from `process.exit` so the exit-code matrix is
+ * unit-testable (E16). Returns the process exit code: 0 only when a session was
+ * actually destroyed; 1 when the daemon is absent, nothing matched, or destroy
+ * failed. The daemon is the single source of truth — there is no pane fallback
+ * (E7).
+ */
+export async function runDown(deps: DownDeps): Promise<number> {
+  if (!deps.daemonRunning()) {
+    deps.stderr(`${DAEMON_NOT_RUNNING}\n`);
+    return 1;
+  }
+  const sock = deps.socket();
+  const res = await deps.listSessions(sock);
+  if (res.error) {
+    deps.stderr(`Error: ${res.error}\n`);
+    return 1;
+  }
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  const sessions = res.result as SessionInfo[];
+  let target: SessionInfo | undefined = undefined;
+  try {
+    target = deps.sessionArg
+      ? resolveTargetSession(sessions, deps.sessionArg)
+      : sessions.find((s) => s.id === deps.resolveProjectSessionId());
+  } catch (error) {
+    if (error instanceof CliError) {
+      deps.stderr(`${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+  if (!target) {
+    deps.stderr("No running zaps session for this project.\n");
+    return 1;
+  }
+  const destroyRes = await deps.destroy(sock, target.id);
+  if (destroyRes.error) {
+    deps.stderr(`Error: ${destroyRes.error}\n`);
+    return 1;
+  }
+  deps.stdout("Session destroyed.\n");
+  return 0;
 }

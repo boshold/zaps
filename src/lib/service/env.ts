@@ -1,4 +1,4 @@
-import type { EnvConfig, EnvDeps, ServiceContext, ServiceStatus } from "./types.js";
+import type { EnvConfig, ServiceContext, ServiceStatus } from "./types.js";
 
 /**
  * Build a ServiceContext from current service statuses. Each service's `cwd`
@@ -51,18 +51,4 @@ export function formatEnvForShell(env: Record<string, string>): string {
   return Object.entries(env)
     .map(([k, v]) => `${k}=${shellEscape(v)}`)
     .join(" ");
-}
-
-/**
- * Set environment variables for a tmux session using set-environment.
- */
-export async function setServiceEnv(
-  session: string,
-  env: Record<string, string>,
-  deps: EnvDeps,
-): Promise<void> {
-  // Sequential calls required: tmux set-environment must complete before the next
-  for (const [key, value] of Object.entries(env)) {
-    await deps.setEnv(session, key, value);
-  }
 }

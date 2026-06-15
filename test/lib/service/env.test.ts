@@ -4,16 +4,9 @@ import {
   buildServiceContext,
   formatEnvForShell,
   resolveEnv,
-  setServiceEnv,
   shellEscape,
 } from "../../../src/lib/service/env.js";
-import type { EnvDeps, ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
-
-const mockSetEnv = vi.fn<EnvDeps["setEnv"]>();
-
-function createDeps(): EnvDeps {
-  return { setEnv: mockSetEnv };
-}
+import type { ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -170,21 +163,5 @@ describe("formatEnvForShell", () => {
 
   it("returns empty string for empty env", () => {
     expect(formatEnvForShell({})).toBe("");
-  });
-});
-
-describe("setServiceEnv", () => {
-  it("calls setEnv for each entry", async () => {
-    mockSetEnv.mockResolvedValue();
-    await setServiceEnv("my-session", { FOO: "bar", BAZ: "qux" }, createDeps());
-    expect(mockSetEnv).toHaveBeenCalledTimes(2);
-    expect(mockSetEnv).toHaveBeenCalledWith("my-session", "FOO", "bar");
-    expect(mockSetEnv).toHaveBeenCalledWith("my-session", "BAZ", "qux");
-  });
-
-  it("does nothing for empty env", async () => {
-    mockSetEnv.mockResolvedValue();
-    await setServiceEnv("my-session", {}, createDeps());
-    expect(mockSetEnv).not.toHaveBeenCalled();
   });
 });
