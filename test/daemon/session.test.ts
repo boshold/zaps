@@ -353,6 +353,75 @@ describe("Session", () => {
   });
 });
 
+describe("Session per-pane log buffers (D2)", () => {
+  function groupParams(): SessionCreateParams {
+    // A combined group "grp" of three members all sharing pane %1; the group
+    // Name is a layout artifact present in paneMap but not in services.
+    return createSessionParams({
+      config: {
+        project: {
+          name: "test-project",
+          services: { a: { start: "a" }, b: { start: "b" }, c: { start: "c" } },
+        },
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        groups: new Map([["grp", ["a", "b", "c"]]]),
+        unavailableServices: new Map(),
+      } as SessionCreateParams["config"],
+      paneMap: { "@tui": "%0", grp: "%1", a: "%1", b: "%1", c: "%1" },
+    });
+  }
+
+  it("shares one LogBuffer instance across every member of a combined group", () => {
+    const session = new Session(groupParams(), createMockManager());
+    const bufA = session.logBuffers.get("a");
+
+    expect(bufA).toBeDefined();
+    expect(session.logBuffers.get("b")).toBe(bufA);
+    expect(session.logBuffers.get("c")).toBe(bufA);
+    // The group name never owns a buffer nor appears as a key.
+    expect(session.logBuffers.has("grp")).toBe(false);
+  });
+
+  it("attachSnapshot resolves every member to its shared pane buffer", () => {
+    const session = new Session(groupParams(), createMockManager());
+    const snap = session.attachSnapshot();
+
+    expect(snap.logSnapshots).toHaveProperty("a");
+    expect(snap.logSnapshots).toHaveProperty("b");
+    expect(snap.logSnapshots).toHaveProperty("c");
+    expect(snap.logSnapshots).not.toHaveProperty("grp");
+  });
+
+  it("fans captured lines out once per member, never the group name", async () => {
+    vi.useFakeTimers();
+    try {
+      const capturePane = vi.fn().mockResolvedValue("hello\nworld");
+      const params = groupParams();
+      params.deps = { capturePane } as unknown as SessionCreateParams["deps"];
+      const session = new Session(params, createMockManager());
+      const events: { event: string; data?: unknown }[] = [];
+      vi.spyOn(session, "broadcast").mockImplementation((e) => {
+        events.push(e);
+      });
+
+      await session.startAll();
+      await vi.advanceTimersByTimeAsync(500);
+
+      const services = events
+        .filter((e) => e.event === "log.lines")
+        .map((e) => (e.data as { service: string }).service)
+        .toSorted();
+      expect(services).toEqual(["a", "b", "c"]);
+      expect(services).not.toContain("grp");
+      // The shared buffer received the lines exactly once.
+      expect(session.logBuffers.get("a")?.snapshot()).toContain("hello");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("Session config staleness (A4)", () => {
   let dir: string;
   let configPath: string;

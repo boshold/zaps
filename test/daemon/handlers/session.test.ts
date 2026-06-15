@@ -122,7 +122,7 @@ describe("session handlers", () => {
       expect(session.subscribers.has(socket)).toBe(true);
     });
 
-    it("removes subscriber on socket close", async () => {
+    it("does not stack a close listener per subscribe call (D7)", async () => {
       const session = createMockSession();
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -132,11 +132,16 @@ describe("session handlers", () => {
         session: session.id,
         params: { events: [] },
       };
-      await sessionHandlers.subscribe(req, store, socket as never);
-      expect(session.subscribers.has(socket)).toBe(true);
 
-      socket.emit("close");
-      expect(session.subscribers.has(socket)).toBe(false);
+      // Subscribing many times on one connection must not register any socket
+      // Close listeners — server-level cleanup owns removal, not the handler.
+      for (let i = 0; i < 15; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- sequential subscribes on one socket
+        await sessionHandlers.subscribe(req, store, socket as never);
+      }
+
+      expect(socket.listenerCount("close")).toBe(0);
+      expect(session.subscribers.has(socket)).toBe(true);
     });
   });
 

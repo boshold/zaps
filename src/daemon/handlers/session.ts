@@ -85,11 +85,11 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
+    // Subscriber removal on close/error is handled once at the server level
+    // (server.ts cleanupSubscriptions) — registering a per-subscribe `close`
+    // Listener here stacked one per subscribe call and tripped the EventEmitter
+    // Max-listeners warning (D7).
     session.addSubscriber(socket);
-
-    socket.on("close", () => {
-      session.removeSubscriber(socket);
-    });
 
     return ipcOk(req.id, { subscribed: true });
   },

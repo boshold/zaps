@@ -22,6 +22,45 @@ const STALE_POLL_MS = 10_000;
 
 type PaneMap = Record<string, string>;
 
+interface LogAllocation {
+  /** Service name → shared buffer; group members on one pane share an instance. */
+  buffers: Map<string, LogBuffer>;
+  /** Monitor key (pane id) → buffer; one entry per monitored pane. */
+  paneBuffers: Map<string, LogBuffer>;
+  /** Monitor key (pane id) → the member service names sharing that pane. */
+  paneMembers: Map<string, string[]>;
+}
+
+/**
+ * Allocate one `LogBuffer` per unique pane and resolve every service name to the
+ * shared instance for its pane (D2). Group names are layout expansion artifacts:
+ * they never own a buffer and never surface as a key. A service without a pane
+ * (future detached services) gets a private, unmonitored buffer so Phase 5 plugs
+ * in without reshaping this map.
+ */
+function allocateLogBuffers(config: ResolvedConfig, paneMap: PaneMap): LogAllocation {
+  const buffers = new Map<string, LogBuffer>();
+  const paneBuffers = new Map<string, LogBuffer>();
+  const paneMembers = new Map<string, string[]>();
+  for (const svcName of Object.keys(config.project.services)) {
+    const paneId = paneMap[svcName];
+    if (paneId === undefined) {
+      // No pane (detached) — private buffer, not polled by the pane monitor.
+      buffers.set(svcName, new LogBuffer());
+      continue;
+    }
+    let buffer = paneBuffers.get(paneId);
+    if (!buffer) {
+      buffer = new LogBuffer();
+      paneBuffers.set(paneId, buffer);
+      paneMembers.set(paneId, []);
+    }
+    buffers.set(svcName, buffer);
+    paneMembers.get(paneId)?.push(svcName);
+  }
+  return { buffers, paneBuffers, paneMembers };
+}
+
 export interface TaskInfo {
   key: string;
   name: string;
@@ -75,6 +114,8 @@ export class Session {
   public manager: ServiceManager;
   public logBuffers: Map<string, LogBuffer>;
   public logMonitor: LogMonitor;
+  /** Monitor key (pane id) → member service names sharing it; drives fan-out (D2). */
+  private paneMembers: Map<string, string[]>;
   /** Tracked in-flight `startAll`; reload/destroy abort then await its settlement. */
   public startPromise: Promise<void> | null = null;
   /** Set once `destroy()` runs; guards the reload-after-destroy race (A5). */
@@ -104,26 +145,39 @@ export class Session {
     this.manager = manager;
     this.configLoadedAt = Date.now();
 
-    // Create log buffers per service
-    this.logBuffers = new Map<string, LogBuffer>();
-    for (const svcName of Object.keys(params.config.project.services)) {
-      this.logBuffers.set(svcName, new LogBuffer());
-    }
-
-    // Log monitor: push new lines to buffers + broadcast to subscribers
-    this.logMonitor = new LogMonitor(
-      { capturePane: params.deps.capturePane },
-      this.logBuffers,
-      (serviceName, lines) => {
-        this.broadcast({
-          session: this.id,
-          event: "log.lines",
-          data: { service: serviceName, lines },
-        });
-      },
-    );
+    // Per-pane log buffers + a monitor that fans new lines out to members (D2).
+    const pipeline = this.buildLogPipeline(this.config, this.paneMap);
+    this.logBuffers = pipeline.buffers;
+    this.logMonitor = pipeline.monitor;
+    this.paneMembers = pipeline.paneMembers;
 
     this.wireManagerEvents(manager);
+  }
+
+  /**
+   * Build the per-pane buffers and a monitor whose capture callback fans a single
+   * `log.lines` event out to every member service sharing that pane (D2). Used by
+   * both construction and reload so the two allocation paths cannot drift.
+   */
+  private buildLogPipeline(
+    config: ResolvedConfig,
+    paneMap: PaneMap,
+  ): { buffers: Map<string, LogBuffer>; monitor: LogMonitor; paneMembers: Map<string, string[]> } {
+    const { buffers, paneBuffers, paneMembers } = allocateLogBuffers(config, paneMap);
+    const monitor = new LogMonitor(
+      { capturePane: this.deps.capturePane },
+      paneBuffers,
+      (paneId, lines) => {
+        for (const member of paneMembers.get(paneId) ?? []) {
+          this.broadcast({
+            session: this.id,
+            event: "log.lines",
+            data: { service: member, lines },
+          });
+        }
+      },
+    );
+    return { buffers, monitor, paneMembers };
   }
 
   private wireManagerEvents(manager: ServiceManager): void {
@@ -182,30 +236,10 @@ export class Session {
   public async startAll(): Promise<void> {
     await this.manager.startAll();
 
-    // Start log monitoring for each service pane.
-    // For combined groups, start one monitor per shared pane and route to all children.
-    const monitoredPanes = new Set<string>();
-    for (const [svcName, paneId] of Object.entries(this.paneMap)) {
-      if (svcName !== "@tui" && !monitoredPanes.has(paneId)) {
-        monitoredPanes.add(paneId);
-        this.logMonitor.start(svcName, paneId);
-      }
-    }
-
-    // For combined children that share a pane, create buffer aliases
-    // So logs requested by child name return the shared pane's output
-    for (const [svcName] of Object.entries(this.paneMap)) {
-      if (svcName !== "@tui" && !this.logBuffers.has(svcName)) {
-        // Find which service's buffer covers this pane
-        const paneId = this.paneMap[svcName];
-        for (const [existingName, existingPaneId] of Object.entries(this.paneMap)) {
-          const existingBuffer = this.logBuffers.get(existingName);
-          if (existingPaneId === paneId && existingBuffer) {
-            this.logBuffers.set(svcName, existingBuffer);
-            break;
-          }
-        }
-      }
+    // One monitor per unique pane, keyed by pane id; the monitor's listener fans
+    // New lines out to every member service mapped to that pane (D2).
+    for (const paneId of this.paneMembers.keys()) {
+      this.logMonitor.start(paneId, paneId);
     }
   }
 
@@ -309,24 +343,11 @@ export class Session {
     // 5. Rebuild layout from the TUI pane (re-wires the old manager on failure).
     const paneMap = await this.rebuildLayout(tuiPaneId, newConfig);
 
-    // 6. Build the new manager, buffers, and monitor before the swap.
+    // 6. Build the new manager + per-pane log pipeline before the swap. Reuses
+    // The same allocation helper as construction so the two cannot drift.
     const { ServiceManager } = await import("#src/lib/service/manager.js");
     const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.tmuxSession);
-    const newLogBuffers = new Map<string, LogBuffer>();
-    for (const svcName of Object.keys(newConfig.project.services)) {
-      newLogBuffers.set(svcName, new LogBuffer());
-    }
-    const newLogMonitor = new LogMonitor(
-      { capturePane: this.deps.capturePane },
-      newLogBuffers,
-      (serviceName, lines) => {
-        this.broadcast({
-          session: this.id,
-          event: "log.lines",
-          data: { service: serviceName, lines },
-        });
-      },
-    );
+    const pipeline = this.buildLogPipeline(newConfig, paneMap);
 
     // 7. Swap every reference atomically (single synchronous block).
     this.config = newConfig;
@@ -336,8 +357,9 @@ export class Session {
     this.paneMap = paneMap;
     this.name = newConfig.project.name ?? "unnamed";
     this.manager = newManager;
-    this.logBuffers = newLogBuffers;
-    this.logMonitor = newLogMonitor;
+    this.logBuffers = pipeline.buffers;
+    this.logMonitor = pipeline.monitor;
+    this.paneMembers = pipeline.paneMembers;
 
     this.wireManagerEvents(newManager);
 
