@@ -9,7 +9,7 @@ import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
-import { createServiceStatus, transition } from "./state.js";
+import { canTransition, createServiceStatus, transition } from "./state.js";
 import type {
   ExecInfo,
   ReadyConfig,
@@ -991,6 +991,7 @@ export class ServiceManager extends EventEmitter {
   ): Promise<void> {
     const restartConfig = config.restart;
     if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
+      const gen = this.monitorGenerations.get(name) ?? 0;
       status.state = transition(status.state, "restarting");
       status.retryCount += 1;
       delete status.readySince;
@@ -999,9 +1000,30 @@ export class ServiceManager extends EventEmitter {
       const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
       await sleep(backoff);
 
-      // Transition: restarting -> starting (handled by startService)
-      await this.startService(name);
-      await this.cascadeRestart(name);
+      // Bail if superseded during backoff: daemon shutting down, the service was
+      // Stopped/restarted (generation bumped), or it already left `restarting`
+      // (e.g. a racing stop). The superseding operation owns the state (C3).
+      if (
+        this.shuttingDown ||
+        (this.monitorGenerations.get(name) ?? 0) !== gen ||
+        status.state !== "restarting"
+      ) {
+        return;
+      }
+
+      // Restart must never reject out of handleCrash (would reach Node's
+      // UnhandledRejection and kill the daemon — C2). On failure, land in error.
+      try {
+        await this.startService(name);
+        await this.cascadeRestart(name);
+      } catch (error) {
+        if (canTransition(status.state, "error")) {
+          status.state = transition(status.state, "error");
+          delete status.readySince;
+        }
+        status.lastError = error instanceof Error ? error.message : String(error);
+        this.emit("stateChange", name, status);
+      }
     } else {
       status.state = transition(status.state, "error");
       status.lastError = "Process exited unexpectedly";

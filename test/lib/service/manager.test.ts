@@ -1028,6 +1028,145 @@ describe("crash recovery", () => {
     expect(mgr.getStatus("svc").state).toBe("ready");
     expect(mgr.getStatus("svc").retryCount).toBe(0);
   });
+
+  it("transitions to error with lastError when the restart attempt fails", async () => {
+    const config = makeConfig({
+      dep: { start: "start-dep", raw: true },
+      svc: { start: "start-svc", dependsOn: ["dep"], restart: { maxRetries: 3, backoff: 100 } },
+    });
+    const paneMap = makePaneMap(["dep", "svc"]);
+    const deps = createMockDeps();
+    // Keep processes "running" so the background poll monitor never fires;
+    // We drive the crash explicitly via handleExecExited.
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    await mgr.startService("dep");
+    const svcStart = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await svcStart;
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    // Dependency goes down — the restart's dep check will throw.
+    mgr.getStatus("dep").state = "error";
+
+    const changed: { name: string; state: string }[] = [];
+    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
+      changed.push({ name, state: status.state });
+    });
+
+    mgr.handleExecExited("svc", 1, null);
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(mgr.getStatus("svc").lastError).toContain('Dependency "dep" is not ready');
+    expect(changed.some((e) => e.name === "svc" && e.state === "error")).toBe(true);
+  });
+
+  it("does not restart a service stopped during crash-backoff", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let stopRequested = false;
+    deps.getDescendantPids = vi.fn(async () => (stopRequested ? [1000] : [1000, 2000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      stopRequested = true;
+    });
+
+    let startCount = 0;
+    deps.sendKeys = vi.fn(async () => {
+      startCount += 1;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+    expect(startCount).toBe(1);
+
+    // Crash → enters backoff (restarting)
+    mgr.handleExecExited("svc", 1, null);
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+
+    // Stop while in backoff
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopPromise;
+
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+    expect(startCount).toBe(1); // No resurrection
+  });
+
+  it("does not restart during shutdown (stopAll) while in crash-backoff", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let stopRequested = false;
+    deps.getDescendantPids = vi.fn(async () => (stopRequested ? [1000] : [1000, 2000]));
+    deps.sendCtrlC = vi.fn(async () => {
+      stopRequested = true;
+    });
+
+    let startCount = 0;
+    deps.sendKeys = vi.fn(async () => {
+      startCount += 1;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    mgr.handleExecExited("svc", 1, null);
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+
+    const stopAllPromise = mgr.stopAll();
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopAllPromise;
+
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+    expect(startCount).toBe(1);
+  });
+
+  it("does not restart when monitor generation is superseded during backoff", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+    });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    let startCount = 0;
+    deps.sendKeys = vi.fn(async () => {
+      startCount += 1;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    mgr.handleExecExited("svc", 1, null);
+    expect(mgr.getStatus("svc").state).toBe("restarting");
+
+    // A superseding operation bumps the generation during backoff
+    (mgr as unknown as { monitorGenerations: Map<string, number> }).monitorGenerations.set(
+      "svc",
+      999,
+    );
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(startCount).toBe(1); // Backoff woke but bailed — no restart
+  });
 });
 
 // =============================================================================
