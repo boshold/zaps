@@ -7,7 +7,7 @@ import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import {
@@ -24,6 +24,7 @@ import {
   setWindowOption,
 } from "#src/lib/tmux.js";
 
+import { DetachedRegistry } from "./detached-registry.js";
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
 import type { SessionCreateParams } from "./session.js";
@@ -58,6 +59,8 @@ class DaemonServer implements SessionStore {
   /** In-flight `create` promises keyed by session id — collapses concurrent
    * creates for the same config into one config-load/layout/startAll (D3). */
   private readonly inFlightCreates = new Map<string, Promise<Session>>();
+  /** Detached-child PID bookkeeping for orphan protection (R10). */
+  private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
   public requestShutdown?: () => void;
 
@@ -106,6 +109,15 @@ class DaemonServer implements SessionStore {
 
   public get sessionCount(): number {
     return this.sessions.size;
+  }
+
+  /**
+   * Reap detached children orphaned by a previous daemon's crash/SIGKILL, then
+   * clear the bookkeeping file. Call once at daemon startup, before any session
+   * is created (R10).
+   */
+  public reapDetachedOrphans(): void {
+    this.detachedRegistry.reapOrphans();
   }
 
   // --- SessionStore ---
@@ -186,8 +198,15 @@ class DaemonServer implements SessionStore {
       sendCtrlC,
       panePid,
       detectPorts,
+      detectPortsForPid,
       capturePane,
       getDescendantPids,
+      recordDetached: (pid: number) => {
+        this.detachedRegistry.record(pid);
+      },
+      removeDetached: (pid: number) => {
+        this.detachedRegistry.remove(pid);
+      },
       renameWindow,
       getWindowName,
       getWindowOption,

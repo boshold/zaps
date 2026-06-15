@@ -71,6 +71,7 @@ vi.mock("#src/lib/tmux.js", () => ({
 
 vi.mock("#src/lib/port.js", () => ({
   detectPorts: vi.fn(),
+  detectPortsForPid: vi.fn(),
   getDescendantPids: vi.fn(),
 }));
 

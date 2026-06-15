@@ -41,6 +41,8 @@ export interface ServiceStatus {
   lastError?: string;
   readySince?: number;
   isDocker?: boolean;
+  /** Pane-less service spawned by the DetachedRunner — drives the TUI marker (E4). */
+  isDetached?: boolean;
   /** Group name for expanded docker services */
   group?: string;
 }

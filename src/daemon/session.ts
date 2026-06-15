@@ -72,6 +72,7 @@ export interface ServiceMeta {
   name: string;
   dependsOn: string[];
   hasDocker: boolean;
+  isDetached?: boolean;
   group?: string;
   dockerDefaults: {
     build: boolean;
@@ -187,6 +188,18 @@ export class Session {
         session: this.id,
         event: "service.stateChange",
         data: { name: svcName, status },
+      });
+    });
+
+    // Detached-service output: the runner streams lines straight from the child
+    // (no pane to poll), so append to the service's buffer + broadcast here, the
+    // Same shape the pane LogMonitor produces (D2/E4).
+    manager.on("logLines", (svcName: string, lines: string[]) => {
+      this.logBuffers.get(svcName)?.appendLines(lines);
+      this.broadcast({
+        session: this.id,
+        event: "log.lines",
+        data: { service: svcName, lines },
       });
     });
 
@@ -498,6 +511,7 @@ export class Session {
         name: svcName,
         dependsOn: svc.dependsOn ?? [],
         hasDocker: Boolean(svc.docker),
+        isDetached: Boolean(svc.detached),
         group: svc._combined?.group,
         dockerDefaults: {
           build: svc.docker?.build ?? false,

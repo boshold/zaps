@@ -116,6 +116,18 @@ describe("Session", () => {
     );
   });
 
+  it("forwards detached logLines to the service buffer and broadcast (E4)", () => {
+    const broadcastSpy = vi.spyOn(session, "broadcast");
+    manager.emit("logLines", "api", ["line one", "line two"]);
+    expect(session.logBuffers.get("api")?.snapshot()).toEqual(["line one", "line two"]);
+    expect(broadcastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "log.lines",
+        data: { service: "api", lines: ["line one", "line two"] },
+      }),
+    );
+  });
+
   it("forwards taskStart events", () => {
     const broadcastSpy = vi.spyOn(session, "broadcast");
     manager.emit("taskStart", "build", "Build");
@@ -301,6 +313,30 @@ describe("Session", () => {
       expect(snap.logSnapshots).toHaveProperty("api");
       expect(snap.tasks).toBeDefined();
       expect(snap.servicesMeta).toBeDefined();
+    });
+
+    it("flags detached services in servicesMeta (E4)", () => {
+      const params = createSessionParams({
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" }, worker: { start: "node w.js", detached: true } },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          groups: new Map(),
+          unavailableServices: new Map(),
+        } as SessionCreateParams["config"],
+        paneMap: { "@tui": "%0", api: "%1" },
+      });
+      const s = new Session(params, createMockManager());
+      const snap = s.attachSnapshot();
+      const api = snap.servicesMeta.find((m) => m.name === "api");
+      const worker = snap.servicesMeta.find((m) => m.name === "worker");
+      expect(api?.isDetached).toBe(false);
+      expect(worker?.isDetached).toBe(true);
+      // The detached service still gets a (private) log buffer.
+      expect(s.logBuffers.has("worker")).toBe(true);
     });
 
     it("includes task shortcuts from getTaskShortcuts", async () => {

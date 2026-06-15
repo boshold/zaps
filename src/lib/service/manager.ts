@@ -16,6 +16,8 @@ import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
+import { DetachedRunner } from "./detached.js";
+import type { SpawnFn } from "./detached.js";
 import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
@@ -30,6 +32,15 @@ import type {
 } from "./types.js";
 
 type PaneMap = Record<string, string>;
+
+/** Ready-detection + port-detection inputs that differ between pane and detached. */
+interface StartTarget {
+  /** `capturePane`/`ready` target — a pane id, or "" for detached (buffer-backed). */
+  readyTarget: string;
+  readyDeps: ReadyDeps;
+  detectPorts: () => Promise<number[]>;
+  detached: boolean;
+}
 
 /**
  * Longest tail of `prev` that equals the head of `current`, or null if none.
@@ -175,6 +186,26 @@ async function fireHook(
   }
 }
 
+/**
+ * Drive a detached service's `onOutput` hook per non-empty line. Errors are
+ * swallowed — `onOutput` must never crash the service (E4).
+ */
+async function fireDetachedOutput(
+  onOutput: (line: string) => void | Promise<void>,
+  lines: string[],
+): Promise<void> {
+  for (const line of lines) {
+    if (line.trim() !== "") {
+      try {
+        // eslint-disable-next-line no-await-in-loop -- sequential per-line hook
+        await onOutput(line);
+      } catch {
+        // The hook must not crash the service.
+      }
+    }
+  }
+}
+
 async function tryAutoOpen(
   serviceConfig: ServiceConfig,
   name: string,
@@ -203,6 +234,8 @@ export class ServiceManager extends EventEmitter {
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
   private readonly monitorGenerations = new Map<string, number>();
+  /** Runs pane-less `detached: true` services (E4). */
+  private readonly detachedRunner: DetachedRunner;
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -235,11 +268,26 @@ export class ServiceManager extends EventEmitter {
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
+    this.detachedRunner = new DetachedRunner({
+      onLines: (service, lines) => {
+        this.handleDetachedLines(service, lines);
+      },
+      onExit: (service, generation) => {
+        this.handleDetachedExit(service, generation);
+      },
+      record: (pid) => deps.recordDetached?.(pid),
+      unrecord: (pid) => deps.removeDetached?.(pid),
+      spawn: deps.detachedSpawn,
+    });
+
     // Initialize statuses for all services
     for (const [name, svc] of Object.entries(config.project.services)) {
       const status = createServiceStatus(name);
       if (svc.docker) {
         status.isDocker = true;
+      }
+      if (svc.detached) {
+        status.isDetached = true;
       }
       if (svc._combined) {
         status.group = svc._combined.group;
@@ -527,7 +575,9 @@ export class ServiceManager extends EventEmitter {
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    if (!serviceConfig || !paneTarget || !status) {
+    // A detached service has no pane; the missing pane is only fatal for the
+    // Pane-based start path (E4).
+    if (!serviceConfig || !status || (!serviceConfig.detached && !paneTarget)) {
       throw new Error(`Unknown service: ${name}`);
     }
 
@@ -569,27 +619,87 @@ export class ServiceManager extends EventEmitter {
       throw new Error(conflict);
     }
 
-    await this.sendStartCommand(name, serviceConfig, paneTarget);
+    if (serviceConfig.detached) {
+      await this.startDetachedService(name, serviceConfig, status, controller);
+    } else {
+      await this.sendStartCommand(name, serviceConfig, paneTarget);
+      await this.finishStart(name, serviceConfig, status, controller, {
+        readyTarget: paneTarget,
+        readyDeps: buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
+        detectPorts: async () => this.deps.detectPorts(paneTarget),
+        detached: false,
+      });
+    }
 
-    // Wait for ready
+    return { noop: false };
+  }
+
+  /**
+   * Spawn a `detached: true` service pane-less and wait for it to become ready.
+   * Ready/port detection are PID-based (no pane); `ready.output` reads the
+   * runner's buffered child output instead of a pane capture (E4).
+   */
+  private async startDetachedService(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    controller: AbortController,
+  ): Promise<void> {
+    const ctx = buildServiceContext(
+      this.statuses,
+      this.config.projectDir,
+      this.config.project.services,
+    );
+    const command = resolveCommand(serviceConfig, ctx);
+    const cwd = serviceConfig.cwd ?? this.config.projectDir;
+    // Detached children inherit the daemon env plus the service's resolved env
+    // (pane services get this additively via a shell prefix).
+    const env: NodeJS.ProcessEnv = { ...process.env, ...resolveEnv(serviceConfig.env, ctx) };
+    const generation = this.monitorGenerations.get(name) ?? 0;
+
+    const pid = this.detachedRunner.start({ service: name, command, cwd, env, generation });
+
+    const detectPorts = async (): Promise<number[]> => this.deps.detectPortsForPid?.(pid) ?? [];
+    const readyDeps: ReadyDeps = {
+      ...buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
+      detectPorts,
+      capturePane: async () => this.detachedRunner.getLines(name).join("\n"),
+    };
+
+    await this.finishStart(name, serviceConfig, status, controller, {
+      readyTarget: "",
+      readyDeps,
+      detectPorts,
+      detached: true,
+    });
+  }
+
+  /**
+   * Wait for ready, resolve ports, and run the post-ready wiring — shared by the
+   * pane and detached start paths. A stop that aborts mid-wait returns silently;
+   * any other failure transitions to `error` with the message.
+   */
+  private async finishStart(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    controller: AbortController,
+    target: StartTarget,
+  ): Promise<void> {
     try {
-      const readyDeps = buildReadyDeps(serviceConfig, this.deps, this.config.projectDir);
       const readyPorts = await waitForReady(
         resolveReadyConfig(serviceConfig),
-        paneTarget,
+        target.readyTarget,
         controller.signal,
-        readyDeps,
+        target.readyDeps,
       );
 
-      // If aborted during ready wait (e.g. stopService called), exit silently
       if (controller.signal.aborted) {
-        return { noop: false };
+        return;
       }
 
-      // Detect ports — use docker-provided ports if available
-      const ports = readyPorts.length > 0 ? readyPorts : await this.deps.detectPorts(paneTarget);
+      const ports = readyPorts.length > 0 ? readyPorts : await target.detectPorts();
 
-      // Update status
       status.state = transition(status.state, "ready");
       status.ports = ports;
       status.readySince = Date.now();
@@ -599,19 +709,63 @@ export class ServiceManager extends EventEmitter {
         this.config.projectDir,
         this.config.project.services,
       );
-      await this.onServiceReady(name, serviceConfig, status, ports, ctx);
+      await this.onServiceReady(name, serviceConfig, status, ports, ctx, target.detached);
     } catch (error) {
-      // If aborted during stop, don't transition to error
       if (controller.signal.aborted) {
-        return { noop: false };
+        return;
       }
       status.state = transition(status.state, "error");
       status.lastError = error instanceof Error ? error.message : String(error);
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
+  }
 
-    return { noop: false };
+  /**
+   * Append detached child output to the session log path (via `logLines`) and
+   * drive the `onOutput` hook — the detached analogue of the pane LogMonitor and
+   * `monitorOutput` (E4).
+   */
+  private handleDetachedLines(name: string, lines: string[]): void {
+    this.emit("logLines", name, lines);
+    const onOutput = this.config.project.services[name]?.onOutput;
+    if (onOutput) {
+      void fireDetachedOutput(onOutput, lines);
+    }
+  }
+
+  /**
+   * Handle a detached child's exit. Generation-checked so a stop/restart that
+   * bumped the generation never crash-restarts a stale child (E4). An exit while
+   * still `starting` fails fast instead of waiting out the ready timeout.
+   */
+  private handleDetachedExit(name: string, generation: number): void {
+    const status = this.statuses.get(name);
+    if (!status) {
+      return;
+    }
+    if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
+      return;
+    }
+    const config = this.config.project.services[name];
+
+    if (status.state === "starting") {
+      this.monitorGenerations.set(name, generation + 1);
+      this.abortControllers.get(name)?.abort();
+      if (canTransition(status.state, "error")) {
+        status.state = transition(status.state, "error");
+      }
+      status.lastError = "Process exited before becoming ready";
+      delete status.readySince;
+      this.emit("stateChange", name, status);
+      return;
+    }
+
+    if (status.state !== "ready") {
+      return;
+    }
+    this.monitorGenerations.set(name, generation + 1);
+    void this.handleCrash(name, config, status);
   }
 
   /**
@@ -709,6 +863,7 @@ export class ServiceManager extends EventEmitter {
     status: ServiceStatus,
     ports: number[],
     ctx: ServiceContext,
+    detached = false,
   ): Promise<void> {
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
     if (explicitUrl === false || serviceConfig.docker) {
@@ -733,13 +888,17 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
-    // Start crash monitor in background with current generation
+    // Start crash monitor in background with current generation. Detached
+    // Services are driven by the child `exit` event and their own output stream,
+    // So the pane-based crash/output monitors don't apply (E4).
     const gen = this.monitorGenerations.get(name) ?? 0;
-    void this.monitorCrash(name, gen);
+    if (!detached) {
+      void this.monitorCrash(name, gen);
 
-    // Start output monitor if onOutput is configured
-    if (serviceConfig.onOutput) {
-      void this.monitorOutput(name, gen);
+      // Start output monitor if onOutput is configured
+      if (serviceConfig.onOutput) {
+        void this.monitorOutput(name, gen);
+      }
     }
   }
 
@@ -755,7 +914,8 @@ export class ServiceManager extends EventEmitter {
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    if (!paneTarget || !status) {
+    // Detached services have no pane (E4).
+    if (!status || (!serviceConfig?.detached && !paneTarget)) {
       throw new Error(`Unknown service: ${name}`);
     }
 
@@ -783,37 +943,13 @@ export class ServiceManager extends EventEmitter {
     // Invalidate any active crash/output monitors
     this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
 
-    const combined = serviceConfig._combined;
+    const combined = serviceConfig?._combined;
 
-    if (combined) {
-      // Combined service: stop individual container via docker compose stop
-      await this.deps.exec(
-        "docker",
-        buildDockerComposeArgs(
-          "stop",
-          name,
-          serviceConfig.docker?.file,
-          this.dockerProjectArgs(serviceConfig),
-        ),
-        serviceConfig.cwd ?? this.config.projectDir,
-      );
-
-      // If ALL siblings are now stopped, Ctrl-C the pane to clean up docker compose up
-      const allStopped = combined.allServices.every((sib) => {
-        if (sib === name) {
-          return true;
-        }
-        const sibStatus = this.statuses.get(sib);
-        return !sibStatus || sibStatus.state === "stopped" || sibStatus.state === "error";
-      });
-
-      if (allStopped) {
-        // `docker compose up` for the whole group runs in the OWNER's pane —
-        // Ctrl-C there, not the stopped member's (which may be an idle shell). E10
-        const ownerPane = this.resolveOwnerPane(combined, paneTarget);
-        await this.deps.sendCtrlC(ownerPane);
-        await this.waitForPaneExit(ownerPane);
-      }
+    if (serviceConfig?.detached) {
+      // Detached service: signal the process group (SIGTERM, then SIGKILL).
+      await this.detachedRunner.stop(name);
+    } else if (combined) {
+      await this.stopCombinedService(name, serviceConfig, combined, paneTarget);
     } else {
       // Regular service: Ctrl-C and wait for exit
       await this.deps.sendCtrlC(paneTarget);
@@ -835,6 +971,43 @@ export class ServiceManager extends EventEmitter {
     }
 
     return { noop: false };
+  }
+
+  /**
+   * Stop one member of a combined docker group via `docker compose stop`, then —
+   * once every sibling is stopped — Ctrl-C the owner's pane to tear down the
+   * group's `docker compose up` (E10).
+   */
+  private async stopCombinedService(
+    name: string,
+    serviceConfig: ServiceConfig,
+    combined: CombinedServiceMeta,
+    paneTarget: string,
+  ): Promise<void> {
+    await this.deps.exec(
+      "docker",
+      buildDockerComposeArgs(
+        "stop",
+        name,
+        serviceConfig.docker?.file,
+        this.dockerProjectArgs(serviceConfig),
+      ),
+      serviceConfig.cwd ?? this.config.projectDir,
+    );
+
+    const allStopped = combined.allServices.every((sib) => {
+      if (sib === name) {
+        return true;
+      }
+      const sibStatus = this.statuses.get(sib);
+      return !sibStatus || sibStatus.state === "stopped" || sibStatus.state === "error";
+    });
+
+    if (allStopped) {
+      const ownerPane = this.resolveOwnerPane(combined, paneTarget);
+      await this.deps.sendCtrlC(ownerPane);
+      await this.waitForPaneExit(ownerPane);
+    }
   }
 
   /**
@@ -1264,7 +1437,7 @@ export class ServiceManager extends EventEmitter {
           // Before re-sending start keys, so the restart can't collide with a
           // Lingering process on the same port (C3). Pane-based services only;
           // Combined/docker services manage lifecycle via compose, not the pane.
-          if (!config._combined) {
+          if (!config._combined && !config.detached) {
             await this.waitForPaneExit(this.paneMap[name]);
           }
           await this.startServiceInternal(name);
@@ -1290,6 +1463,8 @@ export class ServiceManager extends EventEmitter {
 export interface ServiceManagerEvents {
   stateChange: (name: string, status: ServiceStatus) => void;
   taskComplete: (taskKey: string, taskName: string, result: "success" | "error") => void;
+  /** New detached-child log lines — the session appends + broadcasts them (E4). */
+  logLines: (name: string, lines: string[]) => void;
 }
 
 export interface ServiceManagerDeps {
@@ -1297,8 +1472,16 @@ export interface ServiceManagerDeps {
   sendCtrlC: (target: string) => Promise<void>;
   panePid: (target: string) => Promise<number>;
   detectPorts: (paneTarget: string) => Promise<number[]>;
+  /** PID-based port detection for detached services (no pane) (E4). */
+  detectPortsForPid?: (pid: number) => Promise<number[]>;
   capturePane: (target: string, lines: number) => Promise<string>;
   getDescendantPids: (rootPid: number) => Promise<number[]>;
+  /** Record a spawned detached child PID for orphan protection (R10). */
+  recordDetached?: (pid: number) => void;
+  /** Drop a recorded detached child PID on clean stop/exit (R10). */
+  removeDetached?: (pid: number) => void;
+  /** Overridable spawn for detached children (tests inject a fake) (E4). */
+  detachedSpawn?: SpawnFn;
   renameWindow: (target: string, name: string) => Promise<void>;
   getWindowName: (target: string) => Promise<string>;
   getWindowOption: (target: string, option: string) => Promise<string>;

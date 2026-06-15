@@ -1,3 +1,5 @@
+import { EventEmitter } from "node:events";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
@@ -3040,5 +3042,171 @@ describe("unavailable services", () => {
       const lastTitle = String(renameCalls.at(-1)?.[1]);
       expect(lastTitle).not.toContain("unavailable");
     }
+  });
+});
+
+// =============================================================================
+// Detached services (E4)
+// =============================================================================
+
+class FakeDetachedChild extends EventEmitter {
+  public readonly stdout = new EventEmitter();
+  public readonly stderr = new EventEmitter();
+  public readonly pid: number;
+
+  public constructor(pid: number) {
+    super();
+    this.pid = pid;
+  }
+}
+
+function makeDetachedSpawn(
+  children: FakeDetachedChild[],
+  basePid = 7000,
+): {
+  spawn: ServiceManagerDeps["detachedSpawn"];
+  args: { file: string; args: string[] }[];
+} {
+  const args: { file: string; args: string[] }[] = [];
+  let pid = basePid;
+  const spawn = ((file: string, argv: string[]) => {
+    const child = new FakeDetachedChild(pid);
+    pid += 1;
+    children.push(child);
+    args.push({ file, args: argv });
+    return child;
+  }) as unknown as ServiceManagerDeps["detachedSpawn"];
+  return { spawn, args };
+}
+
+describe("detached services (E4)", () => {
+  beforeEach(() => {
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+  });
+
+  it("starts a detached service with no pane: spawns sh -c and goes ready", async () => {
+    const config = makeConfig({ worker: { start: "node w.js", detached: true } });
+    const paneMap = makePaneMap([]); // Worker has NO pane entry
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    const { spawn, args } = makeDetachedSpawn(children);
+    deps.detachedSpawn = spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([4000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    await mgr.startService("worker");
+
+    const status = mgr.getStatus("worker");
+    expect(status.state).toBe("ready");
+    expect(status.isDetached).toBe(true);
+    expect(status.ports).toEqual([4000]);
+    expect(args[0]).toEqual({ file: "sh", args: ["-c", "node w.js"] });
+    // Detached port detection is PID-based, not pane-based.
+    expect(deps.detectPortsForPid).toHaveBeenCalledWith(7000);
+    expect(deps.recordDetached).toBeUndefined(); // Optional dep not wired in this mock
+  });
+
+  it("emits logLines as the child streams output", async () => {
+    const config = makeConfig({ worker: { start: "node w.js", detached: true } });
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+
+    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const seen: [string, string[]][] = [];
+    mgr.on("logLines", (name: string, lines: string[]) => {
+      seen.push([name, lines]);
+    });
+
+    await mgr.startService("worker");
+    children[0].stdout.emit("data", Buffer.from("hello\nworld\n"));
+    expect(seen).toContainEqual(["worker", ["hello", "world"]]);
+  });
+
+  it("stops a detached service by signalling its process group", async () => {
+    const config = makeConfig({ worker: { start: "node w.js", detached: true } });
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+
+    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    await mgr.startService("worker");
+
+    const kill = vi.mocked(process.kill);
+    const stopPromise = mgr.stopService("worker");
+    // Let the per-service lock run stopServiceInternal → runner.stop (SIGTERM).
+    await vi.advanceTimersByTimeAsync(1);
+    expect(kill).toHaveBeenCalledWith(-7000, "SIGTERM");
+
+    children[0].emit("exit", null, "SIGTERM");
+    await stopPromise;
+    expect(mgr.getStatus("worker").state).toBe("stopped");
+  });
+
+  it("restarts a detached service after a crash exit (generation-checked)", async () => {
+    const config = makeConfig({
+      worker: { start: "node w.js", detached: true, restart: { maxRetries: 3, backoff: 1000 } },
+    });
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+
+    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    await mgr.startService("worker");
+    expect(mgr.getStatus("worker").state).toBe("ready");
+
+    // Child crashes unexpectedly.
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(1500);
+
+    expect(children.length).toBe(2); // Respawned
+    expect(mgr.getStatus("worker").state).toBe("ready");
+    expect(mgr.getStatus("worker").retryCount).toBe(1);
+  });
+
+  it("a detached child exit during startup fails fast (no ready-timeout wait)", async () => {
+    const config = makeConfig({
+      worker: { start: "node w.js", detached: true, ready: { output: /never/u } },
+    });
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+
+    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const startPromise = mgr.startService("worker");
+    // Let the lock run startServiceInternal far enough to spawn the child.
+    await vi.advanceTimersByTimeAsync(1);
+    // Child dies before the ready output ever appears.
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(600);
+    await startPromise;
+
+    const status = mgr.getStatus("worker");
+    expect(status.state).toBe("error");
+    expect(status.lastError).toBe("Process exited before becoming ready");
+  });
+
+  it("startAll includes detached services alongside pane services", async () => {
+    const config = makeConfig({
+      pane: { start: "node p.js" },
+      worker: { start: "node w.js", detached: true },
+    });
+    const paneMap = makePaneMap(["pane"]); // Only the pane service gets a pane
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.detectPorts = vi.fn().mockResolvedValue([]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    await mgr.startAll();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(mgr.getStatus("worker").state).toBe("ready");
+    expect(children.length).toBe(1);
   });
 });
