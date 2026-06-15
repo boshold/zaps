@@ -34,6 +34,63 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("docker + ready validation (B3)", () => {
+    const hasDockerReadyError = (result: ReturnType<typeof projectConfigSchema.safeParse>) =>
+      !result.success &&
+      result.error.issues.some((i) => i.message.includes("cannot be used with docker services"));
+
+    it("rejects ready.port on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { port: 5432 } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects ready.port: true on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { port: true } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects a path-style ready.http on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { http: "/health" } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects a path-style ready.http object on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { http: { url: "/health" } } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("allows a full-URL ready.http on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: {
+          db: { docker: { service: "postgres" }, ready: { http: "http://127.0.0.1:5432/health" } },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("allows docker readiness with no explicit ready", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("allows ready.port on a non-docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { port: 3000 } } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("service raw option", () => {
     it("accepts raw: true", () => {
       const result = projectConfigSchema.safeParse({

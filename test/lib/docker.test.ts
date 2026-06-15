@@ -24,6 +24,7 @@ describe("parseContainerInfo", () => {
       state: "running",
       health: "healthy",
       ports: [5432, 8080],
+      ids: [],
     });
   });
 
@@ -31,7 +32,12 @@ describe("parseContainerInfo", () => {
     const json = JSON.stringify([
       { State: "running", Health: "", Publishers: [{ PublishedPort: 3000 }] },
     ]);
-    expect(parseContainerInfo(json)).toEqual({ state: "running", health: "", ports: [3000] });
+    expect(parseContainerInfo(json)).toEqual({
+      state: "running",
+      health: "",
+      ports: [3000],
+      ids: [],
+    });
   });
 
   it("aggregates a multi-record array: ready iff all ready, ports merged", () => {
@@ -43,6 +49,7 @@ describe("parseContainerInfo", () => {
       state: "running",
       health: "healthy",
       ports: [5432, 5433],
+      ids: [],
     });
   });
 
@@ -61,7 +68,25 @@ describe("parseContainerInfo", () => {
       state: "exited",
       health: "",
       ports: [5432, 5433],
+      ids: [],
     });
+  });
+
+  it("merges, dedups, and sorts container ids across records (B4)", () => {
+    const line1 = JSON.stringify({ ID: "b2", State: "running", Health: "", Publishers: [] });
+    const line2 = JSON.stringify({ ID: "a1", State: "running", Health: "", Publishers: [] });
+    const line3 = JSON.stringify({ ID: "a1", State: "running", Health: "", Publishers: [] });
+    expect(parseContainerInfo(`${line1}\n${line2}\n${line3}`)?.ids).toEqual(["a1", "b2"]);
+  });
+
+  it("falls back to Name when ID is absent", () => {
+    const json = JSON.stringify({
+      Name: "proj-db-1",
+      State: "running",
+      Health: "",
+      Publishers: [],
+    });
+    expect(parseContainerInfo(json)?.ids).toEqual(["proj-db-1"]);
   });
 
   it("parses a bare single object (compose v2.21 single container)", () => {
@@ -70,7 +95,12 @@ describe("parseContainerInfo", () => {
       Health: "",
       Publishers: [{ PublishedPort: 80 }],
     });
-    expect(parseContainerInfo(json)).toEqual({ state: "running", health: "", ports: [80] });
+    expect(parseContainerInfo(json)).toEqual({
+      state: "running",
+      health: "",
+      ports: [80],
+      ids: [],
+    });
   });
 
   it("returns null for empty output", () => {
@@ -91,6 +121,7 @@ describe("parseContainerInfo", () => {
       state: "running",
       health: "",
       ports: [],
+      ids: [],
     });
   });
 
@@ -123,6 +154,7 @@ describe("parseContainerInfo", () => {
       state: "running",
       health: "",
       ports: [],
+      ids: [],
     });
   });
 
@@ -137,16 +169,16 @@ describe("parseContainerInfo", () => {
 
 describe("isReady", () => {
   it("running + no healthcheck → ready", () => {
-    expect(isReady({ state: "running", health: "", ports: [] })).toBe(true);
+    expect(isReady({ state: "running", health: "", ports: [], ids: [] })).toBe(true);
   });
   it("running + healthy → ready", () => {
-    expect(isReady({ state: "running", health: "healthy", ports: [5432] })).toBe(true);
+    expect(isReady({ state: "running", health: "healthy", ports: [5432], ids: [] })).toBe(true);
   });
   it("running + unhealthy → not ready", () => {
-    expect(isReady({ state: "running", health: "unhealthy", ports: [] })).toBe(false);
+    expect(isReady({ state: "running", health: "unhealthy", ports: [], ids: [] })).toBe(false);
   });
   it("exited → not ready", () => {
-    expect(isReady({ state: "exited", health: "", ports: [] })).toBe(false);
+    expect(isReady({ state: "exited", health: "", ports: [], ids: [] })).toBe(false);
   });
 });
 

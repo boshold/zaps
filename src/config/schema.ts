@@ -142,6 +142,19 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
         input: svc,
       });
     }
+    if (svc.docker && svc.ready && typeof svc.ready === "object") {
+      const { ready } = svc;
+      const httpValue = "http" in ready ? ready.http : undefined;
+      const httpUrl = typeof httpValue === "string" ? httpValue : httpValue?.url;
+      const isHttpPath = typeof httpUrl === "string" && httpUrl.startsWith("/");
+      if ("port" in ready || isHttpPath) {
+        ctx.addIssue({
+          code: "custom",
+          message: `Service '${name}': ready.port / ready.http path cannot be used with docker services (published ports belong to dockerd, not the pane, so they are never detected). Use docker readiness (default healthcheck/running detection) or ready: {http: "http://127.0.0.1:<port>/path"} with a full URL.`,
+          input: svc,
+        });
+      }
+    }
     if (svc.optional === true) {
       const cmd = svc.start ?? svc.run;
       if (!cmd || typeof cmd !== "string") {

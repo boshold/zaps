@@ -138,16 +138,18 @@ function buildReadyDeps(
   deps: ServiceManagerDeps,
   projectDir: string,
 ): ReadyDeps {
-  const projectArgs = serviceConfig.docker
-    ? composeProjectArgs(serviceConfig.cwd ?? projectDir, serviceConfig.docker)
-    : [];
+  const { docker } = serviceConfig;
+  const projectArgs = docker ? composeProjectArgs(serviceConfig.cwd ?? projectDir, docker) : [];
   return {
     detectPorts: deps.detectPorts,
     capturePane: deps.capturePane,
     cwd: serviceConfig.cwd ?? projectDir,
-    composeFile: serviceConfig.docker?.file,
+    composeFile: docker?.file,
     dockerStatus: async (svc, cwd, composeFile) =>
       getContainerInfo(svc, cwd, composeFile, projectArgs),
+    dockerRequireRecreate: docker
+      ? Boolean(docker.build || docker.forceRecreate || docker.renewVolumes)
+      : undefined,
   };
 }
 

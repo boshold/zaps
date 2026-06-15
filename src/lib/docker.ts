@@ -19,6 +19,8 @@ interface DockerContainerInfo {
   state: string;
   health: string;
   ports: number[];
+  /** Container ID(s) — used to detect recreate (B4). Deduped and sorted. */
+  ids: string[];
 }
 
 /**
@@ -132,10 +134,12 @@ function extractPorts(publishers: unknown): number[] {
 }
 
 function parseRecord(record: Record<string, unknown>): DockerContainerInfo {
+  const id = toStr(record.ID) || toStr(record.Name);
   return {
     state: toStr(record.State),
     health: toStr(record.Health),
     ports: extractPorts(record.Publishers),
+    ids: id ? [id] : [],
   };
 }
 
@@ -195,9 +199,10 @@ function parseContainerInfo(output: string): DockerContainerInfo | null {
     return null;
   }
   const ports = [...new Set(infos.flatMap((i) => i.ports))].toSorted((a, b) => a - b);
+  const ids = [...new Set(infos.flatMap((i) => i.ids))].toSorted();
   // First non-ready record carries the failure reason; otherwise the first.
   const base = infos.find((i) => !isReady(i)) ?? infos[0];
-  return { state: base.state, health: base.health, ports };
+  return { state: base.state, health: base.health, ports, ids };
 }
 
 /**

@@ -67,6 +67,12 @@ export interface ReadyDeps {
     cwd?: string,
     composeFile?: string,
   ) => Promise<DockerContainerInfo | null>;
+  /**
+   * True for recreate-style docker starts (`build`/`forceRecreate`/
+   * `renewVolumes`): a leftover container must be replaced before ready is
+   * accepted, so the ready loop waits for the container id set to change (B4).
+   */
+  dockerRequireRecreate?: boolean;
 }
 
 export interface EnvDeps {

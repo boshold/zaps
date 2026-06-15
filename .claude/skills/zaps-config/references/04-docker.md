@@ -86,6 +86,10 @@ A container is **ready** when both conditions are met:
 
 Handles both JSON array and JSONL output formats from different Docker Compose versions.
 
+For recreate-style starts (`build` / `forceRecreate` / `renewVolumes`), readiness additionally waits for the container id to change, so a leftover container left running from a previous session can't briefly report "ready" before `up` tears it down and recreates it. A container that stays `exited`/`dead` fails fast — the error carries the container state and the last pane output, instead of waiting out the full 60s timeout.
+
+**`ready: { port }` and path-style `ready: { http: "/path" }` are not allowed on docker services** — they fail at config load. Published ports are held by `dockerd`, not the pane, so detection never matches. Use the default docker readiness or a full-URL `ready: { http: "http://127.0.0.1:<port>/path" }`.
+
 ## Port Extraction
 
 Published host ports are extracted from the container's `Publishers` array in the `docker compose ps` JSON output. Ports are deduplicated and sorted ascending. When `service` is an array, ports from all containers are aggregated. These ports populate `status.ports` for the service.

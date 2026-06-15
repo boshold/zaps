@@ -386,7 +386,7 @@ ready: { http: "http://localhost:3000/health" }          // full URL — probes 
 ready: { http: { url: "/api/health", status: 200 } }    // require specific status code
 ```
 
-When the URL starts with `/`, ZAPS first waits for a port (like `port: true`) then probes `http://localhost:{port}{path}`. A full URL is probed directly. If `status` is omitted, any HTTP response counts as ready.
+When the URL starts with `/`, ZAPS re-detects the service's ports every poll and probes the path on `http://127.0.0.1:{port}{path}`, skipping debugger/HMR ports (9229-9240, 24678). A full URL is probed directly. If `status` is omitted, any HTTP response counts as ready.
 
 **Docker** — wait for container running + healthy:
 
@@ -395,6 +395,11 @@ ready: { docker: "postgres" }
 ready: { docker: ["postgres", "redis"] }  // all must be ready
 ready: { docker: "postgres", file: "./docker-compose.yml" }
 ```
+
+> **Docker + `ready.port` / path-`http` is a config load error.** Published docker
+> ports are held by `dockerd`, not the service's pane, so port/PID detection can
+> never match — it would always time out. Use the default docker readiness, or a
+> full-URL `ready: { http: "http://127.0.0.1:<port>/path" }`.
 
 **Function** — custom async check:
 

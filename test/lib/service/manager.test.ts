@@ -5,11 +5,12 @@ import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 
-vi.mock("../../../src/lib/probe.js", () => ({
+vi.mock("../../../src/lib/probe.js", async (importActual) => ({
+  ...(await importActual<typeof import("../../../src/lib/probe.js")>()),
   probePort: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { probePort } = (await import("../../../src/lib/probe.js")) as {
+const { probePort } = (await import("../../../src/lib/probe.js")) as unknown as {
   probePort: ReturnType<typeof vi.fn>;
 };
 
@@ -1510,7 +1511,7 @@ describe("url resolution", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -1624,9 +1625,9 @@ describe("docker ready detection", () => {
     spy.mockImplementation(async () => {
       callCount += 1;
       if (callCount >= 2) {
-        return { state: "running", health: "healthy", ports: [5432] };
+        return { state: "running", health: "healthy", ports: [5432], ids: [] };
       }
-      return { state: "created", health: "", ports: [] };
+      return { state: "created", health: "", ports: [], ids: [] };
     });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
@@ -1654,7 +1655,7 @@ describe("docker ready detection", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -1694,7 +1695,7 @@ describe("docker config", () => {
     // Mock getContainerInfo for docker ready
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -1722,7 +1723,7 @@ describe("docker config", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -1746,7 +1747,7 @@ describe("docker config", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "healthy", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "healthy", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -1771,7 +1772,7 @@ describe("docker config", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const promise = mgr.startService("db");
@@ -2283,7 +2284,7 @@ describe("restartWithDockerOverrides", () => {
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
-    spy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -2340,7 +2341,7 @@ describe("restartWithDockerOverrides", () => {
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi
       .spyOn(dockerModule, "getContainerInfo")
-      .mockResolvedValue({ state: "running", health: "", ports: [5432] });
+      .mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
     let processRunning = false;
     deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
@@ -2588,6 +2589,7 @@ describe("combined docker services", () => {
       state: "running",
       health: "",
       ports: [5432],
+      ids: [],
     }) as unknown as ReturnType<typeof vi.fn>;
   });
 
@@ -2837,7 +2839,7 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(2500);
 
     // Now simulate container crash
-    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [] });
+    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [], ids: [] });
     await vi.advanceTimersByTimeAsync(2500);
 
     // Should transition to error (no restart config)
@@ -2871,14 +2873,14 @@ describe("combined docker services", () => {
     await p;
 
     // Simulate crash — container exits
-    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [] });
+    dockerSpy.mockResolvedValue({ state: "exited", health: "", ports: [], ids: [] });
     await vi.advanceTimersByTimeAsync(2500);
 
     // Should have detected crash and retried
     expect(mgr.getStatus("postgres").retryCount).toBe(1);
 
     // Restore container and advance to let restart complete
-    dockerSpy.mockResolvedValue({ state: "running", health: "", ports: [5432] });
+    dockerSpy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
     await vi.advanceTimersByTimeAsync(2000);
 
     expect(mgr.getStatus("postgres").state).toBe("ready");
