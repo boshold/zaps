@@ -22,7 +22,9 @@ import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
+import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
+import type { ServiceStatus } from "./lib/service/types.js";
 import {
   currentPaneId,
   currentSession,
@@ -105,6 +107,94 @@ async function runTui(opts: {
   client.disconnect();
 }
 
+const DETACH_INACTIVITY_MS = 120_000;
+
+/**
+ * `zaps up -d`: subscribe to the session, then issue a SINGLE `services.startAll`
+ * that joins the daemon's deduped in-flight run. Blocks until the run settles,
+ * bounded by an inactivity timeout that resets on every subscription event (no
+ * fixed wall-clock cap). Throws `CliError` on disconnect/inactivity; throws when
+ * any service ended in `error` so the caller can exit non-zero.
+ */
+async function runDetachedStartAll(sock: string, sid: string, sessionName: string): Promise<void> {
+  const ctl: {
+    sub?: IpcSubscription;
+    inactivity?: ReturnType<typeof setTimeout>;
+    done: boolean;
+    anyError: boolean;
+  } = { done: false, anyError: false };
+
+  await new Promise<void>((resolve, reject) => {
+    const finish = (action: () => void): void => {
+      if (ctl.done) {
+        return;
+      }
+      ctl.done = true;
+      if (ctl.inactivity) {
+        clearTimeout(ctl.inactivity);
+      }
+      ctl.sub?.close();
+      action();
+    };
+    const arm = (): void => {
+      if (ctl.done) {
+        return;
+      }
+      if (ctl.inactivity) {
+        clearTimeout(ctl.inactivity);
+      }
+      ctl.inactivity = setTimeout(() => {
+        finish(() =>
+          reject(
+            new CliError(
+              `zaps up -d: no activity from the daemon for ${DETACH_INACTIVITY_MS / 1000}s; aborting.`,
+            ),
+          ),
+        );
+      }, DETACH_INACTIVITY_MS);
+      ctl.inactivity.unref?.();
+    };
+    // Single startAll that joins the deduped in-flight run; no wall-clock cap
+    // (0) — the inactivity timer and socket-close handler bound it instead.
+    const drive = async (): Promise<void> => {
+      await ctl.sub?.ready;
+      const startRes = await ctl.sub?.request("services.startAll", undefined, 0);
+      if (startRes?.error) {
+        finish(() => reject(new CliError(`Error starting services: ${startRes.error}`)));
+        return;
+      }
+      const listRes = await ctl.sub?.request("services.list", undefined, 0);
+      const statuses = (listRes?.result as ServiceStatus[] | undefined) ?? [];
+      ctl.anyError = statuses.some((s) => s.state === "error");
+      finish(() => resolve());
+    };
+
+    ctl.sub = ipcSubscribe(
+      sock,
+      sid,
+      ["service.stateChange", "log.lines"],
+      () => {
+        arm();
+      },
+      () => {
+        finish(() => reject(new CliError("error: daemon connection closed")));
+      },
+      (err) => {
+        finish(() => reject(new CliError(`Error starting services: ${err}`)));
+      },
+    );
+    arm();
+    void drive().catch((error: unknown) => {
+      finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+    });
+  });
+
+  if (ctl.anyError) {
+    throw new CliError(`Session ${sessionName}: one or more services failed to start.`);
+  }
+  process.stdout.write(`Session ${sessionName} started (detached).\n`);
+}
+
 async function upFlow(detach?: boolean): Promise<void> {
   const configPath = discoverConfig(process.cwd());
   if (!configPath) {
@@ -145,13 +235,16 @@ async function upFlow(detach?: boolean): Promise<void> {
   };
 
   if (detach) {
-    // Start services but don't attach TUI
-    const startRes = await ipcRequest(sock, "services.startAll", null, 60_000, session.id);
-    if (startRes.error) {
-      process.stderr.write(`Error starting services: ${startRes.error}\n`);
-      process.exit(1);
+    // Start services without attaching the TUI; block until the run settles.
+    try {
+      await runDetachedStartAll(sock, session.id, session.name);
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
     }
-    process.stdout.write(`Session ${session.name} started (detached).\n`);
     return;
   }
 
@@ -538,18 +631,32 @@ program
 
         // Follow mode: subscribe to log events
         const sock = socketPath();
-        const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], (event: DaemonEvent) => {
-          const data = event.data as { service: string; lines: string[] };
-          if (targetServices.includes(data.service)) {
-            for (const line of data.lines) {
-              process.stdout.write(`${formatLine(data.service, line)}\n`);
+        let userClosed = false;
+        const sub = ipcSubscribe(
+          sock,
+          ipc.sessionId,
+          ["log.lines"],
+          (event: DaemonEvent) => {
+            const data = event.data as { service: string; lines: string[] };
+            if (targetServices.includes(data.service)) {
+              for (const line of data.lines) {
+                process.stdout.write(`${formatLine(data.service, line)}\n`);
+              }
             }
-          }
-        });
+          },
+          () => {
+            // Q5: the daemon closed the socket — no reconnect; report and exit 1.
+            if (!userClosed) {
+              process.stderr.write("error: daemon connection closed\n");
+              process.exit(1);
+            }
+          },
+        );
 
         // Wait for ctrl+c
         await new Promise<void>((resolve) => {
           process.on("SIGINT", () => {
+            userClosed = true;
             sub.close();
             resolve();
           });
@@ -635,15 +742,29 @@ program
 
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
-    const sub = ipcSubscribe(sock, id, [], (event: DaemonEvent) => {
-      if (filterRe && !filterRe.test(event.event)) {
-        return;
-      }
-      process.stdout.write(`${JSON.stringify(event)}\n`);
-    });
+    let userClosed = false;
+    const sub = ipcSubscribe(
+      sock,
+      id,
+      [],
+      (event: DaemonEvent) => {
+        if (filterRe && !filterRe.test(event.event)) {
+          return;
+        }
+        process.stdout.write(`${JSON.stringify(event)}\n`);
+      },
+      () => {
+        // Q5: the daemon closed the socket — no reconnect; report and exit 1.
+        if (!userClosed) {
+          process.stderr.write("error: daemon connection closed\n");
+          process.exit(1);
+        }
+      },
+    );
 
     await new Promise<void>((resolve) => {
       process.on("SIGINT", () => {
+        userClosed = true;
         sub.close();
         resolve();
       });

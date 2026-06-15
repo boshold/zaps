@@ -134,6 +134,29 @@ describe("ipcRequest", () => {
     const res = await promise;
     expect(res.result).toBe("ok");
   });
+
+  it("rejects immediately when the socket closes before a response (E5)", async () => {
+    const promise = ipcRequest("/test.sock", "test");
+    mockSocket.emit("connect");
+    mockSocket.emit("close");
+
+    await expect(promise).rejects.toThrow("daemon connection closed");
+  });
+
+  it("survives a malformed JSON line and processes a later valid line (E5)", async () => {
+    const promise = ipcRequest("/test.sock", "test");
+    mockSocket.emit("connect");
+
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+
+    // Garbage line must not crash the client; the next valid line resolves.
+    mockSocket.emit("data", Buffer.from("not-json{{{\n"));
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "ok" })}\n`));
+
+    const res = await promise;
+    expect(res.result).toBe("ok");
+  });
 });
 
 describe("ipcStream", () => {
@@ -239,6 +262,55 @@ describe("ipcStream", () => {
     mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`));
     const res = await promise;
     expect(res.result).toBe("done");
+  });
+
+  it("does not time out while events keep arriving (inactivity reset, E3)", async () => {
+    const onEvent = vi.fn();
+    const promise = ipcStream("/test.sock", "tasks.run", {}, onEvent, 500);
+
+    mockSocket.emit("connect");
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+
+    // Emit an event every 300ms (< the 500ms window) for well past the window.
+    for (let i = 0; i < 6; i += 1) {
+      vi.advanceTimersByTime(300);
+      mockSocket.emit(
+        "data",
+        Buffer.from(`${JSON.stringify({ id: req.id, event: "line", data: i })}\n`),
+      );
+    }
+    // 1800ms elapsed, but never 500ms of silence — the stream is still alive.
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: req.id, result: "done" })}\n`));
+
+    const res = await promise;
+    expect(res.result).toBe("done");
+    expect(onEvent).toHaveBeenCalledTimes(6);
+  });
+
+  it("times out after the inactivity window of silence (E3)", async () => {
+    const promise = ipcStream("/test.sock", "tasks.run", {}, vi.fn(), 500);
+
+    mockSocket.emit("connect");
+    const written = mockSocket.write.mock.calls[0][0] as string;
+    const req = JSON.parse(written.replace("\n", ""));
+
+    // One event, then silence past the window → inactivity timeout.
+    mockSocket.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ id: req.id, event: "line", data: 1 })}\n`),
+    );
+    vi.advanceTimersByTime(501);
+
+    await expect(promise).rejects.toThrow(/timed out/);
+  });
+
+  it("rejects immediately when the socket closes mid-stream (E5)", async () => {
+    const promise = ipcStream("/test.sock", "tasks.run", {}, vi.fn());
+    mockSocket.emit("connect");
+    mockSocket.emit("close");
+
+    await expect(promise).rejects.toThrow("daemon connection closed");
   });
 });
 
@@ -422,5 +494,71 @@ describe("ipcSubscribe", () => {
     );
 
     expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("invokes onError on a daemon error-ack (E8)", () => {
+    const onError = vi.fn();
+    ipcSubscribe("/test.sock", "s1", [], vi.fn(), undefined, onError);
+    mockSocket.emit("connect");
+
+    // The daemon replies to the subscribe request with an error ack.
+    const subReq = JSON.parse((mockSocket.write.mock.calls[0][0] as string).replace("\n", ""));
+    mockSocket.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ id: subReq.id, error: "Unknown session" })}\n`),
+    );
+
+    expect(onError).toHaveBeenCalledWith("Unknown session");
+  });
+
+  it("rejects a pending request when the socket closes (E5)", async () => {
+    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    mockSocket.emit("connect");
+
+    const reqPromise = sub.request("services.list");
+    mockSocket.emit("close");
+
+    await expect(reqPromise).rejects.toThrow("daemon connection closed");
+  });
+
+  it("demuxes a request response while events stream on the same socket (E5)", async () => {
+    const onEvent = vi.fn();
+    const sub = ipcSubscribe("/test.sock", "s1", [], onEvent);
+    mockSocket.emit("connect");
+
+    const reqPromise = sub.request("services.list");
+    const { calls } = mockSocket.write.mock;
+    const reqId = JSON.parse((calls[calls.length - 1][0] as string).replace("\n", "")).id;
+
+    // A daemon event interleaves before the request's own response.
+    mockSocket.emit(
+      "data",
+      Buffer.from(
+        `${JSON.stringify({ session: "s1", event: "log.lines", data: { lines: ["x"] } })}\n`,
+      ),
+    );
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: reqId, result: ["api"] })}\n`));
+
+    const res = await reqPromise;
+    expect(res.result).toEqual(["api"]);
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: "log.lines" }));
+    sub.close();
+  });
+
+  it("request with timeoutMs=0 has no wall-clock timeout (inactivity-bounded use)", async () => {
+    vi.useFakeTimers();
+    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    mockSocket.emit("connect");
+
+    const reqPromise = sub.request("services.startAll", undefined, 0);
+    vi.advanceTimersByTime(300_000); // 5 minutes — would have tripped a fixed timeout
+
+    const { calls } = mockSocket.write.mock;
+    const reqId = JSON.parse((calls[calls.length - 1][0] as string).replace("\n", "")).id;
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: reqId, result: "ok" })}\n`));
+
+    await expect(reqPromise).resolves.toMatchObject({ result: "ok" });
+    sub.close();
+    vi.useRealTimers();
   });
 });
