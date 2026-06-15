@@ -8,6 +8,7 @@ interface TaskRunnerDeps {
   tasks: Record<string, TaskConfig>;
   statuses: Map<string, ServiceStatus>;
   projectDir: string;
+  services?: Record<string, { cwd?: string }>;
   onProgress?: (key: string, result: "success" | "error") => void;
   onLine?: (key: string, line: string) => void;
 }
@@ -104,7 +105,7 @@ export async function runTaskWithDeps(
   }
 
   // Resolve env
-  const serviceCtx = buildServiceContext(deps.statuses, deps.projectDir);
+  const serviceCtx = buildServiceContext(deps.statuses, deps.projectDir, deps.services);
   const resolvedEnv = resolveEnv(t.env, serviceCtx);
   const taskCwd = t.cwd ?? deps.projectDir;
   const envSpread = Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {};

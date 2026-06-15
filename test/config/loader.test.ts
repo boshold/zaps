@@ -276,6 +276,34 @@ describe("loadConfig", () => {
     writeSpy.mockRestore();
   });
 
+  it("strips g/y flags from a ready.output regex and warns", async () => {
+    const writeSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "test",
+          services: {
+            api: { start: "npm run dev", ready: { output: /listening/gy } },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    const output = result.project.services.api.ready;
+    const re = (output as { output: RegExp }).output;
+    expect(re).toBeInstanceOf(RegExp);
+    expect(re.flags).not.toMatch(/[gy]/);
+    expect(re.source).toBe("listening");
+
+    const warnings = writeSpy.mock.calls.map(([msg]) => String(msg)).join("");
+    expect(warnings).toContain("service 'api' ready.output regex");
+    writeSpy.mockRestore();
+  });
+
   it("throws when no export found", async () => {
     const configPath = writeConfig(".zaps.ts", `export const notAConfig = 42;`);
 

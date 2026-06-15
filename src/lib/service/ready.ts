@@ -138,10 +138,16 @@ export async function waitForReady(
     await poll(async () => {
       const output = await deps.capturePane(paneTarget, 200);
       const lines = output.split("\n");
-      if (config.output instanceof RegExp) {
-        return lines.some((line) => config.output instanceof RegExp && config.output.test(line));
+      const matcher = config.output;
+      if (matcher instanceof RegExp) {
+        // Reset lastIndex per test — a stray g/y flag (should be stripped at
+        // Load, C10) would otherwise make matches stateful and flaky.
+        return lines.some((line) => {
+          matcher.lastIndex = 0;
+          return matcher.test(line);
+        });
       }
-      return lines.some(config.output as (line: string) => boolean);
+      return lines.some(matcher);
     }, signal);
     return [];
   }

@@ -22,7 +22,7 @@ interface ServiceContext {
     {
       port: number | undefined; // First detected port (shorthand)
       ports: number[]; // All detected ports
-      cwd: string | undefined; // Always `undefined` in current implementation
+      cwd: string | undefined; // Service's configured `cwd`, else the project dir
     }
   >;
   projectDir: string; // Resolved project root
@@ -31,6 +31,7 @@ interface ServiceContext {
 
 - `services` is keyed by service name — access any service's runtime info
 - `port` is `undefined` if the service hasn't reported a port yet
+- `cwd` is the service's configured `cwd` (resolved), or `projectDir` when the service sets none
 - `projectDir` is the resolved working directory for the project
 
 ## How Env Vars Are Applied

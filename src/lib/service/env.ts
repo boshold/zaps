@@ -1,18 +1,21 @@
 import type { EnvConfig, EnvDeps, ServiceContext, ServiceStatus } from "./types.js";
 
 /**
- * Build a ServiceContext from current service statuses.
+ * Build a ServiceContext from current service statuses. Each service's `cwd`
+ * resolves to its configured `cwd` (if any) or the project dir, so config
+ * functions reading `ctx.services[x].cwd` get a real path (C9).
  */
 export function buildServiceContext(
   statuses: Map<string, ServiceStatus>,
   projectDir: string,
+  servicesConfig: Record<string, { cwd?: string }> = {},
 ): ServiceContext {
   const services: ServiceContext["services"] = {};
   for (const [name, status] of statuses) {
     services[name] = {
       port: status.ports[0],
       ports: status.ports,
-      cwd: undefined,
+      cwd: servicesConfig[name]?.cwd ?? projectDir,
     };
   }
   return { services, projectDir };

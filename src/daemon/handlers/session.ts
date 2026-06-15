@@ -36,7 +36,7 @@ async function runPopupTaskNonInteractive(
   }
 
   const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
-  const serviceCtx = buildServiceContext(statuses, config.projectDir);
+  const serviceCtx = buildServiceContext(statuses, config.projectDir, config.project.services);
 
   const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
   const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
@@ -313,6 +313,7 @@ export const sessionHandlers: Record<
             session.manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
           ),
           projectDir: session.config.projectDir,
+          services: session.config.project.services,
           onLine: (_taskKey, line) => {
             send(socket, { id: req.id, event: "line", data: line });
           },

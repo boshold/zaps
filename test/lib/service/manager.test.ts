@@ -2056,16 +2056,38 @@ describe("diffOutput", () => {
     expect(diffOutput([], ["a", "b"])).toEqual(["a", "b"]);
   });
 
-  it("returns new lines after overlap", () => {
+  it("returns new lines after overlap (scrolling)", () => {
     expect(diffOutput(["a", "b", "c"], ["b", "c", "d", "e"])).toEqual(["d", "e"]);
   });
 
-  it("returns all current lines when no overlap found", () => {
-    expect(diffOutput(["x", "y"], ["a", "b"])).toEqual(["a", "b"]);
+  it("returns the appended lines for a plain append (no scroll)", () => {
+    expect(diffOutput(["a", "b", "c"], ["a", "b", "c", "d"])).toEqual(["d"]);
   });
 
   it("returns empty array when captures are identical", () => {
     expect(diffOutput(["a", "b"], ["a", "b"])).toEqual([]);
+  });
+
+  it("does not re-emit the window when the final line is rewritten in place", () => {
+    // Progress bar: only the last line changes — emit nothing (held), not a flood.
+    expect(diffOutput(["a", "b", "50%"], ["a", "b", "60%"])).toEqual([]);
+  });
+
+  it("emits stable new lines but holds the volatile final line", () => {
+    // "done" is stable and new; "100%" is the final (possibly partial) line, held.
+    expect(diffOutput(["a", "b", "50%"], ["a", "b", "done", "100%"])).toEqual(["done"]);
+  });
+
+  it("returns [] for equal-size captures with zero overlap", () => {
+    expect(diffOutput(["x", "y", "z"], ["a", "b", "c"])).toEqual([]);
+  });
+
+  it("treats a differently sized capture with no overlap as all-new", () => {
+    expect(diffOutput(["x", "y"], ["a", "b", "c"])).toEqual(["a", "b", "c"]);
+  });
+
+  it("reports nothing for a fully repetitive window", () => {
+    expect(diffOutput(["x", "x", "x"], ["x", "x", "x"])).toEqual([]);
   });
 });
 

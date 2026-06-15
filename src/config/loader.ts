@@ -16,7 +16,7 @@ import type {
   ServiceConfig,
   UnavailableServiceInfo,
 } from "./types.js";
-import { isLayoutLeaf, isLayoutSplit } from "./types.js";
+import { isLayoutLeaf, isLayoutSplit, isReadyOutput } from "./types.js";
 
 function collectPaneNames(node: LayoutNode): string[] {
   if (isLayoutLeaf(node)) {
@@ -317,6 +317,28 @@ async function nativeTransform(): Promise<JitiOptions["transform"]> {
 }
 
 /**
+ * Strip `g`/`y` flags from `ready.output` RegExps: those flags make `.test()`
+ * stateful (`lastIndex` advances), causing flaky ready detection (C10). Rebuilds
+ * the RegExp without them and warns, naming the service.
+ */
+function normalizeReadyOutputFlags(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    const { ready } = svc;
+    if (!ready || !isReadyOutput(ready) || !(ready.output instanceof RegExp)) {
+      continue;
+    }
+    const { flags } = ready.output;
+    if (/[gy]/u.test(flags)) {
+      ready.output = new RegExp(ready.output.source, flags.replace(/[gy]/gu, ""));
+      process.stderr.write(
+        `Warning: service '${name}' ready.output regex uses stateful 'g'/'y' flags; ` +
+          `stripped them to keep ready detection deterministic.\n`,
+      );
+    }
+  }
+}
+
+/**
  * Dynamically import and validate a zaps config file.
  */
 export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
@@ -340,6 +362,8 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
   const resolvedInvokeDir = invokeDir ?? process.cwd();
   const { lib, bindActions } = createZapsLib();
   const project: ProjectConfig = configFn(lib);
+
+  normalizeReadyOutputFlags(project);
 
   // Resolve optional services and strip unavailable ones before expansion
   const unavailableServices = await resolveOptionalServices(project.services);

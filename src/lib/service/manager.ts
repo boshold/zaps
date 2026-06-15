@@ -27,15 +27,9 @@ import type {
 type PaneMap = Record<string, string>;
 
 /**
- * Find new lines between two pane captures using line-overlap diffing.
- * Finds the tail of `prev` that matches the head of `current`, returns lines after the overlap.
+ * Longest tail of `prev` that equals the head of `current`, or null if none.
  */
-function diffOutput(prev: string[], current: string[]): string[] {
-  if (prev.length === 0) {
-    return current;
-  }
-
-  // Try to find the longest tail of prev matching head of current
+function overlapLength(prev: string[], current: string[]): number | null {
   for (let overlap = Math.min(prev.length, current.length); overlap > 0; overlap -= 1) {
     let match = true;
     for (let i = 0; i < overlap; i += 1) {
@@ -45,12 +39,42 @@ function diffOutput(prev: string[], current: string[]): string[] {
       }
     }
     if (match) {
-      return current.slice(overlap);
+      return overlap;
     }
   }
+  return null;
+}
 
-  // No overlap found — return all current lines
-  return current;
+/**
+ * Find new lines between two pane captures using line-overlap diffing.
+ *
+ * 1. Direct overlap on the full captures handles scrolling and plain appends.
+ * 2. If that fails, retry with each capture's final line excluded: tmux may be
+ *    rewriting it in place (progress bars, status lines), which would otherwise
+ *    desync the search and re-emit the whole window (C6). Only the stable lines
+ *    are returned; the volatile final line is held until a newer line appears.
+ * 3. With no alignment, equal-size windows are the same buffer rewritten —
+ *    prefer reporting nothing over re-emitting everything (C6).
+ */
+function diffOutput(prev: string[], current: string[]): string[] {
+  // No baseline yet — everything is new.
+  if (prev.length === 0) {
+    return current;
+  }
+
+  const direct = overlapLength(prev, current);
+  if (direct !== null) {
+    return current.slice(direct);
+  }
+
+  const prevStable = prev.slice(0, -1);
+  const currStable = current.slice(0, -1);
+  const stable = overlapLength(prevStable, currStable);
+  if (stable !== null) {
+    return currStable.slice(stable);
+  }
+
+  return prev.length === current.length ? [] : current;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -234,6 +258,7 @@ export class ServiceManager extends EventEmitter {
             tasks,
             statuses: this.statuses,
             projectDir: config.projectDir,
+            services: config.project.services,
             onProgress: (taskKey, result) => {
               this.emit("taskComplete", taskKey, tasks[taskKey]?.name ?? taskKey, result);
             },
@@ -500,7 +525,11 @@ export class ServiceManager extends EventEmitter {
       status.ports = ports;
       status.readySince = Date.now();
 
-      const ctx = buildServiceContext(this.statuses, this.config.projectDir);
+      const ctx = buildServiceContext(
+        this.statuses,
+        this.config.projectDir,
+        this.config.project.services,
+      );
       await this.onServiceReady(name, serviceConfig, status, ports, ctx);
     } catch (error) {
       // If aborted during stop, don't transition to error
@@ -542,7 +571,11 @@ export class ServiceManager extends EventEmitter {
     }
 
     // Regular or combined owner: send command to pane
-    const ctx = buildServiceContext(this.statuses, this.config.projectDir);
+    const ctx = buildServiceContext(
+      this.statuses,
+      this.config.projectDir,
+      this.config.project.services,
+    );
     const env = resolveEnv(serviceConfig.env, ctx);
     const resolvedCommand = resolveCommand(serviceConfig, ctx);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;

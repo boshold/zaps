@@ -532,7 +532,7 @@ env: (ctx) => ({
     {
       port: number | undefined; // first detected port
       ports: number[]; // all detected ports
-      cwd: string | undefined;
+      cwd: string | undefined; // service's configured cwd, else projectDir
     }
   >;
   projectDir: string;

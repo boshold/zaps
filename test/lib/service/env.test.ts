@@ -70,7 +70,7 @@ describe("buildServiceContext", () => {
     expect(ctx.services.worker.ports).toEqual([]);
   });
 
-  it("sets cwd to undefined", () => {
+  it("falls back to projectDir when a service has no configured cwd", () => {
     const statuses = new Map<string, ServiceStatus>([
       [
         "svc",
@@ -84,7 +84,24 @@ describe("buildServiceContext", () => {
     ]);
 
     const ctx = buildServiceContext(statuses, "/dir");
-    expect(ctx.services.svc.cwd).toBeUndefined();
+    expect(ctx.services.svc.cwd).toBe("/dir");
+  });
+
+  it("uses the service's configured cwd when present", () => {
+    const statuses = new Map<string, ServiceStatus>([
+      [
+        "svc",
+        {
+          name: "svc",
+          state: "ready",
+          ports: [8080],
+          retryCount: 0,
+        },
+      ],
+    ]);
+
+    const ctx = buildServiceContext(statuses, "/dir", { svc: { cwd: "/dir/backend" } });
+    expect(ctx.services.svc.cwd).toBe("/dir/backend");
   });
 });
 

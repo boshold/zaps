@@ -117,6 +117,20 @@ describe("waitForReady", () => {
     expect(callCount).toBeGreaterThanOrEqual(2);
   });
 
+  it("matches deterministically even if a global-flag regex slips through", async () => {
+    // Defensive: lastIndex must be reset per test, or a stray /g flag would make
+    // Matching stateful and intermittently miss across multiple lines/polls (C10).
+    mockCapturePane.mockResolvedValue("line one\nlistening\nline three");
+
+    const controller = new AbortController();
+    // eslint-disable-next-line require-unicode-regexp -- exercising a stateful global flag
+    const config: ReadyConfig = { output: /listening/g };
+
+    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(promise).resolves.toEqual([]);
+  });
+
   it("resolves on output mode (function) when fn returns true", async () => {
     let callCount = 0;
     mockCapturePane.mockImplementation(async () => {
