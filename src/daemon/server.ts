@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
@@ -155,6 +156,7 @@ class DaemonServer implements SessionStore {
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
+      preflightPorts: checkPortPreflight,
       storeExecInfo: (service: string, info: ExecInfo) => {
         ref.session?.execInfo.set(service, info);
       },

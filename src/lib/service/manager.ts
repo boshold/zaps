@@ -500,6 +500,20 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
+    // Port pre-flight: fail fast with an actionable message instead of a silent
+    // 60s ready timeout when an expected host port is already taken (B2). Runs
+    // Only from the `starting` transition, so a restart's own listener is gone
+    // (stop completed first, per the state machine ordering).
+    const conflict = await this.deps.preflightPorts(serviceConfig, this.config.projectDir);
+    if (conflict) {
+      status.state = transition(status.state, "error");
+      status.lastError = conflict;
+      delete status.readySince;
+      this.emit("stateChange", name, status);
+      this.abortControllers.delete(name);
+      throw new Error(conflict);
+    }
+
     await this.sendStartCommand(name, serviceConfig, paneTarget);
 
     // Wait for ready
@@ -1186,6 +1200,8 @@ export interface ServiceManagerDeps {
   getWindowOption: (target: string, option: string) => Promise<string>;
   setWindowOption: (target: string, option: string, value: string) => Promise<void>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
+  /** Pre-flight expected host ports; returns a conflict message or null (B2). */
+  preflightPorts: (serviceConfig: ServiceConfig, projectDir: string) => Promise<string | null>;
   storeExecInfo: (service: string, info: ExecInfo) => void;
   sessionId: string;
   zapsCommand: string;

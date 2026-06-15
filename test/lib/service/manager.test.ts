@@ -29,6 +29,7 @@ function createMockDeps(): ServiceManagerDeps {
     getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
+    preflightPorts: vi.fn<ServiceManagerDeps["preflightPorts"]>().mockResolvedValue(null),
     storeExecInfo: vi.fn(),
     sessionId: "test-session-id",
     zapsCommand: "zaps",
@@ -464,6 +465,26 @@ describe("startService", () => {
       { name: "svc", state: "starting" },
       { name: "svc", state: "ready" },
     ]);
+  });
+
+  it("fails fast with lastError on a port pre-flight conflict (B2)", async () => {
+    const config = makeConfig({ svc: { start: "start-svc", ready: { port: 5432 } } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.preflightPorts = vi
+      .fn<ServiceManagerDeps["preflightPorts"]>()
+      .mockResolvedValue("Port 5432 already in use (pid 1234 postgres)");
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await expect(mgr.startService("svc")).rejects.toThrow(
+      "Port 5432 already in use (pid 1234 postgres)",
+    );
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(mgr.getStatus("svc").lastError).toBe("Port 5432 already in use (pid 1234 postgres)");
+    // Start command was never sent.
+    expect(deps.sendKeys).not.toHaveBeenCalled();
   });
 
   it("sets readySince on ready and clears on stop", async () => {
