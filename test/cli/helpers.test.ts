@@ -29,8 +29,10 @@ import {
   CliError,
   DAEMON_NOT_RUNNING,
   formatTable,
+  parsePositiveInt,
   resolveCommand,
   resolveCommandArgv,
+  resolveListedSessionId,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
@@ -409,5 +411,106 @@ describe("runDown", () => {
     const { deps, destroy } = makeDeps({ sessionArg: "proj" });
     expect(await runDown(deps)).toBe(0);
     expect(destroy).toHaveBeenCalledWith("/tmp/sock", "abc");
+  });
+});
+
+describe("parsePositiveInt", () => {
+  it("rejects a non-numeric string", () => {
+    expect(parsePositiveInt("abc")).toBeNull();
+  });
+
+  it("rejects zero", () => {
+    expect(parsePositiveInt("0")).toBeNull();
+  });
+
+  it("rejects a negative integer", () => {
+    expect(parsePositiveInt("-5")).toBeNull();
+  });
+
+  it("rejects a non-integer (would silently floor under parseInt)", () => {
+    expect(parsePositiveInt("1.5")).toBeNull();
+  });
+
+  it("accepts a positive integer", () => {
+    expect(parsePositiveInt("10")).toBe(10);
+  });
+});
+
+describe("resolveTargetSession — subdirectory resolution (E12)", () => {
+  const sessions: SessionInfo[] = [
+    { id: "a1", name: "app", projectDir: "/home/u/app" },
+    { id: "b1", name: "other", projectDir: "/home/u/other" },
+  ];
+
+  function withCwd(cwd: string, fn: () => void) {
+    const spy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    try {
+      fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("matches a session when cwd is a subdirectory of its projectDir", () => {
+    withCwd("/home/u/app/src/components", () => {
+      expect(resolveTargetSession(sessions).id).toBe("a1");
+    });
+  });
+
+  it("does not match a sibling dir sharing a name prefix (/app vs /app2)", () => {
+    const siblings: SessionInfo[] = [
+      { id: "a1", name: "app", projectDir: "/home/u/app" },
+      { id: "c1", name: "other", projectDir: "/home/u/zzz" },
+    ];
+    withCwd("/home/u/app2", () => {
+      expect(() => resolveTargetSession(siblings)).toThrow(/Multiple sessions/);
+    });
+  });
+
+  it("prefers the deepest (longest) projectDir for nested projects", () => {
+    const nested: SessionInfo[] = [
+      { id: "root", name: "monorepo", projectDir: "/home/u/app" },
+      { id: "pkg", name: "api", projectDir: "/home/u/app/packages/api" },
+    ];
+    withCwd("/home/u/app/packages/api/src", () => {
+      expect(resolveTargetSession(nested).id).toBe("pkg");
+    });
+  });
+
+  it("exact projectDir match still wins", () => {
+    withCwd("/home/u/app", () => {
+      expect(resolveTargetSession(sessions).id).toBe("a1");
+    });
+  });
+});
+
+describe("resolveListedSessionId (E8 events validation)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the id when the project's session is in the list", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+    const sessions: SessionInfo[] = [
+      { id: "session-/my/.zaps.mts", name: "my", projectDir: "/my" },
+    ];
+    expect(resolveListedSessionId(sessions)).toBe("session-/my/.zaps.mts");
+  });
+
+  it("throws when the project's session is not running", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+    expect(() => resolveListedSessionId([])).toThrow(/No running zaps session/);
+  });
+
+  it("defers to resolveTargetSession for an explicit arg", () => {
+    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    expect(resolveListedSessionId(sessions, "proj")).toBe("abc");
+  });
+
+  it("throws for an explicit arg that matches nothing", () => {
+    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    expect(() => resolveListedSessionId(sessions, "ghost")).toThrow(/Session not found/);
   });
 });

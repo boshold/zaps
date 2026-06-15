@@ -6,8 +6,10 @@ import {
   CliError,
   DAEMON_NOT_RUNNING,
   formatTable,
+  parsePositiveInt,
   resolveCommand,
   resolveCommandArgv,
+  resolveListedSessionId,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
@@ -525,7 +527,11 @@ program
   .option("-f, --follow", "Stream live logs")
   .option("--tail <n>", "Number of lines to show", "100")
   .action(async (services: string[], opts: { follow?: boolean; tail: string }) => {
-    const tail = Number.parseInt(opts.tail, 10);
+    const tail = parsePositiveInt(opts.tail);
+    if (tail === null) {
+      process.stderr.write(`Invalid --tail value "${opts.tail}": expected a positive integer.\n`);
+      process.exit(1);
+    }
 
     try {
       await withDaemon(async (ipc: SessionIpc) => {
@@ -666,17 +672,17 @@ program
       process.exit(1);
     }
 
+    // Validate the resolved session against session.list up front (E8) — the
+    // No-`-s` path resolves a pure config hash, so without this check `events`
+    // Would subscribe to a nonexistent session and hang forever.
     const id = await (async () => {
       try {
-        const sessionOpt = globalSession();
-        if (sessionOpt) {
-          const res = await ipcRequest(sock, "session.list");
-          if (res.error) {
-            throw new CliError(`Error: ${res.error}`);
-          }
-          return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
+        const res = await ipcRequest(sock, "session.list");
+        if (res.error) {
+          throw new CliError(`Error: ${res.error}`);
         }
-        return resolveSessionId().id;
+        const sessions = res.result as SessionInfo[];
+        return resolveListedSessionId(sessions, globalSession());
       } catch (error) {
         if (error instanceof CliError) {
           process.stderr.write(`${error.message}\n`);
@@ -705,6 +711,11 @@ program
           process.stderr.write("error: daemon connection closed\n");
           process.exit(1);
         }
+      },
+      (reason: string) => {
+        // E8: surface a subscribe error-ack that slipped past the session.list pre-check.
+        process.stderr.write(`error: ${reason}\n`);
+        process.exit(1);
       },
     );
 

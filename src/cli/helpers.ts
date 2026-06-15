@@ -101,9 +101,15 @@ export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: strin
     return sessions[0];
   }
   const cwd = process.cwd();
-  const match = sessions.find((s) => s.projectDir === cwd);
-  if (match) {
-    return match;
+  const exact = sessions.find((s) => s.projectDir === cwd);
+  if (exact) {
+    return exact;
+  }
+  // Subdirectory match (E12): cwd is inside a session's projectDir. The path.sep guard stops `/foo` matching `/foobar`; the deepest (longest) projectDir wins for nested projects.
+  const prefixMatches = sessions.filter((s) => cwd.startsWith(`${s.projectDir}${path.sep}`));
+  if (prefixMatches.length > 0) {
+    const [deepest] = prefixMatches.toSorted((a, b) => b.projectDir.length - a.projectDir.length);
+    return deepest;
   }
   const lines = sessions.map((s) => `  ${s.id}  ${s.name}  ${s.projectDir}`).join("\n");
   throw new CliError(`Multiple sessions running. Specify one:\n${lines}`);
@@ -116,6 +122,35 @@ export function resolveSessionId(): { configPath: string; id: string } {
     throw new CliError("No .zaps.mts config found. Run `zaps init` to create one.");
   }
   return { configPath, id: sessionId(configPath) };
+}
+
+/**
+ * Parse a CLI numeric option that must be a finite integer > 0 (E13). Returns
+ * the value, or null for anything invalid — `"abc"` (NaN), `"0"`, `"-5"`,
+ * `"1.5"` (non-integer; `parseInt` would silently floor it). Callers turn null
+ * into a usage error + exit 1.
+ */
+export function parsePositiveInt(raw: string): number | null {
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * Resolve a session id from a `session.list` result, validating existence (E8).
+ * With an explicit arg, defers to `resolveTargetSession` (which throws for an
+ * unknown arg). Without one, resolves this project's id and confirms it is
+ * actually in the list — so callers fail fast instead of subscribing to a
+ * nonexistent session.
+ */
+export function resolveListedSessionId(sessions: SessionInfo[], sessionArg?: string): string {
+  if (sessionArg) {
+    return resolveTargetSession(sessions, sessionArg).id;
+  }
+  const resolved = resolveSessionId().id;
+  if (!sessions.some((s) => s.id === resolved)) {
+    throw new CliError("No running zaps session for this project.");
+  }
+  return resolved;
 }
 
 export function formatTable(rows: string[][]): string {
