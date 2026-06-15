@@ -81,8 +81,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
         }
         throw new Error(`Unknown service: ${name}`);
       }),
-      startService: vi.fn().mockResolvedValue(undefined),
-      stopService: vi.fn().mockResolvedValue(undefined),
+      startService: vi.fn().mockResolvedValue({ noop: false }),
+      stopService: vi.fn().mockResolvedValue({ noop: false }),
       restartService: vi.fn().mockResolvedValue(undefined),
       startAll: vi.fn().mockResolvedValue(undefined),
       stopAll: vi.fn().mockResolvedValue(undefined),

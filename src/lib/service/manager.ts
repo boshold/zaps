@@ -10,7 +10,14 @@ import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { createServiceStatus, transition } from "./state.js";
-import type { ExecInfo, ReadyConfig, ReadyDeps, ServiceContext, ServiceStatus } from "./types.js";
+import type {
+  ExecInfo,
+  ReadyConfig,
+  ReadyDeps,
+  ServiceActionResult,
+  ServiceContext,
+  ServiceStatus,
+} from "./types.js";
 
 type PaneMap = Record<string, string>;
 
@@ -230,9 +237,13 @@ export class ServiceManager extends EventEmitter {
           throw new Error(`Task '${key}' failed`);
         }
       },
-      startService: async (name) => this.startService(name),
+      startService: async (name) => {
+        await this.startService(name);
+      },
       restartService: async (name) => this.restartService(name),
-      stopService: async (name) => this.stopService(name),
+      stopService: async (name) => {
+        await this.stopService(name);
+      },
       isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
       openInBrowser: async (url) => openInBrowser(url),
     });
@@ -323,7 +334,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Start a single service.
    */
-  public async startService(name: string): Promise<void> {
+  public async startService(name: string): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -332,9 +343,10 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Unknown service: ${name}`);
     }
 
-    // Guard: skip if already starting or ready (prevents double-start races)
-    if (status.state === "starting" || status.state === "ready") {
-      return;
+    // Idempotent no-op: already starting/ready (double-start race) or terminal
+    // Unavailable. Returns a friendly no-op instead of throwing or double-acting.
+    if (status.state === "starting" || status.state === "ready" || status.state === "unavailable") {
+      return { noop: true };
     }
 
     // Check dependencies are ready
@@ -376,7 +388,7 @@ export class ServiceManager extends EventEmitter {
 
       // If aborted during ready wait (e.g. stopService called), exit silently
       if (controller.signal.aborted) {
-        return;
+        return { noop: false };
       }
 
       // Detect ports — use docker-provided ports if available
@@ -392,13 +404,15 @@ export class ServiceManager extends EventEmitter {
     } catch (error) {
       // If aborted during stop, don't transition to error
       if (controller.signal.aborted) {
-        return;
+        return { noop: false };
       }
       status.state = transition(status.state, "error");
       status.lastError = error instanceof Error ? error.message : String(error);
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
+
+    return { noop: false };
   }
 
   /**
@@ -491,7 +505,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Stop a single service.
    */
-  public async stopService(name: string): Promise<void> {
+  public async stopService(name: string): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -500,7 +514,18 @@ export class ServiceManager extends EventEmitter {
       throw new Error(`Unknown service: ${name}`);
     }
 
-    // Transition: ready/starting -> stopping
+    // Idempotent no-op: nothing to stop in these states (terminal or already
+    // Stopping). Avoids a raw `Invalid state transition` over IPC on repeat calls.
+    if (
+      status.state === "stopped" ||
+      status.state === "stopping" ||
+      status.state === "error" ||
+      status.state === "unavailable"
+    ) {
+      return { noop: true };
+    }
+
+    // Transition: ready/starting/restarting -> stopping
     status.state = transition(status.state, "stopping");
     this.emit("stateChange", name, status);
 
@@ -555,6 +580,8 @@ export class ServiceManager extends EventEmitter {
       status.lastError = `onStop hook failed: ${error instanceof Error ? error.message : String(error)}`;
       this.emit("stateChange", name, status);
     }
+
+    return { noop: false };
   }
 
   /**

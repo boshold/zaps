@@ -25,8 +25,8 @@ function createManager(): ServiceManager {
   return Object.assign(emitter, {
     startAll: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
-    startService: vi.fn().mockResolvedValue(undefined),
-    stopService: vi.fn().mockResolvedValue(undefined),
+    startService: vi.fn().mockResolvedValue({ noop: false }),
+    stopService: vi.fn().mockResolvedValue({ noop: false }),
     restartService: vi.fn().mockResolvedValue(undefined),
     getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
     getStatus: vi.fn((name: string) => {
@@ -102,7 +102,7 @@ describe("handleRequest", () => {
     const socket = createMockSocket();
     const req: IpcRequest = { id: "r6", method: "services.start", params: { name: "api" } };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
-    expect(res.result).toEqual({ started: "api" });
+    expect(res.result).toEqual({ started: "api", noop: false });
     expect(vi.mocked(manager.startService)).toHaveBeenCalledWith("api");
   });
 
@@ -118,7 +118,7 @@ describe("handleRequest", () => {
     const socket = createMockSocket();
     const req: IpcRequest = { id: "r8", method: "services.stop", params: { name: "api" } };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
-    expect(res.result).toEqual({ stopped: "api" });
+    expect(res.result).toEqual({ stopped: "api", noop: false });
   });
 
   it("handles services.stop error", async () => {

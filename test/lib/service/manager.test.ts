@@ -506,6 +506,76 @@ describe("startService", () => {
     expect(deps.sendKeys).toHaveBeenCalledTimes(1);
   });
 
+  it("returns noop:true when starting an already-ready service", async () => {
+    const config = makeConfig({ svc: { start: "start-svc" } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const promise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    const result = await mgr.startService("svc");
+    expect(result).toEqual({ noop: true });
+  });
+
+  it("returns noop:true when starting an unavailable service (no action)", async () => {
+    const config = makeConfig({ svc: { start: "start-svc" } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    mgr.getStatus("svc").state = "unavailable";
+
+    const events: string[] = [];
+    mgr.on("stateChange", (name: string) => events.push(name));
+
+    const result = await mgr.startService("svc");
+    expect(result).toEqual({ noop: true });
+    expect(deps.sendKeys).not.toHaveBeenCalled();
+    expect(events).toHaveLength(0);
+  });
+
+  it.each(["stopped", "stopping", "error", "unavailable"] as const)(
+    "stop on %s is an idempotent no-op (no throw, no stateChange)",
+    async (state) => {
+      const config = makeConfig({ svc: { start: "start-svc" } });
+      const paneMap = makePaneMap(["svc"]);
+      const deps = createMockDeps();
+
+      const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+      mgr.getStatus("svc").state = state;
+
+      const events: string[] = [];
+      mgr.on("stateChange", (name: string) => events.push(name));
+
+      const result = await mgr.stopService("svc");
+      expect(result).toEqual({ noop: true });
+      expect(mgr.getStatus("svc").state).toBe(state);
+      expect(deps.sendCtrlC).not.toHaveBeenCalled();
+      expect(events).toHaveLength(0);
+    },
+  );
+
+  it("stops a service in restarting state (restarting -> stopping -> stopped)", async () => {
+    const config = makeConfig({ svc: { start: "start-svc" } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    mgr.getStatus("svc").state = "restarting";
+
+    const stopPromise = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    const result = await stopPromise;
+
+    expect(result).toEqual({ noop: false });
+    expect(mgr.getStatus("svc").state).toBe("stopped");
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("%svc");
+  });
+
   it("uses run field when start is not set", async () => {
     const config = makeConfig({
       svc: { run: "run-cmd" },

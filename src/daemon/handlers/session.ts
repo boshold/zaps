@@ -141,8 +141,8 @@ export const sessionHandlers: Record<
     }
     const { name } = req.params as { name: string };
     try {
-      await session.manager.startService(name);
-      return ipcOk(req.id, { started: name });
+      const result = await session.manager.startService(name);
+      return ipcOk(req.id, { started: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -155,8 +155,8 @@ export const sessionHandlers: Record<
     }
     const { name } = req.params as { name: string };
     try {
-      await session.manager.stopService(name);
-      return ipcOk(req.id, { stopped: name });
+      const result = await session.manager.stopService(name);
+      return ipcOk(req.id, { stopped: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }

@@ -84,8 +84,8 @@ const handlers: Record<string, Handler> = {
   async "services.start"(req, manager) {
     const { name } = req.params as { name: string };
     try {
-      await manager.startService(name);
-      return ipcOk(req.id, { started: name });
+      const result = await manager.startService(name);
+      return ipcOk(req.id, { started: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -94,8 +94,8 @@ const handlers: Record<string, Handler> = {
   async "services.stop"(req, manager) {
     const { name } = req.params as { name: string };
     try {
-      await manager.stopService(name);
-      return ipcOk(req.id, { stopped: name });
+      const result = await manager.stopService(name);
+      return ipcOk(req.id, { stopped: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }

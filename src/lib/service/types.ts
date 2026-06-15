@@ -45,6 +45,17 @@ export interface ServiceStatus {
   group?: string;
 }
 
+// === Action results ===
+/**
+ * Result of an idempotent start/stop call. `noop` is true when the call was a
+ * no-op because the service was already in a matching state (e.g. stopping an
+ * already-stopped service), so callers/handlers can report "already done"
+ * instead of an error.
+ */
+export interface ServiceActionResult {
+  noop: boolean;
+}
+
 // === Dependency injection interfaces ===
 export interface ReadyDeps {
   detectPorts: (paneTarget: string) => Promise<number[]>;

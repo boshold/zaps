@@ -196,7 +196,7 @@ describe("session handlers", () => {
         params: { name: "api" },
       };
       const res = await sessionHandlers["services.start"](req, store, socket as never);
-      expect(res.result).toEqual({ started: "api" });
+      expect(res.result).toEqual({ started: "api", noop: false });
       expect(session.manager.startService).toHaveBeenCalledWith("api");
     });
 
@@ -243,7 +243,7 @@ describe("session handlers", () => {
         params: { name: "api" },
       };
       const res = await sessionHandlers["services.stop"](req, store, socket as never);
-      expect(res.result).toEqual({ stopped: "api" });
+      expect(res.result).toEqual({ stopped: "api", noop: false });
     });
 
     it("returns error when stop rejects with non-Error", async () => {
