@@ -417,6 +417,7 @@ If no `ready` config is provided, ZAPS defaults to checking the docker container
 | --------------- | ---------------------------------- | ------- | ------------------------------------------- |
 | `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required)   |
 | `file`          | `string`                           | —       | Path to compose file                        |
+| `projectName`   | `string`                           | —       | Pin the compose project name (see below)    |
 | `build`         | `boolean`                          | —       | `--build` flag                              |
 | `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                     |
 | `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)                |
@@ -424,6 +425,23 @@ If no `ready` config is provided, ZAPS defaults to checking the docker container
 | `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                           |
 | `noDeps`        | `boolean`                          | —       | `--no-deps` flag                            |
 | `expand`        | `boolean`                          | —       | Expand into individual services (see below) |
+
+> **Compose version:** Docker Compose **v2.21+** is the tested baseline.
+
+#### Compose project pinning
+
+Every compose invocation is pinned to a deterministic project name so two
+checkouts in same-named directories (e.g. `…/foo/backend` and `…/bar/backend`)
+can't be mistaken for each other. The project name is resolved by precedence:
+
+1. `docker.projectName` (this config field)
+2. `ZAPS_COMPOSE_PROJECT` env var (read in the daemon process — set it where the daemon spawns)
+3. the compose file's top-level `name:`
+4. `zaps-<sanitized-dir-name>-<hash>` (default)
+
+> **One-time recreate:** switching to a pinned project recreates the service's
+> containers once. If containers already exist under the old (unpinned) name,
+> ZAPS prints a one-time warning suggesting `docker compose -p <old> down`.
 
 ### Expanded Docker Services
 

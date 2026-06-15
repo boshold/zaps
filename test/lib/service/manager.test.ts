@@ -1778,8 +1778,13 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    // GetContainerInfo should be called with the composeFile
-    expect(spy).toHaveBeenCalledWith("postgres", "/test", "my-compose.yml");
+    // GetContainerInfo should be called with the composeFile and the -p project args
+    expect(spy).toHaveBeenCalledWith(
+      "postgres",
+      "/test",
+      "my-compose.yml",
+      expect.arrayContaining(["-p"]),
+    );
 
     spy.mockRestore();
   });

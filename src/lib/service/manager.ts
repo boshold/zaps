@@ -6,7 +6,12 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
-import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
+import {
+  buildDockerCommand,
+  composeProjectArgs,
+  getContainerInfo,
+  legacyProjectWarning,
+} from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
@@ -83,15 +88,16 @@ async function sleep(ms: number): Promise<void> {
 
 function resolveCommand(config: ServiceConfig, ctx: ServiceContext): string {
   if (config.docker && !config.start && !config.run) {
+    const cwd = config.cwd ?? ctx.projectDir;
     // For combined owner: build command with ALL services in the group
     if (config._combined?.isOwner) {
       const groupDocker: DockerConfig = {
         ...config.docker,
         service: config._combined.allServices,
       };
-      return buildDockerCommand(groupDocker);
+      return buildDockerCommand(groupDocker, cwd);
     }
-    return buildDockerCommand(config.docker);
+    return buildDockerCommand(config.docker, cwd);
   }
   const cmd = config.start ?? config.run;
   if (typeof cmd === "function") {
@@ -106,9 +112,10 @@ function resolveCommand(config: ServiceConfig, ctx: ServiceContext): string {
 function buildDockerComposeArgs(
   action: "stop" | "start" | "restart",
   serviceName: string,
-  composeFile?: string,
+  composeFile: string | undefined,
+  projectArgs: string[],
 ): string[] {
-  const args = ["compose"];
+  const args = ["compose", ...projectArgs];
   if (composeFile) {
     args.push("-f", composeFile);
   }
@@ -131,12 +138,16 @@ function buildReadyDeps(
   deps: ServiceManagerDeps,
   projectDir: string,
 ): ReadyDeps {
+  const projectArgs = serviceConfig.docker
+    ? composeProjectArgs(serviceConfig.cwd ?? projectDir, serviceConfig.docker)
+    : [];
   return {
     detectPorts: deps.detectPorts,
     capturePane: deps.capturePane,
     cwd: serviceConfig.cwd ?? projectDir,
     composeFile: serviceConfig.docker?.file,
-    dockerStatus: getContainerInfo,
+    dockerStatus: async (svc, cwd, composeFile) =>
+      getContainerInfo(svc, cwd, composeFile, projectArgs),
   };
 }
 
@@ -189,6 +200,8 @@ export class ServiceManager extends EventEmitter {
   private readonly monitorGenerations = new Map<string, number>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
+  /** Docker project names already checked for a legacy-project migration warning. */
+  private readonly legacyWarned = new Set<string>();
   private readonly originalWindowTitle: Promise<string>;
   private readonly originalAutoRename: Promise<string | null>;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
@@ -576,7 +589,12 @@ export class ServiceManager extends EventEmitter {
       if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
         await this.deps.exec(
           "docker",
-          buildDockerComposeArgs("start", name, serviceConfig.docker?.file),
+          buildDockerComposeArgs(
+            "start",
+            name,
+            serviceConfig.docker?.file,
+            this.dockerProjectArgs(serviceConfig),
+          ),
           serviceConfig.cwd ?? this.config.projectDir,
         );
       }
@@ -594,6 +612,12 @@ export class ServiceManager extends EventEmitter {
     const resolvedCommand = resolveCommand(serviceConfig, ctx);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
 
+    // One-time best-effort migration warning when containers linger under the
+    // Pre-pinning project name (B5). Never blocks start.
+    if (serviceConfig.docker) {
+      await this.warnLegacyDockerProject(serviceConfig, cwd);
+    }
+
     if (serviceConfig.raw) {
       // Raw mode: current inline env approach
       const envPrefix = formatEnvForShell(env);
@@ -607,6 +631,33 @@ export class ServiceManager extends EventEmitter {
         paneTarget,
         `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
       );
+    }
+  }
+
+  /** Resolve the compose `-p` project args for a docker service ([] otherwise). */
+  private dockerProjectArgs(serviceConfig: ServiceConfig): string[] {
+    return serviceConfig.docker
+      ? composeProjectArgs(serviceConfig.cwd ?? this.config.projectDir, serviceConfig.docker)
+      : [];
+  }
+
+  /** Emit a one-time best-effort warning if legacy (unpinned) containers exist. */
+  private async warnLegacyDockerProject(serviceConfig: ServiceConfig, cwd: string): Promise<void> {
+    if (!serviceConfig.docker) {
+      return;
+    }
+    const key = `${cwd} ${serviceConfig.docker.file ?? ""}`;
+    if (this.legacyWarned.has(key)) {
+      return;
+    }
+    this.legacyWarned.add(key);
+    try {
+      const warning = await legacyProjectWarning(cwd, serviceConfig.docker);
+      if (warning) {
+        process.stderr.write(`Warning: ${warning}\n`);
+      }
+    } catch {
+      // Best-effort — never block start.
     }
   }
 
@@ -696,7 +747,12 @@ export class ServiceManager extends EventEmitter {
       // Combined service: stop individual container via docker compose stop
       await this.deps.exec(
         "docker",
-        buildDockerComposeArgs("stop", name, serviceConfig.docker?.file),
+        buildDockerComposeArgs(
+          "stop",
+          name,
+          serviceConfig.docker?.file,
+          this.dockerProjectArgs(serviceConfig),
+        ),
         serviceConfig.cwd ?? this.config.projectDir,
       );
 
@@ -818,7 +874,12 @@ export class ServiceManager extends EventEmitter {
 
       await this.deps.exec(
         "docker",
-        buildDockerComposeArgs("restart", name, serviceConfig.docker?.file),
+        buildDockerComposeArgs(
+          "restart",
+          name,
+          serviceConfig.docker?.file,
+          this.dockerProjectArgs(serviceConfig),
+        ),
         serviceConfig.cwd ?? this.config.projectDir,
       );
 
@@ -957,6 +1018,7 @@ export class ServiceManager extends EventEmitter {
           name,
           config.cwd ?? this.config.projectDir,
           config.docker?.file,
+          this.dockerProjectArgs(config),
         );
         crashed = !info || info.state !== "running";
       } else {

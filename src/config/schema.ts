@@ -56,6 +56,7 @@ const readyConfigSchema = z.union([
 const dockerConfigSchema = z.object({
   service: z.union([z.string(), z.array(z.string()).nonempty()]),
   file: z.optional(z.string()),
+  projectName: z.optional(z.string()),
   build: z.optional(z.boolean()),
   forceRecreate: z.optional(z.boolean()),
   renewVolumes: z.optional(z.boolean()),

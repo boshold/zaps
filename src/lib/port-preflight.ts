@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 
 import type { ServiceConfig } from "#src/config/types.js";
 import { isReadyPort } from "#src/config/types.js";
+import { composeProjectArgs } from "#src/lib/docker.js";
 
 const execFileAsync = promisify(execFile);
 const CONNECT_TIMEOUT_MS = 500;
@@ -18,8 +19,12 @@ async function execOut(cmd: string, args: string[], cwd?: string): Promise<strin
   }
 }
 
-async function defaultComposeConfig(cwd: string, file: string | undefined): Promise<string> {
-  const args = ["compose"];
+async function defaultComposeConfig(
+  cwd: string,
+  file: string | undefined,
+  projectArgs: string[],
+): Promise<string> {
+  const args = ["compose", ...projectArgs];
   if (file) {
     args.push("-f", file);
   }
@@ -52,7 +57,7 @@ function parsePort(addr: string): number {
 
 /** How port pre-flight reaches docker compose — injectable for testing. */
 export interface PreflightDeps {
-  composeConfig?: (cwd: string, file: string | undefined) => Promise<string>;
+  composeConfig?: (cwd: string, file: string | undefined, projectArgs: string[]) => Promise<string>;
 }
 
 /**
@@ -136,7 +141,7 @@ export async function deriveExpectedPorts(
     const { file, service } = serviceConfig.docker;
     const cwd = serviceConfig.cwd ?? projectDir;
     const run = deps.composeConfig ?? defaultComposeConfig;
-    const out = await run(cwd, file);
+    const out = await run(cwd, file, composeProjectArgs(cwd, serviceConfig.docker));
     const serviceNames = Array.isArray(service) ? service : [service];
     const ports = parseComposePorts(out, serviceNames);
     if (ports === null) {

@@ -8,6 +8,7 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 | --------------- | ---------------------------------- | ------------ | --------------------------------------------- |
 | `service`       | `string \| string[]`               | **required** | Docker Compose service name(s)                |
 | `file`          | `string`                           | `undefined`  | Custom compose file (`-f`)                    |
+| `projectName`   | `string`                           | `undefined`  | Pin the compose project name (`-p`)           |
 | `build`         | `boolean`                          | `false`      | Build images before starting (`--build`)      |
 | `forceRecreate` | `boolean`                          | `false`      | Recreate containers (`--force-recreate`)      |
 | `renewVolumes`  | `boolean`                          | `false`      | Recreate anonymous volumes (`-V`)             |
@@ -21,10 +22,21 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 When `docker` is set, ZAPS builds a `docker compose up` command from the config flags:
 
 ```
-docker compose [-f <file>] up [--build] [--force-recreate] [-V] [--remove-orphans] [--pull <policy>] [--no-deps] <service...>
+docker compose -p <project> [-f <file>] up [--build] [--force-recreate] [-V] [--remove-orphans] [--pull <policy>] [--no-deps] <service...>
 ```
 
-Flags are appended only when their corresponding option is truthy/set.
+Flags are appended only when their corresponding option is truthy/set. Compose **v2.21+** is the tested baseline.
+
+## Project Pinning
+
+Every compose invocation (`up`/`ps`/`start`/`stop`/`restart`/`config`) is pinned with `-p <project>` so two checkouts in same-named directories don't collide. The project name resolves by precedence:
+
+1. `docker.projectName`
+2. `ZAPS_COMPOSE_PROJECT` env (read in the daemon process)
+3. the compose file's top-level `name:`
+4. `zaps-<sanitized-dir>-<hash>` (default — deterministic per absolute cwd)
+
+Switching to a pinned project recreates the containers once; if containers exist under the old unpinned name, ZAPS prints a one-time cleanup warning.
 
 ## Auto-Command
 
