@@ -1243,6 +1243,42 @@ describe("crash monitor poll interval", () => {
 // =============================================================================
 
 describe("handleExecExited", () => {
+  it("fails a starting service fast on a wrapper spawn error (E11)", async () => {
+    const config = makeConfig({ svc: { start: "start-svc", ready: { output: /NEVER_MATCHES/u } } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+    deps.capturePane = vi.fn().mockResolvedValue("no match here");
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const events: { name: string; state: string; lastError?: string }[] = [];
+    mgr.on("stateChange", (name: string, status: ServiceStatus) => {
+      events.push({ name, state: status.state, lastError: status.lastError });
+    });
+
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(mgr.getStatus("svc").state).toBe("starting");
+
+    const controller = (
+      mgr as unknown as { abortControllers: Map<string, AbortController> }
+    ).abortControllers.get("svc");
+
+    mgr.handleExecExited("svc", 127, null, "spawn /bad/cwd ENOENT");
+
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(mgr.getStatus("svc").lastError).toBe("spawn /bad/cwd ENOENT");
+    expect(controller?.signal.aborted).toBe(true);
+    expect(events.some((e) => e.state === "error" && e.lastError === "spawn /bad/cwd ENOENT")).toBe(
+      true,
+    );
+
+    // The aborted start settles without overwriting the error state.
+    await vi.advanceTimersByTimeAsync(600);
+    await startPromise;
+    expect(mgr.getStatus("svc").state).toBe("error");
+  });
+
   it("triggers error when service is ready with no restart config", async () => {
     const config = makeConfig({
       svc: { start: "start-svc" },
