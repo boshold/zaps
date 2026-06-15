@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+import { createJiti } from "jiti";
+
 import { detectCycles } from "#src/lib/service/graph.js";
 
 import { createZapsLib } from "./builder.js";
@@ -284,10 +286,14 @@ function stripUnavailableServices(project: ProjectConfig, unavailableNames: Set<
  * Dynamically import and validate a zaps config file.
  */
 export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
-  const absolutePath = new URL(configPath, `file://${process.cwd()}/`).href;
-  // Cache-bust: append unique query param to force re-import on reload
-  const importUrl = `${absolutePath}?t=${Date.now()}`;
-  const mod = await import(importUrl);
+  const absolutePath = path.resolve(process.cwd(), configPath);
+  const jiti = createJiti(import.meta.url, {
+    moduleCache: false,
+    fsCache: true,
+    tryNative: false,
+    interopDefault: true,
+  });
+  const mod = await jiti.import<Record<string, unknown>>(absolutePath);
 
   const configFn = mod.config ?? mod.default;
   if (typeof configFn !== "function") {

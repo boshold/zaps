@@ -253,6 +253,32 @@ export function config({ defineProject, node }: Library) {
 }
 ```
 
+### Config Loading & Reload
+
+Config files (`.zaps.ts` / `.zaps.mts` and their `local.` variants) are evaluated
+with [jiti](https://github.com/unjs/jiti). Each load re-evaluates the **entire**
+import graph — the entry file plus every relative helper/env file it imports — so
+you can split config across modules and a reload picks up edits to any of them:
+
+```typescript
+// helper.mts
+export const apiPort = 3000;
+
+// .zaps.mts
+import { apiPort } from "./helper.mts";
+export function config(z) {
+  /* use apiPort */
+}
+```
+
+Caveats (consequences of jiti's per-load CJS transform):
+
+- No ESM live bindings — exports are snapshotted at load time.
+- Module identity changes per load: values from one load are not `===`/`instanceof`
+  identical to the next. Don't rely on cross-reload object identity.
+- `node_modules` reached from a config are re-evaluated on each load. If config load
+  becomes slow because of a heavy dependency, that cost is per reload.
+
 ## Services
 
 ### Options

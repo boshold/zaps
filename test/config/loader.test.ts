@@ -208,6 +208,50 @@ describe("loadConfig", () => {
     expect(result.projectDir).toBe("/foo/bar");
   });
 
+  it("re-evaluates transitively imported helper on reload", async () => {
+    writeConfig("helper.mts", `export const projectName = "first-value";`);
+    const configPath = writeConfig(
+      "fixture.zaps.mts",
+      `
+      import { projectName } from "./helper.mts";
+      export function config(z) {
+        return z.defineProject({
+          name: projectName,
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    const first = await loadConfig(configPath, tmpDir);
+    expect(first.project.name).toBe("first-value");
+
+    writeConfig("helper.mts", `export const projectName = "second-value";`);
+
+    const second = await loadConfig(configPath, tmpDir);
+    expect(second.project.name).toBe("second-value");
+  });
+
+  it("loads a config from a path containing '#'", async () => {
+    const hashDir = path.join(tmpDir, "branch#1");
+    fs.mkdirSync(hashDir, { recursive: true });
+    const configPath = path.join(hashDir, ".zaps.ts");
+    fs.writeFileSync(
+      configPath,
+      `
+      export function config(z) {
+        return z.defineProject({
+          name: "hash-path",
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, hashDir);
+    expect(result.project.name).toBe("hash-path");
+  });
+
   it("throws when no export found", async () => {
     const configPath = writeConfig(".zaps.ts", `export const notAConfig = 42;`);
 
