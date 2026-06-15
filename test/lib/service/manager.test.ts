@@ -2251,6 +2251,41 @@ describe("restartWithDockerOverrides", () => {
     // Original config should still be restored
     expect(config.project.services.db.docker?.build).toBeUndefined();
   });
+
+  it("serializes concurrent rebuilds so no override flags leak (C8)", async () => {
+    const config = makeConfig({ db: { docker: { service: "postgres" } } });
+    const paneMap = makePaneMap(["db"]);
+    const deps = createMockDeps();
+
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const spy = vi
+      .spyOn(dockerModule, "getContainerInfo")
+      .mockResolvedValue({ state: "running", health: "", ports: [5432] });
+
+    let processRunning = false;
+    deps.getDescendantPids = vi.fn(async () => (processRunning ? [1000, 2000] : [1000]));
+    deps.sendKeys = vi.fn(async () => {
+      processRunning = true;
+    });
+    deps.sendCtrlC = vi.fn(async () => {
+      processRunning = false;
+    });
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Two rebuilds fired concurrently: the second must snapshot the RESTORED
+    // Config (not the first's temporary overrides), so nothing leaks.
+    const r1 = mgr.restartWithDockerOverrides("db", { build: true });
+    const r2 = mgr.restartWithDockerOverrides("db", { forceRecreate: true });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await Promise.all([r1, r2]);
+
+    expect(config.project.services.db.docker?.build).toBeUndefined();
+    expect(config.project.services.db.docker?.forceRecreate).toBeUndefined();
+    expect(config.project.services.db.docker?.service).toBe("postgres");
+
+    spy.mockRestore();
+  });
 });
 
 // =============================================================================
@@ -2394,6 +2429,67 @@ describe("cascadeRestart", () => {
     expect(targets.filter((t: string) => t === "%db")).toHaveLength(1);
     expect(targets.filter((t: string) => t === "%api")).toHaveLength(1);
     expect(targets.filter((t: string) => t === "%frontend")).toHaveLength(1);
+  });
+});
+
+// =============================================================================
+// Operation mutex
+// =============================================================================
+
+describe("operation mutex", () => {
+  it("serializes a concurrent stop + start on the same service (in order)", async () => {
+    const config = makeConfig({ svc: { start: "start-svc", raw: true } });
+    const paneMap = makePaneMap(["svc"]);
+    const deps = createMockDeps();
+
+    let stopRequested = false;
+    deps.getDescendantPids = vi.fn(async () => (stopRequested ? [1000] : [1000, 2000]));
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const startPromise = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+    expect(mgr.getStatus("svc").state).toBe("ready");
+
+    const events: string[] = [];
+    deps.sendCtrlC = vi.fn(async () => {
+      events.push("stop");
+      stopRequested = true;
+    });
+    deps.sendKeys = vi.fn(async () => {
+      events.push("start");
+      stopRequested = false;
+    });
+
+    // Fire both without awaiting between — the mutex must run them in order.
+    const pStop = mgr.stopService("svc");
+    const pStart = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(6000);
+    await Promise.all([pStop, pStart]);
+
+    expect(events).toEqual(["stop", "start"]);
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
+  it("does not poison the chain when an operation rejects", async () => {
+    const config = makeConfig({ api: { start: "node server.js" } });
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // First op rejects (api is not a docker service) — the rejection reaches the
+    // Caller but must not block later operations on the same service.
+    await expect(mgr.restartWithDockerOverrides("api", { build: true })).rejects.toThrow(
+      "not a docker service",
+    );
+
+    const startPromise = mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(mgr.getStatus("api").state).toBe("ready");
   });
 });
 
@@ -2584,6 +2680,58 @@ describe("combined docker services", () => {
       expect.arrayContaining(["restart", "redis"]),
       expect.any(String),
     );
+  });
+
+  it("bumps the monitor generation when restarting a combined non-owner (C7)", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+    const p2 = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p2;
+
+    const gens = (mgr as unknown as { monitorGenerations: Map<string, number> }).monitorGenerations;
+    const before = gens.get("redis") ?? 0;
+
+    const pRestart = mgr.restartService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await pRestart;
+
+    expect((gens.get("redis") ?? 0) > before).toBe(true);
+  });
+
+  it("Ctrl-C's the owner's pane when the last combined sibling stops (E10)", async () => {
+    const config = makeCombinedConfig();
+    const deps = createMockDeps();
+    // Group not referenced in layout → each child got its OWN pane.
+    const paneMap = { "@tui": "%tui", postgres: "%postgres", redis: "%redis" };
+
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const p1 = mgr.startService("postgres");
+    await vi.advanceTimersByTimeAsync(500);
+    await p1;
+    const p2 = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(500);
+    await p2;
+
+    // Stop the owner first — redis still running, so no Ctrl-C yet.
+    const pStopOwner = mgr.stopService("postgres");
+    await vi.advanceTimersByTimeAsync(5500);
+    await pStopOwner;
+    expect(deps.sendCtrlC).not.toHaveBeenCalled();
+
+    // Stop the non-owner last → all stopped → Ctrl-C the OWNER's pane.
+    const pStopRedis = mgr.stopService("redis");
+    await vi.advanceTimersByTimeAsync(5500);
+    await pStopRedis;
+
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("%postgres");
+    expect(deps.sendCtrlC).not.toHaveBeenCalledWith("%redis");
   });
 
   it("crash monitor checks docker container status for combined services", async () => {

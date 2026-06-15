@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 
-import type { DockerConfig, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
+import type {
+  CombinedServiceMeta,
+  DockerConfig,
+  ResolvedConfig,
+  ServiceConfig,
+} from "#src/config/types.js";
 import { buildDockerCommand, getContainerInfo } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
@@ -158,6 +163,8 @@ export class ServiceManager extends EventEmitter {
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
   private readonly monitorGenerations = new Map<string, number>();
+  /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
+  private readonly opLocks = new Map<string, Promise<void>>();
   private readonly originalWindowTitle: Promise<string>;
   private readonly originalAutoRename: Promise<string | null>;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
@@ -255,6 +262,26 @@ export class ServiceManager extends EventEmitter {
    * the same in-flight run (hooks fire exactly once); the shared promise is
    * cleared on settlement so a later call starts a fresh run.
    */
+  /**
+   * Serialize an operation on a service: it runs only after the previous
+   * operation for the same name settles. The caller still sees the operation's
+   * result/rejection; a rejection never poisons the chain for later operations.
+   */
+  private async withServiceLock<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.opLocks.get(name) ?? Promise.resolve();
+    // eslint-disable-next-line promise/prefer-await-to-then -- promise-chain mutex by design
+    const next = prev.then(fn, fn);
+    this.opLocks.set(
+      name,
+      // eslint-disable-next-line promise/prefer-await-to-then -- chain tail must never reject
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
+  }
+
   public async startAll(): Promise<void> {
     this.startAllPromise ??= this.runStartAll();
     await this.startAllPromise;
@@ -401,11 +428,18 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Start a single service. `satisfiedDeps` lists dependencies to treat as
-   * already satisfied without a readiness check — used by `startAll` for
-   * non-autostart deps (Q2); explicit start calls enforce all deps.
+   * Start a single service (serialized per service). `satisfiedDeps` lists
+   * dependencies to treat as already satisfied without a readiness check — used
+   * by `startAll` for non-autostart deps (Q2); explicit start calls enforce all.
    */
   public async startService(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): Promise<ServiceActionResult> {
+    return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
+  }
+
+  private async startServiceInternal(
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
@@ -570,9 +604,13 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Stop a single service.
+   * Stop a single service (serialized per service).
    */
   public async stopService(name: string): Promise<ServiceActionResult> {
+    return this.withServiceLock(name, async () => this.stopServiceInternal(name));
+  }
+
+  private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -625,8 +663,11 @@ export class ServiceManager extends EventEmitter {
       });
 
       if (allStopped) {
-        await this.deps.sendCtrlC(paneTarget);
-        await this.waitForPaneExit(paneTarget);
+        // `docker compose up` for the whole group runs in the OWNER's pane —
+        // Ctrl-C there, not the stopped member's (which may be an idle shell). E10
+        const ownerPane = this.resolveOwnerPane(combined, paneTarget);
+        await this.deps.sendCtrlC(ownerPane);
+        await this.waitForPaneExit(ownerPane);
       }
     } else {
       // Regular service: Ctrl-C and wait for exit
@@ -649,6 +690,17 @@ export class ServiceManager extends EventEmitter {
     }
 
     return { noop: false };
+  }
+
+  /**
+   * Resolve the pane running the group's `docker compose up` — the owner's pane.
+   * Falls back to the given pane if no owner is found.
+   */
+  private resolveOwnerPane(combined: CombinedServiceMeta, fallback: string): string {
+    const owner = combined.allServices.find(
+      (sib) => this.config.project.services[sib]?._combined?.isOwner,
+    );
+    return owner ? (this.paneMap[owner] ?? fallback) : fallback;
   }
 
   /**
@@ -685,9 +737,13 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * Restart a single service.
+   * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    return this.withServiceLock(name, async () => this.restartServiceInternal(name));
+  }
+
+  private async restartServiceInternal(name: string): Promise<void> {
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);
@@ -702,11 +758,13 @@ export class ServiceManager extends EventEmitter {
       !combined.isOwner &&
       (status.state === "ready" || status.state === "starting")
     ) {
-      // Abort any pending ready poll
+      // Abort any pending ready poll and invalidate active monitors so the old
+      // Crash/output monitors don't survive alongside the new ones (C7).
       const controller = this.abortControllers.get(name);
       if (controller) {
         controller.abort();
       }
+      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
 
       status.state = transition(status.state, "stopping");
       this.emit("stateChange", name, status);
@@ -723,21 +781,21 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
 
       status.retryCount = 0;
-      await this.startService(name);
+      await this.startServiceInternal(name);
     } else {
       // Stop if running
       if (status.state === "ready" || status.state === "starting") {
-        await this.stopService(name);
+        await this.stopServiceInternal(name);
       }
 
       // Reset retry count
       status.retryCount = 0;
 
       // Start
-      await this.startService(name);
+      await this.startServiceInternal(name);
     }
 
-    // Cascade restart dependents
+    // Cascade restart dependents (each goes through its own service lock)
     if (!this.cascadingTriggers.has(name)) {
       await this.cascadeRestart(name);
     }
@@ -777,15 +835,26 @@ export class ServiceManager extends EventEmitter {
     name: string,
     overrides: Partial<DockerConfig>,
   ): Promise<void> {
+    return this.withServiceLock(name, async () =>
+      this.restartWithDockerOverridesInternal(name, overrides),
+    );
+  }
+
+  private async restartWithDockerOverridesInternal(
+    name: string,
+    overrides: Partial<DockerConfig>,
+  ): Promise<void> {
     const serviceConfig = this.config.project.services[name];
     if (!serviceConfig?.docker) {
       throw new Error(`Service "${name}" is not a docker service`);
     }
 
+    // Snapshot inside the lock so a queued concurrent rebuild captures the
+    // Restored config, not another rebuild's temporary overrides (C8).
     const original = { ...serviceConfig.docker };
     Object.assign(serviceConfig.docker, overrides);
     try {
-      await this.restartService(name);
+      await this.restartServiceInternal(name);
     } finally {
       serviceConfig.docker = original;
     }
@@ -998,32 +1067,35 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
 
       const backoff = (restartConfig.backoff ?? 1000) * 2 ** (status.retryCount - 1);
+      // Do NOT hold the service lock across the backoff sleep (would block user
+      // Start/stop for the whole window — C3). Lock only the restart action.
       await sleep(backoff);
-
-      // Bail if superseded during backoff: daemon shutting down, the service was
-      // Stopped/restarted (generation bumped), or it already left `restarting`
-      // (e.g. a racing stop). The superseding operation owns the state (C3).
-      if (
-        this.shuttingDown ||
-        (this.monitorGenerations.get(name) ?? 0) !== gen ||
-        status.state !== "restarting"
-      ) {
-        return;
-      }
-
-      // Restart must never reject out of handleCrash (would reach Node's
-      // UnhandledRejection and kill the daemon — C2). On failure, land in error.
-      try {
-        await this.startService(name);
-        await this.cascadeRestart(name);
-      } catch (error) {
-        if (canTransition(status.state, "error")) {
-          status.state = transition(status.state, "error");
-          delete status.readySince;
+      await this.withServiceLock(name, async () => {
+        // Re-check inside the lock: a user stop/restart may have queued ahead.
+        // Bail if superseded (shutting down, generation bumped, or no longer in
+        // The restarting state) — the superseding op owns the state (C3).
+        if (
+          this.shuttingDown ||
+          (this.monitorGenerations.get(name) ?? 0) !== gen ||
+          status.state !== "restarting"
+        ) {
+          return;
         }
-        status.lastError = error instanceof Error ? error.message : String(error);
-        this.emit("stateChange", name, status);
-      }
+
+        // The restart must never reject out of handleCrash (a leaked rejection
+        // Reaches Node and could kill the daemon — C2); on failure, go to error.
+        try {
+          await this.startServiceInternal(name);
+          await this.cascadeRestart(name);
+        } catch (error) {
+          if (canTransition(status.state, "error")) {
+            status.state = transition(status.state, "error");
+            delete status.readySince;
+          }
+          status.lastError = error instanceof Error ? error.message : String(error);
+          this.emit("stateChange", name, status);
+        }
+      });
     } else {
       status.state = transition(status.state, "error");
       status.lastError = "Process exited unexpectedly";
