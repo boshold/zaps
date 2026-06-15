@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+import type { JitiOptions } from "jiti";
 import { createJiti } from "jiti";
 
 import { detectCycles } from "#src/lib/service/graph.js";
@@ -283,15 +284,30 @@ function stripUnavailableServices(project: ProjectConfig, unavailableNames: Set<
 }
 
 /**
+ * In the Bun native binary, jiti's lazy babel require escapes the bundler, so
+ * load the transform from the embedded asset. Other runtimes (dev tsx, node
+ * bundle) resolve jiti's transform from node_modules and need nothing.
+ */
+async function nativeTransform(): Promise<JitiOptions["transform"]> {
+  if (!process.versions.bun) {
+    return undefined;
+  }
+  const { getNativeTransform } = await import("./native-babel.js");
+  return getNativeTransform();
+}
+
+/**
  * Dynamically import and validate a zaps config file.
  */
 export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
   const absolutePath = path.resolve(process.cwd(), configPath);
+  const transform = await nativeTransform();
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
     fsCache: true,
     tryNative: false,
     interopDefault: true,
+    ...(transform === undefined ? {} : { transform }),
   });
   const mod = await jiti.import<Record<string, unknown>>(absolutePath);
 

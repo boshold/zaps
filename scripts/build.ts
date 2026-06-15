@@ -1,7 +1,21 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
+import type { Plugin } from "esbuild";
 import { build } from "esbuild";
+
+// Native-babel.ts uses a Bun-only `import ... with { type: "file" }` asset and
+// Is only reachable in the native binary. Keep it out of the node bundle so
+// Node never evaluates the Bun-specific import attribute.
+const externalNativeBabel: Plugin = {
+  name: "external-native-babel",
+  setup(pluginBuild) {
+    pluginBuild.onResolve({ filter: /native-babel(?:\.js)?$/ }, () => ({
+      path: "./native-babel.js",
+      external: true,
+    }));
+  },
+};
 
 await build({
   entryPoints: ["./src/cli.tsx"],
@@ -10,6 +24,7 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
+  plugins: [externalNativeBabel],
   define: {
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __BUILD_BRANCH__: JSON.stringify(
