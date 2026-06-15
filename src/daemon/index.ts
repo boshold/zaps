@@ -107,8 +107,13 @@ async function runDaemon(): Promise<void> {
 /**
  * Ensure daemon is running. If not, fork+detach a new one.
  * Returns when daemon socket is accepting connections.
+ *
+ * `command` is the spawnable argv `{ file, args }` (E1 — never a joined string,
+ * which spawn would treat as a literal filename). The resolved invocation is
+ * forwarded as `ZAPS_COMMAND` so the daemon builds correct per-service wrapper
+ * commands even when zaps isn't on PATH as `zaps` (E2).
  */
-async function ensureDaemon(command: string): Promise<string> {
+async function ensureDaemon(command: { file: string; args: string[] }): Promise<string> {
   const sock = socketPath();
 
   if (isDaemonRunning()) {
@@ -126,10 +131,18 @@ async function ensureDaemon(command: string): Promise<string> {
   daemonDir(); // Ensure dir exists
   const logFile = fs.openSync(logPath(), "a");
 
-  const child = spawn(command, ["daemon", "run"], {
+  const zapsCommand = [command.file, ...command.args].join(" ");
+  const child = spawn(command.file, [...command.args, "daemon", "run"], {
     detached: true,
     stdio: ["ignore", logFile, logFile],
-    env: { ...process.env },
+    env: { ...process.env, ZAPS_COMMAND: zapsCommand },
+  });
+
+  // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error
+  // Rather than crashing the process via an unhandled 'error' event (E1).
+  const spawnFailure: { error?: Error } = {};
+  child.on("error", (err: Error) => {
+    spawnFailure.error = err;
   });
   child.unref();
   fs.closeSync(logFile);
@@ -137,6 +150,9 @@ async function ensureDaemon(command: string): Promise<string> {
   // Wait for socket to become connectable
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
+    if (spawnFailure.error) {
+      throw new Error(`Failed to start daemon ('${command.file}'): ${spawnFailure.error.message}`);
+    }
     const alive = await pingSocket(sock);
     if (alive) {
       return sock;

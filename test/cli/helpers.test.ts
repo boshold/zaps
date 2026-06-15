@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/config/discovery.js", () => ({
@@ -32,6 +34,7 @@ import {
   CliError,
   formatTable,
   resolveCommand,
+  resolveCommandArgv,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
@@ -72,6 +75,32 @@ describe("resolveCommand", () => {
     process.argv = ["/usr/bin/node", "/path/to/cli.js", "up"];
     const result = resolveCommand();
     expect(result).toBe("/usr/bin/node /path/to/cli.js");
+  });
+});
+
+describe("resolveCommandArgv", () => {
+  const originalArgv = process.argv;
+
+  beforeEach(() => {
+    process.argv = [...originalArgv];
+    delete process.env.ZAPS_COMMAND;
+  });
+
+  it("returns the env command with no args when ZAPS_COMMAND is set", () => {
+    process.env.ZAPS_COMMAND = "my-zaps";
+    expect(resolveCommandArgv()).toEqual({ file: "my-zaps", args: [] });
+  });
+
+  it("returns the execPath basename with no args for the native binary", () => {
+    process.argv[1] = "/$bunfs/root/main.js";
+    const { file, args } = resolveCommandArgv();
+    expect(args).toEqual([]);
+    expect(file).toBe(path.basename(process.execPath));
+  });
+
+  it("splits argv[0] (runtime) and argv[1] (script) for source mode", () => {
+    process.argv = ["/usr/bin/node", "/path/to/cli.js", "up"];
+    expect(resolveCommandArgv()).toEqual({ file: "/usr/bin/node", args: ["/path/to/cli.js"] });
   });
 });
 

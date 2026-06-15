@@ -31,15 +31,30 @@ export interface SessionIpc {
   ): Promise<IpcResponse>;
 }
 
-export function resolveCommand(): string {
+/**
+ * Resolve how to invoke zaps as a spawnable argv: `{ file, args }`. Used to
+ * spawn the daemon child without `shell: true` (a joined string would be exec'd
+ * as a literal filename → ENOENT, E1).
+ * - `ZAPS_COMMAND` env / native binary: a single executable, no extra args.
+ * - Source run (node/tsx): the node binary plus the script path.
+ */
+export function resolveCommandArgv(): { file: string; args: string[] } {
   const zapsCommand = getEnv("ZAPS_COMMAND");
   if (zapsCommand) {
-    return zapsCommand;
+    return { file: zapsCommand, args: [] };
   }
   if (process.argv[1]?.startsWith("/$bunfs/")) {
-    return path.basename(process.execPath);
+    return { file: path.basename(process.execPath), args: [] };
   }
-  return process.argv.slice(0, 2).join(" ");
+  return { file: process.argv[0], args: [process.argv[1]] };
+}
+
+/**
+ * The zaps invocation as a single shell string (for tmux pane commands).
+ */
+export function resolveCommand(): string {
+  const { file, args } = resolveCommandArgv();
+  return [file, ...args].join(" ");
 }
 
 export function resolveRuntime(): string {

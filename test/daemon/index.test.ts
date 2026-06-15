@@ -101,7 +101,7 @@ describe("ensureDaemon", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
     vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
   });
 
@@ -113,7 +113,7 @@ describe("ensureDaemon", () => {
       throw new Error("ENOENT");
     });
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
 
     const { spawn } = await import("node:child_process");
@@ -129,8 +129,61 @@ describe("ensureDaemon", () => {
       throw new Error("ESRCH");
     });
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
+  });
+
+  it("spawns with split argv and forwards ZAPS_COMMAND for source runs (E1/E2)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    await ensureDaemon({ file: "node", args: ["/path/cli.mjs"] });
+
+    const { spawn } = await import("node:child_process");
+    const call = vi.mocked(spawn).mock.calls.at(-1);
+    expect(call?.[0]).toBe("node");
+    expect(call?.[1]).toEqual(["/path/cli.mjs", "daemon", "run"]);
+    const opts = call?.[2] as { env: Record<string, string> };
+    expect(opts.env.ZAPS_COMMAND).toBe("node /path/cli.mjs");
+  });
+
+  it("throws a clear error when the daemon spawn fails (E1)", async () => {
+    vi.useFakeTimers();
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    const netModule = await import("node:net");
+    const { EventEmitter } = await import("node:events");
+    // Socket never connects → pingSocket relies on its 500ms timeout → false.
+    vi.mocked(netModule.default.createConnection).mockImplementation((() => {
+      const socket = new EventEmitter();
+      Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
+      return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
+    }) as typeof netModule.default.createConnection);
+
+    const { spawn } = await import("node:child_process");
+    const child = Object.assign(new EventEmitter(), { unref: vi.fn(), pid: undefined });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+
+    const promise = ensureDaemon({ file: "nonexistent", args: [] });
+    // The listener is registered synchronously; emit the spawn failure now.
+    child.emit("error", new Error("spawn nonexistent ENOENT"));
+
+    // Attach the rejection assertion before advancing timers so the pending
+    // Rejection is never momentarily unhandled.
+    const rejection = expect(promise).rejects.toThrow(
+      /Failed to start daemon \('nonexistent'\): spawn nonexistent ENOENT/,
+    );
+    await vi.advanceTimersByTimeAsync(600);
+    await rejection;
+
+    vi.useRealTimers();
   });
 });
 
@@ -346,7 +399,7 @@ describe("pingSocket branches", () => {
       return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
     }) as typeof netModule.default.createConnection);
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
 
     const { spawn } = await import("node:child_process");
@@ -380,7 +433,7 @@ describe("pingSocket branches", () => {
       return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
     }) as typeof netModule.default.createConnection);
 
-    const promise = ensureDaemon("zaps");
+    const promise = ensureDaemon({ file: "zaps", args: [] });
     // Advance past pingSocket's 500ms timeout
     await vi.advanceTimersByTimeAsync(500);
     // Advance past poll delay + let microtask-based success resolve

@@ -6,6 +6,7 @@ import {
   CliError,
   formatTable,
   resolveCommand,
+  resolveCommandArgv,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
@@ -121,7 +122,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   const tmuxSession = await currentSession();
 
   const command = resolveCommand();
-  const sock = await ensureDaemon(command);
+  const sock = await ensureDaemon(resolveCommandArgv());
 
   const res = await ipcRequest(sock, "session.create", {
     configPath,
@@ -918,8 +919,7 @@ daemonCmd
       process.stdout.write("Daemon already running.\n");
       return;
     }
-    const command = resolveCommand();
-    await ensureDaemon(command);
+    await ensureDaemon(resolveCommandArgv());
     process.stdout.write("Daemon started.\n");
   });
 
