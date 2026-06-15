@@ -161,9 +161,26 @@ function warnNonAutostartDeps(project: ProjectConfig): void {
   }
 }
 
+/**
+ * Reject detached services that ended up in a combined (pane-sharing) group —
+ * e.g. `detached: true` set via a docker `expand` per-child override. Detached
+ * Services run pane-less and so cannot share a group's tmux pane (E4). Runs
+ * After expansion, where `_combined` membership is known.
+ */
+function validateDetachedGroups(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    if (svc.detached && svc._combined) {
+      throw new Error(
+        `Detached service '${name}' cannot be a member of combined group '${svc._combined.group}' — detached services run pane-less and cannot share a pane.`,
+      );
+    }
+  }
+}
+
 function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
   validateServiceDeps(project);
   warnNonAutostartDeps(project);
+  validateDetachedGroups(project);
 
   // Validate task dependsOn refs
   if (project.tasks) {
@@ -190,7 +207,9 @@ function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>
 
     for (const pane of paneNames) {
       if (pane !== "@tui" && project.services[pane]?.detached) {
-        throw new Error(`Detached service '${pane}' must not appear in layout`);
+        throw new Error(
+          `Detached service '${pane}' cannot appear in the layout — detached services run pane-less.`,
+        );
       }
     }
 

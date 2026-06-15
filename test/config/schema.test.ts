@@ -91,6 +91,53 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("detached validation (E4)", () => {
+    const hasError = (
+      result: ReturnType<typeof projectConfigSchema.safeParse>,
+      needle: string,
+    ): boolean => !result.success && result.error.issues.some((i) => i.message.includes(needle));
+
+    it("rejects detached + docker, naming the service and the conflict", () => {
+      const result = projectConfigSchema.safeParse({
+        services: {
+          worker: { start: "node w.js", detached: true, docker: { service: "w" } },
+        },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "cannot be combined with 'docker'")).toBe(true);
+    });
+
+    it("rejects detached + raw", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, raw: true } },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "cannot be combined with 'raw'")).toBe(true);
+    });
+
+    it("rejects detached without a start or run command", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { detached: true } },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "requires a 'start' or 'run' command")).toBe(true);
+    });
+
+    it("accepts detached + path-style ready.http (B3 does not apply to detached)", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, ready: { http: "/health" } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts detached + ready.port (PID-based detection works for detached)", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, ready: { port: 8080 } } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("service raw option", () => {
     it("accepts raw: true", () => {
       const result = projectConfigSchema.safeParse({

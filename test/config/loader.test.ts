@@ -416,7 +416,7 @@ describe("loadConfig", () => {
     );
 
     await expect(loadConfig(configPath)).rejects.toThrow(
-      "Detached service 'db' must not appear in layout",
+      "Detached service 'db' cannot appear in the layout",
     );
   });
 
@@ -679,5 +679,31 @@ describe("docker expand", () => {
 
     const result = await loadConfig(configPath);
     expect(result.groups.size).toBe(0);
+  });
+
+  describe("detached validation (E4)", () => {
+    it("rejects a detached member of a combined docker group (expand override)", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: {
+              cache: {
+                docker: {
+                  service: ["redis", "memcached"],
+                  expand: { redis: { detached: true } },
+                },
+              },
+            },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        /Detached service 'redis' cannot be a member of combined group 'cache'/,
+      );
+    });
   });
 });
