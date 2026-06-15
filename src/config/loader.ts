@@ -217,15 +217,18 @@ async function resolveOptionalServices(
     .map(async ([name, svc]) => {
       let available = false;
       if (typeof svc.optional === "function") {
+        let timer: ReturnType<typeof setTimeout> | undefined = undefined;
         try {
           available = await Promise.race([
             Promise.resolve(svc.optional(optionalCtx)),
-            new Promise<boolean>((_resolve, reject) =>
-              setTimeout(() => reject(new Error("timeout")), 5000),
-            ),
+            new Promise<boolean>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error("timeout")), 5000);
+            }),
           ]);
         } catch {
           available = false;
+        } finally {
+          clearTimeout(timer);
         }
       } else {
         available = await checkBinaryAvailable(extractBinary(svc));

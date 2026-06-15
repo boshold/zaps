@@ -132,6 +132,17 @@ describe("resolveOptionalServices", () => {
     vi.useRealTimers();
   });
 
+  it("clears the timeout timer when a fast probe settles first (no leak)", async () => {
+    vi.useFakeTimers();
+    const services: Record<string, ServiceConfig> = {
+      db: { start: "pg", optional: async () => true },
+    };
+    const result = await resolveOptionalServices(services);
+    expect(result.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
   it("skips services with optional: false", async () => {
     const services: Record<string, ServiceConfig> = {
       api: { start: "node server.js", optional: false },
