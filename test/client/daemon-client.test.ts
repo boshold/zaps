@@ -334,6 +334,20 @@ describe("DaemonClient", () => {
       expect(spy).toHaveBeenCalledWith(snapshot);
     });
 
+    it("routes session.configStale", () => {
+      const spy = vi.fn();
+      client.on("session.configStale", spy);
+      client.connect();
+
+      eventHandler({
+        session: "sess1",
+        event: "session.configStale",
+        data: { configStale: true },
+      });
+
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+
     it("ignores unknown events", () => {
       client.connect();
       // Should not throw

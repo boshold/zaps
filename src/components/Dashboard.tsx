@@ -19,7 +19,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardProps) {
-  const { projectName } = useZaps();
+  const { projectName, configStale } = useZaps();
   const { cols, rows, compact } = useDimensions();
   const width = Math.min(cols, 100);
 
@@ -38,7 +38,13 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   return (
     <Box height={rows} alignItems="center" justifyContent="center">
       <Box flexDirection="column" width={width}>
-        <Header projectName={projectName} statuses={sorted} width={width} compact={compact} />
+        <Header
+          projectName={projectName}
+          statuses={sorted}
+          width={width}
+          compact={compact}
+          configStale={configStale}
+        />
         {!compact && <ColumnHeaders cols={width} />}
         <ServiceList
           statuses={sorted}

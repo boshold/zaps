@@ -154,6 +154,16 @@ export async function panePid(target: string): Promise<number> {
   return Number.parseInt(out, 10);
 }
 
+/** True if `target` is still a live tmux pane (false if it was killed/closed). */
+export async function paneExists(target: string): Promise<boolean> {
+  try {
+    await run(["display-message", "-p", "-t", target, "#{pane_id}"]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function capturePane(target: string, lines = 100): Promise<string> {
   return run(["capture-pane", "-t", target, "-p", "-S", `-${lines}`]);
 }

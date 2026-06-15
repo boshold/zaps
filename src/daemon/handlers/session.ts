@@ -76,7 +76,7 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    session.subscribers.delete(socket);
+    session.removeSubscriber(socket);
     return ipcOk(req.id, { detached: true });
   },
 
@@ -85,10 +85,10 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    session.subscribers.add(socket);
+    session.addSubscriber(socket);
 
     socket.on("close", () => {
-      session.subscribers.delete(socket);
+      session.removeSubscriber(socket);
     });
 
     return ipcOk(req.id, { subscribed: true });

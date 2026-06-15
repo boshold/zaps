@@ -9,12 +9,13 @@ interface HeaderProps {
   statuses: ServiceStatus[];
   width: number;
   compact?: boolean;
+  configStale?: boolean;
 }
 
-export function Header({ projectName, statuses, width, compact }: HeaderProps) {
+export function Header({ projectName, statuses, width, compact, configStale }: HeaderProps) {
   return (
     <Box flexDirection="column">
-      <HeaderRow projectName={projectName} statuses={statuses} />
+      <HeaderRow projectName={projectName} statuses={statuses} configStale={configStale} />
       {!compact && <Text dimColor>{"─".repeat(width)}</Text>}
     </Box>
   );

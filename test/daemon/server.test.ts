@@ -61,6 +61,7 @@ vi.mock("#src/lib/tmux.js", () => ({
   sendKeys: vi.fn(),
   sendCtrlC: vi.fn(),
   panePid: vi.fn(),
+  paneExists: vi.fn(),
   killPane: vi.fn(),
   renameWindow: vi.fn(),
   getWindowName: vi.fn(),
@@ -114,6 +115,7 @@ describe("DaemonServer", () => {
     tmux.sendKeys.mockResolvedValue(undefined);
     tmux.sendCtrlC.mockResolvedValue(undefined);
     tmux.panePid.mockResolvedValue(1000);
+    tmux.paneExists.mockResolvedValue(true);
     tmux.killPane.mockResolvedValue(undefined);
     tmux.renameWindow.mockResolvedValue(undefined);
     tmux.getWindowName.mockResolvedValue("bash");
@@ -188,6 +190,90 @@ describe("DaemonServer", () => {
     });
     expect(s1).toBe(s2);
     expect(server.sessionCount).toBe(1);
+  });
+
+  it("dedupes concurrent creates for the same id into one build (D3)", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    const [s1, s2] = await Promise.all([server.create(params), server.create(params)]);
+
+    expect(s1).toBe(s2);
+    expect(server.sessionCount).toBe(1);
+    // Exactly one config load + one layout build for the shared promise.
+    expect(mockLoadConfig).toHaveBeenCalledTimes(1);
+    expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the in-flight entry on failure so a retry rebuilds (D3)", async () => {
+    mockLoadConfig.mockRejectedValueOnce(new Error("load boom"));
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+
+    await expect(server.create(params)).rejects.toThrow("load boom");
+    expect(server.sessionCount).toBe(0);
+
+    // Entry was removed on rejection → the retry proceeds with the default mock.
+    const session = await server.create(params);
+    expect(session.id).toBeDefined();
+    expect(server.sessionCount).toBe(1);
+  });
+
+  it("returns the cached session when its @tui pane is still alive (A4)", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    const s1 = await server.create(params);
+    tmux.paneExists.mockResolvedValue(true);
+
+    const s2 = await server.create(params);
+    expect(s2).toBe(s1);
+    // No rebuild on a live cache hit.
+    expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    const s1 = await server.create(params);
+    expect(server.sessionCount).toBe(1);
+
+    // The window was closed externally — next create rebuilds with the new pane.
+    tmux.paneExists.mockResolvedValue(false);
+    const s2 = await server.create({ ...params, originPane: "%9" });
+
+    expect(s2).not.toBe(s1);
+    expect(s1.destroyed).toBe(true);
+    expect(server.sessionCount).toBe(1);
+    expect(mockCreateLayout).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes the layout focusPane on the created session (E14)", async () => {
+    mockCreateLayout.mockResolvedValueOnce({
+      paneMap: { "@tui": "%0", api: "%1" },
+      focusPane: "%1",
+    });
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    expect(session.focusPane).toBe("%1");
   });
 
   it("fires onSessionChange callback", async () => {

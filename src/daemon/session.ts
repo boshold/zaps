@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
@@ -15,6 +16,9 @@ import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
 
 const MAX_TASK_HISTORY = 50;
+
+/** How often a subscribed session re-stats its root config for staleness (A4). */
+const STALE_POLL_MS = 10_000;
 
 type PaneMap = Record<string, string>;
 
@@ -77,7 +81,13 @@ export class Session {
   public destroyed = false;
   /** Timestamp of the last successful config load — staleness source (A4). */
   public configLoadedAt: number;
+  /** Layout focus target — returned by `session.create` only (never attach) (E14). */
+  public focusPane = "";
   private reloading = false;
+  /** Subscriber-gated config-staleness poll; null when no subscribers (A4). */
+  private staleTimer: ReturnType<typeof setInterval> | null = null;
+  /** One-shot guard so `session.configStale` fires once per false→true edge. */
+  private staleNotified = false;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
   private opChain: Promise<void> = Promise.resolve();
 
@@ -321,6 +331,8 @@ export class Session {
     // 7. Swap every reference atomically (single synchronous block).
     this.config = newConfig;
     this.configLoadedAt = newConfigLoadedAt;
+    // Fresh load clears staleness — re-arm so the next edit re-broadcasts (A4).
+    this.staleNotified = false;
     this.paneMap = paneMap;
     this.name = newConfig.project.name ?? "unnamed";
     this.manager = newManager;
@@ -353,6 +365,7 @@ export class Session {
         return;
       }
       this.destroyed = true;
+      this.stopStalePoll();
 
       this.manager.abortStartAll();
       await this.settleStartPromise();
@@ -369,6 +382,70 @@ export class Session {
       }
       this.subscribers.clear();
     });
+  }
+
+  /**
+   * Register a subscriber socket and arm the staleness poll on the 0→1 edge.
+   */
+  public addSubscriber(socket: net.Socket): void {
+    this.subscribers.add(socket);
+    if (!this.staleTimer && !this.destroyed) {
+      this.startStalePoll();
+    }
+  }
+
+  /**
+   * Drop a subscriber socket and stop the staleness poll once none remain.
+   */
+  public removeSubscriber(socket: net.Socket): void {
+    this.subscribers.delete(socket);
+    if (this.subscribers.size === 0) {
+      this.stopStalePoll();
+    }
+  }
+
+  /** True if the root config file was modified after the last successful load. */
+  public isConfigStale(): boolean {
+    try {
+      return fs.statSync(this.configPath).mtimeMs > this.configLoadedAt;
+    } catch {
+      // Can't stat (e.g. deleted mid-session) — don't claim staleness.
+      return false;
+    }
+  }
+
+  private startStalePoll(): void {
+    if (this.staleTimer) {
+      return;
+    }
+    this.staleTimer = setInterval(() => {
+      this.checkConfigStale();
+    }, STALE_POLL_MS);
+    // Never keep the daemon alive solely for this poll.
+    this.staleTimer.unref?.();
+  }
+
+  private stopStalePoll(): void {
+    if (this.staleTimer) {
+      clearInterval(this.staleTimer);
+      this.staleTimer = null;
+    }
+  }
+
+  /** Broadcast `session.configStale` once per false→true edge; re-arm when fresh. */
+  private checkConfigStale(): void {
+    if (this.isConfigStale()) {
+      if (!this.staleNotified) {
+        this.staleNotified = true;
+        this.broadcast({
+          session: this.id,
+          event: "session.configStale",
+          data: { configStale: true },
+        });
+      }
+    } else {
+      this.staleNotified = false;
+    }
   }
 
   /**
@@ -424,6 +501,7 @@ export class Session {
       servicesMeta,
       taskHistory: this.taskHistory,
       unavailableServices: [...this.config.unavailableServices.values()],
+      configStale: this.isConfigStale(),
     };
   }
 
@@ -453,4 +531,6 @@ export interface SessionSnapshot {
   servicesMeta: ServiceMeta[];
   taskHistory: TaskRunRecord[];
   unavailableServices: { name: string; reason: string }[];
+  /** Root config edited since the last load — drives the TUI reload hint (A4). */
+  configStale: boolean;
 }

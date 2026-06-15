@@ -120,6 +120,7 @@ describe("daemon handlers", () => {
       expect(res.result).toMatchObject({
         id: session.id,
         name: session.name,
+        focusPane: session.focusPane,
       });
     });
 

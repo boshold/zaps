@@ -94,6 +94,7 @@ async function runTui(opts: {
       initialStatuses={snapshot.statuses}
       initialTaskHistory={snapshot.taskHistory ?? []}
       autoStart={showSplash}
+      configStale={snapshot.configStale}
     />,
     { patchConsole: false },
   );
@@ -136,7 +137,12 @@ async function upFlow(detach?: boolean): Promise<void> {
     process.exit(1);
   }
 
-  const session = res.result as { id: string; name: string; paneMap: Record<string, string> };
+  const session = res.result as {
+    id: string;
+    name: string;
+    paneMap: Record<string, string>;
+    focusPane?: string;
+  };
 
   if (detach) {
     // Start services but don't attach TUI
@@ -150,11 +156,21 @@ async function upFlow(detach?: boolean): Promise<void> {
   }
 
   const tuiPaneId = session.paneMap["@tui"];
-  await selectPane(tuiPaneId);
+  // Honor the daemon-computed focus (layout `focus: true`); defaults to @tui.
+  // Without a focused leaf this matches the old unconditional select behavior.
+  const focusPane = session.focusPane ?? tuiPaneId;
 
-  await (tuiPaneId === originPane
-    ? runTui({ sessionId: session.id, socketPath: sock, autoStart: true })
-    : sendKeys(tuiPaneId, `${command} ui --session ${session.id} --socket ${sock} --start; exit`));
+  if (tuiPaneId === originPane) {
+    // The TUI render blocks until exit, so focus before handing the pane to Ink.
+    await selectPane(focusPane);
+    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
+  } else {
+    await sendKeys(
+      tuiPaneId,
+      `${command} ui --session ${session.id} --socket ${sock} --start; exit`,
+    );
+    await selectPane(focusPane);
+  }
 }
 
 // --- Smart default: attach if running, else up ---

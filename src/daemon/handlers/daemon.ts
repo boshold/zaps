@@ -67,6 +67,7 @@ export const daemonHandlers: Record<
         id: session.id,
         name: session.name,
         paneMap: session.paneMap,
+        focusPane: session.focusPane,
       });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));

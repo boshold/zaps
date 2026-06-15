@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -347,5 +350,96 @@ describe("Session", () => {
       expect(session.subscribers.has(sock as never)).toBe(false);
       expect(sock.write).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("Session config staleness (A4)", () => {
+  let dir: string;
+  let configPath: string;
+  let manager: ServiceManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    manager = createMockManager();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-session-stale-"));
+    configPath = path.join(dir, ".zaps.mts");
+    fs.writeFileSync(configPath, "x");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("isConfigStale reflects file mtime vs configLoadedAt", () => {
+    const session = new Session(createSessionParams({ configPath }), manager);
+    const mtime = fs.statSync(configPath).mtimeMs;
+
+    session.configLoadedAt = mtime - 1000; // File edited after load → stale
+    expect(session.isConfigStale()).toBe(true);
+
+    session.configLoadedAt = mtime + 1000; // Loaded after the edit → fresh
+    expect(session.isConfigStale()).toBe(false);
+  });
+
+  it("isConfigStale is false when the config file is missing", () => {
+    const session = new Session(
+      createSessionParams({ configPath: path.join(dir, "gone.mts") }),
+      manager,
+    );
+    expect(session.isConfigStale()).toBe(false);
+  });
+
+  it("attachSnapshot includes a configStale flag", () => {
+    const session = new Session(createSessionParams({ configPath }), manager);
+    session.configLoadedAt = fs.statSync(configPath).mtimeMs - 1000;
+    expect(session.attachSnapshot().configStale).toBe(true);
+  });
+
+  it("broadcasts session.configStale once per false→true transition", () => {
+    vi.useFakeTimers();
+    const session = new Session(createSessionParams({ configPath }), manager);
+    session.configLoadedAt = fs.statSync(configPath).mtimeMs - 1000; // Stale
+    const broadcast = vi.spyOn(session, "broadcast").mockImplementation(() => undefined);
+
+    session.addSubscriber({} as never); // Arms the 10s poll
+    vi.advanceTimersByTime(10_000);
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "session.configStale", data: { configStale: true } }),
+    );
+
+    broadcast.mockClear();
+    vi.advanceTimersByTime(10_000); // Still stale → no repeat (one-shot)
+    expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("arms the poll only while subscribed and clears it on unsubscribe and destroy", () => {
+    vi.useFakeTimers();
+    const setSpy = vi.spyOn(globalThis, "setInterval");
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+    const session = new Session(createSessionParams({ configPath }), manager);
+    const a = {} as never;
+    const b = {} as never;
+
+    session.addSubscriber(a);
+    expect(setSpy).toHaveBeenCalledTimes(1);
+    session.addSubscriber(b); // Second subscriber does not arm a second poll
+    expect(setSpy).toHaveBeenCalledTimes(1);
+
+    session.removeSubscriber(a); // One remains → poll keeps running
+    expect(clearSpy).not.toHaveBeenCalled();
+    session.removeSubscriber(b); // None left → poll cleared
+    expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops the poll on destroy with subscribers still attached", async () => {
+    vi.useFakeTimers();
+    const clearSpy = vi.spyOn(globalThis, "clearInterval");
+    const session = new Session(createSessionParams({ configPath }), manager);
+    session.addSubscriber({ destroyed: false, write: vi.fn(), destroy: vi.fn() } as never);
+
+    await session.destroy();
+    expect(clearSpy).toHaveBeenCalledTimes(1);
   });
 });

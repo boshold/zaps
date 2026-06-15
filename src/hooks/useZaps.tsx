@@ -13,6 +13,7 @@ interface AppContextValue {
   projectName: string;
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
+  configStale: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -23,6 +24,7 @@ export function AppProvider({
   projectName: initialProjectName,
   tasks: initialTasks,
   servicesMeta: initialServicesMeta,
+  configStale: initialConfigStale = false,
   children,
 }: {
   client: DaemonClient;
@@ -30,12 +32,14 @@ export function AppProvider({
   projectName: string;
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
+  configStale?: boolean;
   children: ReactNode;
 }) {
   const [paneMap, setPaneMap] = useState(initialPaneMap);
   const [projectName, setProjectName] = useState(initialProjectName);
   const [tasks, setTasks] = useState(initialTasks);
   const [servicesMeta, setServicesMeta] = useState(initialServicesMeta);
+  const [configStale, setConfigStale] = useState(initialConfigStale);
 
   useEffect(() => {
     function handleReload(snapshot: SessionSnapshot) {
@@ -43,16 +47,23 @@ export function AppProvider({
       setProjectName(snapshot.name);
       setTasks(snapshot.tasks);
       setServicesMeta(snapshot.servicesMeta);
+      // A successful reload clears the staleness hint.
+      setConfigStale(false);
+    }
+    function handleStale() {
+      setConfigStale(true);
     }
     client.on("session.configReloaded", handleReload);
+    client.on("session.configStale", handleStale);
     return () => {
       client.off("session.configReloaded", handleReload);
+      client.off("session.configStale", handleStale);
     };
   }, [client]);
 
   const value = useMemo(
-    () => ({ client, paneMap, projectName, tasks, servicesMeta }),
-    [client, paneMap, projectName, tasks, servicesMeta],
+    () => ({ client, paneMap, projectName, tasks, servicesMeta, configStale }),
+    [client, paneMap, projectName, tasks, servicesMeta, configStale],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

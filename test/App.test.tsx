@@ -121,6 +121,30 @@ describe("App", () => {
     expect(lastFrame()).toContain("[d]own");
     expect(lastFrame()).toContain("[q]uit");
   });
+
+  it("shows the reload hint on session.configStale and clears it on reload", () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { lastFrame, client } = renderApp({ statuses });
+    expect(lastFrame()).not.toContain("config changed");
+
+    act(() => {
+      client.emit("session.configStale");
+    });
+    expect(lastFrame()).toContain("config changed — press c to reload");
+
+    act(() => {
+      client.emit("session.configReloaded", {
+        paneMap: {},
+        name: "test-project",
+        tasks: [],
+        servicesMeta: [],
+      } as never);
+    });
+    expect(lastFrame()).not.toContain("config changed");
+  });
 });
 
 describe("Keyboard routing — Dashboard", () => {
