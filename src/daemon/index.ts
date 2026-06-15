@@ -38,6 +38,17 @@ async function pingSocket(sock: string): Promise<boolean> {
 }
 
 /**
+ * Format a rejection reason or thrown value for logging, preferring an
+ * Error stack and falling back to a string representation.
+ */
+function formatReason(reason: unknown): string {
+  if (reason instanceof Error) {
+    return reason.stack ?? `${reason.name}: ${reason.message}`;
+  }
+  return String(reason);
+}
+
+/**
  * Run the daemon in the current process (called after fork+detach).
  */
 async function runDaemon(): Promise<void> {
@@ -81,6 +92,13 @@ async function runDaemon(): Promise<void> {
 
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+
+  process.on("unhandledRejection", (reason: unknown) => {
+    log(`unhandledRejection: ${formatReason(reason)}`);
+  });
+  process.on("uncaughtException", (err: Error) => {
+    log(`uncaughtException: ${formatReason(err)}`);
+  });
 
   await server.start(socketPath());
   log(`listening on ${socketPath()}`);

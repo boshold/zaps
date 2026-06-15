@@ -143,7 +143,7 @@ describe("runDaemon", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     process.exit = vi.fn() as unknown as typeof process.exit;
-    processOnSpy = vi.spyOn(process, "on");
+    processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
     delete process.env.XDG_RUNTIME_DIR;
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
@@ -249,6 +249,59 @@ describe("runDaemon", () => {
 
     expect(fs.writeSync).toHaveBeenCalled();
     expect(fs.closeSync).toHaveBeenCalled();
+  });
+
+  function listener(event: string): (arg: unknown) => void {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- mock type
+    const call = processOnSpy.mock.calls.find(([ev]: [string]) => ev === event);
+    return call[1] as (arg: unknown) => void;
+  }
+
+  it("logs unhandledRejection with stack and stays alive", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("unhandledRejection")(new Error("boom"));
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("unhandledRejection");
+    expect(written).toContain("boom");
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("logs non-Error unhandledRejection reason via String()", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("unhandledRejection")("plain reason");
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("unhandledRejection: plain reason");
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("logs uncaughtException and stays alive", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("uncaughtException")(new Error("kaboom"));
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("uncaughtException");
+    expect(written).toContain("kaboom");
+    expect(process.exit).not.toHaveBeenCalled();
   });
 });
 
