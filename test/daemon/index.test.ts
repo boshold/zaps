@@ -85,6 +85,7 @@ vi.mock("../../src/daemon/server.js", () => {
 
 const { createShutdownAll, ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
+const { runShutdownHook } = await import("../../src/daemon/shutdown.js");
 
 describe("ensureDaemon", () => {
   const originalKill = process.kill;
@@ -324,8 +325,9 @@ describe("runDaemon", () => {
     await runDaemon();
     const server = serverInstance();
 
-    expect(typeof server.requestShutdown).toBe("function");
-    server.requestShutdown!();
+    // The IPC handler invokes the registered module hook (not a server method —
+    // A dynamically-assigned property was unreliable in the bun native binary).
+    await runShutdownHook();
     await vi.advanceTimersByTimeAsync(0);
 
     expect(server.stop).toHaveBeenCalled();
@@ -336,7 +338,7 @@ describe("runDaemon", () => {
     await runDaemon();
     const server = serverInstance();
 
-    server.requestShutdown!(); // IPC-triggered shutdown
+    await runShutdownHook(); // IPC-triggered shutdown
     signalHandler("SIGTERM")(); // Signal arrives during teardown
     await vi.advanceTimersByTimeAsync(0);
 
@@ -348,6 +350,8 @@ describe("runDaemon", () => {
   it("shuts down on SIGTERM", async () => {
     await runDaemon();
     signalHandler("SIGTERM")();
+    // Teardown then exit are chained off the async shutdownAll promise.
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(serverInstance().stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -356,6 +360,7 @@ describe("runDaemon", () => {
   it("shuts down on SIGINT", async () => {
     await runDaemon();
     signalHandler("SIGINT")();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(serverInstance().stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -366,6 +371,7 @@ describe("runDaemon", () => {
     const { default: fs } = await import("node:fs");
 
     signalHandler("SIGTERM")();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(fs.writeSync).toHaveBeenCalled();
     expect(fs.closeSync).toHaveBeenCalled();

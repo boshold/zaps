@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { daemonHandlers } from "../../../src/daemon/handlers/daemon.js";
+import { registerShutdownHook } from "../../../src/daemon/shutdown.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 
@@ -11,6 +12,7 @@ describe("daemon handlers", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    registerShutdownHook(null);
   });
 
   describe("daemon.ping", () => {
@@ -45,38 +47,32 @@ describe("daemon handlers", () => {
   });
 
   describe("daemon.shutdown", () => {
-    it("acks first, then defers to the store's shutdownAll path (D1)", async () => {
-      vi.useFakeTimers();
+    it("runs the registered teardown hook before acking (D1)", async () => {
+      const order: string[] = [];
+      const hook = vi.fn(async () => {
+        order.push("hook");
+        return Promise.resolve();
+      });
+      registerShutdownHook(hook);
 
       const store = createMockStore();
-      const requestShutdown = vi.fn();
-      (store as unknown as { requestShutdown: () => void }).requestShutdown = requestShutdown;
-
       const req: IpcRequest = { id: "r4", method: "daemon.shutdown" };
       const res = await daemonHandlers["daemon.shutdown"](req, store);
 
-      // The caller is acked before any teardown begins.
+      // Teardown ran deterministically as part of handling the request — not
+      // Deferred to a timer the bun runtime can drop — and the caller is acked.
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["hook"]);
       expect(res).toEqual({ id: "r4", result: { shuttingDown: true } });
-      expect(requestShutdown).not.toHaveBeenCalled();
-
-      vi.advanceTimersByTime(200);
-      expect(requestShutdown).toHaveBeenCalledTimes(1);
-
-      vi.useRealTimers();
     });
 
     it("still acks when no shutdown hook is registered", async () => {
-      vi.useFakeTimers();
+      registerShutdownHook(null);
 
       const store = createMockStore();
       const req: IpcRequest = { id: "r4b", method: "daemon.shutdown" };
       const res = await daemonHandlers["daemon.shutdown"](req, store);
       expect(res).toEqual({ id: "r4b", result: { shuttingDown: true } });
-
-      // Missing hook must not throw when the timer fires.
-      expect(() => vi.advanceTimersByTime(200)).not.toThrow();
-
-      vi.useRealTimers();
     });
   });
 

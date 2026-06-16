@@ -45,12 +45,6 @@ interface SessionStore {
   getByProjectDir(dir: string): Session | undefined;
   create(params: CreateParams): Promise<Session>;
   destroy(id: string): Promise<void>;
-  /**
-   * Trigger the full daemon teardown path (set by `runDaemon`). Lets the
-   * `daemon.shutdown` IPC handler delegate to the same `shutdownAll()` used by
-   * SIGTERM/SIGINT instead of doing a bare `process.exit` (D1).
-   */
-  requestShutdown?(): void;
 }
 
 class DaemonServer implements SessionStore {
@@ -62,7 +56,6 @@ class DaemonServer implements SessionStore {
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
-  public requestShutdown?: () => void;
 
   public async start(socketPath: string): Promise<void> {
     try {

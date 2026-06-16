@@ -1,4 +1,5 @@
 import type { SessionStore } from "#src/daemon/server.js";
+import { runShutdownHook } from "#src/daemon/shutdown.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 
@@ -25,14 +26,16 @@ export const daemonHandlers: Record<
     });
   },
 
-  async "daemon.shutdown"(req, store) {
-    // Ack the caller first so `{ shuttingDown: true }` is written back before the
-    // Socket goes away, then defer the full teardown (destroy every session,
-    // Remove socket/pid, exit) so the ndjson response flushes before the server
-    // Closes (D1). The defer delegates to the shared `shutdownAll()` path.
-    setTimeout(() => {
-      store.requestShutdown?.();
-    }, 100);
+  async "daemon.shutdown"(req) {
+    // Run the teardown as part of handling the request (destroy every session —
+    // Stopping services and killing panes — and remove the socket/pid files),
+    // Then ACK. `runShutdownHook()` resolves AFTER cleanup is done but schedules
+    // The process exit for the next tick, so this `{ shuttingDown: true }`
+    // Response still flushes to the caller first. This is deterministic across
+    // Runtimes — the previous `setTimeout(…, 100)` defer was silently dropped by
+    // The bun native binary when the event loop drained before it fired, leaving
+    // Sockets/pids/panes/ports all leaked (D1).
+    await runShutdownHook();
     return ipcOk(req.id, { shuttingDown: true });
   },
 

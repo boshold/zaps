@@ -16,6 +16,7 @@ import {
   writePid,
 } from "#src/daemon/lifecycle.js";
 import { DaemonServer } from "#src/daemon/server.js";
+import { registerShutdownHook } from "#src/daemon/shutdown.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 
@@ -59,16 +60,18 @@ interface ShutdownTarget {
 }
 
 /**
- * Build the single daemon teardown path shared by SIGTERM, SIGINT and the
- * `daemon.shutdown` IPC method (D1). Destroys every session best-effort —
- * services stopped reverse-topo, panes killed and `session.destroyed`
- * broadcast by `Session.destroy()` — so one session failing to destroy is
- * logged and does NOT skip the remaining sessions or the file cleanup. After
- * all sessions are torn down it stops the socket server, then runs `finalize`
- * (idle cancel + ownership-checked socket/pid removal + log close + exit).
+ * Build the single daemon teardown path shared by SIGTERM, SIGINT, the idle
+ * timer, and the `daemon.shutdown` IPC method (D1). Destroys every session
+ * best-effort — services stopped reverse-topo, panes killed and
+ * `session.destroyed` broadcast by `Session.destroy()` — so one session failing
+ * to destroy is logged and does NOT skip the remaining sessions or the file
+ * cleanup. After all sessions are torn down it stops the socket server, then
+ * runs `finalize` (idle cancel + ownership-checked socket/pid removal).
  *
- * Re-entry safe: a signal arriving while an IPC-triggered shutdown is in flight
- * is ignored, so sessions are never double-destroyed.
+ * Does NOT exit the process: callers exit *after* the returned promise resolves,
+ * so an in-flight `daemon.shutdown` ACK can flush before the process dies. The
+ * returned function is idempotent — a signal racing the IPC path is a no-op, so
+ * sessions and files are never torn down twice.
  */
 function createShutdownAll(
   server: ShutdownTarget,
@@ -116,14 +119,14 @@ async function runDaemon(): Promise<void> {
   const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
     if (server.sessionCount === 0) {
       log("idle timeout, shutting down");
-      void shutdownAll(); // eslint-disable-line no-use-before-define -- circular: idle/shutdownAll
+      shutdownAndExit(); // eslint-disable-line no-use-before-define -- circular: idle/shutdownAndExit
     } else {
       idle.reset();
     }
   });
 
-  // Shared teardown for signals + `daemon.shutdown` IPC; the finalize closure
-  // Cancels idle, removes only still-owned runtime files (D4), and exits.
+  // Shared teardown for signals + idle + `daemon.shutdown` IPC; the finalize
+  // Closure cancels idle and removes only still-owned runtime files (D4).
   const shutdownAll = createShutdownAll(server, log, () => {
     idle.cancel();
     // Only remove runtime files we still own — a daemon that took over (pid file
@@ -132,9 +135,37 @@ async function runDaemon(): Promise<void> {
       removeSocket();
       removePid();
     }
-    fs.closeSync(logFile);
-    process.exit(0);
   });
+
+  // Close the log and exit. Kept separate from teardown so callers can flush an
+  // IPC ACK between the two (the bun native binary drops a deferred timer when
+  // The loop drains, so exit must be driven explicitly, not on a wall clock).
+  // Idempotent: the IPC path schedules it via setImmediate while a racing signal
+  // May also call it — only the first wins.
+  let exited = false;
+  const exitDaemon = () => {
+    if (exited) {
+      return;
+    }
+    exited = true;
+    try {
+      fs.closeSync(logFile);
+    } catch {
+      // Already closed.
+    }
+    process.exit(0);
+  };
+
+  // Signals + idle: tear down, then exit immediately.
+  const shutdownAndExit = () => {
+    void (async () => {
+      try {
+        await shutdownAll();
+      } finally {
+        exitDaemon();
+      }
+    })();
+  };
 
   server.onSessionChange = (count: number) => {
     if (count === 0) {
@@ -144,16 +175,19 @@ async function runDaemon(): Promise<void> {
     }
   };
 
-  // `daemon.shutdown` IPC delegates to the same path as the signals (D1).
-  server.requestShutdown = () => {
-    void shutdownAll();
-  };
+  // `daemon.shutdown` IPC: run the teardown *inline* (so the response can ACK
+  // Only after sockets/pids/panes are actually gone — deterministic), then exit
+  // On the next tick so the ACK flushes to the caller first (D1).
+  registerShutdownHook(async () => {
+    await shutdownAll();
+    setImmediate(exitDaemon);
+  });
 
   process.on("SIGTERM", () => {
-    void shutdownAll();
+    shutdownAndExit();
   });
   process.on("SIGINT", () => {
-    void shutdownAll();
+    shutdownAndExit();
   });
 
   process.on("unhandledRejection", (reason: unknown) => {

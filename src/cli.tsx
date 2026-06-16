@@ -1040,6 +1040,17 @@ daemonCmd
     await ipcRequest(sock, "daemon.shutdown").catch(() => {
       /* Best-effort — daemon may close the socket as it tears down */
     });
+
+    // The daemon removes its pid/socket as part of handling the shutdown, so
+    // Wait for that to actually happen before reporting — makes `daemon stop`
+    // Deterministic (the command returns only once the daemon is really gone).
+    const deadline = Date.now() + 5000;
+    /* eslint-disable no-await-in-loop -- sequential poll for teardown completion */
+    while (isDaemonRunning() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    /* eslint-enable no-await-in-loop */
+
     process.stdout.write(`Stopped ${sessionCount} session(s), ${serviceCount} service(s).\n`);
   });
 
