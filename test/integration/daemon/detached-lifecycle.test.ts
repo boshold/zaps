@@ -83,7 +83,7 @@ describe.skipIf(!hasTmux())("detached service lifecycle (E4)", () => {
     expect(createRes.error).toBeUndefined();
     sid = (createRes.result as { id: string }).id;
 
-    await waitForServiceState(daemon.socketPath, "worker", "worker", "ready");
+    await waitForServiceState(daemon.socketPath, sid, "worker", "ready");
 
     // 1. No pane was created for the detached service.
     const snap = await ipcRequest(daemon.socketPath, "session.attach", undefined, 5000, sid);
@@ -121,14 +121,14 @@ describe.skipIf(!hasTmux())("detached service lifecycle (E4)", () => {
       }
     }
     // The crash monitor sees the exit and drives it back to ready.
-    await waitForServiceState(daemon.socketPath, "worker", "worker", "ready", 20_000);
+    await waitForServiceState(daemon.socketPath, sid, "worker", "ready", 20_000);
 
     // 5. Stop → the process group is fully gone.
     const afterRes = await ipcRequest(daemon.socketPath, "services.list", undefined, 5000, sid);
     const afterRestart = afterRes.result as { name: string; pid?: number }[];
     const newPid = afterRestart.find((s) => s.name === "worker")?.pid;
-    await ipcRequest(daemon.socketPath, "services.stop", { service: "worker" }, 10_000, sid);
-    await waitForServiceState(daemon.socketPath, "worker", "worker", "stopped");
+    await ipcRequest(daemon.socketPath, "services.stop", { name: "worker" }, 10_000, sid);
+    await waitForServiceState(daemon.socketPath, sid, "worker", "stopped");
 
     if (typeof newPid === "number") {
       const descendants = await getDescendantPids(newPid);
