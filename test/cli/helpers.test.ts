@@ -62,11 +62,10 @@ describe("resolveCommand", () => {
     expect(resolveCommand()).toBe("my-zaps");
   });
 
-  it("returns execPath basename for bunfs", () => {
+  it("returns the full execPath for bunfs", () => {
     process.argv[1] = "/$bunfs/root/main.js";
     const result = resolveCommand();
-    // Should be basename of execPath
-    expect(typeof result).toBe("string");
+    expect(result).toBe(process.execPath);
   });
 
   it("returns argv[0] + argv[1] for source mode", () => {
@@ -89,11 +88,14 @@ describe("resolveCommandArgv", () => {
     expect(resolveCommandArgv()).toEqual({ file: "my-zaps", args: [] });
   });
 
-  it("returns the execPath basename with no args for the native binary", () => {
+  it("returns the full execPath with no args for the native binary", () => {
     process.argv[1] = "/$bunfs/root/main.js";
     const { file, args } = resolveCommandArgv();
     expect(args).toEqual([]);
-    expect(file).toBe(path.basename(process.execPath));
+    // Must be the real executable path, NOT the basename — basename would hunt
+    // $PATH and could fork a different/older `zaps` as the daemon.
+    expect(file).toBe(process.execPath);
+    expect(file).not.toBe(path.basename(process.execPath));
   });
 
   it("splits argv[0] (runtime) and argv[1] (script) for source mode", () => {

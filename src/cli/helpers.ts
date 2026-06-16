@@ -50,7 +50,11 @@ export function resolveCommandArgv(): { file: string; args: string[] } {
     return { file: zapsCommand, args: [] };
   }
   if (process.argv[1]?.startsWith("/$bunfs/")) {
-    return { file: path.basename(process.execPath), args: [] };
+    // Compiled single-file binary: re-exec THIS executable by its real path.
+    // `process.execPath` is the binary itself for a bun-compiled exe — using its
+    // Basename would hunt `$PATH` and could spawn a different/older `zaps` (or
+    // None at all), so the daemon it forks would not be the binary the user ran.
+    return { file: process.execPath, args: [] };
   }
   return { file: process.argv[0], args: [process.argv[1]] };
 }
