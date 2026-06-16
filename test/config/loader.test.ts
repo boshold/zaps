@@ -709,6 +709,181 @@ describe("docker expand", () => {
     expect(result.groups.size).toBe(0);
   });
 
+  it("expands a string `service` when expand is set (G6)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            db: {
+              docker: { expand: true, service: "postgres" },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath);
+    // Parent removed, single child created exactly like service: ["postgres"].
+    expect(result.project.services.db).toBeUndefined();
+    expect(result.project.services.postgres).toBeDefined();
+    expect(result.project.services.postgres._combined?.isOwner).toBe(true);
+    expect(result.groups.get("db")).toEqual(["postgres"]);
+  });
+
+  it("rejects an expand override using the forbidden 'start' key (G7)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            cache: {
+              docker: {
+                service: ["caddy", "redis"],
+                expand: { redis: { start: "echo hijacked" } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+      /override for child 'redis' in group 'cache'.*start/s,
+    );
+  });
+
+  it("rejects an expand override using the forbidden 'docker' key (G7)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            cache: {
+              docker: {
+                service: ["caddy", "redis"],
+                expand: { redis: { docker: { service: "other" } } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+      /override for child 'redis' in group 'cache'.*docker/s,
+    );
+  });
+
+  it("rejects an expand override with an unknown/typo key (G7)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            cache: {
+              docker: {
+                service: ["caddy", "redis"],
+                expand: { redis: { redy: { port: 3000 } } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+      /override for child 'redis' in group 'cache'.*redy/s,
+    );
+  });
+
+  it("accepts a valid expand override (G7)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            cache: {
+              docker: {
+                service: ["caddy", "redis"],
+                expand: { redis: { env: { ROLE: "cache" } } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.redis.env).toEqual({ ROLE: "cache" });
+  });
+
+  it("evaluates `optional` set in an expand-child override (G3)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            infra: {
+              docker: {
+                service: ["postgres", "redis"],
+                expand: { redis: { optional: () => false } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    // Override optional is evaluated for the child (only possible because expansion
+    // Now runs before optional resolution) — redis is stripped, owner survives.
+    expect(result.project.services.redis).toBeUndefined();
+    expect(result.project.services.postgres).toBeDefined();
+    expect(result.groups.get("infra")).toEqual(["postgres"]);
+    expect(result.unavailableServices.has("redis")).toBe(true);
+  });
+
+  it("degrades gracefully when an expand-child override dependsOn references a stripped optional (G3)", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(lib) {
+        return lib.defineProject({
+          services: {
+            stripe: { start: "stripe listen", optional: () => false },
+            infra: {
+              docker: {
+                service: ["postgres", "redis"],
+                expand: { redis: { dependsOn: ["stripe"] } },
+              },
+            },
+          },
+        });
+      }
+    `,
+    );
+
+    // Old ordering threw "references unknown dependency 'stripe'"; now it degrades.
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.stripe).toBeUndefined();
+    expect(result.project.services.redis).toBeDefined();
+    expect(result.project.services.redis.dependsOn).not.toContain("stripe");
+    expect(result.project.services.redis.dependsOn).toContain("postgres");
+  });
+
   describe("detached validation (E4)", () => {
     it("rejects a detached member of a combined docker group (expand override)", async () => {
       const configPath = writeConfig(

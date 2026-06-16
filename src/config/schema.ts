@@ -304,3 +304,16 @@ export const projectConfigSchema = z.object({
   layout: z.optional(layoutNodeSchema),
   hooks: z.optional(hooksConfigSchema),
 });
+
+/**
+ * Strict schema for a docker `expand` per-child override (G7). An override is
+ * spread onto the inherited service, so it may set any service field EXCEPT the
+ * command/lifecycle keys: `start`/`run` would silently replace the inherited
+ * command, `docker` is silently discarded (the child gets its own docker config),
+ * and `_combined` is internal. `.strict()` also rejects typos like `redy:` that
+ * would otherwise be silently inert. Forbidden/unknown keys surface as a
+ * load-time error naming the group, child, and offending key.
+ */
+export const expandOverrideSchema = serviceConfigBaseSchema
+  .omit({ start: true, run: true, docker: true })
+  .strict();

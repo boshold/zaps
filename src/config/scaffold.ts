@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 import defaultTemplate from "./templates/default.template.js";
@@ -13,10 +14,27 @@ const CONFIG_FILENAMES = [
   ".zaps.ts",
 ];
 
-async function getZapsPath(): Promise<string> {
-  // Try resolving installed zaps path
-  // Fallback to "zaps" bare specifier
-  return "zaps";
+/**
+ * Resolve the directory of the installed `zaps` package so a scaffolded config's
+ * `import type { Library } from "..."` resolves for global/native installs where
+ * a bare `"zaps"` specifier is not in the project's `node_modules` (G8). Resolves
+ * `zaps/package.json` (an explicit subpath that works without an `exports`/`main`
+ * field) via `createRequire().resolve` (a node builtin available in all three
+ * runtimes — tsx dev, node bundle, bun native binary) and returns its directory;
+ * the package's `types` field then points the editor/typechecker at the
+ * declarations. Falls back to the bare `"zaps"` specifier on any failure (e.g.
+ * `zaps` is a normal local dependency, or resolution is unavailable) so it never
+ * crashes.
+ *
+ * @internal Exported for testing.
+ */
+export function getZapsPath(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    return path.dirname(require.resolve("zaps/package.json"));
+  } catch {
+    return "zaps";
+  }
 }
 
 /**
@@ -24,7 +42,7 @@ async function getZapsPath(): Promise<string> {
  */
 export async function generateTemplate(): Promise<string> {
   const template = defaultTemplate;
-  const zapsPath = await getZapsPath();
+  const zapsPath = getZapsPath();
   return template.replace(/\{\{ZAPS_PATH\}\}/g, zapsPath);
 }
 
