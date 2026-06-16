@@ -130,8 +130,12 @@ export async function panePid(target: string): Promise<number> {
 /** True if `target` is still a live tmux pane (false if it was killed/closed). */
 export async function paneExists(target: string): Promise<boolean> {
   try {
-    await run(["display-message", "-p", "-t", target, "#{pane_id}"]);
-    return true;
+    // A `display-message -t <id>` probe is NOT reliable: tmux exits 0 and echoes
+    // The requested id back even for a dead pane whose session is gone, so it
+    // Reports every pane as alive (the A4 staleness regression). Enumerate the
+    // Live panes across the server instead and check real membership.
+    const out = await run(["list-panes", "-a", "-F", "#{pane_id}"]);
+    return out.split("\n").includes(target);
   } catch {
     return false;
   }
