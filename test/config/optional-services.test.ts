@@ -209,14 +209,14 @@ describe("extractBinary (via resolveOptionalServices) — env prefixes (G2)", ()
     expect(mockSpawn).toHaveBeenCalledWith("sh", ["-c", "command -v rainfrog"]);
   });
 
-  it("treats an assignments-only command as unavailable without crashing", async () => {
-    mockSpawn.mockReturnValue(fakeProc("close", 1));
+  it("treats an assignments-only command as unavailable without spawning a shell", async () => {
     const services: Record<string, ServiceConfig> = {
       onlyenv: { start: "FOO=1 BAR=2", optional: true },
     };
     const result = await resolveOptionalServices(services);
-    // Empty binary -> `command -v ` -> non-zero exit -> reported unavailable.
-    expect(mockSpawn).toHaveBeenCalledWith("sh", ["-c", "command -v "]);
+    // Empty binary -> short-circuited to unavailable deterministically; no shell
+    // Spawn (`sh -c "command -v "` exits 0 on some shells, which would be wrong).
+    expect(mockSpawn).not.toHaveBeenCalled();
     expect(result.get("onlyenv")?.reason).toBe("binary '' not found");
   });
 });

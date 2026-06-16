@@ -286,6 +286,13 @@ function resolveProjectDir(
 }
 
 async function checkBinaryAvailable(binary: string): Promise<boolean> {
+  // An empty/whitespace-only binary (e.g. an assignments-only command, or a
+  // Caller passing "") is unavailable. Short-circuit WITHOUT spawning: on some
+  // Shells `sh -c "command -v "` exits 0 (treating it as available), so the probe
+  // Would be shell-dependent — this keeps it deterministic (G2).
+  if (binary.trim() === "") {
+    return false;
+  }
   return new Promise((resolve) => {
     const proc = spawn("sh", ["-c", `command -v ${binary}`]);
     proc.on("error", () => resolve(false));
@@ -297,8 +304,9 @@ async function checkBinaryAvailable(binary: string): Promise<boolean> {
  * Pick the binary to probe for an optional service. Skips leading `NAME=value`
  * environment-variable assignments so `STRIPE_KEY=x stripe listen` probes
  * `stripe`, not `STRIPE_KEY=x` (G2). A command that is only assignments (or
- * empty) yields `""`, which the availability probe treats as not-found, so the
- * service is reported unavailable rather than crashing.
+ * empty) yields `""`, which `checkBinaryAvailable` short-circuits to unavailable
+ * without spawning, so the service is reported unavailable deterministically
+ * rather than crashing or depending on shell behavior.
  */
 function extractBinary(svc: ServiceConfig): string {
   const cmd = typeof svc.start === "string" ? svc.start : String(svc.run ?? "");
