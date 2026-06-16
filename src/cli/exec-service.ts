@@ -55,19 +55,32 @@ async function execService(name: string, sessionId: string): Promise<void> {
     detached: true,
   });
 
-  const forwardTerm = () => {
-    // Signal the whole process group so grandchildren die too (no orphans).
+  // Forward termination to the whole process group so grandchildren die too (no
+  // Orphans). The daemon stops a pane by sending Ctrl-C (SIGINT) to the pane's
+  // Foreground group — which contains this wrapper but NOT the child (it has its
+  // Own group via `detached: true`). Handle SIGINT as well as SIGTERM and forward
+  // It to the child's group; otherwise SIGINT would kill only the wrapper, the
+  // Child would be reparented to init, keep its port, and a restart would hit
+  // EADDRINUSE (E11).
+  const forwardSignal = (signal: NodeJS.Signals) => {
     if (child.pid !== undefined) {
       try {
-        process.kill(-child.pid, "SIGTERM");
+        process.kill(-child.pid, signal);
         return;
       } catch {
         // Group gone or not permitted — fall back to a direct child signal.
       }
     }
-    child.kill("SIGTERM");
+    child.kill(signal);
   };
-  process.on("SIGTERM", forwardTerm);
+  const onSigterm = () => {
+    forwardSignal("SIGTERM");
+  };
+  const onSigint = () => {
+    forwardSignal("SIGINT");
+  };
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGINT", onSigint);
 
   let notified = false;
   const notifyExit = (code: number, signal: string | null, spawnError?: string): void => {
@@ -75,7 +88,8 @@ async function execService(name: string, sessionId: string): Promise<void> {
       return;
     }
     notified = true;
-    process.off("SIGTERM", forwardTerm);
+    process.off("SIGTERM", onSigterm);
+    process.off("SIGINT", onSigint);
     // Await exit notification with short timeout before exiting
     void (async () => {
       await ipcRequest(

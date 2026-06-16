@@ -117,9 +117,13 @@ describe("execService", () => {
     });
   }
 
-  function sigtermHandler(): () => void {
+  function signalHandler(signal: string): () => void {
     const calls = onSpy.mock.calls as [string, () => void][];
-    return calls.find((c) => c[0] === "SIGTERM")?.[1] ?? ((): void => undefined);
+    return calls.find((c) => c[0] === signal)?.[1] ?? ((): void => undefined);
+  }
+
+  function sigtermHandler(): () => void {
+    return signalHandler("SIGTERM");
   }
 
   it("spawns the child detached", async () => {
@@ -157,6 +161,18 @@ describe("execService", () => {
     sigtermHandler()();
 
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("signals the whole process group on SIGINT (daemon stops a pane with Ctrl-C)", async () => {
+    resolveOnce();
+    vi.mocked(spawn).mockReturnValue(makeChild(4321) as never);
+
+    await execService("svc", "sess");
+    signalHandler("SIGINT")();
+
+    // Without a SIGINT handler the daemon's Ctrl-C would kill only this wrapper
+    // And orphan the detached child, leaking its port (E11). Forward to the group.
+    expect(killSpy).toHaveBeenCalledWith(-4321, "SIGINT");
   });
 
   it("reports a spawn error via exec-service.exited with spawnError", async () => {
