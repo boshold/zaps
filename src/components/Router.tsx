@@ -1,6 +1,6 @@
 import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DockerConfig } from "#src/config/types.js";
 import { useLogs } from "#src/hooks/useLogs.js";
@@ -291,9 +291,21 @@ export function Router({
   const statuses = useServices(client, initialStatuses);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
-  // Selection count depends on view: services for dashboard, tasks for tasks view
-  const itemCount = view === "tasks" ? tasks.length : statuses.length;
-  const { index, setIndex, moveUp, moveDown } = useSelection(itemCount);
+  // Sort once here (unavailable services to the bottom) and feed the SAME array to
+  // Both rendering and the input handler so indexed actions always hit the
+  // Highlighted row — the duplicate Dashboard-local sort is gone (F8).
+  const sortedStatuses = useMemo(
+    () => [
+      ...statuses.filter((s) => s.state !== "unavailable"),
+      ...statuses.filter((s) => s.state === "unavailable"),
+    ],
+    [statuses],
+  );
+
+  // Per-view selection: dashboard and tasks view each keep their own index,
+  // Clamped only against their own list, so moving in one never shifts the other (F6).
+  const dashboardSel = useSelection(sortedStatuses.length);
+  const tasksSel = useSelection(tasks.length);
 
   const { exit } = useInkApp();
   const busyServices = useRef(new Set<string>());
@@ -419,11 +431,11 @@ export function Router({
 
       if (view === "dashboard") {
         handleDashboardInput(input, key, {
-          statuses,
-          index,
+          statuses: sortedStatuses,
+          index: dashboardSel.index,
           busyServices,
-          moveUp,
-          moveDown,
+          moveUp: dashboardSel.moveUp,
+          moveDown: dashboardSel.moveDown,
           restart,
           toggle,
           restartAll,
@@ -470,10 +482,10 @@ export function Router({
           tasks,
           taskShortcuts,
           taskCount: tasks.length,
-          setIndex,
+          setIndex: tasksSel.setIndex,
           goToDashboard,
-          moveUp,
-          moveDown,
+          moveUp: tasksSel.moveUp,
+          moveDown: tasksSel.moveDown,
           setRunTrigger,
         });
       }
@@ -512,7 +524,7 @@ export function Router({
   if (view === "tasks") {
     return (
       <TasksView
-        selectedIndex={index}
+        selectedIndex={tasksSel.index}
         runTrigger={runTrigger}
         taskShortcuts={taskShortcuts}
         taskHistory={taskHistory}
@@ -523,7 +535,11 @@ export function Router({
   }
   return (
     <>
-      <Dashboard statuses={statuses} selectedIndex={index} taskHistory={taskHistory} />
+      <Dashboard
+        statuses={sortedStatuses}
+        selectedIndex={dashboardSel.index}
+        taskHistory={taskHistory}
+      />
       {view === "dockerRebuild" && dockerRebuildTarget && (
         <DockerRebuildPopup
           serviceName={dockerRebuildTarget}

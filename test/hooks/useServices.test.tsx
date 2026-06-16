@@ -111,4 +111,78 @@ describe("useServices", () => {
     unmount();
     expect(client.listenerCount("service.stateChange")).toBe(0);
   });
+
+  // ── poll epoch guard (F9) ────────────────────────────────────
+
+  it("discards a poll response that started before a newer event-driven update (F9)", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = [makeStatus("db", "starting")];
+      const client = createMockClient(initial);
+
+      // Hold the poll response open so an event can land while it is in flight.
+      let resolvePoll: (v: ServiceStatus[]) => void = () => {
+        /* Replaced below once the pending poll promise exists */
+      };
+      const pendingPoll = new Promise<ServiceStatus[]>((resolve) => {
+        resolvePoll = resolve;
+      });
+      client.listServices = vi.fn(async () => pendingPoll);
+
+      function TestWrapper() {
+        const statuses = useServices(client, initial);
+        return <Text>{statuses.map((s) => `${s.name}:${s.state}`).join(",")}</Text>;
+      }
+
+      const { lastFrame } = render(<TestWrapper />);
+      expect(lastFrame()).toContain("db:starting");
+
+      // Fire the 2s poll; it captures epoch 0 and awaits the pending listServices.
+      await act(async () => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      // A fresher event-driven update lands first and bumps the epoch.
+      act(() => {
+        client.emit("service.stateChange", "db", makeStatus("db", "ready"));
+      });
+      expect(lastFrame()).toContain("db:ready");
+
+      // The stale poll finally resolves — it must be discarded, not applied.
+      await act(async () => {
+        resolvePoll([makeStatus("db", "starting")]);
+        await Promise.resolve();
+      });
+
+      expect(lastFrame()).toContain("db:ready");
+      expect(lastFrame()).not.toContain("db:starting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("applies a poll response when no event raced ahead of it (F9 control)", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = [makeStatus("db", "starting")];
+      const client = createMockClient(initial);
+      client.listServices = vi.fn().mockResolvedValue([makeStatus("db", "ready")]);
+
+      function TestWrapper() {
+        const statuses = useServices(client, initial);
+        return <Text>{statuses.map((s) => `${s.name}:${s.state}`).join(",")}</Text>;
+      }
+
+      const { lastFrame } = render(<TestWrapper />);
+      expect(lastFrame()).toContain("db:starting");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+
+      expect(lastFrame()).toContain("db:ready");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

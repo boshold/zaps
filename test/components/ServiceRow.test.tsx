@@ -59,11 +59,25 @@ describe("ServiceRow", () => {
     expect(frame).toContain("│ Error: SMTP connection refused");
   });
 
-  it("hides error sub-row when not selected", () => {
-    const status = makeStatus({ state: "error", lastError: "SMTP connection refused" });
+  it("shows error sub-row for an unselected stopped dependent of a failed dependency (C4)", () => {
+    const status = makeStatus({ state: "stopped", lastError: 'Dependency "db" not ready' });
     const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
     const frame = lastFrame() ?? "";
-    expect(frame).not.toContain("│ Error:");
+    expect(frame).toContain('│ Error: Dependency "db" not ready');
+  });
+
+  it("shows error sub-row for an unselected errored service (C4)", () => {
+    const status = makeStatus({ state: "error", lastError: "crashed" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
+    expect(lastFrame() ?? "").toContain("│ Error: crashed");
+  });
+
+  it("hides error sub-row for an unselected non-failed service with a lingering lastError", () => {
+    // A running/starting service is not in a failure state — its old lastError stays
+    // Hidden unless the row is selected, so the list isn't cluttered with stale errors.
+    const status = makeStatus({ state: "starting", lastError: "previous transient error" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
+    expect(lastFrame() ?? "").not.toContain("│ Error:");
   });
 
   it("shows retry count when retryCount > 0", () => {

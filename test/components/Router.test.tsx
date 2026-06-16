@@ -368,6 +368,61 @@ describe("Router", () => {
     expect(client.destroySession).toHaveBeenCalled();
   });
 
+  // ── single sort, shared by render + input handler (F8) ───────
+
+  it("targets the highlighted row even when arrival order differs from sorted order (F8)", () => {
+    // Daemon delivers the unavailable service FIRST; the dashboard sorts it to the
+    // Bottom, so the highlighted row (index 0) is the ready service. The input
+    // Handler must index that same sorted array — restart hits "api", not "zoo".
+    const client = createMockClient();
+    const statuses = [
+      makeStatus({ name: "zoo", state: "unavailable" }),
+      makeStatus({ name: "api", state: "ready" }),
+    ];
+    const { stdin } = renderRouter({ statuses, client });
+    stdin.write("r");
+    expect(client.restartService).toHaveBeenCalledWith("api");
+    expect(client.restartService).not.toHaveBeenCalledWith("zoo");
+  });
+
+  // ── per-view selection (F6) ──────────────────────────────────
+
+  it("keeps dashboard and tasks selection independent across a view round-trip (F6)", async () => {
+    const client = createMockClient();
+    const statuses = [
+      makeStatus({ name: "web", state: "ready" }),
+      makeStatus({ name: "api", state: "ready" }),
+      makeStatus({ name: "db", state: "ready" }),
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "migrate", name: "Run migrations", description: null },
+      { key: "seed", name: "Seed DB", description: null },
+    ];
+    const { stdin } = renderRouter({ statuses, tasks, client });
+
+    // Move dashboard selection to the third service (db).
+    stdin.write("j");
+    stdin.write("j");
+    await act(async () => {
+      /* Flush */
+    });
+
+    // Enter tasks view and move its (separate) selection.
+    stdin.write("t");
+    await act(async () => {
+      /* Flush */
+    });
+    stdin.write("j");
+    await act(async () => {
+      /* Flush */
+    });
+
+    // Back to the dashboard — its selection must be untouched, so r hits db.
+    await pressEscape(stdin);
+    stdin.write("r");
+    expect(client.restartService).toHaveBeenCalledWith("db");
+  });
+
   // ── global input: quit (q) ───────────────────────────────────
 
   it("disconnects client on q", () => {

@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { ErrorSubRow } from "./ErrorSubRow.js";
+import { showsErrorSubRow } from "./serviceRowError.js";
 import { StatusCell } from "./StatusCell.js";
 
 interface ServiceRowProps {
@@ -91,7 +92,9 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {trailingInfo(status).padEnd(Math.max(0, available - 24 - 10 - 24))}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }
@@ -114,7 +117,9 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {status.isDetached ? `detached ${portsStr}` : portsStr}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }
@@ -136,7 +141,9 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {stateLabel(status).slice(0, statusWidth)}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }

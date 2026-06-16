@@ -13,6 +13,7 @@ import { TaskHistorySection } from "./TaskHistorySection.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 
 interface DashboardProps {
+  /** Pre-sorted in Router (single source of truth shared with the input handler, F8). */
   statuses: ServiceStatus[];
   selectedIndex: number;
   taskHistory: TaskRunRecord[];
@@ -22,12 +23,6 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   const { projectName, configStale } = useZaps();
   const { cols, rows, compact } = useDimensions();
   const width = Math.min(cols, 100);
-
-  // Sort unavailable services to bottom so index is consistent across all components
-  const sorted = [
-    ...statuses.filter((s) => s.state !== "unavailable"),
-    ...statuses.filter((s) => s.state === "unavailable"),
-  ];
 
   // Compute chrome rows to determine maxRows for service list
   // Normal: Header(2) + ColumnHeaders(2) + ActionHints(2) + HelpBar(1) = 7
@@ -40,21 +35,21 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
       <Box flexDirection="column" width={width}>
         <Header
           projectName={projectName}
-          statuses={sorted}
+          statuses={statuses}
           width={width}
           compact={compact}
           configStale={configStale}
         />
         {!compact && <ColumnHeaders cols={width} />}
         <ServiceList
-          statuses={sorted}
+          statuses={statuses}
           selectedIndex={selectedIndex}
           maxRows={maxRows}
           cols={width}
         />
         {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
-        {!compact && <ActionHints status={sorted[selectedIndex]} />}
-        <HelpBar compact={compact} status={sorted[selectedIndex]} />
+        {!compact && <ActionHints status={statuses[selectedIndex]} />}
+        <HelpBar compact={compact} status={statuses[selectedIndex]} />
       </Box>
     </Box>
   );
