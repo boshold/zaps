@@ -4,18 +4,18 @@ ZAPS integrates with `docker compose` via the `docker` property on services.
 
 ## DockerConfig Options
 
-| Option          | Type                               | Default      | Description                                   |
-| --------------- | ---------------------------------- | ------------ | --------------------------------------------- |
-| `service`       | `string \| string[]`               | **required** | Docker Compose service name(s)                |
-| `file`          | `string`                           | `undefined`  | Custom compose file (`-f`)                    |
-| `projectName`   | `string`                           | `undefined`  | Pin the compose project name (`-p`)           |
-| `build`         | `boolean`                          | `false`      | Build images before starting (`--build`)      |
-| `forceRecreate` | `boolean`                          | `false`      | Recreate containers (`--force-recreate`)      |
-| `renewVolumes`  | `boolean`                          | `false`      | Recreate anonymous volumes (`-V`)             |
-| `removeOrphans` | `boolean`                          | `false`      | Remove orphan containers (`--remove-orphans`) |
-| `pull`          | `"always" \| "missing" \| "never"` | `undefined`  | Image pull policy (`--pull`)                  |
-| `noDeps`        | `boolean`                          | `false`      | Skip dependency services (`--no-deps`)        |
-| `expand`        | `boolean`                          | `false`      | Expand array services into individual entries |
+| Option          | Type                                | Default      | Description                                                              |
+| --------------- | ----------------------------------- | ------------ | ------------------------------------------------------------------------ |
+| `service`       | `string \| string[]`                | **required** | Docker Compose service name(s)                                           |
+| `file`          | `string`                            | `undefined`  | Custom compose file (`-f`)                                               |
+| `projectName`   | `string`                            | `undefined`  | Pin the compose project name (`-p`)                                      |
+| `build`         | `boolean`                           | `false`      | Build images before starting (`--build`)                                 |
+| `forceRecreate` | `boolean`                           | `false`      | Recreate containers (`--force-recreate`)                                 |
+| `renewVolumes`  | `boolean`                           | `false`      | Recreate anonymous volumes (`-V`)                                        |
+| `removeOrphans` | `boolean`                           | `false`      | Remove orphan containers (`--remove-orphans`)                            |
+| `pull`          | `"always" \| "missing" \| "never"`  | `undefined`  | Image pull policy (`--pull`)                                             |
+| `noDeps`        | `boolean`                           | `false`      | Skip dependency services (`--no-deps`)                                   |
+| `expand`        | `boolean \| Record<string, object>` | `false`      | Expand services into individual entries (`true`, or per-child overrides) |
 
 ## Command Generation
 
@@ -166,7 +166,7 @@ services: {
 
 ### Expanded Docker Services
 
-Use `expand: true` with `service: string[]` to create individually addressable services sharing one pane:
+Use `expand: true` to create individually addressable services sharing one pane. It works with an array `service` (one child per name) or a single-string `service` (one child):
 
 ```ts
 services: {
@@ -208,6 +208,12 @@ infra: {
 ```
 
 Children without overrides inherit parent config. Overrides can set `ready`, `env`, hooks, `url`, `flags`, `restart`, etc.
+
+**Override validation (G7):** an override **may not** set `start`, `run`, `docker`, or the internal `_combined` — the command and docker config are inherited from the group, and overriding them would break the shared pane. Unknown keys (e.g. a `redy:` typo) are also rejected. Any forbidden or unknown key fails config load with an error naming the group, the child, and the offending key:
+
+```
+Docker expand override for child 'postgres' in group 'infra' has invalid key(s): start
+```
 
 ### Docker with Dependencies
 

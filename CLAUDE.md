@@ -7,7 +7,7 @@ pnpm check                    # full CI: typecheck + lint:fix + build + build:na
 pnpm test                     # unit tests (vitest)
 pnpm test -- path/to/file     # single test file
 pnpm test:integration         # integration tests (sequential, 60s timeout, needs tmux)
-pnpm test:coverage            # unit tests with coverage (85% lines/functions/statements, 89% branches)
+pnpm test:coverage            # unit tests with coverage (global gate: 85% lines/functions/statements/branches)
 pnpm typecheck                # tsc --noEmit
 pnpm lint                     # oxfmt --check + oxlint (type-aware, deny-warnings)
 pnpm lint:fix                 # oxfmt --write + oxlint --fix

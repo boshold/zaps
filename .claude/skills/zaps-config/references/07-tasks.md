@@ -110,6 +110,24 @@ tasks: {
 }
 ```
 
+If no `shortcut` is given, ZAPS auto-assigns the first character of the task key that
+is not already used and not reserved.
+
+### Reserved keys (`q`, `j`, `k`)
+
+`q`, `j`, and `k` are **reserved** by the TUI (`q` quits, `j`/`k` navigate lists) and are:
+
+- **never auto-assigned** to a task, and
+- **dropped** (no fallback) if a task explicitly requests one via `shortcut`.
+
+A dropped collision prints a load-time warning naming the task, e.g.:
+
+```
+Warning: task 'deploy' ('Deploy') requests reserved shortcut 'q'; 'q' is reserved (q=quit, j/k=navigation) and the shortcut is dropped.
+```
+
+Choose any other key to keep the shortcut.
+
 ## Task Dependencies
 
 `dependsOn` references other task keys. Dependencies run first; if any dependency fails, the dependent task is skipped.
@@ -170,4 +188,5 @@ export function config({ defineProject, runTask }: Library) {
 - **`commands` and `run` are mutually exclusive** — config validation rejects both
 - **`popup` only works with `commands`** — not with `run`
 - **`shortcut` is a single key** — not a key combination
+- **`q`, `j`, `k` are reserved** — never auto-assigned, and dropped (with a load-time warning) if requested explicitly
 - **`dependsOn` references task keys** (the object key), not task `name` values

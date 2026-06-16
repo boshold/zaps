@@ -44,11 +44,41 @@ zaps config       # validate+print config (--json, --path)
 zaps events       # stream daemon events (--filter <type>)
 ```
 
+### Session & Daemon
+
+```
+zaps up           # attach if running, else create + start + attach TUI
+zaps up -d        # create + start services detached (no TUI); attach later with `zaps attach`
+zaps down         # stop all services and destroy the session
+zaps daemon stop  # full cleanup: stops every service in every session, then shuts the daemon down
+                  #   prints `Stopped <n> session(s), <m> service(s).`
+```
+
 ### Other
 
 ```
 zaps --help # see all functions
 ```
+
+## Behavior Notes
+
+- **Detached services** (`detached: true`) and detached sessions (`zaps up -d`) run
+  pane-less — there is no terminal to scroll. Read their output with
+  `zaps logs <svc>` (`-f` to stream). Lifecycle (`start`/`stop`/`restart`) works normally.
+- **Config reload** is validate-then-swap: an invalid edit is reported and the running
+  session keeps the old config (it is never torn down). In the TUI, a changed config
+  shows a `config changed — press c to reload` header hint; press `c` (when idle) to apply.
+- **`--tail <n>`** on `zaps logs` must be a positive integer; otherwise the command
+  errors with `Invalid --tail value "<x>": expected a positive integer.`
+- **`zaps events`** validates the resolved session before subscribing — if no matching
+  session exists it errors immediately instead of hanging.
+- **Error messages** you may surface to the user:
+  - `Port 5432 already in use (pid 1234 postgres)` — a service's expected port is taken
+    (pre-flight, before start). Free the port or stop the owning process.
+  - `Dependency "db" not ready` — shown as a service's error when a `dependsOn` target
+    never became ready; fix or start the dependency first.
+- **Removed env vars:** `ZAPS_PANE_MAP` and `ZAPS_IPC_SOCKET` no longer exist (they never
+  worked) — ignore any references to them.
 
 ### AI
 

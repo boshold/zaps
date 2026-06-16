@@ -8,7 +8,7 @@
 | `run`       | `string \| () => string`                  | —           | One-shot command                               |
 | `stop`      | `string \| () => string`                  | —           | Custom stop command                            |
 | `cwd`       | `string`                                  | —           | Working directory for the service              |
-| `detached`  | `boolean`                                 | `false`     | Run outside tmux layout (hidden pane)          |
+| `detached`  | `boolean`                                 | `false`     | Run pane-less (outside the tmux layout)        |
 | `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference)   |
 | `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)          |
 | `dependsOn` | `string[]`                                | —           | Services that must be ready first              |
@@ -47,10 +47,13 @@ start: () => `node server.js --port=${getPort()}`;
 
 ## Detached Services
 
-`detached: true` runs the service in a hidden tmux pane — no visible pane in the layout.
+`detached: true` runs the service **pane-less** — it has no tmux pane at all, not just a hidden one.
 
-- Still managed by ServiceManager (start/stop/ready detection all work)
-- **Must NOT appear in layout** — validation error if a detached service is referenced in layout
+- Still managed by ServiceManager (start/stop/ready detection and crash recovery all work)
+- **Must NOT appear in layout** — config load error if a detached service is referenced in layout
+- **Cannot combine with `docker` or `raw`** — both require a pane; either combination is a config load error
+- Requires a `start` or `run` command (there is no pane to interact with otherwise)
+- No live terminal — read its output via the log buffer (`zaps logs <name>`, `-f` to stream)
 
 ```ts
 services: {
@@ -138,7 +141,7 @@ services: {
 
 Mark services as optional when the binary may not exist on all machines. ZAPS checks availability at config load — unavailable services are stripped from layout and deps, shown greyed out in TUI.
 
-**Boolean** — auto-checks binary (first word of `start`/`run`) via `command -v`:
+**Boolean** — auto-checks the binary via `command -v`. The binary is the first **non-assignment** token of `start`/`run`, so leading `FOO=bar` env-prefixes are skipped (`DEBUG=1 rainfrog …` probes `rainfrog`). A command with no real binary token (only assignments, or blank) is treated as unavailable:
 
 ```ts
 services: {
@@ -167,7 +170,7 @@ services: {
 
 **Rules:**
 
-- `optional: true` requires `start` or `run` as a **string** (not function) — ZAPS extracts the binary name from it
+- `optional: true` requires `start` or `run` as a **string** (not function) — ZAPS extracts the binary name from it (skipping `FOO=bar` env-prefix assignments)
 - Docker-only services must use the function form
 - Unavailable services: no pane, `dependsOn`/`restartWith` refs silently dropped, layout auto-collapses
 - Predicate timeout: 5 seconds

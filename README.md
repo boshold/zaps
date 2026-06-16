@@ -279,6 +279,13 @@ Caveats (consequences of jiti's per-load CJS transform):
 - `node_modules` reached from a config are re-evaluated on each load. If config load
   becomes slow because of a heavy dependency, that cost is per reload.
 
+**Reloading a running session** is **validate-then-swap**: the new config is loaded and
+validated first, and only swapped in if it parses cleanly. An invalid edit never tears
+down the running session — the old config stays live and the load error is reported.
+When ZAPS detects the config file changed on disk, the TUI header shows a
+`config changed — press c to reload` hint; press **`c`** on the dashboard (while no
+service is mid-operation) to apply it.
+
 ## Services
 
 ### Options
@@ -318,7 +325,7 @@ services: {
 }
 ```
 
-When `optional: true`, ZAPS checks if the binary exists (first word of `start`/`run` via `command -v`). For function commands or custom checks, use the context helper:
+When `optional: true`, ZAPS checks if the binary exists via `command -v`. The binary is the first **non-assignment** token of `start`/`run`, so leading `FOO=bar` env-prefixes are skipped (`FOO=bar rainfrog …` probes `rainfrog`, not `FOO=bar`). A command with no real binary token (only assignments, or blank) is treated as **unavailable**. For function commands or custom checks, use the context helper:
 
 ```typescript
 services: {
@@ -348,6 +355,30 @@ optional: async (ctx) => await ctx.hasBinary("grafana") && await ctx.hasBinary("
 - Layout automatically adjusts (empty splits collapsed)
 
 > **Note:** `optional: true` requires `start` or `run` as a string (not a function). Use the function form with `ctx.hasBinary()` for function commands or docker-only services.
+
+### Detached Services
+
+Set `detached: true` to run a service **pane-less** — outside the tmux layout, with no
+visible pane:
+
+```typescript
+services: {
+  worker: {
+    start: "node worker.js",
+    detached: true,
+    ready: { port: 4000 },
+  },
+}
+```
+
+- Full lifecycle still applies — start/stop/restart, ready detection, and crash
+  recovery all work the same as a paned service.
+- `zaps up -d` starts the whole session detached (services run, no TUI attached);
+  `zaps attach` later to view it.
+- **No tmux pane**, so there is no live terminal to scroll — read its output via the
+  log buffer (`zaps logs worker`, `-f` to stream).
+- A detached service **must not** appear in `layout`, and cannot be combined with
+  `docker` or `raw` (both need a pane) — these are config load errors.
 
 ### Ready Detection
 
@@ -418,18 +449,18 @@ When a service has `docker` config and no `start`/`run`, ZAPS auto-generates a `
 
 If no `ready` config is provided, ZAPS defaults to checking the docker container state (running + healthy).
 
-| Option          | Type                               | Default | Description                                 |
-| --------------- | ---------------------------------- | ------- | ------------------------------------------- |
-| `service`       | `string \| string[]`               | —       | Docker Compose service name(s) (required)   |
-| `file`          | `string`                           | —       | Path to compose file                        |
-| `projectName`   | `string`                           | —       | Pin the compose project name (see below)    |
-| `build`         | `boolean`                          | —       | `--build` flag                              |
-| `forceRecreate` | `boolean`                          | —       | `--force-recreate` flag                     |
-| `renewVolumes`  | `boolean`                          | —       | `-V` flag (recreate volumes)                |
-| `removeOrphans` | `boolean`                          | —       | `--remove-orphans` flag                     |
-| `pull`          | `"always" \| "missing" \| "never"` | —       | `--pull` strategy                           |
-| `noDeps`        | `boolean`                          | —       | `--no-deps` flag                            |
-| `expand`        | `boolean`                          | —       | Expand into individual services (see below) |
+| Option          | Type                                | Default | Description                                 |
+| --------------- | ----------------------------------- | ------- | ------------------------------------------- |
+| `service`       | `string \| string[]`                | —       | Docker Compose service name(s) (required)   |
+| `file`          | `string`                            | —       | Path to compose file                        |
+| `projectName`   | `string`                            | —       | Pin the compose project name (see below)    |
+| `build`         | `boolean`                           | —       | `--build` flag                              |
+| `forceRecreate` | `boolean`                           | —       | `--force-recreate` flag                     |
+| `renewVolumes`  | `boolean`                           | —       | `-V` flag (recreate volumes)                |
+| `removeOrphans` | `boolean`                           | —       | `--remove-orphans` flag                     |
+| `pull`          | `"always" \| "missing" \| "never"`  | —       | `--pull` strategy                           |
+| `noDeps`        | `boolean`                           | —       | `--no-deps` flag                            |
+| `expand`        | `boolean \| Record<string, object>` | —       | Expand into individual services (see below) |
 
 > **Compose version:** Docker Compose **v2.21+** is the tested baseline.
 
@@ -499,6 +530,8 @@ services: {
 ```
 
 Children without overrides inherit the parent config. Overrides can set `ready`, `env`, `onReady`, `onStop`, `onBeforeStart`, `url`, `flags`, `restart`, etc.
+
+An override **cannot** set `start`, `run`, or `docker` (the command and docker config are inherited from the parent group — overriding them would silently break the shared pane), and unknown keys (e.g. a typo like `redy:`) are rejected. Any forbidden or unknown key is a config load error naming the group, child, and offending key. `expand` also works when `service` is a single string (it expands to one child), not only on arrays.
 
 ### Dependencies
 
@@ -656,6 +689,16 @@ Tasks can define a `shortcut` key for quick execution via chord mode. If no shor
 
 Press `t` on the dashboard to enter chord mode. Then press a shortcut key to immediately run that task. Any unmatched key or `Enter` opens the full tasks list instead.
 
+#### Reserved keys
+
+The keys **`q`, `j`, and `k` are reserved** and are never auto-assigned to a task (`q` quits, `j`/`k` are list navigation). If a task explicitly requests one of them via `shortcut`, the shortcut is **dropped** (no fallback is assigned) and ZAPS prints a load-time warning:
+
+```
+Warning: task 'deploy' ('Deploy') requests reserved shortcut 'q'; 'q' is reserved (q=quit, j/k=navigation) and the shortcut is dropped.
+```
+
+Pick a different key for the task to keep a shortcut.
+
 ## Layout
 
 Define a custom tmux pane layout. The `@tui` pane is **required** — it hosts the ZAPS dashboard.
@@ -697,6 +740,7 @@ If no layout is specified, `@tui` gets the main pane and each service gets a bac
 | `o`           | Open service URL in browser    |
 | `t`           | Tasks (chord mode or list)     |
 | `a`           | Restart all services           |
+| `c`           | Reload config (when idle)      |
 | `q`           | Stop all and quit              |
 
 ### Chord Mode
@@ -862,6 +906,51 @@ Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectiv
 - Use the `zaps-usage` skill to manage dev sessions (start/stop services, run tasks, view logs)
 - Use the `zaps-config` skill when editing ZAPS config files
 ```
+
+## Troubleshooting & Migration
+
+### `zaps daemon stop` tears down services
+
+`zaps daemon stop` now performs a **full cleanup**: it stops every service in every
+session the daemon manages before shutting the daemon down, and reports what it tore
+down (`Stopped <n> session(s), <m> service(s).`). It is no longer a bare process kill.
+
+### Error messages you may see
+
+- **Port already in use** — before starting a service, ZAPS pre-flights its expected
+  host ports. If one is taken it fails fast with an attributed message instead of
+  letting the service crash on bind:
+
+  ```
+  Port 5432 already in use (pid 1234 postgres)
+  ```
+
+- **Dependency not ready** — when a service can't start because one of its
+  `dependsOn` services never became ready, the dependent's `lastError` (shown in the
+  dashboard) reads:
+
+  ```
+  Dependency "db" not ready
+  ```
+
+### Removed environment variables
+
+`ZAPS_PANE_MAP` and `ZAPS_IPC_SOCKET` have been **removed**. These legacy env paths
+never functioned and there is no migration — delete any references to them. Pane and
+socket resolution is handled internally by the daemon.
+
+### Compose project pinning (one-time)
+
+Upgrading pins every compose invocation to a deterministic `-p` project name (see
+[Compose project pinning](#compose-project-pinning)). Existing containers started under
+the old, unpinned project name keep running but are no longer tracked. Clean them up
+once per affected project directory:
+
+```bash
+docker compose -p <old-project-name> down
+```
+
+ZAPS prints a best-effort one-time warning when it detects such leftover containers.
 
 ## License
 
