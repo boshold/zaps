@@ -1,10 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { probePort } from "../../src/lib/probe.js";
+import { isAuxPort, probePort, selectProbeCandidates } from "../../src/lib/probe.js";
 
-// ---------- tests ----------
+function mockFetch(responses: Record<string, number | "throw">): ReturnType<typeof vi.spyOn> {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const url = input as string;
+    const value = responses[url];
+    if (value === undefined || value === "throw") {
+      throw new Error("Connection refused");
+    }
+    return new Response(null, { status: value });
+  });
+}
 
 beforeEach(() => {
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
   vi.restoreAllMocks();
 });
 
@@ -13,64 +26,72 @@ describe("probePort", () => {
     expect(await probePort([])).toBeUndefined();
   });
 
-  it("returns undefined for port with no listener", async () => {
+  it("returns undefined when no listener responds", async () => {
+    mockFetch({});
     expect(await probePort([19_999])).toBeUndefined();
   });
 
-  describe("HTTP GET probe", () => {
-    afterEach(() => {
-      vi.restoreAllMocks();
-    });
-
-    it("returns http URL when server responds to HTTP GET", async () => {
-      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
-
-      const result = await probePort([3000]);
-      expect(result).toBe("http://localhost:3000");
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "http://localhost:3000",
-        expect.objectContaining({ method: "GET", redirect: "manual" }),
-      );
-    });
-
-    it("returns http URL even for 4xx/5xx responses", async () => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 403 }));
-
-      const result = await probePort([3000]);
-      expect(result).toBe("http://localhost:3000");
-    });
-
-    it("returns undefined when fetch throws", async () => {
-      vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Connection refused"));
-
-      const result = await probePort([3000]);
-      expect(result).toBeUndefined();
-    });
+  it("targets 127.0.0.1 (B8)", async () => {
+    const spy = mockFetch({ "http://127.0.0.1:3000": 200 });
+    expect(await probePort([3000])).toBe("http://127.0.0.1:3000");
+    expect(spy).toHaveBeenCalledWith(
+      "http://127.0.0.1:3000",
+      expect.objectContaining({ method: "GET", redirect: "manual" }),
+    );
   });
 
-  describe("multi-port selection", () => {
-    afterEach(() => {
-      vi.restoreAllMocks();
-    });
+  it("falls back to [::1] when 127.0.0.1 is refused (B8)", async () => {
+    mockFetch({ "http://[::1]:3000": 200 });
+    expect(await probePort([3000])).toBe("http://[::1]:3000");
+  });
 
-    it("returns first HTTP port", async () => {
-      const fetchSpy = vi.spyOn(globalThis, "fetch");
-      fetchSpy
-        .mockRejectedValueOnce(new Error("Connection refused"))
-        .mockResolvedValueOnce(new Response());
+  it("accepts a 4xx/5xx-only port when it is the only candidate", async () => {
+    mockFetch({ "http://127.0.0.1:3000": 403 });
+    expect(await probePort([3000])).toBe("http://127.0.0.1:3000");
+  });
 
-      const result = await probePort([5432, 3000]);
-      expect(result).toBe("http://localhost:3000");
-    });
+  it("prefers a 2xx/3xx port over a lower port answering only 4xx (B7)", async () => {
+    mockFetch({ "http://127.0.0.1:3000": 403, "http://127.0.0.1:8080": 200 });
+    expect(await probePort([3000, 8080])).toBe("http://127.0.0.1:8080");
+  });
 
-    it("returns undefined when all ports fail", async () => {
-      vi.spyOn(globalThis, "fetch")
-        .mockRejectedValueOnce(new Error("Connection refused"))
-        .mockRejectedValueOnce(new Error("Connection refused"))
-        .mockRejectedValueOnce(new Error("Connection refused"));
+  it("skips the Node inspector port when an app port is present (B7)", async () => {
+    const spy = mockFetch({ "http://127.0.0.1:9229": 200, "http://127.0.0.1:3000": 200 });
+    expect(await probePort([9229, 3000])).toBe("http://127.0.0.1:3000");
+    expect(spy).not.toHaveBeenCalledWith("http://127.0.0.1:9229", expect.anything());
+  });
 
-      const result = await probePort([5432, 3000, 8080]);
-      expect(result).toBeUndefined();
-    });
+  it("probes an aux port when it is the only one (no brick)", async () => {
+    mockFetch({ "http://127.0.0.1:24678": 200 });
+    expect(await probePort([24_678])).toBe("http://127.0.0.1:24678");
+  });
+
+  it("returns undefined when all ports fail", async () => {
+    mockFetch({});
+    expect(await probePort([5432, 3000, 8080])).toBeUndefined();
+  });
+});
+
+describe("isAuxPort", () => {
+  it("flags the Node inspector range 9229-9240", () => {
+    expect(isAuxPort(9229)).toBe(true);
+    expect(isAuxPort(9240)).toBe(true);
+    expect(isAuxPort(9228)).toBe(false);
+    expect(isAuxPort(9241)).toBe(false);
+  });
+  it("flags the Vite HMR port 24678", () => {
+    expect(isAuxPort(24_678)).toBe(true);
+  });
+  it("does not flag a typical app port", () => {
+    expect(isAuxPort(3000)).toBe(false);
+  });
+});
+
+describe("selectProbeCandidates", () => {
+  it("drops aux ports when non-aux ports exist", () => {
+    expect(selectProbeCandidates([9229, 3000, 24_678])).toEqual([3000]);
+  });
+  it("keeps aux ports when they are the only ones", () => {
+    expect(selectProbeCandidates([9229, 24_678])).toEqual([9229, 24_678]);
   });
 });

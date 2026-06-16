@@ -56,6 +56,8 @@ interface RenderOpts {
   selectedIndex?: number;
   runTrigger?: number;
   client?: DaemonClient;
+  runningTask?: string | null;
+  onRunStart?: (taskKey: string) => void;
 }
 
 function renderTasksView(opts: RenderOpts) {
@@ -76,6 +78,8 @@ function renderTasksView(opts: RenderOpts) {
           runTrigger={opts.runTrigger ?? 0}
           taskShortcuts={[]}
           taskHistory={[]}
+          runningTask={opts.runningTask ?? null}
+          onRunStart={opts.onRunStart ?? (() => undefined)}
         />
       </AppProvider>,
     ),
@@ -86,7 +90,12 @@ function rerenderTasksView(
   rerender: (tree: React.ReactElement) => void,
   client: DaemonClient,
   tasks: TaskInfo[],
-  opts: { selectedIndex?: number; runTrigger?: number },
+  opts: {
+    selectedIndex?: number;
+    runTrigger?: number;
+    runningTask?: string | null;
+    onRunStart?: (taskKey: string) => void;
+  },
 ) {
   rerender(
     <AppProvider
@@ -101,6 +110,8 @@ function rerenderTasksView(
         runTrigger={opts.runTrigger ?? 0}
         taskShortcuts={[]}
         taskHistory={[]}
+        runningTask={opts.runningTask ?? null}
+        onRunStart={opts.onRunStart ?? (() => undefined)}
       />
     </AppProvider>,
   );
@@ -192,8 +203,9 @@ describe("TasksView", () => {
     expect(frame).toContain("Run migrations");
   });
 
-  it("prevents concurrent task execution (double trigger)", async () => {
+  it("prevents concurrent task execution (double trigger via Router runningTask)", async () => {
     let resolveRun!: () => void;
+    const onRunStart = vi.fn();
     const client = createMockClient({
       runTask: vi.fn().mockImplementation(
         async () =>
@@ -203,21 +215,34 @@ describe("TasksView", () => {
       ),
     });
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { rerender } = renderTasksView({ tasks, client });
+    const { rerender } = renderTasksView({ tasks, client, onRunStart });
 
-    // First trigger starts a run
-    rerenderTasksView(rerender, client, tasks, { runTrigger: 1 });
+    // First trigger starts a run; the view optimistically tells Router it is running.
+    rerenderTasksView(rerender, client, tasks, { runTrigger: 1, onRunStart });
     await vi.waitFor(() => {
       expect(client.runTask).toHaveBeenCalledTimes(1);
     });
+    expect(onRunStart).toHaveBeenCalledWith("migrate");
 
-    // Second trigger while first is still running — should be ignored
-    rerenderTasksView(rerender, client, tasks, { runTrigger: 2 });
+    // Router now owns runningTask; second trigger while still running is ignored (F4).
+    rerenderTasksView(rerender, client, tasks, {
+      runTrigger: 2,
+      runningTask: "migrate",
+      onRunStart,
+    });
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(client.runTask).toHaveBeenCalledTimes(1);
 
     // Resolve first run
     resolveRun();
+  });
+
+  it("renders the running indicator from the Router-owned runningTask prop", () => {
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { lastFrame } = renderTasksView({ tasks, runningTask: "migrate" });
+    const frame = lastFrame() ?? "";
+    // Re-entering with a run in flight still shows the task; no crash.
+    expect(frame).toContain("Run migrations");
   });
 
   it("does not run task when tasks list is empty", async () => {

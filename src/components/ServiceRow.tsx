@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { ErrorSubRow } from "./ErrorSubRow.js";
+import { showsErrorSubRow } from "./serviceRowError.js";
 import { StatusCell } from "./StatusCell.js";
 
 interface ServiceRowProps {
@@ -45,6 +46,18 @@ function stateLabel(status: ServiceStatus): string {
   return status.state;
 }
 
+/**
+ * Trailing info cell for the wide layout: a `detached` marker for pane-less
+ * services (E4) alongside any url / retry text.
+ */
+function trailingInfo(status: ServiceStatus): string {
+  const base = status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "");
+  if (status.isDetached) {
+    return base ? `detached ${base}` : "detached";
+  }
+  return base;
+}
+
 // 4 chars: selector(2) + status(1) + space(1)
 const PREFIX_WIDTH = 4;
 const INDENT_WIDTH = 2;
@@ -76,12 +89,12 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
           <Text dimColor={dim}>{stateLabel(status).padEnd(10)}</Text>
           <Text dimColor>{portsStr.padEnd(24)}</Text>
           <Text dimColor wrap="truncate">
-            {(status.url ?? (status.retryCount > 0 ? `retry ${status.retryCount}` : "")).padEnd(
-              Math.max(0, available - 24 - 10 - 24),
-            )}
+            {trailingInfo(status).padEnd(Math.max(0, available - 24 - 10 - 24))}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }
@@ -101,10 +114,12 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
           </Text>
           <Text dimColor={dim}>{stateLabel(status).padEnd(statusWidth)}</Text>
           <Text dimColor wrap="truncate">
-            {portsStr}
+            {status.isDetached ? `detached ${portsStr}` : portsStr}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }
@@ -126,7 +141,9 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {stateLabel(status).slice(0, statusWidth)}
           </Text>
         </Box>
-        {isSelected && status.lastError && <ErrorSubRow error={status.lastError} />}
+        {status.lastError && showsErrorSubRow(status, isSelected) && (
+          <ErrorSubRow error={status.lastError} />
+        )}
       </Box>
     );
   }

@@ -4,11 +4,16 @@ import { program } from "commander";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
   CliError,
+  DAEMON_NOT_RUNNING,
   formatTable,
+  parsePositiveInt,
   resolveCommand,
+  resolveCommandArgv,
+  resolveListedSessionId,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
+  runDown,
   withDaemon,
 } from "./cli/helpers.js";
 import { isCodingAgent, resolveFormat, writeData } from "./cli/output.js";
@@ -21,16 +26,10 @@ import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
+import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
-import {
-  currentPaneId,
-  currentSession,
-  killPane,
-  listZapsSessions,
-  selectPane,
-  sendKeys,
-  showEnv,
-} from "./lib/tmux.js";
+import type { ServiceStatus } from "./lib/service/types.js";
+import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
@@ -93,6 +92,7 @@ async function runTui(opts: {
       initialStatuses={snapshot.statuses}
       initialTaskHistory={snapshot.taskHistory ?? []}
       autoStart={showSplash}
+      configStale={snapshot.configStale}
     />,
     { patchConsole: false },
   );
@@ -101,6 +101,94 @@ async function runTui(opts: {
 
   process.stdout.write("\x1b[?1049l");
   client.disconnect();
+}
+
+const DETACH_INACTIVITY_MS = 120_000;
+
+/**
+ * `zaps up -d`: subscribe to the session, then issue a SINGLE `services.startAll`
+ * that joins the daemon's deduped in-flight run. Blocks until the run settles,
+ * bounded by an inactivity timeout that resets on every subscription event (no
+ * fixed wall-clock cap). Throws `CliError` on disconnect/inactivity; throws when
+ * any service ended in `error` so the caller can exit non-zero.
+ */
+async function runDetachedStartAll(sock: string, sid: string, sessionName: string): Promise<void> {
+  const ctl: {
+    sub?: IpcSubscription;
+    inactivity?: ReturnType<typeof setTimeout>;
+    done: boolean;
+    anyError: boolean;
+  } = { done: false, anyError: false };
+
+  await new Promise<void>((resolve, reject) => {
+    const finish = (action: () => void): void => {
+      if (ctl.done) {
+        return;
+      }
+      ctl.done = true;
+      if (ctl.inactivity) {
+        clearTimeout(ctl.inactivity);
+      }
+      ctl.sub?.close();
+      action();
+    };
+    const arm = (): void => {
+      if (ctl.done) {
+        return;
+      }
+      if (ctl.inactivity) {
+        clearTimeout(ctl.inactivity);
+      }
+      ctl.inactivity = setTimeout(() => {
+        finish(() =>
+          reject(
+            new CliError(
+              `zaps up -d: no activity from the daemon for ${DETACH_INACTIVITY_MS / 1000}s; aborting.`,
+            ),
+          ),
+        );
+      }, DETACH_INACTIVITY_MS);
+      ctl.inactivity.unref?.();
+    };
+    // Single startAll that joins the deduped in-flight run; no wall-clock cap
+    // (0) — the inactivity timer and socket-close handler bound it instead.
+    const drive = async (): Promise<void> => {
+      await ctl.sub?.ready;
+      const startRes = await ctl.sub?.request("services.startAll", undefined, 0);
+      if (startRes?.error) {
+        finish(() => reject(new CliError(`Error starting services: ${startRes.error}`)));
+        return;
+      }
+      const listRes = await ctl.sub?.request("services.list", undefined, 0);
+      const statuses = (listRes?.result as ServiceStatus[] | undefined) ?? [];
+      ctl.anyError = statuses.some((s) => s.state === "error");
+      finish(() => resolve());
+    };
+
+    ctl.sub = ipcSubscribe(
+      sock,
+      sid,
+      ["service.stateChange", "log.lines"],
+      () => {
+        arm();
+      },
+      () => {
+        finish(() => reject(new CliError("error: daemon connection closed")));
+      },
+      (err) => {
+        finish(() => reject(new CliError(`Error starting services: ${err}`)));
+      },
+    );
+    arm();
+    void drive().catch((error: unknown) => {
+      finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+    });
+  });
+
+  if (ctl.anyError) {
+    throw new CliError(`Session ${sessionName}: one or more services failed to start.`);
+  }
+  process.stdout.write(`Session ${sessionName} started (detached).\n`);
 }
 
 async function upFlow(detach?: boolean): Promise<void> {
@@ -121,7 +209,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   const tmuxSession = await currentSession();
 
   const command = resolveCommand();
-  const sock = await ensureDaemon(command);
+  const sock = await ensureDaemon(resolveCommandArgv());
 
   const res = await ipcRequest(sock, "session.create", {
     configPath,
@@ -135,25 +223,43 @@ async function upFlow(detach?: boolean): Promise<void> {
     process.exit(1);
   }
 
-  const session = res.result as { id: string; name: string; paneMap: Record<string, string> };
+  const session = res.result as {
+    id: string;
+    name: string;
+    paneMap: Record<string, string>;
+    focusPane?: string;
+  };
 
   if (detach) {
-    // Start services but don't attach TUI
-    const startRes = await ipcRequest(sock, "services.startAll", null, 60_000, session.id);
-    if (startRes.error) {
-      process.stderr.write(`Error starting services: ${startRes.error}\n`);
-      process.exit(1);
+    // Start services without attaching the TUI; block until the run settles.
+    try {
+      await runDetachedStartAll(sock, session.id, session.name);
+    } catch (error) {
+      if (error instanceof CliError) {
+        process.stderr.write(`${error.message}\n`);
+        process.exit(1);
+      }
+      throw error;
     }
-    process.stdout.write(`Session ${session.name} started (detached).\n`);
     return;
   }
 
   const tuiPaneId = session.paneMap["@tui"];
-  await selectPane(tuiPaneId);
+  // Honor the daemon-computed focus (layout `focus: true`); defaults to @tui.
+  // Without a focused leaf this matches the old unconditional select behavior.
+  const focusPane = session.focusPane ?? tuiPaneId;
 
-  await (tuiPaneId === originPane
-    ? runTui({ sessionId: session.id, socketPath: sock, autoStart: true })
-    : sendKeys(tuiPaneId, `${command} ui --session ${session.id} --socket ${sock} --start; exit`));
+  if (tuiPaneId === originPane) {
+    // The TUI render blocks until exit, so focus before handing the pane to Ink.
+    await selectPane(focusPane);
+    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
+  } else {
+    await sendKeys(
+      tuiPaneId,
+      `${command} ui --session ${session.id} --socket ${sock} --start; exit`,
+    );
+    await selectPane(focusPane);
+  }
 }
 
 // --- Smart default: attach if running, else up ---
@@ -222,66 +328,23 @@ program
   .command("down")
   .description("Stop all services and destroy session")
   .action(async () => {
-    const sock = socketPath();
-    if (isDaemonRunning()) {
-      const sessionOpt = globalSession();
-      const res = await ipcRequest(sock, "session.list");
-      if (res.error) {
-        process.stderr.write(`Error: ${res.error}\n`);
-        process.exit(1);
-      }
-      const sessions = res.result as SessionInfo[];
-      const target = (() => {
-        try {
-          return sessionOpt
-            ? resolveTargetSession(sessions, sessionOpt)
-            : sessions.find((s) => s.id === resolveSessionId().id);
-        } catch (error) {
-          if (error instanceof CliError) {
-            process.stderr.write(`${error.message}\n`);
-            process.exit(1);
-          }
-          throw error;
-        }
-      })();
-      if (target) {
-        const destroyRes = await ipcRequest(sock, "session.destroy", null, 30_000, target.id);
-        if (destroyRes.error) {
-          process.stderr.write(`Error: ${destroyRes.error}\n`);
-        } else {
-          process.stdout.write("Session destroyed.\n");
-        }
-      } else {
-        process.stderr.write("No running zaps session for this project.\n");
-      }
-      return;
+    const code = await runDown({
+      daemonRunning: isDaemonRunning,
+      socket: socketPath,
+      sessionArg: globalSession(),
+      listSessions: async (sock) => ipcRequest(sock, "session.list"),
+      destroy: async (sock, id) => ipcRequest(sock, "session.destroy", null, 30_000, id),
+      resolveProjectSessionId: () => resolveSessionId().id,
+      stdout: (text) => {
+        process.stdout.write(text);
+      },
+      stderr: (text) => {
+        process.stderr.write(text);
+      },
+    });
+    if (code !== 0) {
+      process.exit(code);
     }
-
-    if (!getEnv("TMUX")) {
-      process.stderr.write("zaps must be run from inside a tmux session.\n");
-      process.exit(1);
-    }
-
-    const tmuxSession = await currentSession();
-    const raw = await showEnv(tmuxSession, "ZAPS_PANE_MAP");
-    if (!raw) {
-      process.stderr.write("No active zaps panes found in this session.\n");
-      process.exit(1);
-    }
-
-    const paneMap = JSON.parse(raw) as Record<string, string>;
-    const originPane = await currentPaneId();
-
-    let killed = 0;
-    for (const paneId of Object.values(paneMap)) {
-      if (paneId !== originPane) {
-        await killPane(paneId).catch(() => {
-          /* Best-effort cleanup */
-        });
-        killed += 1;
-      }
-    }
-    process.stdout.write(`Killed ${killed} pane(s).\n`);
   });
 
 // --- Service Operations (flat, variadic) ---
@@ -374,19 +437,14 @@ program
   .action(async (opts: { json?: boolean; toon?: boolean }) => {
     const format = resolveFormat(opts);
     const sock = socketPath();
+    // No daemon → no sessions can exist; report it (E7) and emit an empty list
+    // For machine formats. Informational, so exit 0 (nothing errored).
     if (!isDaemonRunning()) {
-      const sessions = await listZapsSessions();
       if (format !== "text") {
-        writeData(sessions, format);
+        writeData([] as SessionInfo[], format);
         return;
       }
-      if (sessions.length === 0) {
-        process.stdout.write("No running zaps instances found.\n");
-        return;
-      }
-      for (const { session, panes } of sessions) {
-        process.stdout.write(`${session} (${panes} panes)\n`);
-      }
+      process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
       return;
     }
 
@@ -469,7 +527,11 @@ program
   .option("-f, --follow", "Stream live logs")
   .option("--tail <n>", "Number of lines to show", "100")
   .action(async (services: string[], opts: { follow?: boolean; tail: string }) => {
-    const tail = Number.parseInt(opts.tail, 10);
+    const tail = parsePositiveInt(opts.tail);
+    if (tail === null) {
+      process.stderr.write(`Invalid --tail value "${opts.tail}": expected a positive integer.\n`);
+      process.exit(1);
+    }
 
     try {
       await withDaemon(async (ipc: SessionIpc) => {
@@ -521,18 +583,32 @@ program
 
         // Follow mode: subscribe to log events
         const sock = socketPath();
-        const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], (event: DaemonEvent) => {
-          const data = event.data as { service: string; lines: string[] };
-          if (targetServices.includes(data.service)) {
-            for (const line of data.lines) {
-              process.stdout.write(`${formatLine(data.service, line)}\n`);
+        let userClosed = false;
+        const sub = ipcSubscribe(
+          sock,
+          ipc.sessionId,
+          ["log.lines"],
+          (event: DaemonEvent) => {
+            const data = event.data as { service: string; lines: string[] };
+            if (targetServices.includes(data.service)) {
+              for (const line of data.lines) {
+                process.stdout.write(`${formatLine(data.service, line)}\n`);
+              }
             }
-          }
-        });
+          },
+          () => {
+            // Q5: the daemon closed the socket — no reconnect; report and exit 1.
+            if (!userClosed) {
+              process.stderr.write("error: daemon connection closed\n");
+              process.exit(1);
+            }
+          },
+        );
 
         // Wait for ctrl+c
         await new Promise<void>((resolve) => {
           process.on("SIGINT", () => {
+            userClosed = true;
             sub.close();
             resolve();
           });
@@ -592,21 +668,21 @@ program
     const sock = socketPath();
 
     if (!isDaemonRunning()) {
-      process.stderr.write("No running daemon found.\n");
+      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
       process.exit(1);
     }
 
+    // Validate the resolved session against session.list up front (E8) — the
+    // No-`-s` path resolves a pure config hash, so without this check `events`
+    // Would subscribe to a nonexistent session and hang forever.
     const id = await (async () => {
       try {
-        const sessionOpt = globalSession();
-        if (sessionOpt) {
-          const res = await ipcRequest(sock, "session.list");
-          if (res.error) {
-            throw new CliError(`Error: ${res.error}`);
-          }
-          return resolveTargetSession(res.result as SessionInfo[], sessionOpt).id;
+        const res = await ipcRequest(sock, "session.list");
+        if (res.error) {
+          throw new CliError(`Error: ${res.error}`);
         }
-        return resolveSessionId().id;
+        const sessions = res.result as SessionInfo[];
+        return resolveListedSessionId(sessions, globalSession());
       } catch (error) {
         if (error instanceof CliError) {
           process.stderr.write(`${error.message}\n`);
@@ -618,15 +694,34 @@ program
 
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
-    const sub = ipcSubscribe(sock, id, [], (event: DaemonEvent) => {
-      if (filterRe && !filterRe.test(event.event)) {
-        return;
-      }
-      process.stdout.write(`${JSON.stringify(event)}\n`);
-    });
+    let userClosed = false;
+    const sub = ipcSubscribe(
+      sock,
+      id,
+      [],
+      (event: DaemonEvent) => {
+        if (filterRe && !filterRe.test(event.event)) {
+          return;
+        }
+        process.stdout.write(`${JSON.stringify(event)}\n`);
+      },
+      () => {
+        // Q5: the daemon closed the socket — no reconnect; report and exit 1.
+        if (!userClosed) {
+          process.stderr.write("error: daemon connection closed\n");
+          process.exit(1);
+        }
+      },
+      (reason: string) => {
+        // E8: surface a subscribe error-ack that slipped past the session.list pre-check.
+        process.stderr.write(`error: ${reason}\n`);
+        process.exit(1);
+      },
+    );
 
     await new Promise<void>((resolve) => {
       process.on("SIGINT", () => {
+        userClosed = true;
         sub.close();
         resolve();
       });
@@ -810,7 +905,7 @@ program
 
     const sock = socketPath();
     if (!isDaemonRunning()) {
-      process.stderr.write("No running daemon found.\n");
+      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
       process.exit(1);
     }
 
@@ -918,8 +1013,7 @@ daemonCmd
       process.stdout.write("Daemon already running.\n");
       return;
     }
-    const command = resolveCommand();
-    await ensureDaemon(command);
+    await ensureDaemon(resolveCommandArgv());
     process.stdout.write("Daemon started.\n");
   });
 
@@ -932,10 +1026,32 @@ daemonCmd
       return;
     }
     const sock = socketPath();
+
+    // Gather counts before issuing shutdown so we can report what was torn down.
+    let sessionCount = 0;
+    let serviceCount = 0;
+    const statusRes = await ipcRequest(sock, "daemon.status").catch(() => null);
+    if (statusRes && !statusRes.error) {
+      const status = statusRes.result as { sessions: { serviceCount: number }[] };
+      sessionCount = status.sessions.length;
+      serviceCount = status.sessions.reduce((sum, s) => sum + s.serviceCount, 0);
+    }
+
     await ipcRequest(sock, "daemon.shutdown").catch(() => {
-      /* Best-effort */
+      /* Best-effort — daemon may close the socket as it tears down */
     });
-    process.stdout.write("Daemon stopped.\n");
+
+    // The daemon removes its pid/socket as part of handling the shutdown, so
+    // Wait for that to actually happen before reporting — makes `daemon stop`
+    // Deterministic (the command returns only once the daemon is really gone).
+    const deadline = Date.now() + 5000;
+    /* eslint-disable no-await-in-loop -- sequential poll for teardown completion */
+    while (isDaemonRunning() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    /* eslint-enable no-await-in-loop */
+
+    process.stdout.write(`Stopped ${sessionCount} session(s), ${serviceCount} service(s).\n`);
   });
 
 daemonCmd
@@ -994,21 +1110,11 @@ program
   .option("-s, --session <id>", "Target session (auto-detected from CWD)")
   .action(async (opts: { session?: string }) => {
     const sock = socketPath();
-    let targetSessionId = "";
-    try {
-      const res = await ipcRequest(sock, "session.list");
-      if (!res.error) {
-        // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-        const sessions = res.result as SessionInfo[];
-        if (sessions.length > 0) {
-          targetSessionId = resolveTargetSession(sessions, opts.session).id;
-        }
-      }
-    } catch {
-      // Daemon not running — MCP server will report errors per-tool call
-    }
+    // Session binding is resolved per tool call inside the server (E9) — not
+    // Cached here — so an MCP server started before `zaps up`, or surviving a
+    // Session restart, picks up the current session on the next call.
     const { startMcpServer } = await import("./mcp/server.js");
-    await startMcpServer(sock, targetSessionId);
+    await startMcpServer(sock, opts.session);
   });
 
 if (process.argv.length === 2) {

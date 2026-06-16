@@ -36,7 +36,7 @@ async function runPopupTaskNonInteractive(
   }
 
   const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
-  const serviceCtx = buildServiceContext(statuses, config.projectDir);
+  const serviceCtx = buildServiceContext(statuses, config.projectDir, config.project.services);
 
   const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
   const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
@@ -76,7 +76,7 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    session.subscribers.delete(socket);
+    session.removeSubscriber(socket);
     return ipcOk(req.id, { detached: true });
   },
 
@@ -85,11 +85,11 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    session.subscribers.add(socket);
-
-    socket.on("close", () => {
-      session.subscribers.delete(socket);
-    });
+    // Subscriber removal on close/error is handled once at the server level
+    // (server.ts cleanupSubscriptions) — registering a per-subscribe `close`
+    // Listener here stacked one per subscribe call and tripped the EventEmitter
+    // Max-listeners warning (D7).
+    session.addSubscriber(socket);
 
     return ipcOk(req.id, { subscribed: true });
   },
@@ -141,8 +141,8 @@ export const sessionHandlers: Record<
     }
     const { name } = req.params as { name: string };
     try {
-      await session.manager.startService(name);
-      return ipcOk(req.id, { started: name });
+      const result = await session.manager.startService(name);
+      return ipcOk(req.id, { started: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -155,8 +155,8 @@ export const sessionHandlers: Record<
     }
     const { name } = req.params as { name: string };
     try {
-      await session.manager.stopService(name);
-      return ipcOk(req.id, { stopped: name });
+      const result = await session.manager.stopService(name);
+      return ipcOk(req.id, { stopped: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -313,6 +313,7 @@ export const sessionHandlers: Record<
             session.manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
           ),
           projectDir: session.config.projectDir,
+          services: session.config.project.services,
           onLine: (_taskKey, line) => {
             send(socket, { id: req.id, event: "line", data: line });
           },
@@ -360,12 +361,13 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const { service, code, signal } = req.params as {
+    const { service, code, signal, spawnError } = req.params as {
       service: string;
       code: number;
       signal?: string | null;
+      spawnError?: string;
     };
-    session.manager.handleExecExited(service, code, signal ?? null);
+    session.manager.handleExecExited(service, code, signal ?? null, spawnError);
     return ipcOk(req.id, { ok: true });
   },
 

@@ -13,6 +13,8 @@ export function useRouter() {
   }
 
   function goToDashboard() {
+    // Clear the log target so useLogs unsubscribes and stops accumulating lines in the background once we leave the log view (F1).
+    setLogTarget(null);
     setView("dashboard");
   }
 

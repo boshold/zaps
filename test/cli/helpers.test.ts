@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/config/discovery.js", () => ({
@@ -22,21 +24,20 @@ vi.mock("../../src/lib/ipc/client.js", () => ({
   ipcStream: vi.fn(),
 }));
 
-vi.mock("../../src/lib/tmux.js", () => ({
-  currentSession: vi.fn(),
-  showEnv: vi.fn(),
-}));
-
-import type { SessionInfo } from "../../src/cli/helpers.js";
+import type { DownDeps, SessionInfo } from "../../src/cli/helpers.js";
 import {
   CliError,
+  DAEMON_NOT_RUNNING,
   formatTable,
+  parsePositiveInt,
   resolveCommand,
+  resolveCommandArgv,
+  resolveListedSessionId,
   resolveRuntime,
   resolveSessionId,
   resolveTargetSession,
+  runDown,
   withDaemon,
-  withLegacyIpc,
 } from "../../src/cli/helpers.js";
 
 describe("CliError", () => {
@@ -61,17 +62,45 @@ describe("resolveCommand", () => {
     expect(resolveCommand()).toBe("my-zaps");
   });
 
-  it("returns execPath basename for bunfs", () => {
+  it("returns the full execPath for bunfs", () => {
     process.argv[1] = "/$bunfs/root/main.js";
     const result = resolveCommand();
-    // Should be basename of execPath
-    expect(typeof result).toBe("string");
+    expect(result).toBe(process.execPath);
   });
 
   it("returns argv[0] + argv[1] for source mode", () => {
     process.argv = ["/usr/bin/node", "/path/to/cli.js", "up"];
     const result = resolveCommand();
     expect(result).toBe("/usr/bin/node /path/to/cli.js");
+  });
+});
+
+describe("resolveCommandArgv", () => {
+  const originalArgv = process.argv;
+
+  beforeEach(() => {
+    process.argv = [...originalArgv];
+    delete process.env.ZAPS_COMMAND;
+  });
+
+  it("returns the env command with no args when ZAPS_COMMAND is set", () => {
+    process.env.ZAPS_COMMAND = "my-zaps";
+    expect(resolveCommandArgv()).toEqual({ file: "my-zaps", args: [] });
+  });
+
+  it("returns the full execPath with no args for the native binary", () => {
+    process.argv[1] = "/$bunfs/root/main.js";
+    const { file, args } = resolveCommandArgv();
+    expect(args).toEqual([]);
+    // Must be the real executable path, NOT the basename — basename would hunt
+    // $PATH and could fork a different/older `zaps` as the daemon.
+    expect(file).toBe(process.execPath);
+    expect(file).not.toBe(path.basename(process.execPath));
+  });
+
+  it("splits argv[0] (runtime) and argv[1] (script) for source mode", () => {
+    process.argv = ["/usr/bin/node", "/path/to/cli.js", "up"];
+    expect(resolveCommandArgv()).toEqual({ file: "/usr/bin/node", args: ["/path/to/cli.js"] });
   });
 });
 
@@ -217,68 +246,24 @@ describe("resolveSessionId", () => {
   });
 });
 
-describe("withLegacyIpc", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    delete process.env.TMUX;
-  });
-
-  it("throws when not in tmux", async () => {
-    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/tmux session/);
-  });
-
-  it("throws when no ZAPS_IPC_SOCKET found", async () => {
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("");
-
-    await expect(withLegacyIpc(async () => "result")).rejects.toThrow(/No running zaps instance/);
-  });
-
-  it("calls fn with ipc when socket found", async () => {
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
-
-    const result = await withLegacyIpc(async (ipc) => {
-      expect(ipc.sessionId).toBe("");
-      return "done";
-    });
-    expect(result).toBe("done");
-  });
-});
-
 describe("withDaemon", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.TMUX;
   });
 
-  it("falls back to legacy when no daemon running and no sessionArg", async () => {
+  it("throws the accurate daemon-not-running error when no daemon and no sessionArg", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(false);
 
-    process.env.TMUX = "yes";
-
-    const { currentSession, showEnv } = await import("../../src/lib/tmux.js");
-    vi.mocked(currentSession).mockResolvedValue("main");
-    vi.mocked(showEnv).mockResolvedValue("/tmp/legacy.sock");
-
-    const result = await withDaemon(async () => "legacy-result");
-    expect(result).toBe("legacy-result");
+    await expect(withDaemon(async () => "result")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
-  it("throws when no daemon and sessionArg provided", async () => {
+  it("throws the accurate daemon-not-running error when no daemon and sessionArg provided", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(false);
 
-    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(
-      /No running daemon found/,
-    );
+    await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
   it("resolves session from daemon with sessionArg", async () => {
@@ -357,5 +342,177 @@ describe("withDaemon", () => {
     vi.mocked(ipcRequest).mockResolvedValue({ id: "r1", error: "list error" });
 
     await expect(withDaemon(async () => "result")).rejects.toThrow(/list error/);
+  });
+});
+
+describe("runDown", () => {
+  const sessions = [{ id: "abc", name: "proj", projectDir: "/proj" }];
+
+  function makeDeps(over: Partial<DownDeps> = {}): {
+    deps: DownDeps;
+    out: string[];
+    err: string[];
+    destroy: ReturnType<typeof vi.fn>;
+  } {
+    const out: string[] = [];
+    const err: string[] = [];
+    const destroy = vi.fn(over.destroy ?? (async () => ({ id: "d1" })));
+    const deps: DownDeps = {
+      daemonRunning: over.daemonRunning ?? (() => true),
+      socket: over.socket ?? (() => "/tmp/sock"),
+      sessionArg: over.sessionArg,
+      listSessions: over.listSessions ?? (async () => ({ id: "l1", result: sessions })),
+      destroy,
+      resolveProjectSessionId: over.resolveProjectSessionId ?? (() => "abc"),
+      stdout: (text) => out.push(text),
+      stderr: (text) => err.push(text),
+    };
+    return { deps, out, err, destroy };
+  }
+
+  it("returns 1 with the accurate error when the daemon is not running", async () => {
+    const { deps, err } = makeDeps({ daemonRunning: () => false });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain(DAEMON_NOT_RUNNING);
+  });
+
+  it("returns 1 when session.list errors", async () => {
+    const { deps, err } = makeDeps({ listSessions: async () => ({ id: "l1", error: "boom" }) });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("boom");
+  });
+
+  it("returns 1 when nothing matches the current project (nothing to stop)", async () => {
+    const { deps, err, destroy } = makeDeps({ resolveProjectSessionId: () => "nope" });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("No running zaps session");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("returns 1 when an explicit session arg cannot be resolved", async () => {
+    const { deps, err, destroy } = makeDeps({ sessionArg: "ghost" });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("Session not found");
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("returns 1 when destroy fails", async () => {
+    const { deps, err } = makeDeps({ destroy: async () => ({ id: "d1", error: "no" }) });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("no");
+  });
+
+  it("returns 0 and reports success when the project session is destroyed", async () => {
+    const { deps, out, destroy } = makeDeps();
+    expect(await runDown(deps)).toBe(0);
+    expect(out.join("")).toContain("Session destroyed.");
+    expect(destroy).toHaveBeenCalledWith("/tmp/sock", "abc");
+  });
+
+  it("returns 0 when a session resolved by arg is destroyed", async () => {
+    const { deps, destroy } = makeDeps({ sessionArg: "proj" });
+    expect(await runDown(deps)).toBe(0);
+    expect(destroy).toHaveBeenCalledWith("/tmp/sock", "abc");
+  });
+});
+
+describe("parsePositiveInt", () => {
+  it("rejects a non-numeric string", () => {
+    expect(parsePositiveInt("abc")).toBeNull();
+  });
+
+  it("rejects zero", () => {
+    expect(parsePositiveInt("0")).toBeNull();
+  });
+
+  it("rejects a negative integer", () => {
+    expect(parsePositiveInt("-5")).toBeNull();
+  });
+
+  it("rejects a non-integer (would silently floor under parseInt)", () => {
+    expect(parsePositiveInt("1.5")).toBeNull();
+  });
+
+  it("accepts a positive integer", () => {
+    expect(parsePositiveInt("10")).toBe(10);
+  });
+});
+
+describe("resolveTargetSession — subdirectory resolution (E12)", () => {
+  const sessions: SessionInfo[] = [
+    { id: "a1", name: "app", projectDir: "/home/u/app" },
+    { id: "b1", name: "other", projectDir: "/home/u/other" },
+  ];
+
+  function withCwd(cwd: string, fn: () => void) {
+    const spy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    try {
+      fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it("matches a session when cwd is a subdirectory of its projectDir", () => {
+    withCwd("/home/u/app/src/components", () => {
+      expect(resolveTargetSession(sessions).id).toBe("a1");
+    });
+  });
+
+  it("does not match a sibling dir sharing a name prefix (/app vs /app2)", () => {
+    const siblings: SessionInfo[] = [
+      { id: "a1", name: "app", projectDir: "/home/u/app" },
+      { id: "c1", name: "other", projectDir: "/home/u/zzz" },
+    ];
+    withCwd("/home/u/app2", () => {
+      expect(() => resolveTargetSession(siblings)).toThrow(/Multiple sessions/);
+    });
+  });
+
+  it("prefers the deepest (longest) projectDir for nested projects", () => {
+    const nested: SessionInfo[] = [
+      { id: "root", name: "monorepo", projectDir: "/home/u/app" },
+      { id: "pkg", name: "api", projectDir: "/home/u/app/packages/api" },
+    ];
+    withCwd("/home/u/app/packages/api/src", () => {
+      expect(resolveTargetSession(nested).id).toBe("pkg");
+    });
+  });
+
+  it("exact projectDir match still wins", () => {
+    withCwd("/home/u/app", () => {
+      expect(resolveTargetSession(sessions).id).toBe("a1");
+    });
+  });
+});
+
+describe("resolveListedSessionId (E8 events validation)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the id when the project's session is in the list", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+    const sessions: SessionInfo[] = [
+      { id: "session-/my/.zaps.mts", name: "my", projectDir: "/my" },
+    ];
+    expect(resolveListedSessionId(sessions)).toBe("session-/my/.zaps.mts");
+  });
+
+  it("throws when the project's session is not running", async () => {
+    const { discoverConfig } = await import("../../src/config/discovery.js");
+    vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
+    expect(() => resolveListedSessionId([])).toThrow(/No running zaps session/);
+  });
+
+  it("defers to resolveTargetSession for an explicit arg", () => {
+    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    expect(resolveListedSessionId(sessions, "proj")).toBe("abc");
+  });
+
+  it("throws for an explicit arg that matches nothing", () => {
+    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    expect(() => resolveListedSessionId(sessions, "ghost")).toThrow(/Session not found/);
   });
 });

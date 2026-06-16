@@ -194,8 +194,20 @@ async function detectPortsImpl(paneTarget: string): Promise<number[]> {
   return [...new Set(ports)].toSorted((a, b) => a - b);
 }
 
+/**
+ * Detect listening ports for a process tree rooted at an explicit PID — used for
+ * detached services, which have no pane to derive the root PID from (E4).
+ * Returns deduplicated sorted port list.
+ */
+async function detectPortsForPidImpl(rootPid: number): Promise<number[]> {
+  const pids = await getDescendantPidsImpl(rootPid);
+  const ports = await getListeningPortsImpl(pids);
+  return [...new Set(ports)].toSorted((a, b) => a - b);
+}
+
 export {
   getDescendantPidsImpl as getDescendantPids,
   getListeningPortsImpl as getListeningPorts,
   detectPortsImpl as detectPorts,
+  detectPortsForPidImpl as detectPortsForPid,
 };

@@ -4,16 +4,9 @@ import {
   buildServiceContext,
   formatEnvForShell,
   resolveEnv,
-  setServiceEnv,
   shellEscape,
 } from "../../../src/lib/service/env.js";
-import type { EnvDeps, ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
-
-const mockSetEnv = vi.fn<EnvDeps["setEnv"]>();
-
-function createDeps(): EnvDeps {
-  return { setEnv: mockSetEnv };
-}
+import type { ServiceContext, ServiceStatus } from "../../../src/lib/service/types.js";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -70,7 +63,7 @@ describe("buildServiceContext", () => {
     expect(ctx.services.worker.ports).toEqual([]);
   });
 
-  it("sets cwd to undefined", () => {
+  it("falls back to projectDir when a service has no configured cwd", () => {
     const statuses = new Map<string, ServiceStatus>([
       [
         "svc",
@@ -84,7 +77,24 @@ describe("buildServiceContext", () => {
     ]);
 
     const ctx = buildServiceContext(statuses, "/dir");
-    expect(ctx.services.svc.cwd).toBeUndefined();
+    expect(ctx.services.svc.cwd).toBe("/dir");
+  });
+
+  it("uses the service's configured cwd when present", () => {
+    const statuses = new Map<string, ServiceStatus>([
+      [
+        "svc",
+        {
+          name: "svc",
+          state: "ready",
+          ports: [8080],
+          retryCount: 0,
+        },
+      ],
+    ]);
+
+    const ctx = buildServiceContext(statuses, "/dir", { svc: { cwd: "/dir/backend" } });
+    expect(ctx.services.svc.cwd).toBe("/dir/backend");
   });
 });
 
@@ -153,21 +163,5 @@ describe("formatEnvForShell", () => {
 
   it("returns empty string for empty env", () => {
     expect(formatEnvForShell({})).toBe("");
-  });
-});
-
-describe("setServiceEnv", () => {
-  it("calls setEnv for each entry", async () => {
-    mockSetEnv.mockResolvedValue();
-    await setServiceEnv("my-session", { FOO: "bar", BAZ: "qux" }, createDeps());
-    expect(mockSetEnv).toHaveBeenCalledTimes(2);
-    expect(mockSetEnv).toHaveBeenCalledWith("my-session", "FOO", "bar");
-    expect(mockSetEnv).toHaveBeenCalledWith("my-session", "BAZ", "qux");
-  });
-
-  it("does nothing for empty env", async () => {
-    mockSetEnv.mockResolvedValue();
-    await setServiceEnv("my-session", {}, createDeps());
-    expect(mockSetEnv).not.toHaveBeenCalled();
   });
 });

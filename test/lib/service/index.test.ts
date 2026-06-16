@@ -9,7 +9,6 @@ import {
   formatEnvForShell,
   resolveEnv,
   reverseTopoSort,
-  setServiceEnv,
   shellEscape,
   topoSort,
   transition,
@@ -38,7 +37,6 @@ describe("service barrel exports", () => {
     expect(resolveEnv).toBeDefined();
     expect(formatEnvForShell).toBeDefined();
     expect(shellEscape).toBeDefined();
-    expect(setServiceEnv).toBeDefined();
   });
 
   it("exports ServiceManager", () => {

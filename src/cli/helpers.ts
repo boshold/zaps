@@ -6,7 +6,13 @@ import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcStream } from "#src/lib/ipc/client.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
-import { currentSession, showEnv } from "#src/lib/tmux.js";
+
+/**
+ * Single source of truth for the "no daemon" error. Reused by every
+ * daemon-requiring command (down/ls/logs/services/…) so the message is
+ * identical everywhere (E7, P05-V01).
+ */
+export const DAEMON_NOT_RUNNING = "Daemon not running.";
 
 export class CliError extends Error {
   public constructor(message: string) {
@@ -31,15 +37,34 @@ export interface SessionIpc {
   ): Promise<IpcResponse>;
 }
 
-export function resolveCommand(): string {
+/**
+ * Resolve how to invoke zaps as a spawnable argv: `{ file, args }`. Used to
+ * spawn the daemon child without `shell: true` (a joined string would be exec'd
+ * as a literal filename → ENOENT, E1).
+ * - `ZAPS_COMMAND` env / native binary: a single executable, no extra args.
+ * - Source run (node/tsx): the node binary plus the script path.
+ */
+export function resolveCommandArgv(): { file: string; args: string[] } {
   const zapsCommand = getEnv("ZAPS_COMMAND");
   if (zapsCommand) {
-    return zapsCommand;
+    return { file: zapsCommand, args: [] };
   }
   if (process.argv[1]?.startsWith("/$bunfs/")) {
-    return path.basename(process.execPath);
+    // Compiled single-file binary: re-exec THIS executable by its real path.
+    // `process.execPath` is the binary itself for a bun-compiled exe — using its
+    // Basename would hunt `$PATH` and could spawn a different/older `zaps` (or
+    // None at all), so the daemon it forks would not be the binary the user ran.
+    return { file: process.execPath, args: [] };
   }
-  return process.argv.slice(0, 2).join(" ");
+  return { file: process.argv[0], args: [process.argv[1]] };
+}
+
+/**
+ * The zaps invocation as a single shell string (for tmux pane commands).
+ */
+export function resolveCommand(): string {
+  const { file, args } = resolveCommandArgv();
+  return [file, ...args].join(" ");
 }
 
 export function resolveRuntime(): string {
@@ -51,6 +76,25 @@ export function resolveRuntime(): string {
     return "native";
   }
   return "source";
+}
+
+/**
+ * Match a session by directory (E12): exact `projectDir === dir`, else the
+ * deepest projectDir that `dir` sits inside (path.sep guard so `/foo` never
+ * matches `/foobar`). Returns undefined when nothing matches. Shared by the CLI
+ * (resolveTargetSession) and the MCP server so both resolve cwd identically.
+ */
+export function findSessionByDir(sessions: SessionInfo[], dir: string): SessionInfo | undefined {
+  const exact = sessions.find((s) => s.projectDir === dir);
+  if (exact) {
+    return exact;
+  }
+  const prefixMatches = sessions.filter((s) => dir.startsWith(`${s.projectDir}${path.sep}`));
+  if (prefixMatches.length === 0) {
+    return undefined;
+  }
+  const [deepest] = prefixMatches.toSorted((a, b) => b.projectDir.length - a.projectDir.length);
+  return deepest;
 }
 
 export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
@@ -79,8 +123,7 @@ export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: strin
   if (sessions.length === 1) {
     return sessions[0];
   }
-  const cwd = process.cwd();
-  const match = sessions.find((s) => s.projectDir === cwd);
+  const match = findSessionByDir(sessions, process.cwd());
   if (match) {
     return match;
   }
@@ -97,6 +140,35 @@ export function resolveSessionId(): { configPath: string; id: string } {
   return { configPath, id: sessionId(configPath) };
 }
 
+/**
+ * Parse a CLI numeric option that must be a finite integer > 0 (E13). Returns
+ * the value, or null for anything invalid — `"abc"` (NaN), `"0"`, `"-5"`,
+ * `"1.5"` (non-integer; `parseInt` would silently floor it). Callers turn null
+ * into a usage error + exit 1.
+ */
+export function parsePositiveInt(raw: string): number | null {
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * Resolve a session id from a `session.list` result, validating existence (E8).
+ * With an explicit arg, defers to `resolveTargetSession` (which throws for an
+ * unknown arg). Without one, resolves this project's id and confirms it is
+ * actually in the list — so callers fail fast instead of subscribing to a
+ * nonexistent session.
+ */
+export function resolveListedSessionId(sessions: SessionInfo[], sessionArg?: string): string {
+  if (sessionArg) {
+    return resolveTargetSession(sessions, sessionArg).id;
+  }
+  const resolved = resolveSessionId().id;
+  if (!sessions.some((s) => s.id === resolved)) {
+    throw new CliError("No running zaps session for this project.");
+  }
+  return resolved;
+}
+
 export function formatTable(rows: string[][]): string {
   if (rows.length === 0) {
     return "";
@@ -111,33 +183,13 @@ export function formatTable(rows: string[][]): string {
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
 }
 
-export async function withLegacyIpc<T>(fn: (ipc: SessionIpc) => Promise<T>): Promise<T> {
-  if (!getEnv("TMUX")) {
-    throw new CliError("Must be inside a tmux session.");
-  }
-  const tmuxSession = await currentSession();
-  const legacySock = await showEnv(tmuxSession, "ZAPS_IPC_SOCKET");
-  if (!legacySock) {
-    throw new CliError("No running zaps instance found in this session.");
-  }
-  const ipc: SessionIpc = {
-    sessionId: "",
-    request: async (method, params?) => ipcRequest(legacySock, method, params),
-    stream: async (method, params, onEvent) => ipcStream(legacySock, method, params, onEvent),
-  };
-  return fn(ipc);
-}
-
 export async function withDaemon<T>(
   fn: (ipc: SessionIpc) => Promise<T>,
   sessionArg?: string,
 ): Promise<T> {
   const sock = socketPath();
   if (!isDaemonRunning()) {
-    if (sessionArg) {
-      throw new CliError("No running daemon found.");
-    }
-    return withLegacyIpc(fn);
+    throw new CliError(DAEMON_NOT_RUNNING);
   }
 
   const id = await (async () => {
@@ -168,4 +220,60 @@ export async function withDaemon<T>(
       ipcStream(sock, method, params, onEvent, 120_000, id),
   };
   return fn(ipc);
+}
+
+export interface DownDeps {
+  daemonRunning: () => boolean;
+  socket: () => string;
+  sessionArg?: string;
+  listSessions: (sock: string) => Promise<IpcResponse>;
+  destroy: (sock: string, id: string) => Promise<IpcResponse>;
+  resolveProjectSessionId: () => string;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+}
+
+/**
+ * Core of `zaps down`, decoupled from `process.exit` so the exit-code matrix is
+ * unit-testable (E16). Returns the process exit code: 0 only when a session was
+ * actually destroyed; 1 when the daemon is absent, nothing matched, or destroy
+ * failed. The daemon is the single source of truth — there is no pane fallback
+ * (E7).
+ */
+export async function runDown(deps: DownDeps): Promise<number> {
+  if (!deps.daemonRunning()) {
+    deps.stderr(`${DAEMON_NOT_RUNNING}\n`);
+    return 1;
+  }
+  const sock = deps.socket();
+  const res = await deps.listSessions(sock);
+  if (res.error) {
+    deps.stderr(`Error: ${res.error}\n`);
+    return 1;
+  }
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  const sessions = res.result as SessionInfo[];
+  let target: SessionInfo | undefined = undefined;
+  try {
+    target = deps.sessionArg
+      ? resolveTargetSession(sessions, deps.sessionArg)
+      : sessions.find((s) => s.id === deps.resolveProjectSessionId());
+  } catch (error) {
+    if (error instanceof CliError) {
+      deps.stderr(`${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+  if (!target) {
+    deps.stderr("No running zaps session for this project.\n");
+    return 1;
+  }
+  const destroyRes = await deps.destroy(sock, target.id);
+  if (destroyRes.error) {
+    deps.stderr(`Error: ${destroyRes.error}\n`);
+    return 1;
+  }
+  deps.stdout("Session destroyed.\n");
+  return 0;
 }

@@ -16,6 +16,9 @@ export interface TasksViewProps {
   runTrigger: number;
   taskShortcuts: TaskShortcut[];
   taskHistory: TaskRunRecord[];
+  // Running-task state is owned by Router so it survives leaving/re-entering this view (F4).
+  runningTask: string | null;
+  onRunStart: (taskKey: string) => void;
 }
 
 export function TasksView({
@@ -23,21 +26,19 @@ export function TasksView({
   runTrigger,
   taskShortcuts,
   taskHistory,
+  runningTask,
+  onRunStart,
 }: TasksViewProps) {
   const { client, tasks } = useZaps();
   const { cols, rows, compact, medium } = useDimensions();
-  const [runningTask, setRunningTask] = useState<string | null>(null);
   const [taskOutput, setTaskOutput] = useState<string[]>([]);
   const [taskResults, setTaskResults] = useState<Record<string, "success" | "error">>({});
   const taskResultsRef = useRef<Record<string, "success" | "error">>({});
-  const runningRef = useRef(false);
 
   async function runTask(taskKey: string) {
-    if (runningRef.current) {
-      return;
-    }
-    runningRef.current = true;
-    setRunningTask(taskKey);
+    // Optimistically mark running so a rapid second key press cannot double-dispatch before the
+    // Task.start event arrives; Router clears it on the task.complete event (not on unmount).
+    onRunStart(taskKey);
     setTaskOutput([]);
 
     try {
@@ -53,9 +54,6 @@ export function TasksView({
     } catch {
       /* Task execution error handled by daemon */
     }
-
-    setRunningTask(null);
-    runningRef.current = false;
   }
 
   const prevTrigger = useRef(runTrigger);
@@ -66,7 +64,7 @@ export function TasksView({
     prevTrigger.current = runTrigger;
 
     const task = tasks[selectedIndex];
-    if (!task || runningRef.current) {
+    if (!task || runningTask) {
       return;
     }
 

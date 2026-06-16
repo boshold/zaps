@@ -34,6 +34,110 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("docker + ready validation (B3)", () => {
+    const hasDockerReadyError = (result: ReturnType<typeof projectConfigSchema.safeParse>) =>
+      !result.success &&
+      result.error.issues.some((i) => i.message.includes("cannot be used with docker services"));
+
+    it("rejects ready.port on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { port: 5432 } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects ready.port: true on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { port: true } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects a path-style ready.http on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { http: "/health" } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("rejects a path-style ready.http object on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" }, ready: { http: { url: "/health" } } } },
+      });
+      expect(hasDockerReadyError(result)).toBe(true);
+    });
+
+    it("allows a full-URL ready.http on a docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: {
+          db: { docker: { service: "postgres" }, ready: { http: "http://127.0.0.1:5432/health" } },
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("allows docker readiness with no explicit ready", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { db: { docker: { service: "postgres" } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("allows ready.port on a non-docker service", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", ready: { port: 3000 } } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("detached validation (E4)", () => {
+    const hasError = (
+      result: ReturnType<typeof projectConfigSchema.safeParse>,
+      needle: string,
+    ): boolean => !result.success && result.error.issues.some((i) => i.message.includes(needle));
+
+    it("rejects detached + docker, naming the service and the conflict", () => {
+      const result = projectConfigSchema.safeParse({
+        services: {
+          worker: { start: "node w.js", detached: true, docker: { service: "w" } },
+        },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "cannot be combined with 'docker'")).toBe(true);
+    });
+
+    it("rejects detached + raw", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, raw: true } },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "cannot be combined with 'raw'")).toBe(true);
+    });
+
+    it("rejects detached without a start or run command", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { detached: true } },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "requires a 'start' or 'run' command")).toBe(true);
+    });
+
+    it("accepts detached + path-style ready.http (B3 does not apply to detached)", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, ready: { http: "/health" } } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts detached + ready.port (PID-based detection works for detached)", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, ready: { port: 8080 } } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("service raw option", () => {
     it("accepts raw: true", () => {
       const result = projectConfigSchema.safeParse({

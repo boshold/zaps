@@ -151,6 +151,16 @@ export function config({ defineProject, restartService }: Library) {
 }
 ```
 
+## Config Loading & Reload
+
+Configs are evaluated with [jiti](https://github.com/unjs/jiti). Every load re-evaluates the **whole** import graph — the entry config plus all relative helper/env files it imports — so you can split a config across modules and a reload picks up edits to any of them.
+
+Caveats (jiti uses a per-load CJS transform):
+
+- No ESM live bindings — exports are snapshotted at load time.
+- Module identity changes per load: objects/classes from one load are not `===`/`instanceof` identical across loads. Don't rely on cross-reload identity.
+- `node_modules` reached from a config are re-evaluated on each load (per-reload cost for heavy deps).
+
 ## Scaffolding with `zaps init`
 
 Run `zaps init` to create a starter `.zaps.mts` in the current directory.

@@ -181,27 +181,6 @@ describe("CLI — ui command", () => {
     vi.clearAllMocks();
   });
 
-  it("reads ZAPS_PANE_MAP via showEnv", async () => {
-    const paneMap = { "@tui": "%0", api: "%1" };
-    mockCurrentSession.mockResolvedValue("my-session");
-    mockShowEnv.mockResolvedValue(JSON.stringify(paneMap));
-
-    const session = await mockCurrentSession();
-    const raw = await mockShowEnv(session, "ZAPS_PANE_MAP");
-    const parsed = JSON.parse(raw ?? "") as Record<string, string>;
-    expect(parsed).toEqual(paneMap);
-    expect(mockShowEnv).toHaveBeenCalledWith("my-session", "ZAPS_PANE_MAP");
-  });
-
-  it("errors when ZAPS_PANE_MAP not set in tmux env", async () => {
-    mockCurrentSession.mockResolvedValue("my-session");
-    mockShowEnv.mockResolvedValue(null);
-
-    const session = await mockCurrentSession();
-    const raw = await mockShowEnv(session, "ZAPS_PANE_MAP");
-    expect(raw).toBeNull();
-  });
-
   it("creates ServiceManager with correct deps", () => {
     // Verify deps structure matches ServiceManagerDeps interface
     const deps = {

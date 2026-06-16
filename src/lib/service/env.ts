@@ -1,18 +1,21 @@
-import type { EnvConfig, EnvDeps, ServiceContext, ServiceStatus } from "./types.js";
+import type { EnvConfig, ServiceContext, ServiceStatus } from "./types.js";
 
 /**
- * Build a ServiceContext from current service statuses.
+ * Build a ServiceContext from current service statuses. Each service's `cwd`
+ * resolves to its configured `cwd` (if any) or the project dir, so config
+ * functions reading `ctx.services[x].cwd` get a real path (C9).
  */
 export function buildServiceContext(
   statuses: Map<string, ServiceStatus>,
   projectDir: string,
+  servicesConfig: Record<string, { cwd?: string }> = {},
 ): ServiceContext {
   const services: ServiceContext["services"] = {};
   for (const [name, status] of statuses) {
     services[name] = {
       port: status.ports[0],
       ports: status.ports,
-      cwd: undefined,
+      cwd: servicesConfig[name]?.cwd ?? projectDir,
     };
   }
   return { services, projectDir };
@@ -48,18 +51,4 @@ export function formatEnvForShell(env: Record<string, string>): string {
   return Object.entries(env)
     .map(([k, v]) => `${k}=${shellEscape(v)}`)
     .join(" ");
-}
-
-/**
- * Set environment variables for a tmux session using set-environment.
- */
-export async function setServiceEnv(
-  session: string,
-  env: Record<string, string>,
-  deps: EnvDeps,
-): Promise<void> {
-  // Sequential calls required: tmux set-environment must complete before the next
-  for (const [key, value] of Object.entries(env)) {
-    await deps.setEnv(session, key, value);
-  }
 }

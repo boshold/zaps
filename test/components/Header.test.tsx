@@ -33,4 +33,16 @@ describe("Header", () => {
     expect(frame).toContain("1 error");
     expect(frame).toContain("1 starting");
   });
+
+  it("shows the reload hint when the config is stale", () => {
+    const { lastFrame } = render(
+      <Header projectName="test" statuses={[]} width={80} configStale />,
+    );
+    expect(lastFrame()).toContain("config changed — press c to reload");
+  });
+
+  it("hides the reload hint when the config is not stale", () => {
+    const { lastFrame } = render(<Header projectName="test" statuses={[]} width={80} />);
+    expect(lastFrame()).not.toContain("config changed");
+  });
 });

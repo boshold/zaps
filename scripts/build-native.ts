@@ -11,8 +11,36 @@
  * the bundle to replace import.meta.require → require and import.meta.url →
  * a __filename-based equivalent.
  */
+import { createRequire } from "node:module";
+import path from "node:path";
+
 import { $ } from "bun";
 import type { BunPlugin } from "bun";
+
+const require = createRequire(import.meta.url);
+
+// Jiti's exports map blocks the deep `jiti/dist/babel.cjs` import the loader
+// Embeds as a Bun file asset. Resolve it to the real path and force the `file`
+// Loader so it is embedded as an opaque asset (default export = runtime path)
+// Rather than bundled as a CJS module — embedding keeps `--bytecode` working.
+const babelPath = path.join(
+  path.dirname(require.resolve("jiti/package.json")),
+  "dist",
+  "babel.cjs",
+);
+const babelAssetPlugin: BunPlugin = {
+  name: "jiti-babel-asset",
+  setup(build) {
+    build.onResolve({ filter: /^jiti\/dist\/babel\.cjs$/ }, () => ({
+      path: babelPath,
+      namespace: "babel-asset",
+    }));
+    build.onLoad({ filter: /.*/, namespace: "babel-asset" }, async () => ({
+      contents: await Bun.file(babelPath).bytes(),
+      loader: "file",
+    }));
+  },
+};
 
 const tlaFixPlugin: BunPlugin = {
   name: "tla-fix",
@@ -65,7 +93,7 @@ const result = await Bun.build({
   target: "bun",
   outdir: "./dist",
   naming: "cli.js",
-  plugins: [tlaFixPlugin],
+  plugins: [tlaFixPlugin, babelAssetPlugin],
   define: {
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __BUILD_BRANCH__: JSON.stringify(branchName),

@@ -9,8 +9,8 @@ export function createMockServiceManager(): ServiceManager {
   return Object.assign(emitter, {
     startAll: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
-    startService: vi.fn().mockResolvedValue(undefined),
-    stopService: vi.fn().mockResolvedValue(undefined),
+    startService: vi.fn().mockResolvedValue({ noop: false }),
+    stopService: vi.fn().mockResolvedValue({ noop: false }),
     restartService: vi.fn().mockResolvedValue(undefined),
     getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
     getStatus: vi.fn((name: string) => {

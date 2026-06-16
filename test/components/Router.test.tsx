@@ -134,6 +134,19 @@ describe("Router", () => {
     expect(lastFrame()).toBe("");
   });
 
+  it("ignores keyboard input during the splash (input gated until ready) (F5)", async () => {
+    const client = createMockClient();
+    const { stdin } = renderRouter({ autoStart: true, statuses: [], client });
+    // During the ~1.2s splash, destructive keys must do nothing.
+    stdin.write("d");
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(client.disconnect).not.toHaveBeenCalled();
+  });
+
   // ── dashboard input: navigation ──────────────────────────────
 
   it("navigates down with j key", async () => {
@@ -298,6 +311,32 @@ describe("Router", () => {
     expect(editPaneCapture).toHaveBeenCalledWith("%1", "web");
   });
 
+  // ── dashboard input: detached services disable pane actions ──
+
+  it("does not zoom a detached service even if a pane is mapped", () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin } = renderRouter({ statuses, paneMap: { worker: "%1" } });
+    stdin.write("z");
+    expect(zoomPane).not.toHaveBeenCalled();
+  });
+
+  it("does not edit-capture a detached service even if a pane is mapped", () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin } = renderRouter({ statuses, paneMap: { worker: "%1" } });
+    stdin.write("E");
+    expect(editPaneCapture).not.toHaveBeenCalled();
+  });
+
+  it("still opens logs for a detached service with l key", async () => {
+    const statuses = [makeStatus({ name: "worker", isDetached: true })];
+    const { stdin, lastFrame } = renderRouter({ statuses });
+    stdin.write("l");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(lastFrame() ?? "").toContain("worker");
+  });
+
   // ── dashboard input: tasks view (t) ──────────────────────────
 
   it("navigates to tasks view with t key", async () => {
@@ -327,6 +366,61 @@ describe("Router", () => {
     const { stdin } = renderRouter({ client });
     stdin.write("d");
     expect(client.destroySession).toHaveBeenCalled();
+  });
+
+  // ── single sort, shared by render + input handler (F8) ───────
+
+  it("targets the highlighted row even when arrival order differs from sorted order (F8)", () => {
+    // Daemon delivers the unavailable service FIRST; the dashboard sorts it to the
+    // Bottom, so the highlighted row (index 0) is the ready service. The input
+    // Handler must index that same sorted array — restart hits "api", not "zoo".
+    const client = createMockClient();
+    const statuses = [
+      makeStatus({ name: "zoo", state: "unavailable" }),
+      makeStatus({ name: "api", state: "ready" }),
+    ];
+    const { stdin } = renderRouter({ statuses, client });
+    stdin.write("r");
+    expect(client.restartService).toHaveBeenCalledWith("api");
+    expect(client.restartService).not.toHaveBeenCalledWith("zoo");
+  });
+
+  // ── per-view selection (F6) ──────────────────────────────────
+
+  it("keeps dashboard and tasks selection independent across a view round-trip (F6)", async () => {
+    const client = createMockClient();
+    const statuses = [
+      makeStatus({ name: "web", state: "ready" }),
+      makeStatus({ name: "api", state: "ready" }),
+      makeStatus({ name: "db", state: "ready" }),
+    ];
+    const tasks: TaskInfo[] = [
+      { key: "migrate", name: "Run migrations", description: null },
+      { key: "seed", name: "Seed DB", description: null },
+    ];
+    const { stdin } = renderRouter({ statuses, tasks, client });
+
+    // Move dashboard selection to the third service (db).
+    stdin.write("j");
+    stdin.write("j");
+    await act(async () => {
+      /* Flush */
+    });
+
+    // Enter tasks view and move its (separate) selection.
+    stdin.write("t");
+    await act(async () => {
+      /* Flush */
+    });
+    stdin.write("j");
+    await act(async () => {
+      /* Flush */
+    });
+
+    // Back to the dashboard — its selection must be untouched, so r hits db.
+    await pressEscape(stdin);
+    stdin.write("r");
+    expect(client.restartService).toHaveBeenCalledWith("db");
   });
 
   // ── global input: quit (q) ───────────────────────────────────

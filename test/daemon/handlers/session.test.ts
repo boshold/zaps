@@ -122,7 +122,7 @@ describe("session handlers", () => {
       expect(session.subscribers.has(socket)).toBe(true);
     });
 
-    it("removes subscriber on socket close", async () => {
+    it("does not stack a close listener per subscribe call (D7)", async () => {
       const session = createMockSession();
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -132,11 +132,16 @@ describe("session handlers", () => {
         session: session.id,
         params: { events: [] },
       };
-      await sessionHandlers.subscribe(req, store, socket as never);
-      expect(session.subscribers.has(socket)).toBe(true);
 
-      socket.emit("close");
-      expect(session.subscribers.has(socket)).toBe(false);
+      // Subscribing many times on one connection must not register any socket
+      // Close listeners — server-level cleanup owns removal, not the handler.
+      for (let i = 0; i < 15; i += 1) {
+        // eslint-disable-next-line no-await-in-loop -- sequential subscribes on one socket
+        await sessionHandlers.subscribe(req, store, socket as never);
+      }
+
+      expect(socket.listenerCount("close")).toBe(0);
+      expect(session.subscribers.has(socket)).toBe(true);
     });
   });
 
@@ -196,7 +201,7 @@ describe("session handlers", () => {
         params: { name: "api" },
       };
       const res = await sessionHandlers["services.start"](req, store, socket as never);
-      expect(res.result).toEqual({ started: "api" });
+      expect(res.result).toEqual({ started: "api", noop: false });
       expect(session.manager.startService).toHaveBeenCalledWith("api");
     });
 
@@ -243,7 +248,7 @@ describe("session handlers", () => {
         params: { name: "api" },
       };
       const res = await sessionHandlers["services.stop"](req, store, socket as never);
-      expect(res.result).toEqual({ stopped: "api" });
+      expect(res.result).toEqual({ stopped: "api", noop: false });
     });
 
     it("returns error when stop rejects with non-Error", async () => {
@@ -878,7 +883,7 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["exec-service.exited"](req, store, socket as never);
       expect(res.result).toEqual({ ok: true });
-      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 1, "SIGTERM");
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 1, "SIGTERM", undefined);
     });
 
     it("defaults null signal when omitted", async () => {
@@ -892,7 +897,26 @@ describe("session handlers", () => {
         params: { service: "dev", code: 0 },
       };
       await sessionHandlers["exec-service.exited"](req, store, socket as never);
-      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 0, null);
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith("dev", 0, null, undefined);
+    });
+
+    it("forwards spawnError to handleExecExited", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rx3",
+        method: "exec-service.exited",
+        session: session.id,
+        params: { service: "dev", code: 127, signal: null, spawnError: "spawn cwd ENOENT" },
+      };
+      await sessionHandlers["exec-service.exited"](req, store, socket as never);
+      expect(session.manager.handleExecExited).toHaveBeenCalledWith(
+        "dev",
+        127,
+        null,
+        "spawn cwd ENOENT",
+      );
     });
 
     it("returns error for unknown session", async () => {

@@ -26,6 +26,7 @@ export const tmuxDeps = {
   exec: async () => {
     /* No-op */
   },
+  preflightPorts: async () => null,
   storeExecInfo: () => {
     /* No-op */
   },

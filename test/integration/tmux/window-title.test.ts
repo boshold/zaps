@@ -34,6 +34,7 @@ const deps = {
   exec: async () => {
     /* No-op */
   },
+  preflightPorts: async () => null,
   storeExecInfo: () => {
     /* No-op */
   },

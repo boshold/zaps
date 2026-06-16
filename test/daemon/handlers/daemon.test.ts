@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { daemonHandlers } from "../../../src/daemon/handlers/daemon.js";
+import { registerShutdownHook } from "../../../src/daemon/shutdown.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 
@@ -11,6 +12,7 @@ describe("daemon handlers", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    registerShutdownHook(null);
   });
 
   describe("daemon.ping", () => {
@@ -45,20 +47,32 @@ describe("daemon handlers", () => {
   });
 
   describe("daemon.shutdown", () => {
-    it("returns shuttingDown and schedules exit", async () => {
-      vi.useFakeTimers();
-      const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => undefined as never);
+    it("runs the registered teardown hook before acking (D1)", async () => {
+      const order: string[] = [];
+      const hook = vi.fn(async () => {
+        order.push("hook");
+        return Promise.resolve();
+      });
+      registerShutdownHook(hook);
 
       const store = createMockStore();
       const req: IpcRequest = { id: "r4", method: "daemon.shutdown" };
       const res = await daemonHandlers["daemon.shutdown"](req, store);
+
+      // Teardown ran deterministically as part of handling the request — not
+      // Deferred to a timer the bun runtime can drop — and the caller is acked.
+      expect(hook).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["hook"]);
       expect(res).toEqual({ id: "r4", result: { shuttingDown: true } });
+    });
 
-      vi.advanceTimersByTime(200);
-      expect(exitSpy).toHaveBeenCalledWith(0);
+    it("still acks when no shutdown hook is registered", async () => {
+      registerShutdownHook(null);
 
-      vi.useRealTimers();
-      exitSpy.mockRestore();
+      const store = createMockStore();
+      const req: IpcRequest = { id: "r4b", method: "daemon.shutdown" };
+      const res = await daemonHandlers["daemon.shutdown"](req, store);
+      expect(res).toEqual({ id: "r4b", result: { shuttingDown: true } });
     });
   });
 
@@ -102,6 +116,7 @@ describe("daemon handlers", () => {
       expect(res.result).toMatchObject({
         id: session.id,
         name: session.name,
+        focusPane: session.focusPane,
       });
     });
 

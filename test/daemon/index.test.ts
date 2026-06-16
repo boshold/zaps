@@ -17,6 +17,7 @@ vi.mock("node:fs", () => ({
     openSync: vi.fn(() => 3),
     writeSync: vi.fn(),
     closeSync: vi.fn(),
+    statSync: vi.fn(() => ({ mtimeMs: Date.now() })),
   },
 }));
 
@@ -71,15 +72,20 @@ vi.mock("../../src/daemon/server.js", () => {
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
+        list: vi.fn(() => []),
+        destroy: vi.fn().mockResolvedValue(undefined),
+        reapDetachedOrphans: vi.fn(),
         sessionCount: 0,
         onSessionChange: undefined,
+        requestShutdown: undefined,
       });
     }),
   };
 });
 
-const { ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
+const { createShutdownAll, ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
+const { runShutdownHook } = await import("../../src/daemon/shutdown.js");
 
 describe("ensureDaemon", () => {
   const originalKill = process.kill;
@@ -101,7 +107,7 @@ describe("ensureDaemon", () => {
     vi.mocked(fs.readFileSync).mockReturnValue("12345");
     vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
   });
 
@@ -113,7 +119,7 @@ describe("ensureDaemon", () => {
       throw new Error("ENOENT");
     });
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
 
     const { spawn } = await import("node:child_process");
@@ -129,8 +135,79 @@ describe("ensureDaemon", () => {
       throw new Error("ESRCH");
     });
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
+  });
+
+  it("does not fork a second daemon when the spawn lock is held (D4)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    // ReadPid (daemon.pid) → garbage → isDaemonRunning false without calling kill;
+    // Then the spawn.lock read returns a live holder pid → lock is not stale.
+    vi.mocked(fs.readFileSync).mockReturnValueOnce("garbage").mockReturnValueOnce("12345");
+    vi.mocked(fs.openSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+    });
+    vi.mocked(process.kill as unknown as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
+    expect(sock).toMatch(/daemon\.sock$/);
+
+    const { spawn } = await import("node:child_process");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("spawns with split argv and forwards ZAPS_COMMAND for source runs (E1/E2)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    await ensureDaemon({ file: "node", args: ["/path/cli.mjs"] });
+
+    const { spawn } = await import("node:child_process");
+    const call = vi.mocked(spawn).mock.calls.at(-1);
+    expect(call?.[0]).toBe("node");
+    expect(call?.[1]).toEqual(["/path/cli.mjs", "daemon", "run"]);
+    const opts = call?.[2] as { env: Record<string, string> };
+    expect(opts.env.ZAPS_COMMAND).toBe("node /path/cli.mjs");
+  });
+
+  it("throws a clear error when the daemon spawn fails (E1)", async () => {
+    vi.useFakeTimers();
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    const netModule = await import("node:net");
+    const { EventEmitter } = await import("node:events");
+    // Socket never connects → pingSocket relies on its 500ms timeout → false.
+    vi.mocked(netModule.default.createConnection).mockImplementation((() => {
+      const socket = new EventEmitter();
+      Object.assign(socket, { write: vi.fn(), destroy: vi.fn() });
+      return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
+    }) as typeof netModule.default.createConnection);
+
+    const { spawn } = await import("node:child_process");
+    const child = Object.assign(new EventEmitter(), { unref: vi.fn(), pid: undefined });
+    vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+
+    const promise = ensureDaemon({ file: "nonexistent", args: [] });
+    // The listener is registered synchronously; emit the spawn failure now.
+    child.emit("error", new Error("spawn nonexistent ENOENT"));
+
+    // Attach the rejection assertion before advancing timers so the pending
+    // Rejection is never momentarily unhandled.
+    const rejection = expect(promise).rejects.toThrow(
+      /Failed to start daemon \('nonexistent'\): spawn nonexistent ENOENT/,
+    );
+    await vi.advanceTimersByTimeAsync(600);
+    await rejection;
+
+    vi.useRealTimers();
   });
 });
 
@@ -143,7 +220,7 @@ describe("runDaemon", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     process.exit = vi.fn() as unknown as typeof process.exit;
-    processOnSpy = vi.spyOn(process, "on");
+    processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
     delete process.env.XDG_RUNTIME_DIR;
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
@@ -154,8 +231,12 @@ describe("runDaemon", () => {
       return Object.assign(emitter, {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
+        list: vi.fn(() => []),
+        destroy: vi.fn().mockResolvedValue(undefined),
+        reapDetachedOrphans: vi.fn(),
         sessionCount: 0,
         onSessionChange: undefined,
+        requestShutdown: undefined,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock instance
       }) as any;
     });
@@ -177,8 +258,11 @@ describe("runDaemon", () => {
     return vi.mocked(DaemonServer).mock.results[0].value as {
       start: ReturnType<typeof vi.fn>;
       stop: ReturnType<typeof vi.fn>;
+      list: ReturnType<typeof vi.fn>;
+      destroy: ReturnType<typeof vi.fn>;
       sessionCount: number;
       onSessionChange?: (count: number) => void;
+      requestShutdown?: () => void;
     };
   }
 
@@ -225,9 +309,49 @@ describe("runDaemon", () => {
     expect(server.stop).not.toHaveBeenCalled();
   });
 
+  it("arms the idle timer at startup with no session ever created (D5)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    // No onSessionChange(0) call — the idle timer must already be armed by the
+    // Startup `idle.reset()`, so a daemon that never gets a session still exits.
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(server.stop).toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("wires daemon.shutdown IPC to the same shutdownAll path (D1)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    // The IPC handler invokes the registered module hook (not a server method —
+    // A dynamically-assigned property was unreliable in the bun native binary).
+    await runShutdownHook();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(server.stop).toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("is re-entry safe: a signal during IPC shutdown does not double-destroy (D1)", async () => {
+    await runDaemon();
+    const server = serverInstance();
+
+    await runShutdownHook(); // IPC-triggered shutdown
+    signalHandler("SIGTERM")(); // Signal arrives during teardown
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Re-entry guard: the server is stopped and the process exits exactly once.
+    expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(process.exit).toHaveBeenCalledTimes(1);
+  });
+
   it("shuts down on SIGTERM", async () => {
     await runDaemon();
     signalHandler("SIGTERM")();
+    // Teardown then exit are chained off the async shutdownAll promise.
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(serverInstance().stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -236,6 +360,7 @@ describe("runDaemon", () => {
   it("shuts down on SIGINT", async () => {
     await runDaemon();
     signalHandler("SIGINT")();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(serverInstance().stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -246,9 +371,170 @@ describe("runDaemon", () => {
     const { default: fs } = await import("node:fs");
 
     signalHandler("SIGTERM")();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(fs.writeSync).toHaveBeenCalled();
     expect(fs.closeSync).toHaveBeenCalled();
+  });
+
+  it("removes runtime files on shutdown when it owns the pid file (D4)", async () => {
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.readFileSync).mockReturnValue(String(process.pid));
+
+    await runDaemon();
+    vi.mocked(fs.unlinkSync).mockClear();
+    signalHandler("SIGTERM")();
+
+    // Both daemon.sock and daemon.pid are unlinked.
+    const targets = vi.mocked(fs.unlinkSync).mock.calls.map(([p]) => String(p));
+    expect(targets.some((p) => p.includes("daemon.sock"))).toBe(true);
+    expect(targets.some((p) => p.includes("daemon.pid"))).toBe(true);
+  });
+
+  it("does not remove runtime files on shutdown when the pid file was taken over (D4)", async () => {
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.readFileSync).mockReturnValue(String(process.pid + 1));
+
+    await runDaemon();
+    vi.mocked(fs.unlinkSync).mockClear();
+    signalHandler("SIGTERM")();
+
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  function listener(event: string): (arg: unknown) => void {
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access -- mock type
+    const call = processOnSpy.mock.calls.find(([ev]: [string]) => ev === event);
+    return call[1] as (arg: unknown) => void;
+  }
+
+  it("logs unhandledRejection with stack and stays alive", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("unhandledRejection")(new Error("boom"));
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("unhandledRejection");
+    expect(written).toContain("boom");
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("logs non-Error unhandledRejection reason via String()", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("unhandledRejection")("plain reason");
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("unhandledRejection: plain reason");
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+
+  it("logs uncaughtException and stays alive", async () => {
+    await runDaemon();
+    const { default: fs } = await import("node:fs");
+    vi.mocked(fs.writeSync).mockClear();
+
+    listener("uncaughtException")(new Error("kaboom"));
+
+    const written = vi
+      .mocked(fs.writeSync)
+      .mock.calls.map(([, msg]) => msg)
+      .join("");
+    expect(written).toContain("uncaughtException");
+    expect(written).toContain("kaboom");
+    expect(process.exit).not.toHaveBeenCalled();
+  });
+});
+
+describe("createShutdownAll", () => {
+  it("destroys every session, then stops the server and finalizes", async () => {
+    const destroyed: string[] = [];
+    const order: string[] = [];
+    const server = {
+      list: () => [{ id: "a" }, { id: "b" }, { id: "c" }],
+      destroy: async (id: string) => {
+        destroyed.push(id);
+      },
+      stop: () => order.push("stop"),
+    };
+    const finalize = () => order.push("finalize");
+    const shutdownAll = createShutdownAll(server, vi.fn(), finalize);
+
+    await shutdownAll();
+
+    expect(destroyed).toEqual(["a", "b", "c"]);
+    // Server is stopped and finalize runs only after all sessions are destroyed.
+    expect(order).toEqual(["stop", "finalize"]);
+  });
+
+  it("isolates a failing session destroy: others, stop and finalize still run", async () => {
+    const destroyed: string[] = [];
+    const logs: string[] = [];
+    let stopped = false;
+    let finalized = false;
+    const server = {
+      list: () => [{ id: "a" }, { id: "bad" }, { id: "c" }],
+      destroy: async (id: string) => {
+        if (id === "bad") {
+          throw new Error("destroy boom");
+        }
+        destroyed.push(id);
+      },
+      stop: () => {
+        stopped = true;
+      },
+    };
+    const shutdownAll = createShutdownAll(
+      server,
+      (m) => logs.push(m),
+      () => {
+        finalized = true;
+      },
+    );
+
+    await shutdownAll();
+
+    expect(destroyed).toEqual(["a", "c"]);
+    expect(
+      logs.some((m) => m.includes("error destroying session bad") && m.includes("destroy boom")),
+    ).toBe(true);
+    expect(stopped).toBe(true);
+    expect(finalized).toBe(true);
+  });
+
+  it("is idempotent: a second call is a no-op (re-entry safe)", async () => {
+    let destroyCalls = 0;
+    let stopCalls = 0;
+    let finalizeCalls = 0;
+    const server = {
+      list: () => [{ id: "a" }],
+      destroy: async () => {
+        destroyCalls += 1;
+      },
+      stop: () => {
+        stopCalls += 1;
+      },
+    };
+    const shutdownAll = createShutdownAll(server, vi.fn(), () => {
+      finalizeCalls += 1;
+    });
+
+    await shutdownAll();
+    await shutdownAll();
+
+    expect(destroyCalls).toBe(1);
+    expect(stopCalls).toBe(1);
+    expect(finalizeCalls).toBe(1);
   });
 });
 
@@ -293,7 +579,7 @@ describe("pingSocket branches", () => {
       return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
     }) as typeof netModule.default.createConnection);
 
-    const sock = await ensureDaemon("zaps");
+    const sock = await ensureDaemon({ file: "zaps", args: [] });
     expect(sock).toMatch(/daemon\.sock$/);
 
     const { spawn } = await import("node:child_process");
@@ -327,7 +613,7 @@ describe("pingSocket branches", () => {
       return socket as unknown as ReturnType<typeof netModule.default.createConnection>;
     }) as typeof netModule.default.createConnection);
 
-    const promise = ensureDaemon("zaps");
+    const promise = ensureDaemon({ file: "zaps", args: [] });
     // Advance past pingSocket's 500ms timeout
     await vi.advanceTimersByTimeAsync(500);
     // Advance past poll delay + let microtask-based success resolve

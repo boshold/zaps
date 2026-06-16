@@ -34,7 +34,7 @@ async function runPopupTaskNonInteractive(
   }
 
   const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
-  const serviceCtx = buildServiceContext(statuses, config.projectDir);
+  const serviceCtx = buildServiceContext(statuses, config.projectDir, config.project.services);
 
   const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
   const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
@@ -84,8 +84,8 @@ const handlers: Record<string, Handler> = {
   async "services.start"(req, manager) {
     const { name } = req.params as { name: string };
     try {
-      await manager.startService(name);
-      return ipcOk(req.id, { started: name });
+      const result = await manager.startService(name);
+      return ipcOk(req.id, { started: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -94,8 +94,8 @@ const handlers: Record<string, Handler> = {
   async "services.stop"(req, manager) {
     const { name } = req.params as { name: string };
     try {
-      await manager.stopService(name);
-      return ipcOk(req.id, { stopped: name });
+      const result = await manager.stopService(name);
+      return ipcOk(req.id, { stopped: name, noop: result.noop });
     } catch (error) {
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
@@ -145,6 +145,7 @@ const handlers: Record<string, Handler> = {
               manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
             ),
             projectDir: config.projectDir,
+            services: config.project.services,
             onLine: (_taskKey, line) => {
               send(socket, { id: req.id, event: "line", data: line });
             },

@@ -56,6 +56,7 @@ const readyConfigSchema = z.union([
 const dockerConfigSchema = z.object({
   service: z.union([z.string(), z.array(z.string()).nonempty()]),
   file: z.optional(z.string()),
+  projectName: z.optional(z.string()),
   build: z.optional(z.boolean()),
   forceRecreate: z.optional(z.boolean()),
   renewVolumes: z.optional(z.boolean()),
@@ -123,6 +124,78 @@ const serviceConfigBaseSchema = z.object({
   ),
 });
 
+type ServiceConfigInput = z.infer<typeof serviceConfigBaseSchema>;
+
+/**
+ * Detached services run pane-less, so any field that requires a tmux pane is a
+ * load error (E4). Group-membership and layout checks live in the loader, where
+ * the expanded group structure is known.
+ */
+function detachedIssues(name: string, svc: ServiceConfigInput): string[] {
+  if (!svc.detached) {
+    return [];
+  }
+  const issues: string[] = [];
+  if (svc.docker) {
+    issues.push(
+      `Service '${name}': 'detached: true' cannot be combined with 'docker' — detached services run pane-less and have no docker pane. Remove one.`,
+    );
+  }
+  if (svc.raw) {
+    issues.push(
+      `Service '${name}': 'detached: true' cannot be combined with 'raw' — raw mode sends keystrokes to a tmux pane, which detached services do not have. Remove one.`,
+    );
+  }
+  if (!svc.start && !svc.run) {
+    issues.push(
+      `Service '${name}': 'detached: true' requires a 'start' or 'run' command to spawn (there is nothing to run otherwise).`,
+    );
+  }
+  return issues;
+}
+
+/** Every non-detached service needs a start, run, or docker config to do anything. */
+function baseCommandIssues(name: string, svc: ServiceConfigInput): string[] {
+  if (!svc.detached && !svc.start && !svc.run && !svc.docker) {
+    return [`Service '${name}' must have 'start', 'run', or 'docker' config`];
+  }
+  return [];
+}
+
+/**
+ * Docker-only ready rejection (B3). Never fires for detached services: they have
+ * no docker pane and PID-based port detection works for them.
+ */
+function dockerReadyIssues(name: string, svc: ServiceConfigInput): string[] {
+  if (svc.detached || !svc.docker || !svc.ready || typeof svc.ready !== "object") {
+    return [];
+  }
+  const { ready } = svc;
+  const httpValue = "http" in ready ? ready.http : undefined;
+  const httpUrl = typeof httpValue === "string" ? httpValue : httpValue?.url;
+  const isHttpPath = typeof httpUrl === "string" && httpUrl.startsWith("/");
+  if ("port" in ready || isHttpPath) {
+    return [
+      `Service '${name}': ready.port / ready.http path cannot be used with docker services (published ports belong to dockerd, not the pane, so they are never detected). Use docker readiness (default healthcheck/running detection) or ready: {http: "http://127.0.0.1:<port>/path"} with a full URL.`,
+    ];
+  }
+  return [];
+}
+
+/** `optional: true` needs a string command so the binary-availability probe can run. */
+function optionalIssues(name: string, svc: ServiceConfigInput): string[] {
+  if (svc.optional !== true) {
+    return [];
+  }
+  const cmd = svc.start ?? svc.run;
+  if (!cmd || typeof cmd !== "string") {
+    return [
+      `Service '${name}' has optional: true but requires 'start' or 'run' as a string; use optional: (ctx) => ctx.hasBinary('name') for function commands`,
+    ];
+  }
+  return [];
+}
+
 const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine((val, ctx) => {
   const entries = Object.entries(val);
   if (entries.length === 0) {
@@ -134,22 +207,14 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
     return;
   }
   for (const [name, svc] of entries) {
-    if (!svc.start && !svc.run && !svc.docker) {
-      ctx.addIssue({
-        code: "custom",
-        message: `Service '${name}' must have 'start', 'run', or 'docker' config`,
-        input: svc,
-      });
-    }
-    if (svc.optional === true) {
-      const cmd = svc.start ?? svc.run;
-      if (!cmd || typeof cmd !== "string") {
-        ctx.addIssue({
-          code: "custom",
-          message: `Service '${name}' has optional: true but requires 'start' or 'run' as a string; use optional: (ctx) => ctx.hasBinary('name') for function commands`,
-          input: svc,
-        });
-      }
+    const issues = [
+      ...detachedIssues(name, svc),
+      ...baseCommandIssues(name, svc),
+      ...dockerReadyIssues(name, svc),
+      ...optionalIssues(name, svc),
+    ];
+    for (const message of issues) {
+      ctx.addIssue({ code: "custom", message, input: svc });
     }
   }
 });
@@ -239,3 +304,16 @@ export const projectConfigSchema = z.object({
   layout: z.optional(layoutNodeSchema),
   hooks: z.optional(hooksConfigSchema),
 });
+
+/**
+ * Strict schema for a docker `expand` per-child override (G7). An override is
+ * spread onto the inherited service, so it may set any service field EXCEPT the
+ * command/lifecycle keys: `start`/`run` would silently replace the inherited
+ * command, `docker` is silently discarded (the child gets its own docker config),
+ * and `_combined` is internal. `.strict()` also rejects typos like `redy:` that
+ * would otherwise be silently inert. Forbidden/unknown keys surface as a
+ * load-time error naming the group, child, and offending key.
+ */
+export const expandOverrideSchema = serviceConfigBaseSchema
+  .omit({ start: true, run: true, docker: true })
+  .strict();

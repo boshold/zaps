@@ -14,6 +14,7 @@ export interface DaemonClientEvents {
   "task.complete": (key: string, name: string, result: "success" | "error") => void;
   "session.destroyed": () => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
+  "session.configStale": () => void;
   disconnect: () => void;
 }
 
@@ -200,6 +201,10 @@ export class DaemonClient extends EventEmitter {
       }
       case "session.configReloaded": {
         this.emit("session.configReloaded", data);
+        break;
+      }
+      case "session.configStale": {
+        this.emit("session.configStale");
         break;
       }
       default: {

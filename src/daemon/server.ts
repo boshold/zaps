@@ -6,7 +6,8 @@ import { promisify } from "node:util";
 import { loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
-import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import { checkPortPreflight } from "#src/lib/port-preflight.js";
+import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import {
@@ -14,6 +15,7 @@ import {
   getWindowName,
   getWindowOption,
   killPane,
+  paneExists,
   panePid,
   renameWindow,
   selectPane,
@@ -22,6 +24,7 @@ import {
   setWindowOption,
 } from "#src/lib/tmux.js";
 
+import { DetachedRegistry } from "./detached-registry.js";
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
 import type { SessionCreateParams } from "./session.js";
@@ -29,22 +32,29 @@ import { Session, sessionId } from "./session.js";
 
 const execFileAsync = promisify(execFile);
 
+interface CreateParams {
+  configPath: string;
+  projectDir: string;
+  tmuxSession: string;
+  originPane: string;
+}
+
 interface SessionStore {
   list(): Session[];
   get(id: string): Session | undefined;
   getByProjectDir(dir: string): Session | undefined;
-  create(params: {
-    configPath: string;
-    projectDir: string;
-    tmuxSession: string;
-    originPane: string;
-  }): Promise<Session>;
+  create(params: CreateParams): Promise<Session>;
   destroy(id: string): Promise<void>;
 }
 
 class DaemonServer implements SessionStore {
   private server: net.Server | null = null;
   private readonly sessions = new Map<string, Session>();
+  /** In-flight `create` promises keyed by session id — collapses concurrent
+   * creates for the same config into one config-load/layout/startAll (D3). */
+  private readonly inFlightCreates = new Map<string, Promise<Session>>();
+  /** Detached-child PID bookkeeping for orphan protection (R10). */
+  private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
 
   public async start(socketPath: string): Promise<void> {
@@ -69,7 +79,7 @@ class DaemonServer implements SessionStore {
         });
         const cleanupSubscriptions = () => {
           for (const session of this.sessions.values()) {
-            session.subscribers.delete(socket);
+            session.removeSubscriber(socket);
           }
         };
         socket.on("error", cleanupSubscriptions);
@@ -94,6 +104,15 @@ class DaemonServer implements SessionStore {
     return this.sessions.size;
   }
 
+  /**
+   * Reap detached children orphaned by a previous daemon's crash/SIGKILL, then
+   * clear the bookkeeping file. Call once at daemon startup, before any session
+   * is created (R10).
+   */
+  public reapDetachedOrphans(): void {
+    this.detachedRegistry.reapOrphans();
+  }
+
   // --- SessionStore ---
 
   public list(): Session[] {
@@ -113,20 +132,46 @@ class DaemonServer implements SessionStore {
     return undefined;
   }
 
-  public async create(params: {
-    configPath: string;
-    projectDir: string;
-    tmuxSession: string;
-    originPane: string;
-  }): Promise<Session> {
+  public async create(params: CreateParams): Promise<Session> {
     const id = sessionId(params.configPath);
 
-    // If session already exists, return it
-    const existing = this.sessions.get(id);
-    if (existing) {
-      return existing;
+    // Collapse concurrent creates for the same id onto one in-flight build so a
+    // Single config load / layout / startAll runs and no loser leaks panes (D3).
+    const inflight = this.inFlightCreates.get(id);
+    if (inflight) {
+      return inflight;
     }
 
+    const promise = this.resolveCreate(id, params);
+    this.inFlightCreates.set(id, promise);
+    return promise;
+  }
+
+  /**
+   * Reuse a live cached session, else (re)build. A cache hit whose `@tui` pane
+   * was killed externally is fully destroyed and rebuilt with the caller's
+   * origin pane, so a re-`up` after closing the window starts clean (A4). The
+   * in-flight entry is cleared on settle — including failure — so a later
+   * create retries instead of joining a dead promise (D3).
+   */
+  private async resolveCreate(id: string, params: CreateParams): Promise<Session> {
+    try {
+      const existing = this.sessions.get(id);
+      if (existing) {
+        const tuiPane = existing.paneMap["@tui"];
+        if (tuiPane && (await paneExists(tuiPane))) {
+          return existing;
+        }
+        // The tmux window was closed externally — full teardown, then rebuild.
+        await this.destroy(id);
+      }
+      return await this.buildSession(id, params);
+    } finally {
+      this.inFlightCreates.delete(id);
+    }
+  }
+
+  private async buildSession(id: string, params: CreateParams): Promise<Session> {
     // Load config
     const config = await loadConfig(params.configPath, params.projectDir);
 
@@ -146,8 +191,15 @@ class DaemonServer implements SessionStore {
       sendCtrlC,
       panePid,
       detectPorts,
+      detectPortsForPid,
       capturePane,
       getDescendantPids,
+      recordDetached: (pid: number) => {
+        this.detachedRegistry.record(pid);
+      },
+      removeDetached: (pid: number) => {
+        this.detachedRegistry.remove(pid);
+      },
       renameWindow,
       getWindowName,
       getWindowOption,
@@ -155,6 +207,7 @@ class DaemonServer implements SessionStore {
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
+      preflightPorts: checkPortPreflight,
       storeExecInfo: (service: string, info: ExecInfo) => {
         ref.session?.execInfo.set(service, info);
       },
@@ -177,12 +230,15 @@ class DaemonServer implements SessionStore {
     };
 
     const session = new Session(sessionParams, manager);
+    // Create-response-only focus target; attach never returns it (E14).
+    session.focusPane = focusPane;
     ref.session = session;
     this.sessions.set(id, session);
     this.onSessionChange?.(this.sessions.size);
 
-    // Start services in background — TUI connects and sees them starting
-    void session.startAll().catch(() => {
+    // Start services in background — TUI connects and sees them starting.
+    // Tracked so reload/destroy can cooperatively abort and await it (A5).
+    session.startPromise = session.startAll().catch(() => {
       /* Errors surfaced via stateChange */
     });
 

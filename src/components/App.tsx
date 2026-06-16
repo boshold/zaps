@@ -17,6 +17,7 @@ interface AppProps {
   initialStatuses: ServiceStatus[];
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
+  configStale?: boolean;
 }
 
 export function App({
@@ -28,6 +29,7 @@ export function App({
   initialStatuses,
   initialTaskHistory,
   autoStart,
+  configStale,
 }: AppProps) {
   return (
     <AppProvider
@@ -36,6 +38,7 @@ export function App({
       projectName={projectName}
       tasks={tasks}
       servicesMeta={servicesMeta}
+      configStale={configStale}
     >
       <Router
         initialStatuses={initialStatuses}

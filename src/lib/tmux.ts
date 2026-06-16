@@ -71,33 +71,6 @@ export async function listPanes(session: string, allWindows = false): Promise<Pa
   });
 }
 
-export async function listZapsSessions(): Promise<{ session: string; panes: number }[]> {
-  try {
-    const out = await run(["list-sessions", "-F", "#{session_name}"]);
-    const sessions = out ? out.split("\n") : [];
-    const results: { session: string; panes: number }[] = [];
-    for (const session of sessions) {
-      const paneMapRaw = await showEnv(session, "ZAPS_PANE_MAP");
-      if (paneMapRaw) {
-        const parsed: unknown = JSON.parse(paneMapRaw);
-        if (typeof parsed === "object" && parsed !== null) {
-          const keys = Object.keys(parsed);
-          const values = Object.values(parsed).filter((v): v is string => typeof v === "string");
-          const livePanes = await listPanes(session, true).catch(() => [] as PaneInfo[]);
-          const liveIds = new Set(livePanes.map((p) => p.id));
-          const hasLive = values.some((id) => liveIds.has(id));
-          if (hasLive) {
-            results.push({ session, panes: keys.length });
-          }
-        }
-      }
-    }
-    return results;
-  } catch {
-    return [];
-  }
-}
-
 export async function hasSession(name: string): Promise<boolean> {
   try {
     await run(["has-session", "-t", name]);
@@ -152,6 +125,20 @@ export async function killPane(target: string): Promise<void> {
 export async function panePid(target: string): Promise<number> {
   const out = await run(["display-message", "-p", "-t", target, "#{pane_pid}"]);
   return Number.parseInt(out, 10);
+}
+
+/** True if `target` is still a live tmux pane (false if it was killed/closed). */
+export async function paneExists(target: string): Promise<boolean> {
+  try {
+    // A `display-message -t <id>` probe is NOT reliable: tmux exits 0 and echoes
+    // The requested id back even for a dead pane whose session is gone, so it
+    // Reports every pane as alive (the A4 staleness regression). Enumerate the
+    // Live panes across the server instead and check real membership.
+    const out = await run(["list-panes", "-a", "-F", "#{pane_id}"]);
+    return out.split("\n").includes(target);
+  } catch {
+    return false;
+  }
 }
 
 export async function capturePane(target: string, lines = 100): Promise<string> {

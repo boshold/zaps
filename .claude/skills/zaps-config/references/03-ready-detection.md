@@ -73,6 +73,10 @@ ready: { docker: ["postgres", "redis"] }
 ready: { docker: "redis", file: "docker-compose.dev.yml" }
 ```
 
+**`ready.port` / path-`http` are rejected at config load on docker services.** Published docker ports belong to `dockerd`/`docker-proxy`, not the service's pane process tree, so port/PID detection never matches and the check would always time out. Use docker readiness (the default), or a full-URL `ready: { http: "http://127.0.0.1:<port>/path" }`.
+
+For recreate-style starts (`docker.build` / `forceRecreate` / `renewVolumes`), readiness waits for the container id to change before reporting ready, so a leftover container from a previous session can't flash "ready" just before it's torn down and recreated. A container that stays `exited`/`dead` fails fast (with its state and the last pane output) instead of waiting the full 60s timeout.
+
 ### HTTP
 
 ```ts
@@ -81,10 +85,12 @@ ready: { http: string | { url: string; status?: number } }
 
 Two modes based on URL format:
 
-| Input                       | Behavior                                                                                  |
-| --------------------------- | ----------------------------------------------------------------------------------------- |
-| `"/path"` (starts with `/`) | Waits for ANY port first (like `port: true`), then probes `http://localhost:{port}{path}` |
-| `"http://..."` (full URL)   | Probes URL directly, no port wait                                                         |
+| Input                       | Behavior                                                                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `"/path"` (starts with `/`) | Re-detects ports every poll and probes the path on `http://127.0.0.1:{port}{path}`, skipping debugger/HMR ports |
+| `"http://..."` (full URL)   | Probes URL directly, no port wait                                                                               |
+
+Port probes target `127.0.0.1` (not `localhost`, which can resolve to `::1`) and skip auxiliary ports (Node inspector `9229-9240`, Vite HMR `24678`) unless they are the only ports detected.
 
 Per-attempt: `GET` request, `redirect: "manual"`, **1s timeout**.
 

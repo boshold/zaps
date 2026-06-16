@@ -84,6 +84,22 @@ const { startMcpServer } = await import("../../src/mcp/server.js");
 const SOCK = "/test.sock";
 const SESSION = "sess1";
 
+// Every tool call re-resolves the session via `session.list` (E9); the mock routes `session.list` to the binding list and every other method to the per-test response, with the default binding mapping the test cwd to SESSION.
+let listResponse: unknown;
+let methodResponder: () => Promise<unknown>;
+
+function setSessionList(result: unknown): void {
+  listResponse = result;
+}
+function setMethodResult(result: unknown): void {
+  methodResponder = async () => result;
+}
+function setMethodError(err: unknown): void {
+  methodResponder = async () => {
+    throw err;
+  };
+}
+
 describe("startMcpServer", () => {
   beforeEach(async () => {
     mockIpcRequest.mockReset();
@@ -94,7 +110,14 @@ describe("startMcpServer", () => {
     mcpServerCtorArgs = [];
     registeredTools.clear();
     registeredResources.clear();
-    await startMcpServer(SOCK, SESSION);
+
+    listResponse = { id: "L", result: [{ id: SESSION, name: "proj", projectDir: process.cwd() }] };
+    methodResponder = async () => ({ id: "r1", result: undefined });
+    mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) =>
+      method === "session.list" ? listResponse : methodResponder(),
+    );
+
+    await startMcpServer(SOCK);
   });
 
   afterEach(() => {
@@ -136,12 +159,74 @@ describe("startMcpServer", () => {
     });
   });
 
+  // --- Per-call session resolution (E9) ---
+
+  describe("per-call session resolution", () => {
+    it("a tool call with no running session returns the exact actionable error", async () => {
+      setSessionList({ id: "L", result: [] });
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        `No running zaps session for ${process.cwd()}. Run 'zaps up' first.`,
+      );
+    });
+
+    it("re-resolves the session id on every call (picks up a restart)", async () => {
+      setMethodResult({ id: "r1", result: [] });
+
+      setSessionList({
+        id: "L",
+        result: [{ id: "sess-A", name: "proj", projectDir: process.cwd() }],
+      });
+      await registeredTools.get("services_list")!.cb({});
+      expect(mockIpcRequest).toHaveBeenLastCalledWith(
+        SOCK,
+        "services.list",
+        undefined,
+        30_000,
+        "sess-A",
+      );
+
+      // Simulate `zaps down && zaps up` minting a new id for the same project.
+      setSessionList({
+        id: "L",
+        result: [{ id: "sess-B", name: "proj", projectDir: process.cwd() }],
+      });
+      await registeredTools.get("services_list")!.cb({});
+      expect(mockIpcRequest).toHaveBeenLastCalledWith(
+        SOCK,
+        "services.list",
+        undefined,
+        30_000,
+        "sess-B",
+      );
+    });
+
+    it("surfaces daemon-down (ENOENT) at resolution time", async () => {
+      const err = new Error("connect ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      mockIpcRequest.mockImplementation(async () => {
+        throw err;
+      });
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
+      );
+    });
+
+    it("surfaces a bad -s override verbatim", async () => {
+      registeredTools.clear();
+      setSessionList({ id: "L", result: [{ id: "real", name: "proj", projectDir: "/p" }] });
+      await startMcpServer(SOCK, "ghost");
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Session not found: ghost",
+      );
+    });
+  });
+
   // --- Read-only tool forwarding ---
 
   describe("read-only tools", () => {
     it("services_list forwards to ipcRequest and returns JSON", async () => {
       const statuses = [{ name: "api", state: "ready" }];
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: statuses });
+      setMethodResult({ id: "r1", result: statuses });
 
       const result = await registeredTools.get("services_list")!.cb({});
 
@@ -159,7 +244,7 @@ describe("startMcpServer", () => {
 
     it("services_details forwards { name } param", async () => {
       const details = { name: "api", state: "ready", pid: 123 };
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: details });
+      setMethodResult({ id: "r1", result: details });
 
       const result = await registeredTools.get("services_details")!.cb({ name: "api" });
 
@@ -176,7 +261,7 @@ describe("startMcpServer", () => {
     });
 
     it("logs_snapshot forwards { service } and joins lines", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: ["line1", "line2", "line3"] });
+      setMethodResult({ id: "r1", result: ["line1", "line2", "line3"] });
 
       const result = await registeredTools.get("logs_snapshot")!.cb({ service: "api" });
 
@@ -194,7 +279,7 @@ describe("startMcpServer", () => {
 
     it("tasks_list forwards to ipcRequest", async () => {
       const tasks = [{ key: "build", name: "Build" }];
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: tasks });
+      setMethodResult({ id: "r1", result: tasks });
 
       const result = await registeredTools.get("tasks_list")!.cb({});
 
@@ -205,7 +290,7 @@ describe("startMcpServer", () => {
     });
 
     it("tool throws on IPC error response", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Not found" });
+      setMethodResult({ id: "r1", error: "Not found" });
 
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow("Not found");
     });
@@ -215,7 +300,7 @@ describe("startMcpServer", () => {
 
   describe("mutation tools", () => {
     it("services_start forwards { name } and returns JSON", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { started: "api" } });
+      setMethodResult({ id: "r1", result: { started: "api" } });
 
       const result = await registeredTools.get("services_start")!.cb({ name: "api" });
 
@@ -232,7 +317,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_stop forwards { name }", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { stopped: "api" } });
+      setMethodResult({ id: "r1", result: { stopped: "api" } });
 
       const result = await registeredTools.get("services_stop")!.cb({ name: "api" });
 
@@ -249,7 +334,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_restart forwards { name }", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { restarted: "api" } });
+      setMethodResult({ id: "r1", result: { restarted: "api" } });
 
       const result = await registeredTools.get("services_restart")!.cb({ name: "api" });
 
@@ -270,7 +355,7 @@ describe("startMcpServer", () => {
 
   describe("batch mutation tools", () => {
     it("services_start_all forwards without params when names omitted", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { started: ["api", "web"] } });
+      setMethodResult({ id: "r1", result: { started: ["api", "web"] } });
 
       const result = await registeredTools.get("services_start_all")!.cb({});
 
@@ -287,7 +372,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_start_all forwards { names } when provided", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { started: ["api"] } });
+      setMethodResult({ id: "r1", result: { started: ["api"] } });
 
       const result = await registeredTools.get("services_start_all")!.cb({ names: ["api"] });
 
@@ -304,7 +389,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_start_all throws on IPC error", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Daemon unavailable" });
+      setMethodResult({ id: "r1", error: "Daemon unavailable" });
 
       await expect(registeredTools.get("services_start_all")!.cb({})).rejects.toThrow(
         "Daemon unavailable",
@@ -312,7 +397,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_stop_all forwards without params when names omitted", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { stopped: ["api", "web"] } });
+      setMethodResult({ id: "r1", result: { stopped: ["api", "web"] } });
 
       const result = await registeredTools.get("services_stop_all")!.cb({});
 
@@ -329,7 +414,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_stop_all forwards { names } when provided", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { stopped: ["web"] } });
+      setMethodResult({ id: "r1", result: { stopped: ["web"] } });
 
       const result = await registeredTools.get("services_stop_all")!.cb({ names: ["web"] });
 
@@ -353,7 +438,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_restart_all forwards without params when names omitted", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { restarted: ["api", "web"] } });
+      setMethodResult({ id: "r1", result: { restarted: ["api", "web"] } });
 
       const result = await registeredTools.get("services_restart_all")!.cb({});
 
@@ -370,7 +455,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_restart_all forwards { names } when provided", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: { restarted: ["api"] } });
+      setMethodResult({ id: "r1", result: { restarted: ["api"] } });
 
       const result = await registeredTools.get("services_restart_all")!.cb({ names: ["api"] });
 
@@ -387,7 +472,7 @@ describe("startMcpServer", () => {
     });
 
     it("services_restart_all throws on IPC error", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Timeout" });
+      setMethodResult({ id: "r1", error: "Timeout" });
 
       await expect(registeredTools.get("services_restart_all")!.cb({})).rejects.toThrow("Timeout");
     });
@@ -420,6 +505,32 @@ describe("startMcpServer", () => {
         content: [{ type: "text", text: "output1\noutput2" }],
         isError: false,
       });
+    });
+
+    it("collects a long stream through the inactivity-based ipcStream (E3)", async () => {
+      mockIpcStream.mockImplementation(
+        async (_sock: unknown, _method: unknown, _params: unknown, onEvent: unknown) => {
+          const emit = onEvent as (event: string, data: unknown) => void;
+          for (let i = 0; i < 500; i += 1) {
+            emit("line", `line ${i}`);
+          }
+          return { id: "r1", result: { success: true } };
+        },
+      );
+
+      const result = await registeredTools.get("tasks_run")!.cb({ key: "long" });
+
+      // The 120s window is the inactivity timeout (resets on each line) — a task streaming for well over 2 minutes still completes.
+      expect(mockIpcStream).toHaveBeenCalledWith(
+        SOCK,
+        "tasks.run",
+        { key: "long" },
+        expect.any(Function),
+        120_000,
+        SESSION,
+      );
+      const [{ text }] = (result as { content: { text: string }[] }).content;
+      expect(text.split("\n")).toHaveLength(500);
     });
 
     it("returns isError: true on IPC error", async () => {
@@ -464,7 +575,7 @@ describe("startMcpServer", () => {
         { name: "api", state: "ready" },
         { name: "web", state: "stopped" },
       ];
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: statuses });
+      setMethodResult({ id: "r1", result: statuses });
 
       const resource = registeredResources.get("service-logs")!;
       const result = await resource.template.config.list();
@@ -488,7 +599,7 @@ describe("startMcpServer", () => {
     });
 
     it("read callback returns log text content", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", result: ["log1", "log2"] });
+      setMethodResult({ id: "r1", result: ["log1", "log2"] });
 
       const resource = registeredResources.get("service-logs")!;
       const result = await resource.cb({ href: "zaps://logs/api" }, { serviceName: "api" });
@@ -533,7 +644,7 @@ describe("startMcpServer", () => {
     it("request() catches ECONNREFUSED and returns friendly message", async () => {
       const err = new Error("connect ECONNREFUSED") as NodeJS.ErrnoException;
       err.code = "ECONNREFUSED";
-      mockIpcRequest.mockRejectedValue(err);
+      setMethodError(err);
 
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
         "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
@@ -543,7 +654,7 @@ describe("startMcpServer", () => {
     it("request() catches ENOENT and returns friendly message", async () => {
       const err = new Error("connect ENOENT") as NodeJS.ErrnoException;
       err.code = "ENOENT";
-      mockIpcRequest.mockRejectedValue(err);
+      setMethodError(err);
 
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
         "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
@@ -551,13 +662,13 @@ describe("startMcpServer", () => {
     });
 
     it("request() re-throws unknown errors", async () => {
-      mockIpcRequest.mockRejectedValue(new Error("unexpected"));
+      setMethodError(new Error("unexpected"));
 
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow("unexpected");
     });
 
     it("request() helper throws on IPC error", async () => {
-      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Session expired" });
+      setMethodResult({ id: "r1", error: "Session expired" });
 
       await expect(registeredTools.get("services_details")!.cb({ name: "api" })).rejects.toThrow(
         "Session expired",

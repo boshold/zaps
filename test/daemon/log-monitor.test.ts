@@ -149,6 +149,30 @@ describe("LogMonitor", () => {
     monitor.stop("unknown");
   });
 
+  it("stop() clears inFlight and prevCaptures so maps stay bounded (D6)", async () => {
+    const { capturePane, monitor } = setup();
+    capturePane.mockResolvedValue("line1");
+    const internals = monitor as unknown as {
+      timers: Map<string, unknown>;
+      inFlight: Map<string, unknown>;
+      prevCaptures: Map<string, unknown>;
+    };
+
+    // Repeated start/stop cycles must not grow any bookkeeping map.
+    for (let i = 0; i < 5; i += 1) {
+      monitor.start("%1", "%1", 100);
+      // eslint-disable-next-line no-await-in-loop -- drive one capture per cycle
+      await vi.advanceTimersByTimeAsync(100);
+      expect(internals.inFlight.size).toBe(1);
+      expect(internals.prevCaptures.size).toBe(1);
+
+      monitor.stop("%1");
+      expect(internals.timers.size).toBe(0);
+      expect(internals.inFlight.size).toBe(0);
+      expect(internals.prevCaptures.size).toBe(0);
+    }
+  });
+
   it("start monitoring for service with no buffer does not crash", async () => {
     const capturePane = vi.fn<(target: string, lines: number) => Promise<string>>();
     capturePane.mockResolvedValueOnce("line1\nline2");

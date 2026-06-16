@@ -50,10 +50,14 @@ export interface MockSession {
   destroy: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   pushTaskRecord: ReturnType<typeof vi.fn>;
+  addSubscriber: ReturnType<typeof vi.fn>;
+  removeSubscriber: ReturnType<typeof vi.fn>;
+  focusPane: string;
 }
 
 export function createMockSession(overrides: Partial<MockSession> = {}): MockSession {
   const logBuffers = overrides.logBuffers ?? new Map([["api", new LogBuffer(100)]]);
+  const subscribers = overrides.subscribers ?? new Set<unknown>();
   return {
     id: "abc123",
     name: "test-project",
@@ -81,8 +85,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
         }
         throw new Error(`Unknown service: ${name}`);
       }),
-      startService: vi.fn().mockResolvedValue(undefined),
-      stopService: vi.fn().mockResolvedValue(undefined),
+      startService: vi.fn().mockResolvedValue({ noop: false }),
+      stopService: vi.fn().mockResolvedValue({ noop: false }),
       restartService: vi.fn().mockResolvedValue(undefined),
       startAll: vi.fn().mockResolvedValue(undefined),
       stopAll: vi.fn().mockResolvedValue(undefined),
@@ -96,7 +100,10 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       stop: vi.fn(),
       stopAll: vi.fn(),
     },
-    subscribers: new Set(),
+    subscribers,
+    addSubscriber: vi.fn((socket: unknown) => subscribers.add(socket)),
+    removeSubscriber: vi.fn((socket: unknown) => subscribers.delete(socket)),
+    focusPane: "%0",
     createdAt: Date.now(),
     taskHistory: [],
     attachSnapshot: vi.fn(() => ({

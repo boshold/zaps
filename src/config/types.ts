@@ -26,6 +26,8 @@ export type ReadyConfig = ReadyFn | ReadyOutput | ReadyPort | ReadyDocker | Read
 export interface DockerConfig {
   service: string | string[];
   file?: string;
+  /** Pin the compose project name (overrides env / file `name:` / the zaps pin). */
+  projectName?: string;
   build?: boolean;
   forceRecreate?: boolean;
   renewVolumes?: boolean;
