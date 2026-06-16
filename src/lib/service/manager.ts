@@ -1362,7 +1362,9 @@ export class ServiceManager extends EventEmitter {
     await this.pendingRename.catch(() => {
       /* Ignored */
     });
-    await this.deps.renameWindow(this.paneMap["@tui"], title);
+    await this.deps.renameWindow(this.paneMap["@tui"], title).catch(() => {
+      // Best-effort cosmetic title update; the tmux window/server may be gone (e.g. teardown).
+    });
   }
 
   public handleExecExited(
