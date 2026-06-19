@@ -178,6 +178,25 @@ describe("Dashboard", () => {
     expect(frame).not.toContain("Recent Tasks");
   });
 
+  it("reserves rows for the Recent Tasks section so the list never overflows the pane", () => {
+    // 14 single-line services fit when there is no history (maxRows 17 at the
+    // 24-row default), but the Recent Tasks block (title + 3 rows + margin)
+    // Shrinks the budget below 14, so the list must truncate instead of
+    // Overflowing the pane and blanking the alternate-screen frame.
+    const statuses = Array.from({ length: 14 }, (_, i) => makeStatus(`svc-${String(i)}`));
+    const taskHistory: TaskRunRecord[] = [
+      { taskKey: "a", taskName: "Task A", result: "success", timestamp: Date.now() },
+      { taskKey: "b", taskName: "Task B", result: "success", timestamp: Date.now() },
+      { taskKey: "c", taskName: "Task C", result: "success", timestamp: Date.now() },
+    ];
+
+    const { lastFrame: withoutHistory } = renderDashboard({ statuses });
+    expect(withoutHistory() ?? "").not.toContain("more");
+
+    const { lastFrame: withHistory } = renderDashboard({ statuses, taskHistory });
+    expect(withHistory() ?? "").toContain("more");
+  });
+
   it("marks only the detached service row as detached", () => {
     const paneSvc = makeStatus("web", "ready", [3000]);
     const detachedSvc: ServiceStatus = { ...makeStatus("worker", "ready"), isDetached: true };

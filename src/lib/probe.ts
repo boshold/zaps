@@ -1,5 +1,12 @@
 const HTTP_TIMEOUT = 1000;
 
+/**
+ * Loopback hosts to probe, in order. A service may bind only IPv4 (`127.0.0.1`)
+ * or only IPv6 (`[::1]`) loopback — Nuxt/Nitro, for instance, binds `[::1]` only
+ * — so both must be attempted (B8).
+ */
+const PROBE_HOSTS = ["127.0.0.1", "[::1]"] as const;
+
 const AUX_PORT_RANGE_START = 9229;
 const AUX_PORT_RANGE_END = 9240;
 const VITE_HMR_PORT = 24_678;
@@ -38,7 +45,7 @@ async function fetchProbe(host: string, port: number): Promise<Response | undefi
 
 /** Probe one port on `127.0.0.1`, falling back to `[::1]` (B8). */
 async function probeOne(port: number): Promise<{ url: string; ok: boolean } | undefined> {
-  for (const host of ["127.0.0.1", "[::1]"]) {
+  for (const host of PROBE_HOSTS) {
     const res = await fetchProbe(host, port);
     if (res) {
       return { url: `http://${host}:${port}`, ok: res.status >= 200 && res.status < 400 };
@@ -65,4 +72,4 @@ async function probePort(ports: number[]): Promise<string | undefined> {
   return fallback;
 }
 
-export { probePort, isAuxPort, selectProbeCandidates };
+export { probePort, isAuxPort, selectProbeCandidates, PROBE_HOSTS };

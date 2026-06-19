@@ -27,7 +27,12 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   // Compute chrome rows to determine maxRows for service list
   // Normal: Header(2) + ColumnHeaders(2) + ActionHints(2) + HelpBar(1) = 7
   // Compact: Header(1) + HelpBar(1) = 2
-  const chromeRows = compact ? 2 : 7;
+  // The Recent Tasks section only renders when history exists (marginTop(1) +
+  // Title(1) + up to `limit` rows); count it so the column never overflows the
+  // Pane height and blanks the alternate-screen Ink frame.
+  const recentTasksRows =
+    !compact && taskHistory.length > 0 ? 2 + Math.min(taskHistory.length, 3) : 0;
+  const chromeRows = (compact ? 2 : 7) + recentTasksRows;
   const maxRows = Math.max(1, rows - chromeRows);
 
   return (
