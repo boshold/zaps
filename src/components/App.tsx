@@ -7,7 +7,7 @@ import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
-import { Router } from "./Router.js";
+import { AppShell } from "./AppShell.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { IconThemeProvider, createIconTheme, resolveIconTier } from "./theme/IconTheme.js";
 
@@ -54,7 +54,7 @@ export function App({
         configStale={configStale}
         ui={resolvedUi}
       >
-        <Router
+        <AppShell
           initialStatuses={initialStatuses}
           initialTaskHistory={initialTaskHistory}
           autoStart={autoStart}

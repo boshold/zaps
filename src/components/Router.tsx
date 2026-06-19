@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DockerConfig } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
 import { useLogs } from "#src/hooks/useLogs.js";
+import { useOverlay } from "#src/hooks/useOverlay.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
@@ -293,6 +294,9 @@ export function Router({
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
   const { connected, retry } = useConnection(client);
+  // When an overlay is open the base view goes inert — input is owned by the top
+  // Overlay (and Esc-to-pop by the host), so dashboard/logs/tasks keys are gated.
+  const { isOpen: overlayOpen } = useOverlay();
   const statuses = useServices(client, initialStatuses, connected);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
@@ -517,7 +521,7 @@ export function Router({
         });
       }
     },
-    { isActive: ready },
+    { isActive: ready && !overlayOpen },
   );
 
   if (!ready) {
