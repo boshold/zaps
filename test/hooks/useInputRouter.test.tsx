@@ -35,7 +35,6 @@ describe("useInputRouter", () => {
       dashboard: true,
       logs: false,
       tasks: false,
-      dockerRebuild: false,
     });
   });
 
@@ -67,7 +66,6 @@ describe("useInputRouter", () => {
     expect(flags?.dashboard).toBe(false);
     expect(flags?.logs).toBe(false);
     expect(flags?.tasks).toBe(false);
-    expect(flags?.dockerRebuild).toBe(false);
     // Global yields to the overlay so the palette can own typed keys (e.g. `q`).
     expect(flags?.global).toBe(false);
 

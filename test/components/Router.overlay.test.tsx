@@ -5,6 +5,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
+import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
 import { Router } from "../../src/components/Router.js";
 import type { OverlayApi } from "../../src/hooks/useOverlay.js";
 import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
@@ -51,6 +52,7 @@ function renderWithOverlay(client: DaemonClient, statuses: ServiceStatus[]) {
       <AppProvider client={client} paneMap={{}} projectName="proj" tasks={[]} servicesMeta={[]}>
         <OverlayController />
         <Router initialStatuses={statuses} initialTaskHistory={[]} />
+        <OverlayHost />
       </AppProvider>
     </OverlayProvider>,
   );
@@ -131,5 +133,46 @@ describe("Router command palette", () => {
     });
     await flush();
     expect(overlay?.isOpen).toBe(false);
+  });
+
+  it("does not open the palette while disconnected (no one-frame flash)", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+    act(() => {
+      (client as unknown as EventEmitter).emit("disconnect");
+    });
+    await flush();
+    stdin.write("\x0B"); // Ctrl-K — gated behind the !connected guard now
+    await flush();
+    expect(overlay?.isOpen).toBe(false);
+  });
+});
+
+describe("Router help overlay", () => {
+  afterEach(() => {
+    overlay = undefined;
+  });
+
+  it("opens the help overlay on `?`", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+    stdin.write("?");
+    await flush();
+    expect(overlay?.top?.id).toBe("help");
+  });
+
+  it("opens help from the palette's Help command", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+    stdin.write("\x0B"); // Ctrl-K
+    await flush();
+    for (const ch of "help") {
+      stdin.write(ch);
+      await flush();
+    }
+    stdin.write("\r"); // Run the highlighted Help command
+    await flush();
+    // Palette closed, help opened in its place.
+    expect(overlay?.top?.id).toBe("help");
   });
 });

@@ -15,8 +15,6 @@ interface InputRouterFlags {
   logs: boolean;
   /** Tasks view owns input (transitional until the Phase 4 picker overlay). */
   tasks: boolean;
-  /** Docker rebuild owns input (transitional until the T06 docker overlay). */
-  dockerRebuild: boolean;
 }
 
 /**
@@ -42,7 +40,6 @@ function useInputRouter(
       dashboard: base && view === "dashboard",
       logs: base && view === "logs",
       tasks: base && view === "tasks",
-      dockerRebuild: base && view === "dockerRebuild",
     };
   }, [view, ready, connected, isOpen]);
 }

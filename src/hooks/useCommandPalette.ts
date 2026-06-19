@@ -14,8 +14,8 @@ interface CommandPaletteState {
   index: number;
   moveUp: () => void;
   moveDown: () => void;
-  /** Run the highlighted command. Returns `true` when one ran, `false` if there was none. */
-  runSelected: () => boolean;
+  /** The currently highlighted command, or undefined when there are no results. */
+  selected: Command | undefined;
 }
 
 /**
@@ -50,16 +50,9 @@ function useCommandPalette(commands: Command[]): CommandPaletteState {
     setIndex((i) => Math.min(results.length - 1, i + 1));
   }, [results.length]);
 
-  const runSelected = useCallback(() => {
-    const match = results[clamped];
-    if (!match) {
-      return false;
-    }
-    match.item.run();
-    return true;
-  }, [results, clamped]);
+  const selected = results[clamped]?.item;
 
-  return { query, setQuery: changeQuery, results, index: clamped, moveUp, moveDown, runSelected };
+  return { query, setQuery: changeQuery, results, index: clamped, moveUp, moveDown, selected };
 }
 
 export { useCommandPalette };

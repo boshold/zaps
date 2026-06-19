@@ -20,10 +20,11 @@ import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 import { Dashboard } from "./Dashboard.js";
 import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
 import { DisconnectBanner } from "./DisconnectBanner.js";
-import type { DockerFlagKey } from "./DockerRebuildView.js";
-import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
 import { LogView } from "./LogView.js";
 import { COMMAND_PALETTE_ID, CommandPalette } from "./overlay/CommandPalette.js";
+import type { DockerFlags } from "./overlay/DockerRebuildOverlay.js";
+import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuildOverlay.js";
+import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { TasksView } from "./TasksView.js";
 
@@ -69,72 +70,6 @@ function handleTasksInput(
   }
 }
 
-function buildDockerOverrides(flags: Record<DockerFlagKey, boolean>): Partial<DockerConfig> {
-  const overrides: Partial<DockerConfig> = {};
-  if (flags.build) {
-    overrides.build = true;
-  }
-  if (flags.forceRecreate) {
-    overrides.forceRecreate = true;
-  }
-  if (flags.renewVolumes) {
-    overrides.renewVolumes = true;
-  }
-  if (flags.pull) {
-    overrides.pull = "always";
-  }
-  if (flags.removeOrphans) {
-    overrides.removeOrphans = true;
-  }
-  return overrides;
-}
-
-function handleDockerRebuildInput(
-  input: string,
-  key: Key,
-  ctx: {
-    flagIndex: number;
-    setFlagIndex: React.Dispatch<React.SetStateAction<number>>;
-    dockerFlags: Record<DockerFlagKey, boolean>;
-    setDockerFlags: React.Dispatch<React.SetStateAction<Record<DockerFlagKey, boolean>>>;
-    dockerRebuildTarget: string;
-    busyServices: React.RefObject<Set<string>>;
-    rebuildDocker: (name: string, overrides: Partial<DockerConfig>) => Promise<void>;
-    goToDashboard: () => void;
-  },
-) {
-  if (key.escape) {
-    ctx.goToDashboard();
-    return;
-  }
-  if (key.upArrow || input === "k") {
-    ctx.setFlagIndex((i) => Math.max(0, i - 1));
-    return;
-  }
-  if (key.downArrow || input === "j") {
-    ctx.setFlagIndex((i) => Math.min(DOCKER_REBUILD_FLAGS.length - 1, i + 1));
-    return;
-  }
-  if (input === " ") {
-    const flagKey = DOCKER_REBUILD_FLAGS[ctx.flagIndex].key;
-    ctx.setDockerFlags((prev) => ({ ...prev, [flagKey]: !prev[flagKey] }));
-    return;
-  }
-  if (key.return && !ctx.busyServices.current.has(ctx.dockerRebuildTarget)) {
-    ctx.busyServices.current.add(ctx.dockerRebuildTarget);
-    const overrides = buildDockerOverrides(ctx.dockerFlags);
-    ctx.goToDashboard();
-    void ctx
-      .rebuildDocker(ctx.dockerRebuildTarget, overrides)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(ctx.dockerRebuildTarget);
-      });
-  }
-}
-
 export function Router({
   initialStatuses,
   initialTaskHistory,
@@ -144,15 +79,7 @@ export function Router({
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }) {
-  const {
-    view,
-    logTarget,
-    dockerRebuildTarget,
-    goToLogs,
-    goToDashboard,
-    goToTasks,
-    goToDockerRebuild,
-  } = useRouter();
+  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
   const { client, paneMap, tasks, servicesMeta } = useZaps();
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
@@ -188,17 +115,6 @@ export function Router({
     scrollUp,
     scrollDown,
   } = useLogs(client, logTarget);
-
-  // Docker rebuild popup state
-  const defaultFlags: Record<DockerFlagKey, boolean> = {
-    build: false,
-    forceRecreate: false,
-    renewVolumes: false,
-    pull: false,
-    removeOrphans: false,
-  };
-  const [dockerFlags, setDockerFlags] = useState(defaultFlags);
-  const [dockerFlagIndex, setDockerFlagIndex] = useState(0);
 
   // Task run trigger — incremented on Enter in tasks view
   const [runTrigger, setRunTrigger] = useState(0);
@@ -308,19 +224,48 @@ export function Router({
     exit();
   }
 
-  // Open the docker-rebuild view with this service's defaults preloaded — shared
-  // By the dashboard `R` key and the palette's rebuild command.
+  // Run services.rebuild with the same per-service busy guard the quick keys use.
+  // Shared by the docker overlay's Enter confirm.
+  function confirmDockerRebuild(name: string, overrides: Partial<DockerConfig>) {
+    if (busyServices.current.has(name)) {
+      return;
+    }
+    busyServices.current.add(name);
+    void rebuildDocker(name, overrides)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        busyServices.current.delete(name);
+      });
+  }
+
+  // Open the docker-rebuild overlay with this service's defaults preloaded —
+  // Shared by the dashboard `R` key and the palette's rebuild command.
   function openDockerRebuild(name: string) {
     const meta = svcMetaMap.get(name);
-    setDockerFlags({
+    const defaults: DockerFlags = {
       build: meta?.dockerDefaults.build ?? false,
       forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
       renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
       pull: meta?.dockerDefaults.pull ?? false,
       removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
+    };
+    overlay.push({
+      id: DOCKER_REBUILD_ID,
+      render: () => (
+        <DockerRebuildOverlay
+          serviceName={name}
+          defaults={defaults}
+          onConfirm={confirmDockerRebuild}
+        />
+      ),
     });
-    setDockerFlagIndex(0);
-    goToDockerRebuild(name);
+  }
+
+  // Open the help overlay (keymap + version) — shared by `?` and the palette.
+  function openHelp() {
+    overlay.push({ id: HELP_OVERLAY_ID, render: () => <HelpOverlay /> });
   }
 
   // --- Palette action wiring: each command reuses the same IPC the quick keys
@@ -415,6 +360,7 @@ export function Router({
         runTask: runTaskByKey,
         detach: detachSession,
         shutdown: destroySession,
+        help: openHelp,
       },
     });
     overlay.push({
@@ -426,22 +372,28 @@ export function Router({
   // Global keys — work from any base view, survive a disconnect, yield to overlays.
   useInput(
     (input, key) => {
-      // Ctrl-K / `:` opens the command palette from any base view.
-      if ((key.ctrl && input === "k") || input === ":") {
-        openPalette();
-        return;
-      }
-      // Q / ctrl+c: detach from any view (services keep running).
+      // Q / ctrl+c: detach from any view (services keep running). Works offline.
       if (input === "q" || (key.ctrl && input === "c")) {
         detachSession();
         return;
       }
       // While disconnected the UI is inert except `r` (manual re-attach). No
-      // Auto-reconnect — `r` re-invokes client.connect().
+      // Auto-reconnect — `r` re-invokes client.connect(). The overlay-opening keys
+      // Below are gated behind this so a disconnect can't push an overlay that the
+      // Force-pop effect would then immediately clear (one-frame flash).
       if (!connected) {
         if (input === "r") {
           retry();
         }
+        return;
+      }
+      // Ctrl-K / `:` opens the command palette; `?` opens help.
+      if ((key.ctrl && input === "k") || input === ":") {
+        openPalette();
+        return;
+      }
+      if (input === "?") {
+        openHelp();
         return;
       }
       // Ctrl+d: shut down — destroy session from any view.
@@ -485,25 +437,6 @@ export function Router({
       });
     },
     { isActive: flags.tasks },
-  );
-
-  // Docker rebuild input (transitional — superseded by the T06 docker overlay).
-  useInput(
-    (input, key) => {
-      if (dockerRebuildTarget) {
-        handleDockerRebuildInput(input, key, {
-          flagIndex: dockerFlagIndex,
-          setFlagIndex: setDockerFlagIndex,
-          dockerFlags,
-          setDockerFlags,
-          dockerRebuildTarget,
-          busyServices,
-          rebuildDocker,
-          goToDashboard,
-        });
-      }
-    },
-    { isActive: flags.dockerRebuild },
   );
 
   if (!ready) {
@@ -552,22 +485,15 @@ export function Router({
       />
     );
   }
+  // Overlays (docker rebuild, palette, help) float above this base view via the
+  // OverlayHost (mounted by AppShell), so the dashboard is the lone base render.
   return (
-    <>
-      <Dashboard
-        statuses={sortedStatuses}
-        selectedIndex={dashboardSel.index}
-        taskHistory={taskHistory}
-        input={dashboardInput}
-        inputActive={flags.dashboard}
-      />
-      {view === "dockerRebuild" && dockerRebuildTarget && (
-        <DockerRebuildPopup
-          serviceName={dockerRebuildTarget}
-          flags={dockerFlags}
-          flagIndex={dockerFlagIndex}
-        />
-      )}
-    </>
+    <Dashboard
+      statuses={sortedStatuses}
+      selectedIndex={dashboardSel.index}
+      taskHistory={taskHistory}
+      input={dashboardInput}
+      inputActive={flags.dashboard}
+    />
   );
 }

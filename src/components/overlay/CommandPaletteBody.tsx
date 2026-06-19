@@ -41,7 +41,7 @@ interface CommandPaletteBodyProps {
  */
 function CommandPaletteBody({ commands, isActive, onClose }: CommandPaletteBodyProps) {
   const { icon } = useIcons();
-  const { query, setQuery, results, index, moveUp, moveDown, runSelected } =
+  const { query, setQuery, results, index, moveUp, moveDown, selected } =
     useCommandPalette(commands);
 
   useInput(
@@ -56,9 +56,13 @@ function CommandPaletteBody({ commands, isActive, onClose }: CommandPaletteBodyP
   );
 
   function handleSubmit() {
-    if (runSelected()) {
-      onClose();
+    if (!selected) {
+      return;
     }
+    // Close first, then run: a command that opens another overlay (e.g. help)
+    // Pushes onto the stack — running before the pop would close the wrong one.
+    onClose();
+    selected.run();
   }
 
   return (

@@ -5,10 +5,12 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
-import { DOCKER_REBUILD_FLAGS } from "../../src/components/DockerRebuildView.js";
+import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
 import { Router } from "../../src/components/Router.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
 import type { ServiceMeta, TaskInfo } from "../../src/daemon/session.js";
+import type { OverlayApi } from "../../src/hooks/useOverlay.js";
+import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 
@@ -65,6 +67,16 @@ function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
   };
 }
 
+// Captures the live overlay API so tests can assert the stack (the palette,
+// Help, and docker-rebuild overlays render position="absolute" and are not
+// Capturable by ink-testing-library, so frame text isn't reliable for them).
+let overlay: OverlayApi | undefined;
+
+function OverlayController() {
+  overlay = useOverlay();
+  return null;
+}
+
 function renderRouter(
   opts: {
     statuses?: ServiceStatus[];
@@ -84,19 +96,23 @@ function renderRouter(
   const taskHistory = opts.taskHistory ?? [];
 
   const result = render(
-    <AppProvider
-      client={client}
-      paneMap={paneMap}
-      projectName="test-project"
-      tasks={tasks}
-      servicesMeta={servicesMeta}
-    >
-      <Router
-        initialStatuses={statuses}
-        initialTaskHistory={taskHistory}
-        autoStart={opts.autoStart}
-      />
-    </AppProvider>,
+    <OverlayProvider>
+      <AppProvider
+        client={client}
+        paneMap={paneMap}
+        projectName="test-project"
+        tasks={tasks}
+        servicesMeta={servicesMeta}
+      >
+        <OverlayController />
+        <Router
+          initialStatuses={statuses}
+          initialTaskHistory={taskHistory}
+          autoStart={opts.autoStart}
+        />
+        <OverlayHost />
+      </AppProvider>
+    </OverlayProvider>,
   );
 
   return { ...result, client };
@@ -110,6 +126,16 @@ async function pressEscape(stdin: { write: (data: string) => void }) {
   });
 }
 
+// Send a key inside act + settle. The mock stdin can drop the first keystroke
+// Aimed at a just-pushed overlay's `useInput`, so callers warm up with an
+// Ignored key first.
+async function pressKey(stdin: { write: (data: string) => void }, data: string) {
+  await act(async () => {
+    stdin.write(data);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+}
+
 // ── tests ──────────────────────────────────────────────────────────────
 
 describe("Router", () => {
@@ -119,6 +145,7 @@ describe("Router", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    overlay = undefined;
   });
 
   // ── rendering ─────────────────────────────────────────────────
@@ -241,7 +268,7 @@ describe("Router", () => {
 
   // ── dashboard input: docker rebuild (R) ──────────────────────
 
-  it("enters docker rebuild view with R for docker service", async () => {
+  it("opens the docker-rebuild overlay with R for a docker service", async () => {
     const statuses = [makeStatus({ isDocker: true })];
     const servicesMeta: ServiceMeta[] = [
       {
@@ -257,25 +284,22 @@ describe("Router", () => {
         },
       },
     ];
-    const { stdin, lastFrame } = renderRouter({ statuses, servicesMeta });
+    const { stdin } = renderRouter({ statuses, servicesMeta });
     stdin.write("R");
     await act(async () => {
       /* Flush */
     });
-    const frame = lastFrame() ?? "";
-    // Dashboard still renders underneath popup
-    expect(frame).toContain("web");
-    // Pressing escape proves we were in docker rebuild view
+    expect(overlay?.top?.id).toBe("docker-rebuild");
+    // Esc is owned by OverlayHost (overlay binds no Esc) → closes it.
     await pressEscape(stdin);
-    expect(lastFrame()).toContain("web");
+    expect(overlay?.isOpen).toBe(false);
   });
 
   it("ignores R for non-docker service", () => {
     const statuses = [makeStatus({ isDocker: false })];
-    const { stdin, lastFrame } = renderRouter({ statuses });
-    const frameBefore = lastFrame();
+    const { stdin } = renderRouter({ statuses });
     stdin.write("R");
-    expect(lastFrame()).toBe(frameBefore);
+    expect(overlay?.isOpen).toBe(false);
   });
 
   // ── dashboard input: zoom pane (z) ──────────────────────────
@@ -511,12 +535,14 @@ describe("Router", () => {
     expect(frame).toContain("Run migrations");
   });
 
-  // ── docker rebuild input ─────────────────────────────────────
+  // ── docker rebuild overlay (Router integration) ──────────────
+  // Detailed flag-toggle / move / clamp behavior lives in the dedicated
+  // DockerRebuildOverlay test (the overlay is position="absolute" and
+  // Uncapturable), so here we assert the Router wiring only.
 
-  describe("docker rebuild view", () => {
-    function enterDockerRebuild() {
-      const statuses = [makeStatus({ isDocker: true })];
-      const servicesMeta: ServiceMeta[] = [
+  describe("docker rebuild overlay", () => {
+    function dockerMeta(): ServiceMeta[] {
+      return [
         {
           name: "web",
           dependsOn: [],
@@ -530,133 +556,52 @@ describe("Router", () => {
           },
         },
       ];
+    }
+
+    function enterDockerRebuild() {
       const client = createMockClient();
-      const result = renderRouter({ statuses, servicesMeta, client });
+      client.rebuildDocker = vi.fn().mockResolvedValue(undefined);
+      const result = renderRouter({
+        statuses: [makeStatus({ isDocker: true })],
+        servicesMeta: dockerMeta(),
+        client,
+      });
       result.stdin.write("R");
       return { ...result, client };
     }
 
-    it("exits with escape", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      await pressEscape(stdin);
-      const frame = lastFrame() ?? "";
-      expect(frame).toContain("zaps");
-    });
-
-    it("toggles flag with space without crashing", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write(" ");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("navigates flags with j/k without crashing", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("j");
-      stdin.write("k");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("clamps flag index at boundaries", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("k");
-      stdin.write("k");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-      for (let i = 0; i < DOCKER_REBUILD_FLAGS.length + 2; i += 1) {
-        stdin.write("j");
-      }
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("rebuilds on enter and returns to dashboard", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("\r");
-      await act(async () => {
-        /* Flush */
-      });
-      const frame = lastFrame() ?? "";
-      expect(frame).toContain("zaps");
-    });
-
-    it("ignores enter when busy", async () => {
+    it("cancels on Esc without rebuilding (host owns Esc)", async () => {
       const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      stdin.write("\r");
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressEscape(stdin);
+      expect(overlay?.isOpen).toBe(false);
+      expect(client.rebuildDocker).not.toHaveBeenCalled();
+    });
+
+    it("rebuilds on Enter and closes", async () => {
+      const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      stdin.write("R");
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressKey(stdin, "\r");
+      expect(client.rebuildDocker).toHaveBeenCalledWith("web", {});
+      expect(overlay?.isOpen).toBe(false);
+    });
+
+    it("sends toggled flags as overrides on Enter", async () => {
+      const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      expect(client.disconnect).not.toHaveBeenCalled();
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressKey(stdin, " "); // Toggle --build (index 0)
+      await pressKey(stdin, "\r");
+      expect(client.rebuildDocker).toHaveBeenCalledWith("web", { build: true });
     });
-  });
-
-  // ── buildDockerOverrides via docker rebuild ──────────────────
-
-  it("builds overrides from toggled flags", async () => {
-    const statuses = [makeStatus({ isDocker: true })];
-    const servicesMeta: ServiceMeta[] = [
-      {
-        name: "web",
-        dependsOn: [],
-        hasDocker: true,
-        dockerDefaults: {
-          build: false,
-          forceRecreate: false,
-          renewVolumes: false,
-          pull: false,
-          removeOrphans: false,
-        },
-      },
-    ];
-    const client = createMockClient();
-    const { stdin } = renderRouter({ statuses, servicesMeta, client });
-
-    stdin.write("R");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write(" ");
-    stdin.write("j");
-    stdin.write(" ");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("\r");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(client.disconnect).not.toHaveBeenCalled();
   });
 
   // ── onTaskComplete via daemon events ─────────────────────────
