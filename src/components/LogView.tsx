@@ -3,6 +3,8 @@ import { Box, Text } from "ink";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 
 import { Header } from "./Header.js";
+import { FullscreenLayout } from "./layout/FullscreenLayout.js";
+import { LogViewBody } from "./LogViewBody.js";
 
 export interface LogViewProps {
   serviceName: string;
@@ -12,27 +14,23 @@ export interface LogViewProps {
 }
 
 export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps) {
-  const { cols, rows, compact } = useDimensions();
-  const visibleLines = Math.max(1, rows - 4);
+  const { cols, compact } = useDimensions();
 
-  const displayLines = autoScroll
-    ? lines.slice(-visibleLines)
-    : lines.slice(-(visibleLines + offset), offset > 0 ? -offset : lines.length);
+  const header = <Header projectName={serviceName} statuses={[]} width={cols} compact={compact} />;
+  const footer = (
+    <Box>
+      <Text dimColor>[j/k/↑/↓] scroll [esc] back </Text>
+      {/* Autoscroll state: live tails the newest lines; paused resumes by
+          scrolling back down to the bottom (↓/j), which re-enables follow. */}
+      <Text color={autoScroll ? "green" : "yellow"}>
+        {autoScroll ? "● live" : "⏸ paused (↓ to follow)"}
+      </Text>
+    </Box>
+  );
 
   return (
-    <Box flexDirection="column" padding={1} height="100%">
-      <Header projectName={serviceName} statuses={[]} width={cols} compact={compact} />
-      <Box flexDirection="column" flexGrow={1} marginTop={1}>
-        {displayLines.map((line, i) => (
-          // eslint-disable-next-line react/no-array-index-key -- Log lines have no stable key
-          <Text key={i} wrap="truncate">
-            {line}
-          </Text>
-        ))}
-      </Box>
-      <Box marginTop={1}>
-        <Text dimColor>[j/k/↑/↓] scroll [esc] back</Text>
-      </Box>
-    </Box>
+    <FullscreenLayout header={header} footer={footer}>
+      <LogViewBody lines={lines} autoScroll={autoScroll} offset={offset} />
+    </FullscreenLayout>
   );
 }
