@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { StatusSummary } from "./StatusSummary.js";
+import { useIcons } from "./theme/IconTheme.js";
 
 interface HeaderRowProps {
   projectName: string;
@@ -11,13 +12,16 @@ interface HeaderRowProps {
 }
 
 export function HeaderRow({ projectName, statuses, configStale }: HeaderRowProps) {
+  const { icon } = useIcons();
   return (
     <Box>
       <Text bold color="cyan">
-        ⚡ zaps:{" "}
+        {icon("logo")} zaps:{" "}
       </Text>
       <Text bold>{projectName}</Text>
-      {configStale && <Text color="yellow">{"  config changed — press c to reload"}</Text>}
+      {configStale && (
+        <Text color="yellow">{`  config changed ${icon("dash")} press c to reload`}</Text>
+      )}
       <Box flexGrow={1} justifyContent="flex-end">
         <StatusSummary statuses={statuses} />
       </Box>

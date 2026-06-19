@@ -72,7 +72,7 @@ function renderRow(
 }
 
 export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceListProps) {
-  // Windowing (grow-from-selected + `↑/↓ N more` + multi-line rows) lives in the
+  // Windowing (grow-from-selected + overflow markers + multi-line rows) lives in the
   // Reusable ScrollableList; ServiceList only contributes its row rendering and
   // The service-specific row-height (group headers + error sub-rows).
   return (

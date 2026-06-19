@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import type { DaemonClient } from "#src/client/daemon-client.js";
 import { resolveUiConfig } from "#src/config/index.js";
 import type { UiConfig } from "#src/config/types.js";
@@ -37,8 +39,11 @@ export function App({
   ui,
 }: AppProps) {
   // Resolve UI config + icon tier once at the root (env override wins over config).
-  const resolvedUi = resolveUiConfig(ui);
-  const iconTheme = createIconTheme(resolveIconTier(resolvedUi.icons));
+  // Memoized for stable context identity across re-renders.
+  const iconTheme = useMemo(
+    () => createIconTheme(resolveIconTier(resolveUiConfig(ui).icons)),
+    [ui],
+  );
 
   return (
     <IconThemeProvider value={iconTheme}>

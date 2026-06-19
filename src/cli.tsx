@@ -68,14 +68,16 @@ async function runTui(opts: {
 
   if (showSplash) {
     const { renderSplash } = await import("./components/logo.js");
+    const { resolveIconTier } = await import("./components/theme/IconTheme.js");
     const { listPanes } = await import("./lib/tmux.js");
+    const splashTier = resolveIconTier(snapshot.ui?.icons);
     const tmuxSession = await currentSession();
     const panes = await listPanes(tmuxSession);
     const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
     if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height });
+      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier);
     } else {
-      renderSplash();
+      renderSplash(undefined, splashTier);
     }
   }
 

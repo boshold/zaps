@@ -2,6 +2,9 @@ import { Text } from "ink";
 
 import type { TaskInfo } from "#src/daemon/session.js";
 
+import type { IconTheme } from "./theme/IconTheme.js";
+import { useIcons } from "./theme/IconTheme.js";
+
 interface TaskRowProps {
   task: TaskInfo;
   isSelected: boolean;
@@ -11,39 +14,40 @@ interface TaskRowProps {
   maxWidth?: number;
 }
 
-function getIconAndColor(isRunning: boolean, result?: "success" | "error") {
+function getIconAndColor(icons: IconTheme, isRunning: boolean, result?: "success" | "error") {
   if (isRunning) {
-    return { icon: "◐", color: "yellow" } as const;
+    return { icon: icons.icon("working"), color: "yellow" } as const;
   }
   if (result === "success") {
-    return { icon: "✔", color: "green" } as const;
+    return { icon: icons.icon("taskSuccess"), color: "green" } as const;
   }
   if (result === "error") {
-    return { icon: "✖", color: "red" } as const;
+    return { icon: icons.icon("taskError"), color: "red" } as const;
   }
-  return { icon: "○", color: "gray" } as const;
+  return { icon: icons.icon("taskPending"), color: "gray" } as const;
 }
 
-function truncate(str: string, max: number): string {
+function truncate(str: string, max: number, ellipsis: string): string {
   if (str.length <= max) {
     return str;
   }
-  return `${str.slice(0, max - 1)}…`;
+  return `${str.slice(0, Math.max(0, max - ellipsis.length))}${ellipsis}`;
 }
 
 export function TaskRow({ task, isSelected, result, isRunning, shortcut, maxWidth }: TaskRowProps) {
-  const { icon, color } = getIconAndColor(isRunning, result);
+  const icons = useIcons();
+  const { icon, color } = getIconAndColor(icons, isRunning, result);
   const cursor = isSelected ? ">" : " ";
 
   // Build the full text to compute truncation
   const shortcutPart = shortcut ? ` [${shortcut}]` : "";
-  const descPart = task.description ? ` — ${task.description}` : "";
+  const descPart = task.description ? ` ${icons.icon("dash")} ${task.description}` : "";
   const tail = `${shortcutPart} ${task.name}${descPart}`;
 
   // Prefix is "X Y" where X=cursor, Y=icon — always 3 chars
   const prefixLen = 3;
   const available = maxWidth !== undefined ? Math.max(0, maxWidth - prefixLen) : tail.length;
-  const truncatedTail = truncate(tail, available);
+  const truncatedTail = truncate(tail, available, icons.icon("ellipsis"));
 
   // Split truncatedTail back into shortcut / name / desc portions for coloring
   // ShortcutPart is fixed-length if present, so we can slice deterministically

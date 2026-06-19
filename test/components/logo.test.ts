@@ -1,7 +1,7 @@
 import type { MockInstance } from "vitest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { LOGO, renderSplash } from "../../src/components/logo.js";
+import { LOGO, LOGO_ASCII, renderSplash } from "../../src/components/logo.js";
 
 describe("LOGO", () => {
   it("is a non-empty string", () => {
@@ -50,6 +50,26 @@ describe("renderSplash", () => {
     renderSplash({ cols: 80, rows: 24 });
     const output = writeSpy.mock.calls[0][0] as string;
     expect(output).toContain("Starting services...");
+  });
+
+  function firstNonAscii(s: string): number {
+    for (let i = 0; i < s.length; i += 1) {
+      if (s.charCodeAt(i) > 127) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  it("renders a strictly 7-bit splash under the ascii tier", () => {
+    renderSplash({ cols: 80, rows: 24 }, "ascii");
+    const output = writeSpy.mock.calls[0][0] as string;
+    expect(firstNonAscii(output)).toBe(-1);
+  });
+
+  it("ascii logo art is itself pure 7-bit", () => {
+    expect(firstNonAscii(LOGO_ASCII)).toBe(-1);
+    expect(LOGO_ASCII.length).toBeGreaterThan(0);
   });
 
   it("handles small terminal size", () => {

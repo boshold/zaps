@@ -5,6 +5,7 @@ import { useViewportSize } from "./layout/ViewportContext.js";
 import { ServiceList } from "./ServiceList.js";
 import { EmptyState } from "./states/EmptyState.js";
 import { EMPTY_STATE_MESSAGES } from "./states/messages.js";
+import { useIcons } from "./theme/IconTheme.js";
 
 interface DashboardServiceListProps {
   statuses: ServiceStatus[];
@@ -20,11 +21,12 @@ interface DashboardServiceListProps {
  *
  * When there are no statuses to show it renders a centered placeholder instead
  * of a blank body: "no services configured" when the config has none, otherwise
- * "starting services…" (attached, nothing reported yet).
+ * "starting services" (attached, nothing reported yet).
  */
 export function DashboardServiceList({ statuses, selectedIndex, cols }: DashboardServiceListProps) {
   const { height } = useViewportSize();
   const { servicesMeta } = useZaps();
+  const { icon } = useIcons();
 
   if (statuses.length === 0) {
     return (
@@ -32,7 +34,7 @@ export function DashboardServiceList({ statuses, selectedIndex, cols }: Dashboar
         message={
           servicesMeta.length === 0
             ? EMPTY_STATE_MESSAGES.noServices
-            : EMPTY_STATE_MESSAGES.loadingServices
+            : `${EMPTY_STATE_MESSAGES.loadingServices}${icon("ellipsis")}`
         }
       />
     );

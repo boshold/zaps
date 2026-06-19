@@ -14,7 +14,7 @@ interface LogViewBodyProps {
  * `FullscreenLayout`) instead of a hardcoded `rows - 4`. The newest visible line
  * — the tail when autoscrolling, or `offset` lines back when scrolled — is
  * anchored at the bottom by slicing off newer lines and selecting the last one,
- * so `ScrollableList` grows older lines upward and emits an `↑ N more` marker.
+ * so `ScrollableList` grows older lines upward and emits an up-overflow marker.
  */
 export function LogViewBody({ lines, autoScroll, offset }: LogViewBodyProps) {
   const { height } = useViewportSize();

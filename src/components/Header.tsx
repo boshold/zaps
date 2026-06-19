@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { HeaderRow } from "./HeaderRow.js";
+import { useIcons } from "./theme/IconTheme.js";
 
 interface HeaderProps {
   projectName: string;
@@ -13,10 +14,11 @@ interface HeaderProps {
 }
 
 export function Header({ projectName, statuses, width, compact, configStale }: HeaderProps) {
+  const { icon } = useIcons();
   return (
     <Box flexDirection="column">
       <HeaderRow projectName={projectName} statuses={statuses} configStale={configStale} />
-      {!compact && <Text dimColor>{"─".repeat(width)}</Text>}
+      {!compact && <Text dimColor>{icon("divider").repeat(width)}</Text>}
     </Box>
   );
 }

@@ -6,15 +6,27 @@ export const LOGO = `
  ███████╗ ██║  ██║ ██║      ███████║
  ╚══════╝ ╚═╝  ╚═╝ ╚═╝      ╚══════╝`.trimStart();
 
+/** Strictly 7-bit splash art for the `ascii` icon tier (no box-drawing glyphs). */
+export const LOGO_ASCII = `
+ _____   _    ____  ____
+|__  /  / \\  |  _ \\/ ___|
+  / /  / _ \\ | |_) \\___ \\
+ / /_ / ___ \\|  __/ ___) |
+/____/_/   \\_\\_|   |____/`.trimStart();
+
 /**
  * Write ANSI splash to stdout — visible while Ink loads.
- * Accepts optional tmux pane dimensions (process.stdout doesn't reflect pane height).
+ * Accepts optional tmux pane dimensions (process.stdout doesn't reflect pane height)
+ * and the icon tier so the `ascii` tier renders 7-bit-safe art.
  */
-export function renderSplash(size?: { cols: number; rows: number }): void {
+export function renderSplash(
+  size?: { cols: number; rows: number },
+  tier?: "nerd" | "unicode" | "ascii",
+): void {
   const rows = size?.rows || process.stdout.rows || 24;
   const cols = size?.cols || process.stdout.columns || 80;
 
-  const lines = LOGO.split("\n");
+  const lines = (tier === "ascii" ? LOGO_ASCII : LOGO).split("\n");
   const cyan = "\x1b[36m";
   const dim = "\x1b[2m";
   const reset = "\x1b[0m";

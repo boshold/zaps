@@ -42,13 +42,13 @@ function createIconTheme(tier: IconTier): IconTheme {
   };
 }
 
-/** Read the active icon theme from the nearest `IconThemeProvider`. */
+// Default tier when no provider is mounted (isolated component tests). The app
+// Root always provides a resolved theme; this fallback keeps the nerd visuals.
+const DEFAULT_ICON_THEME = createIconTheme("nerd");
+
+/** Read the active icon theme from the nearest `IconThemeProvider` (nerd default). */
 function useIcons(): IconTheme {
-  const ctx = useContext(IconThemeContext);
-  if (!ctx) {
-    throw new Error("useIcons must be used within an IconThemeProvider");
-  }
-  return ctx;
+  return useContext(IconThemeContext) ?? DEFAULT_ICON_THEME;
 }
 
 export { createIconTheme, IconThemeProvider, resolveIconTier, useIcons };

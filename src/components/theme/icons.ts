@@ -21,6 +21,10 @@ type IconKey =
   | "taskSuccess"
   | "taskError"
   | "taskPending"
+  // Text punctuation (kept ascii-foldable for the ascii tier)
+  | "ellipsis"
+  | "dash"
+  | "dot"
   // Misc semantic markers
   | "docker"
   | "url"
@@ -30,24 +34,27 @@ type IconKey =
 
 type IconMap = Record<IconKey, string>;
 
-// Nerd/Unicode tiers use expressive BMP glyphs (a Nerd font is a Unicode
-// Superset, so these render on both). The ascii tier is strictly 7-bit so plain
-// Terminals stay legible. Color is never the only signal — each state has a
-// Distinct glyph (accessibility invariant).
+// The nerd/unicode tiers preserve the pre-theme visuals exactly (so the default
+// Render is unchanged), while the ascii tier is strictly 7-bit so plain terminals
+// Stay legible end-to-end. Color is never the only signal — each ascii state has
+// A distinct glyph (accessibility invariant).
 const nerd: IconMap = {
   ready: "●",
   working: "◐",
   stopped: "○",
   error: "✖",
-  unavailable: "⊘",
-  selection: "❯",
-  overflowUp: "▲",
-  overflowDown: "▼",
+  unavailable: "○",
+  selection: ">",
+  overflowUp: "↑",
+  overflowDown: "↓",
   divider: "─",
   treeBranch: "│",
   taskSuccess: "✔",
   taskError: "✖",
   taskPending: "○",
+  ellipsis: "…",
+  dash: "—",
+  dot: "·",
   docker: "⬢",
   url: "↗",
   live: "●",
@@ -55,26 +62,7 @@ const nerd: IconMap = {
   logo: "⚡",
 };
 
-const unicode: IconMap = {
-  ready: "●",
-  working: "◐",
-  stopped: "○",
-  error: "✖",
-  unavailable: "⊘",
-  selection: "›",
-  overflowUp: "▲",
-  overflowDown: "▼",
-  divider: "─",
-  treeBranch: "│",
-  taskSuccess: "✔",
-  taskError: "✖",
-  taskPending: "○",
-  docker: "⬢",
-  url: "↗",
-  live: "●",
-  paused: "⏸",
-  logo: "⚡",
-};
+const unicode: IconMap = { ...nerd };
 
 const ascii: IconMap = {
   ready: "*",
@@ -90,6 +78,9 @@ const ascii: IconMap = {
   taskSuccess: "+",
   taskError: "x",
   taskPending: ".",
+  ellipsis: "...",
+  dash: "-",
+  dot: "|",
   docker: "D",
   url: "@",
   live: "*",
@@ -101,7 +92,7 @@ const ICON_MAPS: Record<IconTier, IconMap> = { nerd, unicode, ascii };
 
 /** Animated spinner frames per tier (transitional service states). */
 const SPINNER_FRAMES: Record<IconTier, string[]> = {
-  nerd: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+  nerd: ["◐", "◑", "◒", "◓"],
   unicode: ["◐", "◑", "◒", "◓"],
   ascii: ["|", "/", "-", "\\"],
 };

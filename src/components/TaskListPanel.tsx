@@ -6,6 +6,7 @@ import type { TaskShortcut } from "#src/lib/taskShortcuts.js";
 import { TaskHistorySection } from "./TaskHistorySection.js";
 import { TaskRow } from "./TaskRow.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { useIcons } from "./theme/IconTheme.js";
 
 interface TaskListPanelProps {
   tasks: TaskInfo[];
@@ -40,6 +41,7 @@ export function TaskListPanel({
   width,
   showHistory = true,
 }: TaskListPanelProps) {
+  const { icon } = useIcons();
   const shortcutMap = new Map(taskShortcuts.map((s) => [s.name, s.shortcut]));
 
   // Help text takes 1 row, history takes 2+ rows
@@ -68,7 +70,8 @@ export function TaskListPanel({
       <Box flexDirection="column" flexGrow={1}>
         {above > 0 && (
           <Text dimColor>
-            {"  "}↑ {above} more
+            {"  "}
+            {icon("overflowUp")} {above} more
           </Text>
         )}
         {visible.map((task, i) => (
@@ -84,7 +87,8 @@ export function TaskListPanel({
         ))}
         {below > 0 && (
           <Text dimColor>
-            {"  "}↓ {below} more
+            {"  "}
+            {icon("overflowDown")} {below} more
           </Text>
         )}
       </Box>
@@ -94,7 +98,7 @@ export function TaskListPanel({
       {!compact && (
         <Box marginTop={1}>
           <Text dimColor wrap="truncate">
-            [j/k/↑/↓] select [enter] run [key] shortcut [esc] back
+            {`[j/k/${icon("overflowUp")}/${icon("overflowDown")}] select [enter] run [key] shortcut [esc] back`}
           </Text>
         </Box>
       )}

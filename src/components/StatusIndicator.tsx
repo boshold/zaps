@@ -3,17 +3,29 @@ import { useEffect, useState } from "react";
 
 import type { ServiceState } from "#src/lib/service/types.js";
 
-const SPINNER_FRAMES = ["◐", "◑", "◒", "◓"];
+import type { IconKey } from "./theme/icons.js";
+import { useIcons } from "./theme/IconTheme.js";
+
 const SPINNER_INTERVAL = 150;
 
-const STATUS_MAP: Record<ServiceState, { symbol: string; color: string }> = {
-  ready: { symbol: "●", color: "green" },
-  starting: { symbol: "◐", color: "yellow" },
-  stopping: { symbol: "◐", color: "yellow" },
-  restarting: { symbol: "◐", color: "yellow" },
-  error: { symbol: "✖", color: "red" },
-  stopped: { symbol: "○", color: "gray" },
-  unavailable: { symbol: "○", color: "gray" },
+const STATE_COLOR: Record<ServiceState, string> = {
+  ready: "green",
+  starting: "yellow",
+  stopping: "yellow",
+  restarting: "yellow",
+  error: "red",
+  stopped: "gray",
+  unavailable: "gray",
+};
+
+const STATE_ICON: Record<ServiceState, IconKey> = {
+  ready: "ready",
+  starting: "working",
+  stopping: "working",
+  restarting: "working",
+  error: "error",
+  stopped: "stopped",
+  unavailable: "unavailable",
 };
 
 function isSpinnerState(state: ServiceState): boolean {
@@ -21,6 +33,7 @@ function isSpinnerState(state: ServiceState): boolean {
 }
 
 export function StatusIndicator({ state }: { state: ServiceState }) {
+  const { icon, spinnerFrames } = useIcons();
   const [frame, setFrame] = useState(0);
 
   useEffect(() => {
@@ -28,20 +41,22 @@ export function StatusIndicator({ state }: { state: ServiceState }) {
       return;
     }
     const id = setInterval(() => {
-      setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
+      setFrame((f) => (f + 1) % spinnerFrames.length);
     }, SPINNER_INTERVAL);
     return () => {
       clearInterval(id);
     };
-  }, [state]);
+  }, [state, spinnerFrames.length]);
 
   // Reset frame when state changes
   useEffect(() => {
     setFrame(0);
   }, [state]);
 
-  const { color } = STATUS_MAP[state];
-  const symbol = isSpinnerState(state) ? SPINNER_FRAMES[frame] : STATUS_MAP[state].symbol;
+  const color = STATE_COLOR[state];
+  const symbol = isSpinnerState(state)
+    ? spinnerFrames[frame % spinnerFrames.length]
+    : icon(STATE_ICON[state]);
 
   return <Text color={color}>{symbol}</Text>;
 }

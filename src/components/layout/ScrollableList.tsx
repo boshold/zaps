@@ -1,6 +1,8 @@
 import { Box, Text } from "ink";
 import type { ReactNode } from "react";
 
+import { useIcons } from "#src/components/theme/IconTheme.js";
+
 interface ScrollableListProps<T> {
   items: T[];
   /** Index that must stay visible; clamped to list bounds. */
@@ -10,7 +12,7 @@ interface ScrollableListProps<T> {
   /** Rows a given item occupies (group header + error sub-row, etc.). Default 1. */
   rowHeight?: (item: T, index: number) => number;
   renderItem: (item: T, index: number, selected: boolean) => ReactNode;
-  /** Show `↑/↓ N more` markers (each reserves a line when shown). Default true. */
+  /** Show themed up/down "N more" markers (each reserves a line when shown). Default true. */
   overflowMarkers?: boolean;
 }
 
@@ -56,7 +58,7 @@ function computeWindow(
 
 /**
  * Reusable windowing list: renders only the slice of `items` that fits
- * `maxHeight`, keeps `selectedIndex` in view, and emits `↑/↓ N more` overflow
+ * `maxHeight`, keeps `selectedIndex` in view, and emits themed "N more" overflow
  * markers. Generalized from `ServiceList`'s windowing so the dashboard list, log
  * view, task picker, and failed-output viewer can all share one implementation.
  */
@@ -68,6 +70,7 @@ function ScrollableList<T>({
   renderItem,
   overflowMarkers = true,
 }: ScrollableListProps<T>) {
+  const { icon } = useIcons();
   const total = items.length;
   if (total === 0) {
     return <Box flexDirection="column" />;
@@ -92,11 +95,21 @@ function ScrollableList<T>({
 
   return (
     <Box flexDirection="column">
-      {overflowMarkers && above > 0 && <Text dimColor>↑ {above} more</Text>}
+      {overflowMarkers && above > 0 && (
+        <Text dimColor>
+          {"  "}
+          {icon("overflowUp")} {above} more
+        </Text>
+      )}
       {items
         .slice(start, end)
         .map((item, i): ReactNode => renderItem(item, i + start, i + start === selected))}
-      {overflowMarkers && below > 0 && <Text dimColor>↓ {below} more</Text>}
+      {overflowMarkers && below > 0 && (
+        <Text dimColor>
+          {"  "}
+          {icon("overflowDown")} {below} more
+        </Text>
+      )}
     </Box>
   );
 }
