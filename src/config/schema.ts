@@ -302,6 +302,9 @@ const cwdConfigSchema = z.union([
 // (IconTheme, DetailPane, notifications) land in later phases.
 const uiTaskConfigSchema = z.object({
   defaultMode: z.enum(["background", "pane"]).default("background"),
+  // Opt-in alternative picker: open `fzf` in a tmux popup instead of the in-app
+  // TaskPicker. Falls back to the in-app picker when tmux < 3.2 or fzf is absent.
+  popupPicker: z.boolean().default(false),
 });
 
 export const uiConfigSchema = z.object({

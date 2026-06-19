@@ -14,6 +14,7 @@ import { useZaps } from "#src/hooks/useZaps.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
@@ -318,7 +319,7 @@ export function Router({
     }
   }
 
-  function openTaskPicker() {
+  function openInAppTaskPicker() {
     // Freeze the in-flight key set at open time (the render thunk is a closure).
     // The data model keys runs by runId; the guard is checked per task key (Q12).
     const runningKeys = new Set(
@@ -335,6 +336,31 @@ export function Router({
         />
       ),
     });
+  }
+
+  // `t` opens the task picker. With `ui.task.popupPicker` enabled AND a capable
+  // Host (tmux >= 3.2 + fzf), launch fzf in a tmux popup and run the pick in the
+  // Background. Otherwise — and on any popup failure or a missing dependency —
+  // Fall back to the in-app TaskPicker, which stays the primary path (P04-T04).
+  function openTaskPicker() {
+    if (!ui.task.popupPicker) {
+      openInAppTaskPicker();
+      return;
+    }
+    void (async () => {
+      try {
+        if (await popupPickerAvailable()) {
+          const key = await runPopupPicker(tasks.map((t) => ({ key: t.key, name: t.name })));
+          if (key) {
+            launchTask(key, "background");
+          }
+          return;
+        }
+      } catch {
+        /* Popup failed — fall through to the in-app picker */
+      }
+      openInAppTaskPicker();
+    })();
   }
 
   function openPalette() {

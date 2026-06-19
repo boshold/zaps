@@ -19,7 +19,7 @@ describe("createZapsLib", () => {
         icons: "nerd",
         notifications: "osc9",
         failOutput: "overlay",
-        task: { defaultMode: "background" },
+        task: { defaultMode: "background", popupPicker: false },
         wideThreshold: 100,
       },
     });

@@ -9,6 +9,8 @@ import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
 import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
+import { resolveUiConfig } from "../../src/config/index.js";
+import type { ResolvedUiConfig } from "../../src/config/index.js";
 import type { ServiceMeta, TaskInfo } from "../../src/daemon/session.js";
 import type { OverlayApi } from "../../src/hooks/useOverlay.js";
 import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
@@ -26,8 +28,14 @@ vi.mock("../../src/lib/tmux.js", () => ({
   editPaneCapture: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../src/lib/task/popup-picker.js", () => ({
+  popupPickerAvailable: vi.fn().mockResolvedValue(false),
+  runPopupPicker: vi.fn().mockResolvedValue(null),
+}));
+
 const { openInBrowser } = await import("../../src/lib/open.js");
 const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
+const { popupPickerAvailable, runPopupPicker } = await import("../../src/lib/task/popup-picker.js");
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -88,6 +96,7 @@ function renderRouter(
     taskHistory?: TaskRunRecord[];
     autoStart?: boolean;
     client?: DaemonClient;
+    ui?: ResolvedUiConfig;
   } = {},
 ) {
   const client = opts.client ?? createMockClient();
@@ -105,6 +114,7 @@ function renderRouter(
         projectName="test-project"
         tasks={tasks}
         servicesMeta={servicesMeta}
+        ui={opts.ui}
       >
         <OverlayController />
         <Router
@@ -492,6 +502,59 @@ describe("Router", () => {
     await pressKey(stdin, "\r");
     expect(client.runTask).toHaveBeenCalledWith("migrate", {});
     expect(overlay?.isOpen).toBe(false);
+  });
+
+  // ── optional fzf popup picker (P04-T05) ──────────────────────
+
+  it("opens the fzf popup picker and runs the selection in the background when enabled + available", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
+    vi.mocked(runPopupPicker).mockResolvedValue("migrate");
+    const client = createMockClient();
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      client,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    });
+    await pressKey(stdin, "t");
+    // Let the async popup flow settle.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(runPopupPicker).toHaveBeenCalled();
+    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
+    // No in-app overlay — the popup is the whole UI.
+    expect(overlay?.isOpen).toBe(false);
+  });
+
+  it("falls back to the in-app picker when the popup is unavailable (old tmux / no fzf)", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(false);
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    });
+    await pressKey(stdin, "t");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(runPopupPicker).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
+  });
+
+  it("falls back to the in-app picker when the popup launch errors", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
+    vi.mocked(runPopupPicker).mockRejectedValue(new Error("popup blew up"));
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    });
+    await pressKey(stdin, "t");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
   });
 
   // ── docker rebuild overlay (Router integration) ──────────────

@@ -173,6 +173,8 @@ export type UiTaskMode = "background" | "pane";
 
 export interface UiTaskConfig {
   defaultMode?: UiTaskMode;
+  /** Open the picker as `fzf` in a tmux popup (falls back to the in-app picker). */
+  popupPicker?: boolean;
 }
 
 /** TUI-local presentation config. Every field is optional and has a safe default. */

@@ -201,6 +201,36 @@ export async function setWindowOption(
   await run(["set-window-option", "-t", target, option, value]);
 }
 
+/**
+ * Parsed tmux version (major.minor), or null if tmux is absent or its version
+ * string is unrecognised. `display-popup` (used by the popup task picker) was
+ * added in tmux 3.2, so callers gate popups on this.
+ */
+export async function tmuxVersion(): Promise<{ major: number; minor: number } | null> {
+  try {
+    const out = await run(["-V"]);
+    const match = /(?<major>\d+)\.(?<minor>\d+)/u.exec(out);
+    if (!match?.groups) {
+      return null;
+    }
+    return {
+      major: Number.parseInt(match.groups.major, 10),
+      minor: Number.parseInt(match.groups.minor, 10),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** True if this tmux supports `display-popup` (>= 3.2). */
+export async function tmuxSupportsPopup(): Promise<boolean> {
+  const version = await tmuxVersion();
+  if (!version) {
+    return false;
+  }
+  return version.major > 3 || (version.major === 3 && version.minor >= 2);
+}
+
 export interface DisplayPopupOptions {
   cwd?: string;
   command: string;

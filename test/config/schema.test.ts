@@ -622,7 +622,7 @@ describe("projectConfigSchema", () => {
           icons: "nerd",
           notifications: "osc9",
           failOutput: "overlay",
-          task: { defaultMode: "background" },
+          task: { defaultMode: "background", popupPicker: false },
           wideThreshold: 100,
         });
       }
@@ -635,7 +635,21 @@ describe("projectConfigSchema", () => {
         expect(result.data.ui.icons).toBe("ascii");
         expect(result.data.ui.notifications).toBe("osc9");
         expect(result.data.ui.task.defaultMode).toBe("background");
+        expect(result.data.ui.task.popupPicker).toBe(false);
         expect(result.data.ui.wideThreshold).toBe(100);
+      }
+    });
+
+    it("accepts ui.task.popupPicker opt-in", () => {
+      const result = projectConfigSchema.safeParse({
+        ...base,
+        ui: { task: { popupPicker: true } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.ui.task.popupPicker).toBe(true);
+        // Sibling default still applied.
+        expect(result.data.ui.task.defaultMode).toBe("background");
       }
     });
 
