@@ -63,6 +63,21 @@ describe("useOverlay", () => {
     expect(captured?.stack).toHaveLength(0);
   });
 
+  it("clear empties the whole stack at once", () => {
+    render(
+      <OverlayProvider>
+        <Probe />
+      </OverlayProvider>,
+    );
+    act(() => captured?.push(overlay("a")));
+    act(() => captured?.push(overlay("b")));
+    expect(captured?.stack).toHaveLength(2);
+
+    act(() => captured?.clear());
+    expect(captured?.isOpen).toBe(false);
+    expect(captured?.top).toBeNull();
+  });
+
   it("re-pushing an existing id moves it to the top without duplicating", () => {
     render(
       <OverlayProvider>

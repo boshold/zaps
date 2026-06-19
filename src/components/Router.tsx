@@ -6,12 +6,16 @@ import type { DockerConfig } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
+import { useOverlay } from "#src/hooks/useOverlay.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
+import { buildCommandRegistry } from "#src/lib/command-registry.js";
+import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
 import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
@@ -19,6 +23,7 @@ import { DisconnectBanner } from "./DisconnectBanner.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
 import { LogView } from "./LogView.js";
+import { COMMAND_PALETTE_ID, CommandPalette } from "./overlay/CommandPalette.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { TasksView } from "./TasksView.js";
 
@@ -262,10 +267,21 @@ export function Router({
   );
 
   // Per-consumer input gating. Exactly one base view is active at a time; the top
-  // Overlay (none yet) would own input instead. Each view owns its own useInput.
+  // Overlay owns input instead. Each view/overlay owns its own useInput.
+  const overlay = useOverlay();
   const flags = useInputRouter(view, { ready, connected });
 
-  // Tear down the session once, shared by Ctrl-D (global) and `d` (dashboard).
+  // A lost daemon connection force-closes every overlay. The global keys
+  // (q/Ctrl-C/r) yield to overlays, so a palette left open at the moment of
+  // Disconnect would otherwise trap input; clearing the stack surfaces the
+  // Sticky disconnect banner with the global keys live again.
+  useEffect(() => {
+    if (!connected && overlay.isOpen) {
+      overlay.clear();
+    }
+  }, [connected, overlay]);
+
+  // Tear down the session once, shared by Ctrl-D (global), `d` (dashboard), palette.
   function destroySession() {
     if (globalBusyRef.current) {
       return;
@@ -282,17 +298,142 @@ export function Router({
       });
   }
 
+  // Detach (services keep running) — shared by `q`/Ctrl-C and the palette.
+  function detachSession() {
+    if (globalBusyRef.current) {
+      return;
+    }
+    globalBusyRef.current = true;
+    client.disconnect();
+    exit();
+  }
+
+  // Open the docker-rebuild view with this service's defaults preloaded — shared
+  // By the dashboard `R` key and the palette's rebuild command.
+  function openDockerRebuild(name: string) {
+    const meta = svcMetaMap.get(name);
+    setDockerFlags({
+      build: meta?.dockerDefaults.build ?? false,
+      forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
+      renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
+      pull: meta?.dockerDefaults.pull ?? false,
+      removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
+    });
+    setDockerFlagIndex(0);
+    goToDockerRebuild(name);
+  }
+
+  // --- Palette action wiring: each command reuses the same IPC the quick keys
+  // Drive, including the per-service busy guard, so it is never a second path. ---
+  function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
+    if (busyServices.current.has(name)) {
+      return;
+    }
+    busyServices.current.add(name);
+    void action(name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        busyServices.current.delete(name);
+      });
+  }
+
+  function runAllServicesAction(action: () => Promise<void>) {
+    if (busyServices.current.size > 0) {
+      return;
+    }
+    for (const s of sortedStatuses) {
+      busyServices.current.add(s.name);
+    }
+    void action()
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        busyServices.current.clear();
+      });
+  }
+
+  function zoomService(name: string) {
+    const paneId = paneMap[name];
+    if (paneId) {
+      void zoomPane(paneId);
+    }
+  }
+
+  function editCaptureService(name: string) {
+    const paneId = paneMap[name];
+    if (!paneId || busyServices.current.has(name)) {
+      return;
+    }
+    busyServices.current.add(name);
+    void editPaneCapture(paneId, name)
+      .catch(() => {
+        /* IPC error — ignore */
+      })
+      .finally(() => {
+        busyServices.current.delete(name);
+      });
+  }
+
+  function runTaskByKey(key: string) {
+    if (runningTask) {
+      return;
+    }
+    const task = tasks.find((t) => t.key === key);
+    if (!task) {
+      return;
+    }
+    // Optimistic running guard; task.start/complete events update history.
+    setRunningTask(key);
+    void client.runTask(key, {}).catch(() => {
+      /* Task execution error handled by daemon */
+    });
+  }
+
+  function openPalette() {
+    const selected = sortedStatuses[dashboardSel.index];
+    const commands = buildCommandRegistry({
+      selected,
+      tasks,
+      actions: {
+        restart: (n) => runGuardedServiceAction(n, restart),
+        toggle: (n) => runGuardedServiceAction(n, toggle),
+        restartAll: () => runAllServicesAction(restartAll),
+        reloadConfig: () =>
+          runAllServicesAction(async () => {
+            await client.reloadConfig();
+          }),
+        openLogs: goToLogs,
+        openUrl: (url) => {
+          void openInBrowser(url);
+        },
+        rebuildDocker: openDockerRebuild,
+        zoom: zoomService,
+        editCapture: editCaptureService,
+        runTask: runTaskByKey,
+        detach: detachSession,
+        shutdown: destroySession,
+      },
+    });
+    overlay.push({
+      id: COMMAND_PALETTE_ID,
+      render: () => <CommandPalette commands={commands} />,
+    });
+  }
+
   // Global keys — work from any base view, survive a disconnect, yield to overlays.
   useInput(
     (input, key) => {
+      // Ctrl-K / `:` opens the command palette from any base view.
+      if ((key.ctrl && input === "k") || input === ":") {
+        openPalette();
+        return;
+      }
       // Q / ctrl+c: detach from any view (services keep running).
       if (input === "q" || (key.ctrl && input === "c")) {
-        if (globalBusyRef.current) {
-          return;
-        }
-        globalBusyRef.current = true;
-        client.disconnect();
-        exit();
+        detachSession();
         return;
       }
       // While disconnected the UI is inert except `r` (manual re-attach). No
@@ -326,18 +467,7 @@ export function Router({
     goToTasks,
     destroySession,
     paneMap,
-    goToDockerRebuild: (name: string) => {
-      const meta = svcMetaMap.get(name);
-      setDockerFlags({
-        build: meta?.dockerDefaults.build ?? false,
-        forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
-        renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
-        pull: meta?.dockerDefaults.pull ?? false,
-        removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
-      });
-      setDockerFlagIndex(0);
-      goToDockerRebuild(name);
-    },
+    goToDockerRebuild: openDockerRebuild,
   };
 
   // Tasks view input (transitional — superseded by the Phase 4 picker overlay).

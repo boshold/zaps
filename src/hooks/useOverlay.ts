@@ -14,6 +14,8 @@ interface OverlayApi {
   push: (overlay: OverlayDescriptor) => void;
   /** Pop the top overlay (also bound to Esc by `OverlayHost`). */
   pop: () => void;
+  /** Empty the whole stack at once (e.g. force-close every overlay on disconnect). */
+  clear: () => void;
   /** The current top overlay, or null when the stack is empty. */
   top: OverlayDescriptor | null;
   /** `stack.length > 0` — true while any overlay is open. */
@@ -31,6 +33,7 @@ const NOOP_OVERLAY: OverlayApi = {
   stack: [],
   push: () => undefined,
   pop: () => undefined,
+  clear: () => undefined,
   top: null,
   isOpen: false,
   isTop: () => false,
@@ -52,17 +55,22 @@ function OverlayProvider({ children }: { children: ReactNode }) {
     setStack((prev) => (prev.length > 0 ? prev.slice(0, -1) : prev));
   }, []);
 
+  const clear = useCallback(() => {
+    setStack((prev) => (prev.length > 0 ? [] : prev));
+  }, []);
+
   const value = useMemo<OverlayApi>(() => {
     const top = stack.length > 0 ? stack[stack.length - 1] : null;
     return {
       stack,
       push,
       pop,
+      clear,
       top,
       isOpen: stack.length > 0,
       isTop: (id) => top?.id === id,
     };
-  }, [stack, push, pop]);
+  }, [stack, push, pop, clear]);
 
   return createElement(OverlayContext.Provider, { value }, children);
 }
