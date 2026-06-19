@@ -203,23 +203,33 @@ export class Session {
       });
     });
 
-    manager.on("taskStart", (taskKey: string, taskName: string) => {
-      this.pushTaskRecord({ taskKey, taskName, result: "running", timestamp: Date.now() });
+    manager.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
+      this.pushTaskRecord({
+        runId,
+        taskKey,
+        taskName,
+        result: "running",
+        timestamp: Date.now(),
+        mode: "background",
+      });
       this.broadcast({
         session: this.id,
         event: "task.start",
-        data: { key: taskKey, name: taskName },
+        data: { key: taskKey, name: taskName, runId },
       });
     });
 
-    manager.on("taskComplete", (taskKey: string, taskName: string, result: "success" | "error") => {
-      this.pushTaskRecord({ taskKey, taskName, result, timestamp: Date.now() });
-      this.broadcast({
-        session: this.id,
-        event: "task.complete",
-        data: { key: taskKey, name: taskName, result },
-      });
-    });
+    manager.on(
+      "taskComplete",
+      (runId: string, taskKey: string, taskName: string, result: "success" | "error") => {
+        this.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now() });
+        this.broadcast({
+          session: this.id,
+          event: "task.complete",
+          data: { key: taskKey, name: taskName, result, runId },
+        });
+      },
+    );
   }
 
   public pushTaskRecord(record: TaskRunRecord): void {
@@ -230,8 +240,12 @@ export class Session {
       }
       return;
     }
+    // Match the in-flight record by runId so concurrent runs of the same task
+    // Key resolve independently (Q12). taskKey is kept as a secondary guard for
+    // The manager/hook path, where a run's sub-task completions share its runId
+    // But must not replace the top-level "running" record.
     const runningIdx = this.taskHistory.findIndex(
-      (r) => r.taskKey === record.taskKey && r.result === "running",
+      (r) => r.runId === record.runId && r.taskKey === record.taskKey && r.result === "running",
     );
     if (runningIdx !== -1) {
       this.taskHistory[runningIdx] = record;

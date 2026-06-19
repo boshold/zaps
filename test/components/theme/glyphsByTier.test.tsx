@@ -40,8 +40,8 @@ const STATUSES: ServiceStatus[] = [
 ];
 
 const HISTORY: TaskRunRecord[] = [
-  { taskKey: "a", taskName: "Migrate", result: "success", timestamp: 1 },
-  { taskKey: "b", taskName: "Build", result: "error", timestamp: 2 },
+  { runId: "a", taskKey: "a", taskName: "Migrate", result: "success", timestamp: 1 },
+  { runId: "b", taskKey: "b", taskName: "Build", result: "error", timestamp: 2 },
 ];
 
 function renderDashboard(tier: IconTier, configStale = false) {

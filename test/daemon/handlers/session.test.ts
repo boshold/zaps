@@ -613,9 +613,22 @@ describe("session handlers", () => {
         params: { key: "build" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
-      expect(session.pushTaskRecord).toHaveBeenCalled();
-      expect(session.broadcast).toHaveBeenCalled();
+      const result = res.result as { success: boolean; runId: string };
+      expect(result.success).toBe(true);
+      // The run's id is returned for correlation, and threaded into the records.
+      expect(result.runId).toEqual(expect.any(String));
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "running", mode: "background" }),
+      );
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "success" }),
+      );
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.start",
+          data: expect.objectContaining({ runId: result.runId }),
+        }),
+      );
     });
 
     it("runs popup task non-interactively", async () => {
@@ -637,7 +650,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
     });
 
     it("runs popup task with function command", async () => {
@@ -659,7 +672,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith("dynamic-cmd", expect.anything());
     });
 
@@ -682,7 +695,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: false });
+      expect(res.result).toMatchObject({ success: false });
     });
 
     it("runs task and invokes onLine/onProgress callbacks", async () => {
@@ -710,7 +723,7 @@ describe("session handlers", () => {
         params: { key: "build" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       // Verify socket received line and progress events
       expect(socket.write).toHaveBeenCalled();
       const writes = socket.write.mock.calls.map((c: string[]) => JSON.parse(c[0]));
@@ -744,7 +757,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: false });
+      expect(res.result).toMatchObject({ success: false });
     });
 
     it("runs popup task with custom cwd", async () => {
@@ -766,7 +779,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({ cwd: "/custom" }),
@@ -797,7 +810,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({ env: { NODE_ENV: "test" } }),

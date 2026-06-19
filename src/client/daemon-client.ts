@@ -10,8 +10,8 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 export interface DaemonClientEvents {
   "service.stateChange": (name: string, status: ServiceStatus) => void;
   "log.lines": (service: string, lines: string[]) => void;
-  "task.start": (key: string, name: string) => void;
-  "task.complete": (key: string, name: string, result: "success" | "error") => void;
+  "task.start": (key: string, name: string, runId?: string) => void;
+  "task.complete": (key: string, name: string, result: "success" | "error", runId?: string) => void;
   "session.destroyed": () => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
   "session.configStale": () => void;
@@ -148,7 +148,7 @@ export class DaemonClient extends EventEmitter {
       onLine?: (line: string) => void;
       onProgress?: (taskKey: string, result: "success" | "error") => void;
     },
-  ): Promise<{ success: boolean }> {
+  ): Promise<{ success: boolean; runId?: string }> {
     const res = await ipcStream(
       this.socketPath,
       "tasks.run",
@@ -167,7 +167,7 @@ export class DaemonClient extends EventEmitter {
     if (res.error) {
       throw new Error(res.error);
     }
-    return res.result as { success: boolean };
+    return res.result as { success: boolean; runId?: string };
   }
 
   // --- Internal ---
@@ -188,11 +188,11 @@ export class DaemonClient extends EventEmitter {
         break;
       }
       case "task.start": {
-        this.emit("task.start", data.key, data.name);
+        this.emit("task.start", data.key, data.name, data.runId);
         break;
       }
       case "task.complete": {
-        this.emit("task.complete", data.key, data.name, data.result);
+        this.emit("task.complete", data.key, data.name, data.result, data.runId);
         break;
       }
       case "session.destroyed": {

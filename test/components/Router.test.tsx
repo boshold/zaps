@@ -640,6 +640,35 @@ describe("Router", () => {
     expect(lastFrame()).toBeDefined();
   });
 
+  it("keeps the top-level running record when a dep-graph completion shares its runId", async () => {
+    // Manager/hook path: one task.start for the top key, then a dep of the graph
+    // Completes carrying the SAME runId. The dep must prepend as its own row and
+    // NOT clobber the still-running top-level record (mirrors session matching).
+    const client = createMockClient();
+    const { lastFrame } = renderRouter({ client });
+    client.emit("task.start", "build", "BuildTopLevel", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    client.emit("task.complete", "lint", "LintDep", "success", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    const frame = lastFrame() ?? "";
+    // Top-level "BuildTopLevel" is still shown as running (not relabeled to the dep).
+    expect(frame).toContain("BuildTopLevel");
+    expect(frame).toContain("running");
+    // The dep appears as its own completed row.
+    expect(frame).toContain("LintDep");
+
+    // Top-level completion now resolves the running record.
+    client.emit("task.complete", "build", "BuildTopLevel", "success", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(lastFrame() ?? "").toContain("BuildTopLevel");
+  });
+
   // ── ready gate with autoStart ────────────────────────────────
 
   describe("autoStart ready gate", () => {

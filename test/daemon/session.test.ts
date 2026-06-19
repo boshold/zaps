@@ -128,50 +128,115 @@ describe("Session", () => {
     );
   });
 
-  it("forwards taskStart events", () => {
+  it("forwards taskStart events with runId", () => {
     const broadcastSpy = vi.spyOn(session, "broadcast");
-    manager.emit("taskStart", "build", "Build");
+    manager.emit("taskStart", "run_1", "build", "Build");
     expect(broadcastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task.start",
-        data: { key: "build", name: "Build" },
+        data: { key: "build", name: "Build", runId: "run_1" },
       }),
     );
   });
 
-  it("forwards taskComplete events", () => {
+  it("forwards taskComplete events with runId", () => {
     const broadcastSpy = vi.spyOn(session, "broadcast");
-    manager.emit("taskComplete", "build", "Build", "success");
+    manager.emit("taskComplete", "run_1", "build", "Build", "success");
     expect(broadcastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "task.complete",
-        data: { key: "build", name: "Build", result: "success" },
+        data: { key: "build", name: "Build", result: "success", runId: "run_1" },
       }),
     );
+  });
+
+  it("correlates a manager run's start→complete into one record by runId", () => {
+    manager.emit("taskStart", "run_1", "build", "Build");
+    expect(session.taskHistory).toHaveLength(1);
+    expect(session.taskHistory[0]).toMatchObject({ runId: "run_1", result: "running" });
+    manager.emit("taskComplete", "run_1", "build", "Build", "success");
+    expect(session.taskHistory).toHaveLength(1);
+    expect(session.taskHistory[0]).toMatchObject({ runId: "run_1", result: "success" });
   });
 
   describe("pushTaskRecord", () => {
     it("adds running records to front", () => {
-      session.pushTaskRecord({ taskKey: "t1", taskName: "T1", result: "running", timestamp: 1 });
+      session.pushTaskRecord({
+        runId: "r1",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "running",
+        timestamp: 1,
+      });
       expect(session.taskHistory).toHaveLength(1);
       expect(session.taskHistory[0].result).toBe("running");
     });
 
-    it("replaces matching running record on completion", () => {
-      session.pushTaskRecord({ taskKey: "t1", taskName: "T1", result: "running", timestamp: 1 });
-      session.pushTaskRecord({ taskKey: "t1", taskName: "T1", result: "success", timestamp: 2 });
+    it("replaces the matching running record (by runId) on completion", () => {
+      session.pushTaskRecord({
+        runId: "r1",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "running",
+        timestamp: 1,
+      });
+      session.pushTaskRecord({
+        runId: "r1",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "success",
+        timestamp: 2,
+      });
       expect(session.taskHistory).toHaveLength(1);
       expect(session.taskHistory[0].result).toBe("success");
     });
 
+    it("keeps concurrent same-key runs independent via distinct runIds", () => {
+      // Two in-flight runs of the same task key.
+      session.pushTaskRecord({
+        runId: "rA",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "running",
+        timestamp: 1,
+      });
+      session.pushTaskRecord({
+        runId: "rB",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "running",
+        timestamp: 2,
+      });
+      expect(session.taskHistory).toHaveLength(2);
+
+      // Completing rA must resolve only rA; rB stays running.
+      session.pushTaskRecord({
+        runId: "rA",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "error",
+        timestamp: 3,
+      });
+      expect(session.taskHistory).toHaveLength(2);
+      const byRun = Object.fromEntries(session.taskHistory.map((r) => [r.runId, r.result]));
+      expect(byRun).toEqual({ rA: "error", rB: "running" });
+    });
+
     it("prepends if no matching running record found", () => {
-      session.pushTaskRecord({ taskKey: "t1", taskName: "T1", result: "success", timestamp: 1 });
+      session.pushTaskRecord({
+        runId: "r1",
+        taskKey: "t1",
+        taskName: "T1",
+        result: "success",
+        timestamp: 1,
+      });
       expect(session.taskHistory).toHaveLength(1);
     });
 
     it("caps at 50 records", () => {
       for (let i = 0; i < 55; i += 1) {
         session.pushTaskRecord({
+          runId: `r${i}`,
           taskKey: `t${i}`,
           taskName: `T${i}`,
           result: "running",
@@ -184,6 +249,7 @@ describe("Session", () => {
     it("caps non-running records at 50 when no matching running entry", () => {
       for (let i = 0; i < 55; i += 1) {
         session.pushTaskRecord({
+          runId: `r${i}`,
           taskKey: `t${i}`,
           taskName: `T${i}`,
           result: "success",

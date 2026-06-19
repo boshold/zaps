@@ -285,10 +285,10 @@ describe("DaemonClient", () => {
       eventHandler({
         session: "sess1",
         event: "task.start",
-        data: { key: "build", name: "Build" },
+        data: { key: "build", name: "Build", runId: "run_1" },
       });
 
-      expect(spy).toHaveBeenCalledWith("build", "Build");
+      expect(spy).toHaveBeenCalledWith("build", "Build", "run_1");
     });
 
     it("routes task.complete", () => {
@@ -299,10 +299,10 @@ describe("DaemonClient", () => {
       eventHandler({
         session: "sess1",
         event: "task.complete",
-        data: { key: "build", name: "Build", result: "success" },
+        data: { key: "build", name: "Build", result: "success", runId: "run_1" },
       });
 
-      expect(spy).toHaveBeenCalledWith("build", "Build", "success");
+      expect(spy).toHaveBeenCalledWith("build", "Build", "success", "run_1");
     });
 
     it("routes session.destroyed", () => {

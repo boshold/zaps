@@ -67,9 +67,9 @@ describe("Dashboard overflow (v1 blank repro)", () => {
       ...Array.from({ length: 15 }, (_, i) => makeStatus(`svc-${String(i)}`)),
     ];
     const taskHistory: TaskRunRecord[] = [
-      { taskKey: "a", taskName: "Migrate", result: "success", timestamp: 1 },
-      { taskKey: "b", taskName: "Build", result: "error", timestamp: 2 },
-      { taskKey: "c", taskName: "Seed", result: "success", timestamp: 3 },
+      { runId: "a", taskKey: "a", taskName: "Migrate", result: "success", timestamp: 1 },
+      { runId: "b", taskKey: "b", taskName: "Build", result: "error", timestamp: 2 },
+      { runId: "c", taskKey: "c", taskName: "Seed", result: "success", timestamp: 3 },
     ];
 
     const { lastFrame } = render(

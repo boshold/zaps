@@ -132,9 +132,13 @@ export function Router({
       if (record.result === "running") {
         return [record, ...prev].slice(0, MAX_HISTORY);
       }
-      // Replace matching running entry, or prepend if not found
+      // Replace the matching in-flight entry by runId (so concurrent same-key
+      // Runs resolve independently), or prepend if not found. taskKey is a
+      // Secondary guard mirroring session.pushTaskRecord: on the manager/hook
+      // Path a run's dep-graph completions share the run's runId, and must not
+      // Clobber the top-level "running" record (they prepend as their own rows).
       const runningIdx = prev.findIndex(
-        (r) => r.taskKey === record.taskKey && r.result === "running",
+        (r) => r.runId === record.runId && r.taskKey === record.taskKey && r.result === "running",
       );
       if (runningIdx !== -1) {
         const next = [...prev];
@@ -145,14 +149,27 @@ export function Router({
     });
   }
 
-  // Subscribe to daemon task events
+  // Subscribe to daemon task events. `runId` correlates start↔complete; a missing
+  // One (older daemon) falls back to the task key so behavior degrades to the
+  // Pre-runId single-flight matching rather than breaking.
   useEffect(() => {
-    function handleTaskStart(taskKey: string, taskName: string) {
-      onTaskComplete({ taskKey, taskName, result: "running", timestamp: Date.now() });
+    function handleTaskStart(taskKey: string, taskName: string, runId?: string) {
+      onTaskComplete({
+        runId: runId ?? taskKey,
+        taskKey,
+        taskName,
+        result: "running",
+        timestamp: Date.now(),
+      });
       setRunningTask(taskKey);
     }
-    function handleTaskComplete(taskKey: string, taskName: string, result: "success" | "error") {
-      onTaskComplete({ taskKey, taskName, result, timestamp: Date.now() });
+    function handleTaskComplete(
+      taskKey: string,
+      taskName: string,
+      result: "success" | "error",
+      runId?: string,
+    ) {
+      onTaskComplete({ runId: runId ?? taskKey, taskKey, taskName, result, timestamp: Date.now() });
       setRunningTask((cur) => (cur === taskKey ? null : cur));
     }
     client.on("task.start", handleTaskStart);

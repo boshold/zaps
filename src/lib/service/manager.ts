@@ -14,6 +14,7 @@ import {
 } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
+import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
 import { DetachedRunner } from "./detached.js";
@@ -315,7 +316,10 @@ export class ServiceManager extends EventEmitter {
         if (!tasks[key]) {
           throw new Error(`Unknown task: ${key}`);
         }
-        this.emit("taskStart", key, tasks[key]?.name ?? key);
+        // One runId for the whole run; every event it emits carries it so the
+        // Session can correlate history/output even across concurrent runs (Q12).
+        const runId = newRunId();
+        this.emit("taskStart", runId, key, tasks[key]?.name ?? key);
         const visited = new Set<string>();
         const results = new Map<string, "success" | "error">();
         const ok = await runTaskWithDeps(
@@ -326,7 +330,7 @@ export class ServiceManager extends EventEmitter {
             projectDir: config.projectDir,
             services: config.project.services,
             onProgress: (taskKey, result) => {
-              this.emit("taskComplete", taskKey, tasks[taskKey]?.name ?? taskKey, result);
+              this.emit("taskComplete", runId, taskKey, tasks[taskKey]?.name ?? taskKey, result);
             },
           },
           visited,
@@ -1467,7 +1471,14 @@ export class ServiceManager extends EventEmitter {
 
 export interface ServiceManagerEvents {
   stateChange: (name: string, status: ServiceStatus) => void;
-  taskComplete: (taskKey: string, taskName: string, result: "success" | "error") => void;
+  /** Run started; `runId` correlates this run's events/history (Q12). */
+  taskStart: (runId: string, taskKey: string, taskName: string) => void;
+  taskComplete: (
+    runId: string,
+    taskKey: string,
+    taskName: string,
+    result: "success" | "error",
+  ) => void;
   /** New detached-child log lines — the session appends + broadcasts them (E4). */
   logLines: (name: string, lines: string[]) => void;
 }

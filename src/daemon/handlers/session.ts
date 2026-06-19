@@ -9,6 +9,7 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
 function send(socket: Socket, msg: object): void {
@@ -285,12 +286,23 @@ export const sessionHandlers: Record<
     const taskName = task.name;
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
+    // One runId per run correlates this run's start/complete + (Phase 5) output,
+    // So concurrent runs of the same key stay independent (Q12).
+    const runId = newRunId();
+
     // Record + broadcast task.start to all subscribers
-    session.pushTaskRecord({ taskKey: key, taskName, result: "running", timestamp: Date.now() });
+    session.pushTaskRecord({
+      runId,
+      taskKey: key,
+      taskName,
+      result: "running",
+      timestamp: Date.now(),
+      mode: "background",
+    });
     session.broadcast({
       session: session.id,
       event: "task.start",
-      data: { key, name: taskName },
+      data: { key, name: taskName, runId },
     });
 
     let success = false;
@@ -328,6 +340,7 @@ export const sessionHandlers: Record<
 
     // Record + broadcast task.complete to all subscribers
     session.pushTaskRecord({
+      runId,
       taskKey: key,
       taskName,
       result: success ? "success" : "error",
@@ -336,10 +349,10 @@ export const sessionHandlers: Record<
     session.broadcast({
       session: session.id,
       event: "task.complete",
-      data: { key, name: taskName, result: success ? "success" : "error" },
+      data: { key, name: taskName, result: success ? "success" : "error", runId },
     });
 
-    return ipcOk(req.id, { success });
+    return ipcOk(req.id, { success, runId });
   },
 
   async "exec-service.resolve"(req, store) {

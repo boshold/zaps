@@ -134,12 +134,19 @@ describe("Dashboard", () => {
     const statuses = [makeStatus("db")];
     const taskHistory: TaskRunRecord[] = [
       {
+        runId: "migrate",
         taskKey: "migrate",
         taskName: "Prisma Migrate",
         result: "success",
         timestamp: Date.now() - 120_000,
       },
-      { taskKey: "build", taskName: "Build", result: "error", timestamp: Date.now() - 300_000 },
+      {
+        runId: "build",
+        taskKey: "build",
+        taskName: "Build",
+        result: "error",
+        timestamp: Date.now() - 300_000,
+      },
     ];
 
     const { lastFrame } = renderDashboard({ statuses, taskHistory });
@@ -191,9 +198,9 @@ describe("Dashboard", () => {
     // Overflowing the pane and blanking the alternate-screen frame.
     const statuses = Array.from({ length: 14 }, (_, i) => makeStatus(`svc-${String(i)}`));
     const taskHistory: TaskRunRecord[] = [
-      { taskKey: "a", taskName: "Task A", result: "success", timestamp: Date.now() },
-      { taskKey: "b", taskName: "Task B", result: "success", timestamp: Date.now() },
-      { taskKey: "c", taskName: "Task C", result: "success", timestamp: Date.now() },
+      { runId: "a", taskKey: "a", taskName: "Task A", result: "success", timestamp: Date.now() },
+      { runId: "b", taskKey: "b", taskName: "Task B", result: "success", timestamp: Date.now() },
+      { runId: "c", taskKey: "c", taskName: "Task C", result: "success", timestamp: Date.now() },
     ];
 
     const { lastFrame: withoutHistory } = renderDashboard({ statuses });
