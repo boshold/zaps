@@ -3,6 +3,7 @@ import { useApp as useInkApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DockerConfig } from "#src/config/types.js";
+import { useConnection } from "#src/hooks/useConnection.js";
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
@@ -14,6 +15,7 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
+import { DisconnectBanner } from "./DisconnectBanner.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
 import { LogView } from "./LogView.js";
@@ -288,7 +290,10 @@ export function Router({
     goToDockerRebuild,
   } = useRouter();
   const { client, paneMap, tasks, servicesMeta } = useZaps();
-  const statuses = useServices(client, initialStatuses);
+  // First consumer of the daemon disconnect/connected surface. While offline the
+  // Poll is gated (deliberate freeze of last-known state, not a silent catch).
+  const { connected, retry } = useConnection(client);
+  const statuses = useServices(client, initialStatuses, connected);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Sort once here (unavailable services to the bottom) and feed the SAME array to
@@ -411,6 +416,15 @@ export function Router({
         return;
       }
 
+      // While disconnected the UI is inert except `r` (manual re-attach) and `q`
+      // (handled above). No auto-reconnect — `r` re-invokes client.connect().
+      if (!connected) {
+        if (input === "r") {
+          retry();
+        }
+        return;
+      }
+
       // Ctrl+d: shut down — destroy session from any view
       if (key.ctrl && input === "d") {
         if (globalBusyRef.current) {
@@ -508,6 +522,19 @@ export function Router({
 
   if (!ready) {
     return null;
+  }
+
+  // Disconnected: show the last-known dashboard with a sticky banner regardless
+  // Of which view was active, so the lost connection is never a silent blank.
+  if (!connected) {
+    return (
+      <Dashboard
+        statuses={sortedStatuses}
+        selectedIndex={dashboardSel.index}
+        taskHistory={taskHistory}
+        banner={<DisconnectBanner />}
+      />
+    );
   }
 
   // Conditional render — pass state as props

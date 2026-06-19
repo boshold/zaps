@@ -4,7 +4,11 @@ import type { DaemonClient } from "#src/client/daemon-client.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
-export function useServices(client: DaemonClient, initialStatuses: ServiceStatus[]) {
+export function useServices(
+  client: DaemonClient,
+  initialStatuses: ServiceStatus[],
+  connected = true,
+) {
   const [statuses, setStatuses] = useState<ServiceStatus[]>(initialStatuses);
   // Bumped on every event-driven update. A 2s poll captures the epoch when it
   // Starts and discards its response if an event landed meanwhile, so a slow
@@ -37,8 +41,13 @@ export function useServices(client: DaemonClient, initialStatuses: ServiceStatus
     };
   }, [client]);
 
-  // Poll every 2s for port updates (ports may change without state events)
+  // Poll every 2s for port updates (ports may change without state events).
+  // While disconnected we deliberately stop polling — last-known state is frozen
+  // (and dimmed behind the banner) rather than the poll silently failing every 2s.
   useEffect(() => {
+    if (!connected) {
+      return;
+    }
     const id = setInterval(() => {
       const startEpoch = epochRef.current;
       void (async () => {
@@ -56,7 +65,7 @@ export function useServices(client: DaemonClient, initialStatuses: ServiceStatus
     return () => {
       clearInterval(id);
     };
-  }, [client]);
+  }, [client, connected]);
 
   return statuses;
 }

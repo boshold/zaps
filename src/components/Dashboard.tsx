@@ -1,4 +1,5 @@
 import { Box } from "ink";
+import type { ReactNode } from "react";
 
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
@@ -18,9 +19,11 @@ interface DashboardProps {
   statuses: ServiceStatus[];
   selectedIndex: number;
   taskHistory: TaskRunRecord[];
+  /** Optional sticky top slot — e.g. the disconnect banner when offline. */
+  banner?: ReactNode;
 }
 
-export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardProps) {
+export function Dashboard({ statuses, selectedIndex, taskHistory, banner }: DashboardProps) {
   const { projectName, configStale } = useZaps();
   const { cols, compact } = useDimensions();
   const width = Math.min(cols, 100);
@@ -31,6 +34,7 @@ export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardPro
   // Measurement, never a manual row budget (the v1 chromeRows blanking bug).
   const header = (
     <Box flexDirection="column">
+      {banner}
       <Header
         projectName={projectName}
         statuses={statuses}
