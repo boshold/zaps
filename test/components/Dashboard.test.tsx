@@ -6,8 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { Dashboard } from "../../src/components/Dashboard.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
+import { resolveUiConfig } from "../../src/config/index.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
+
+// Keep these single-column assertions in the narrow layout; the wide detail pane
+// Has its own dedicated test (DetailPane.test).
+const NARROW_UI = resolveUiConfig({ wideThreshold: 999 });
 
 function makeStatus(
   name: string,
@@ -57,6 +62,7 @@ function renderDashboard(opts: {
       projectName={opts.projectName ?? "test-project"}
       tasks={[]}
       servicesMeta={[]}
+      ui={NARROW_UI}
     >
       <Dashboard
         statuses={opts.statuses}

@@ -93,6 +93,9 @@ function renderApp(opts: {
         servicesMeta={opts.servicesMeta ?? []}
         initialStatuses={statuses}
         initialTaskHistory={[]}
+        // Keep these single-column assertions in the narrow layout (the detail
+        // Pane has its own dedicated tests).
+        ui={{ wideThreshold: 999 }}
       />,
     ),
   };

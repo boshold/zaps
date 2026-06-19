@@ -1,6 +1,9 @@
+import { Box } from "ink";
+
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { DetailPane } from "./dashboard/DetailPane.js";
 import { useViewportSize } from "./layout/ViewportContext.js";
 import { ServiceList } from "./ServiceList.js";
 import { EmptyState } from "./states/EmptyState.js";
@@ -11,6 +14,8 @@ interface DashboardServiceListProps {
   statuses: ServiceStatus[];
   selectedIndex: number;
   cols: number;
+  /** Width of the right-hand detail pane; 0 hides it (narrow layout). */
+  detailWidth?: number;
 }
 
 /**
@@ -23,7 +28,12 @@ interface DashboardServiceListProps {
  * of a blank body: "no services configured" when the config has none, otherwise
  * "starting services" (attached, nothing reported yet).
  */
-export function DashboardServiceList({ statuses, selectedIndex, cols }: DashboardServiceListProps) {
+export function DashboardServiceList({
+  statuses,
+  selectedIndex,
+  cols,
+  detailWidth = 0,
+}: DashboardServiceListProps) {
   const { height } = useViewportSize();
   const { servicesMeta } = useZaps();
   const { icon } = useIcons();
@@ -40,7 +50,21 @@ export function DashboardServiceList({ statuses, selectedIndex, cols }: Dashboar
     );
   }
 
-  return (
+  const list = (
     <ServiceList statuses={statuses} selectedIndex={selectedIndex} maxRows={height} cols={cols} />
   );
+
+  // Wide layout: list on the left, selected-service detail on the right.
+  if (detailWidth > 0) {
+    return (
+      <Box flexDirection="row">
+        <Box width={cols} flexShrink={0} flexDirection="column">
+          {list}
+        </Box>
+        <DetailPane status={statuses[selectedIndex]} width={detailWidth} />
+      </Box>
+    );
+  }
+
+  return list;
 }

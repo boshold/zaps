@@ -40,10 +40,8 @@ export function App({
 }: AppProps) {
   // Resolve UI config + icon tier once at the root (env override wins over config).
   // Memoized for stable context identity across re-renders.
-  const iconTheme = useMemo(
-    () => createIconTheme(resolveIconTier(resolveUiConfig(ui).icons)),
-    [ui],
-  );
+  const resolvedUi = useMemo(() => resolveUiConfig(ui), [ui]);
+  const iconTheme = useMemo(() => createIconTheme(resolveIconTier(resolvedUi.icons)), [resolvedUi]);
 
   return (
     <IconThemeProvider value={iconTheme}>
@@ -54,6 +52,7 @@ export function App({
         tasks={tasks}
         servicesMeta={servicesMeta}
         configStale={configStale}
+        ui={resolvedUi}
       >
         <Router
           initialStatuses={initialStatuses}
