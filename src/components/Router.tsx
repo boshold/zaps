@@ -4,18 +4,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { DockerConfig } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
+import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
-import { useOverlay } from "#src/hooks/useOverlay.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
 import { useServices } from "#src/hooks/useServices.js";
 import { useZaps } from "#src/hooks/useZaps.js";
-import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
+import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
 import { DisconnectBanner } from "./DisconnectBanner.js";
 import type { DockerFlagKey } from "./DockerRebuildView.js";
 import { DOCKER_REBUILD_FLAGS, DockerRebuildPopup } from "./DockerRebuildView.js";
@@ -24,147 +23,6 @@ import type { TaskRunRecord } from "./TaskRunRecord.js";
 import { TasksView } from "./TasksView.js";
 
 const MAX_HISTORY = 50;
-
-// eslint-disable-next-line complexity -- Flat key-dispatch handler, inherently branchy
-function handleDashboardInput(
-  input: string,
-  key: Key,
-  ctx: {
-    statuses: ServiceStatus[];
-    index: number;
-    busyServices: React.RefObject<Set<string>>;
-    moveUp: () => void;
-    moveDown: () => void;
-    restart: (name: string) => Promise<void>;
-    toggle: (name: string) => Promise<void>;
-    restartAll: () => Promise<void>;
-    reloadConfig: () => Promise<void>;
-    goToLogs: (name: string) => void;
-    goToTasks: () => void;
-    goToDockerRebuild: (name: string) => void;
-    destroySession: () => void;
-    paneMap: Record<string, string>;
-  },
-) {
-  if (key.upArrow || input === "k") {
-    ctx.moveUp();
-  }
-  if (key.downArrow || input === "j") {
-    ctx.moveDown();
-  }
-  const selected = ctx.statuses[ctx.index];
-  const selectedName = selected?.name;
-  const isBusy = selectedName ? ctx.busyServices.current.has(selectedName) : true;
-  const isUnavailable = selected?.state === "unavailable";
-
-  if (input === "r" && selected && !isBusy && !isUnavailable) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .restart(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
-  }
-  if (input === "s" && selected && !isBusy && !isUnavailable) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .toggle(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
-  }
-  if (input === "l" && selected && !isUnavailable) {
-    ctx.goToLogs(selectedName);
-  }
-  const selectedUrl = selected?.url;
-  if (input === "o" && selectedUrl) {
-    void openInBrowser(selectedUrl);
-  }
-  if (input === "R" && selected?.isDocker && !isUnavailable) {
-    ctx.goToDockerRebuild(selectedName);
-  }
-  // Detached services have no pane, so zoom/edit-capture are disabled (E4).
-  if (input === "z" && selected && !isUnavailable && !selected.isDetached) {
-    const paneId = ctx.paneMap[selectedName];
-    if (paneId) {
-      void zoomPane(paneId);
-    }
-  }
-  if (input === "Z") {
-    const tuiPaneId = ctx.paneMap["@tui"];
-    if (tuiPaneId) {
-      void zoomPane(tuiPaneId);
-    }
-  }
-  if (input === "E" && selected && !isBusy && !isUnavailable && !selected.isDetached) {
-    const paneId = ctx.paneMap[selectedName];
-    if (paneId) {
-      ctx.busyServices.current.add(selectedName);
-      void editPaneCapture(paneId, selectedName)
-        .catch(() => {
-          /* IPC error — ignore */
-        })
-        .finally(() => {
-          ctx.busyServices.current.delete(selectedName);
-        });
-    }
-  }
-  if (input === "d") {
-    ctx.destroySession();
-    return;
-  }
-  if (input === "t") {
-    ctx.goToTasks();
-  }
-  if (input === "a" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .restartAll()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
-  }
-  if (input === "c" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .reloadConfig()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
-  }
-}
-
-function handleLogsInput(
-  input: string,
-  key: Key,
-  ctx: { goToDashboard: () => void; scrollUp: () => void; scrollDown: () => void },
-) {
-  if (key.escape) {
-    ctx.goToDashboard();
-  }
-  if (key.upArrow || input === "k") {
-    ctx.scrollUp();
-  }
-  if (key.downArrow || input === "j") {
-    ctx.scrollDown();
-  }
-}
 
 function handleTasksInput(
   input: string,
@@ -294,9 +152,6 @@ export function Router({
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
   const { connected, retry } = useConnection(client);
-  // When an overlay is open the base view goes inert — input is owned by the top
-  // Overlay (and Esc-to-pop by the host), so dashboard/logs/tasks keys are gated.
-  const { isOpen: overlayOpen } = useOverlay();
   const statuses = useServices(client, initialStatuses, connected);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
@@ -406,10 +261,31 @@ export function Router({
     t.shortcut ? [{ shortcut: t.shortcut, name: t.name }] : [],
   );
 
+  // Per-consumer input gating. Exactly one base view is active at a time; the top
+  // Overlay (none yet) would own input instead. Each view owns its own useInput.
+  const flags = useInputRouter(view, { ready, connected });
+
+  // Tear down the session once, shared by Ctrl-D (global) and `d` (dashboard).
+  function destroySession() {
+    if (globalBusyRef.current) {
+      return;
+    }
+    globalBusyRef.current = true;
+    client
+      .destroySession()
+      .catch(() => {
+        /* Graceful shutdown */
+      })
+      .finally(() => {
+        client.disconnect();
+        exit();
+      });
+  }
+
+  // Global keys — work from any base view, survive a disconnect, yield to overlays.
   useInput(
     (input, key) => {
-      // Q / ctrl+c: detach from any view (services keep running)
-      // Note: input is gated below by { isActive: ready } so splash keypresses are ignored (F5).
+      // Q / ctrl+c: detach from any view (services keep running).
       if (input === "q" || (key.ctrl && input === "c")) {
         if (globalBusyRef.current) {
           return;
@@ -419,96 +295,72 @@ export function Router({
         exit();
         return;
       }
-
-      // While disconnected the UI is inert except `r` (manual re-attach) and `q`
-      // (handled above). No auto-reconnect — `r` re-invokes client.connect().
+      // While disconnected the UI is inert except `r` (manual re-attach). No
+      // Auto-reconnect — `r` re-invokes client.connect().
       if (!connected) {
         if (input === "r") {
           retry();
         }
         return;
       }
-
-      // Ctrl+d: shut down — destroy session from any view
+      // Ctrl+d: shut down — destroy session from any view.
       if (key.ctrl && input === "d") {
-        if (globalBusyRef.current) {
-          return;
-        }
-        globalBusyRef.current = true;
-        client
-          .destroySession()
-          .catch(() => {
-            /* Graceful shutdown */
-          })
-          .finally(() => {
-            client.disconnect();
-            exit();
-          });
-        return;
+        destroySession();
       }
+    },
+    { isActive: flags.global },
+  );
 
-      if (view === "dashboard") {
-        handleDashboardInput(input, key, {
-          statuses: sortedStatuses,
-          index: dashboardSel.index,
-          busyServices,
-          moveUp: dashboardSel.moveUp,
-          moveDown: dashboardSel.moveDown,
-          restart,
-          toggle,
-          restartAll,
-          reloadConfig: async () => client.reloadConfig(),
-          goToLogs,
-          goToTasks,
-          destroySession: () => {
-            if (globalBusyRef.current) {
-              return;
-            }
-            globalBusyRef.current = true;
-            client
-              .destroySession()
-              .catch(() => {
-                /* Graceful shutdown */
-              })
-              .finally(() => {
-                client.disconnect();
-                exit();
-              });
-          },
-          paneMap,
-          goToDockerRebuild: (name: string) => {
-            const meta = svcMetaMap.get(name);
-            setDockerFlags({
-              build: meta?.dockerDefaults.build ?? false,
-              forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
-              renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
-              pull: meta?.dockerDefaults.pull ?? false,
-              removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
-            });
-            setDockerFlagIndex(0);
-            goToDockerRebuild(name);
-          },
-        });
-      }
+  // Dashboard input context — owned here, consumed by the Dashboard's own useInput.
+  const dashboardInput: DashboardInputContext = {
+    statuses: sortedStatuses,
+    index: dashboardSel.index,
+    busyServices,
+    moveUp: dashboardSel.moveUp,
+    moveDown: dashboardSel.moveDown,
+    restart,
+    toggle,
+    restartAll,
+    reloadConfig: async () => client.reloadConfig(),
+    goToLogs,
+    goToTasks,
+    destroySession,
+    paneMap,
+    goToDockerRebuild: (name: string) => {
+      const meta = svcMetaMap.get(name);
+      setDockerFlags({
+        build: meta?.dockerDefaults.build ?? false,
+        forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
+        renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
+        pull: meta?.dockerDefaults.pull ?? false,
+        removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
+      });
+      setDockerFlagIndex(0);
+      goToDockerRebuild(name);
+    },
+  };
 
-      if (view === "logs") {
-        handleLogsInput(input, key, { goToDashboard, scrollUp, scrollDown });
-      }
+  // Tasks view input (transitional — superseded by the Phase 4 picker overlay).
+  useInput(
+    (input, key) => {
+      handleTasksInput(input, key, {
+        tasks,
+        taskShortcuts,
+        taskCount: tasks.length,
+        setIndex: tasksSel.setIndex,
+        goToDashboard,
+        moveUp: tasksSel.moveUp,
+        moveDown: tasksSel.moveDown,
+        setRunTrigger,
+      });
+    },
+    { isActive: flags.tasks },
+  );
 
-      if (view === "tasks") {
-        handleTasksInput(input, key, {
-          tasks,
-          taskShortcuts,
-          taskCount: tasks.length,
-          setIndex: tasksSel.setIndex,
-          goToDashboard,
-          moveUp: tasksSel.moveUp,
-          moveDown: tasksSel.moveDown,
-          setRunTrigger,
-        });
-      }
-
-      if (view === "dockerRebuild" && dockerRebuildTarget) {
+  // Docker rebuild input (transitional — superseded by the T06 docker overlay).
+  useInput(
+    (input, key) => {
+      if (dockerRebuildTarget) {
         handleDockerRebuildInput(input, key, {
           flagIndex: dockerFlagIndex,
           setFlagIndex: setDockerFlagIndex,
@@ -521,7 +373,7 @@ export function Router({
         });
       }
     },
-    { isActive: ready && !overlayOpen },
+    { isActive: flags.dockerRebuild },
   );
 
   if (!ready) {
@@ -537,6 +389,8 @@ export function Router({
         selectedIndex={dashboardSel.index}
         taskHistory={taskHistory}
         banner={<DisconnectBanner />}
+        input={dashboardInput}
+        inputActive={flags.dashboard}
       />
     );
   }
@@ -549,6 +403,10 @@ export function Router({
         lines={logLines}
         autoScroll={logAutoScroll}
         offset={logOffset}
+        onBack={goToDashboard}
+        scrollUp={scrollUp}
+        scrollDown={scrollDown}
+        inputActive={flags.logs}
       />
     );
   }
@@ -570,6 +428,8 @@ export function Router({
         statuses={sortedStatuses}
         selectedIndex={dashboardSel.index}
         taskHistory={taskHistory}
+        input={dashboardInput}
+        inputActive={flags.dashboard}
       />
       {view === "dockerRebuild" && dockerRebuildTarget && (
         <DockerRebuildPopup

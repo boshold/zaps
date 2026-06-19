@@ -7,6 +7,8 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { ActionHints } from "./ActionHints.js";
 import { ColumnHeaders } from "./ColumnHeaders.js";
+import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
+import { useDashboardInput } from "./dashboard/useDashboardInput.js";
 import { DashboardServiceList } from "./DashboardServiceList.js";
 import { Header } from "./Header.js";
 import { HelpBar } from "./HelpBar.js";
@@ -28,12 +30,26 @@ interface DashboardProps {
   taskHistory: TaskRunRecord[];
   /** Optional sticky top slot — e.g. the disconnect banner when offline. */
   banner?: ReactNode;
+  /** Key-handler context; when present and `inputActive`, the dashboard owns input. */
+  input?: DashboardInputContext;
+  /** Whether the Router has routed input to the dashboard (false → inert). */
+  inputActive?: boolean;
 }
 
-export function Dashboard({ statuses, selectedIndex, taskHistory, banner }: DashboardProps) {
+export function Dashboard({
+  statuses,
+  selectedIndex,
+  taskHistory,
+  banner,
+  input,
+  inputActive = false,
+}: DashboardProps) {
   const { projectName, configStale, ui } = useZaps();
   const { cols, compact } = useDimensions();
   const selected = statuses[selectedIndex];
+
+  // The dashboard owns its own input (gated by the Router via `inputActive`).
+  useDashboardInput(input, inputActive);
 
   // Wide layout (Q2): on roomy terminals split the body into list + detail pane.
   // Detail pane ~38% clamped to [32, 50] cols; the list keeps the rest (min 48).

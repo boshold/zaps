@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
 
 import { useDimensions } from "#src/hooks/useDimensions.js";
 
@@ -12,11 +12,44 @@ export interface LogViewProps {
   lines: string[];
   autoScroll: boolean;
   offset: number;
+  /** Leave the full-screen log view (Esc). */
+  onBack?: () => void;
+  /** Scroll one line towards older output. */
+  scrollUp?: () => void;
+  /** Scroll one line towards newer output (re-enables follow at the tail). */
+  scrollDown?: () => void;
+  /** Whether the Router has routed input to the log view (false → inert). */
+  inputActive?: boolean;
 }
 
-export function LogView({ serviceName, lines, autoScroll, offset }: LogViewProps) {
+export function LogView({
+  serviceName,
+  lines,
+  autoScroll,
+  offset,
+  onBack,
+  scrollUp,
+  scrollDown,
+  inputActive = false,
+}: LogViewProps) {
   const { cols, compact } = useDimensions();
   const { icon } = useIcons();
+
+  // The log view owns its own input (gated by the Router via `inputActive`).
+  useInput(
+    (input, key) => {
+      if (key.escape) {
+        onBack?.();
+      }
+      if (key.upArrow || input === "k") {
+        scrollUp?.();
+      }
+      if (key.downArrow || input === "j") {
+        scrollDown?.();
+      }
+    },
+    { isActive: inputActive },
+  );
   const up = icon("overflowUp");
   const down = icon("overflowDown");
 
