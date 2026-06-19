@@ -68,6 +68,7 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
+    runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
   return client as unknown as DaemonClient;
 }
@@ -273,7 +274,7 @@ describe("Keyboard routing — Dashboard", () => {
 });
 
 describe("Keyboard routing — View switching", () => {
-  it("t goes directly to tasks view with shortcuts inline", async () => {
+  it("t opens the task picker overlay", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -288,12 +289,11 @@ describe("Keyboard routing — View switching", () => {
     });
 
     const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
-    expect(frame).toContain("[m]");
+    expect(frame).toContain("Type to filter tasks");
     expect(frame).toContain("Run migrations");
   });
 
-  it("Esc from tasks returns to dashboard", async () => {
+  it("Esc closes the task picker back to the dashboard", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -306,9 +306,12 @@ describe("Keyboard routing — View switching", () => {
     act(() => {
       stdin.write("t");
     });
-    expect(lastFrame()).toContain("[enter] run");
+    expect(lastFrame()).toContain("Type to filter tasks");
 
-    // Go back
+    // Warm-up (the just-pushed overlay can drop its first key), then Esc.
+    act(() => {
+      stdin.write("x");
+    });
     await pressEscape(stdin);
     expect(lastFrame()).toContain("[t]asks");
   });
@@ -462,29 +465,6 @@ describe("Keyboard routing — ctrl keys", () => {
     expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
   });
 
-  it("ctrl+d works from tasks view", async () => {
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-    const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null }];
-
-    const { stdin, client } = renderApp({ statuses, tasks });
-
-    // Switch to tasks view
-    act(() => {
-      stdin.write("t");
-    });
-    // Then ctrl+d
-    act(() => {
-      stdin.write("\x04");
-    });
-    await act(async () => {
-      /* Flush */
-    });
-
-    expect(vi.mocked(client.destroySession)).toHaveBeenCalled();
-  });
-
   it("ctrl+c works from logs view", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
@@ -528,32 +508,28 @@ describe("Keyboard routing — Tasks view", () => {
     expect(vi.mocked(client.runTask)).toHaveBeenCalled();
   });
 
-  it("shortcut key triggers task", async () => {
+  it("runs the selected task in a pane on Tab", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
-    const tasks: TaskInfo[] = [
-      { key: "build", name: "Build", description: null, shortcut: "b" },
-      { key: "test", name: "Test", description: null, shortcut: "x" },
-    ];
+    const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null }];
 
     const { stdin, client } = renderApp({ statuses, tasks });
 
     act(() => {
       stdin.write("t");
     });
-    // Press shortcut for second task
     act(() => {
-      stdin.write("x");
+      stdin.write("\t"); // Tab → run in pane
     });
     await act(async () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.runTask)).toHaveBeenCalled();
+    expect(vi.mocked(client.runTaskInPane)).toHaveBeenCalledWith("build");
   });
 
-  it("up/down navigates tasks", async () => {
+  it("up/down navigates the task picker", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -571,8 +547,10 @@ describe("Keyboard routing — Tasks view", () => {
       stdin.write(ARROW_DOWN);
     });
 
-    // Should show tasks view with second task selected
-    expect(lastFrame()).toContain("[enter] run");
+    // The picker stays open with the task list rendered.
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Build");
+    expect(frame).toContain("Test");
   });
 });
 

@@ -17,7 +17,7 @@ interface DashboardInputContext {
   restartAll: () => Promise<void>;
   reloadConfig: () => Promise<void>;
   goToLogs: (name: string) => void;
-  goToTasks: () => void;
+  openTaskPicker: () => void;
   goToDockerRebuild: (name: string) => void;
   destroySession: () => void;
   paneMap: Record<string, string>;
@@ -99,7 +99,7 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
     return;
   }
   if (input === "t") {
-    ctx.goToTasks();
+    ctx.openTaskPicker();
   }
   if (input === "a" && ctx.busyServices.current.size === 0) {
     for (const s of ctx.statuses) {

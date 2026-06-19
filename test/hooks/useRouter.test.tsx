@@ -88,20 +88,4 @@ describe("useRouter", () => {
     });
     expect(lastFrame()).toContain("view:dashboard");
   });
-
-  it("goToTasks sets view to tasks", async () => {
-    let hookRef: ReturnType<typeof useRouter> | null = null;
-
-    function Wrapper() {
-      hookRef = useRouter();
-      return <Text>view:{hookRef.view}</Text>;
-    }
-
-    const { lastFrame } = render(<Wrapper />);
-
-    act(() => {
-      hookRef!.goToTasks();
-    });
-    expect(lastFrame()).toContain("view:tasks");
-  });
 });

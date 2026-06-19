@@ -34,7 +34,6 @@ describe("useInputRouter", () => {
       global: true,
       dashboard: true,
       logs: false,
-      tasks: false,
     });
   });
 
@@ -65,7 +64,6 @@ describe("useInputRouter", () => {
     expect(flags?.overlayOpen).toBe(true);
     expect(flags?.dashboard).toBe(false);
     expect(flags?.logs).toBe(false);
-    expect(flags?.tasks).toBe(false);
     // Global yields to the overlay so the palette can own typed keys (e.g. `q`).
     expect(flags?.global).toBe(false);
 

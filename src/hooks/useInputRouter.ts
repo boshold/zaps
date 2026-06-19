@@ -13,8 +13,6 @@ interface InputRouterFlags {
   dashboard: boolean;
   /** LogView owns input. */
   logs: boolean;
-  /** Tasks view owns input (transitional until the Phase 4 picker overlay). */
-  tasks: boolean;
 }
 
 /**
@@ -39,7 +37,6 @@ function useInputRouter(
       global: ready && !isOpen,
       dashboard: base && view === "dashboard",
       logs: base && view === "logs",
-      tasks: base && view === "tasks",
     };
   }, [view, ready, connected, isOpen]);
 }

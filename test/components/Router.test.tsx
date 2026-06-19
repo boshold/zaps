@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
+import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
 import type { ServiceMeta, TaskInfo } from "../../src/daemon/session.js";
@@ -53,6 +54,7 @@ function createMockClient(): DaemonClient {
     restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
+    runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
   return client as unknown as DaemonClient;
 }
@@ -361,17 +363,13 @@ describe("Router", () => {
     expect(lastFrame() ?? "").toContain("worker");
   });
 
-  // ── dashboard input: tasks view (t) ──────────────────────────
+  // ── dashboard input: task picker (t) ─────────────────────────
 
-  it("navigates to tasks view with t key", async () => {
+  it("opens the task picker overlay with t key", async () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
+    const { stdin } = renderRouter({ tasks });
+    await pressKey(stdin, "t");
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
   });
 
   // ── dashboard input: restart all (a) ─────────────────────────
@@ -469,70 +467,31 @@ describe("Router", () => {
     expect(frame).toContain("zaps");
   });
 
-  // ── tasks view input ─────────────────────────────────────────
+  // ── task picker overlay (Router integration) ─────────────────
+  // Detailed filter/highlight/empty/guard behavior lives in the dedicated
+  // TaskPicker test; here we assert the Router wiring only (open/close/run).
 
-  it("returns to dashboard from tasks on escape", async () => {
+  it("closes the task picker on escape (host owns Esc)", async () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(lastFrame()).toContain("[enter] run");
+    const { stdin } = renderRouter({ tasks });
+    await pressKey(stdin, "t");
+    expect(overlay?.isOpen).toBe(true);
+    await pressKey(stdin, "x"); // Warm-up (ignored by the just-pushed overlay)
     await pressEscape(stdin);
-    expect(lastFrame()).toContain("zaps");
+    expect(overlay?.isOpen).toBe(false);
   });
 
-  it("triggers task run on enter in tasks view", async () => {
+  it("runs the selected task in the background on enter", async () => {
+    const client = createMockClient();
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("\r");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
-  });
-
-  it("matches task shortcut in tasks view", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null, shortcut: "m" },
-      { key: "seed", name: "Seed DB", description: null, shortcut: "s" },
-    ];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("s");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
-  });
-
-  it("navigates tasks list with j/k in tasks view", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-      { key: "seed", name: "Seed DB", description: null },
-    ];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("j");
-    stdin.write("k");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("Run migrations");
+    const { stdin } = renderRouter({ tasks, client });
+    await pressKey(stdin, "t");
+    // Double Enter: the first may be dropped by the just-pushed overlay; the
+    // Second lands. Whichever runs, the task fires once and the overlay closes.
+    await pressKey(stdin, "\r");
+    await pressKey(stdin, "\r");
+    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
+    expect(overlay?.isOpen).toBe(false);
   });
 
   // ── docker rebuild overlay (Router integration) ──────────────

@@ -1,8 +1,7 @@
-import type { Key } from "ink";
 import { useApp as useInkApp, useInput } from "ink";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { DockerConfig } from "#src/config/types.js";
+import type { DockerConfig, UiTaskMode } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
@@ -25,50 +24,10 @@ import { COMMAND_PALETTE_ID, CommandPalette } from "./overlay/CommandPalette.js"
 import type { DockerFlags } from "./overlay/DockerRebuildOverlay.js";
 import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuildOverlay.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
+import { TASK_PICKER_ID, TaskPicker } from "./overlay/TaskPicker.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
-import { TasksView } from "./TasksView.js";
 
 const MAX_HISTORY = 50;
-
-function handleTasksInput(
-  input: string,
-  key: Key,
-  ctx: {
-    tasks: { key: string; name: string }[];
-    taskShortcuts: { shortcut: string; name: string }[];
-    taskCount: number;
-    setIndex: (i: number) => void;
-    goToDashboard: () => void;
-    moveUp: () => void;
-    moveDown: () => void;
-    setRunTrigger: React.Dispatch<React.SetStateAction<number>>;
-  },
-) {
-  if (key.escape) {
-    ctx.goToDashboard();
-  }
-  if (key.upArrow || input === "k") {
-    ctx.moveUp();
-    return;
-  }
-  if (key.downArrow || input === "j") {
-    ctx.moveDown();
-    return;
-  }
-  if (key.return) {
-    ctx.setRunTrigger((n) => n + 1);
-  }
-
-  // Match input against task shortcuts
-  const matched = ctx.taskShortcuts.find((t) => t.shortcut === input);
-  if (matched) {
-    const idx = ctx.tasks.findIndex((t) => t.name === matched.name);
-    if (idx !== -1) {
-      ctx.setIndex(idx);
-      ctx.setRunTrigger((n) => n + 1);
-    }
-  }
-}
 
 export function Router({
   initialStatuses,
@@ -79,8 +38,8 @@ export function Router({
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }) {
-  const { view, logTarget, goToLogs, goToDashboard, goToTasks } = useRouter();
-  const { client, paneMap, tasks, servicesMeta } = useZaps();
+  const { view, logTarget, goToLogs, goToDashboard } = useRouter();
+  const { client, paneMap, tasks, servicesMeta, ui } = useZaps();
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
   const { connected, retry } = useConnection(client);
@@ -98,10 +57,8 @@ export function Router({
     [statuses],
   );
 
-  // Per-view selection: dashboard and tasks view each keep their own index,
-  // Clamped only against their own list, so moving in one never shifts the other (F6).
+  // Dashboard selection — clamped against the (sorted) service list.
   const dashboardSel = useSelection(sortedStatuses.length);
-  const tasksSel = useSelection(tasks.length);
 
   const { exit } = useInkApp();
   const busyServices = useRef(new Set<string>());
@@ -116,15 +73,12 @@ export function Router({
     scrollDown,
   } = useLogs(client, logTarget);
 
-  // Task run trigger — incremented on Enter in tasks view
-  const [runTrigger, setRunTrigger] = useState(0);
-
-  // Task run history — shared between Dashboard and TasksView
+  // Task run history — shared between the Dashboard and the task picker.
   const [taskHistory, setTaskHistory] = useState<TaskRunRecord[]>(initialTaskHistory);
 
-  // Running-task state lives here (not in TasksView) so it survives leaving/re-entering the
-  // Tasks view and blocks duplicate runs. Set optimistically on dispatch + by the task.start
-  // Event; cleared only by the task.complete event, never by unmount (F4).
+  // Running-task state for the palette's background-run guard. Set optimistically
+  // On dispatch + by the task.start event; cleared by task.complete (F4). The
+  // Picker's per-key duplicate guard derives in-flight keys from taskHistory.
   const [runningTask, setRunningTask] = useState<string | null>(null);
 
   function onTaskComplete(record: TaskRunRecord) {
@@ -193,11 +147,6 @@ export function Router({
 
   // Build service metadata lookup
   const svcMetaMap = new Map(servicesMeta.map((m) => [m.name, m]));
-
-  // Precompute task shortcuts from snapshot data
-  const taskShortcuts = tasks.flatMap((t) =>
-    t.shortcut ? [{ shortcut: t.shortcut, name: t.name }] : [],
-  );
 
   // Per-consumer input gating. Exactly one base view is active at a time; the top
   // Overlay owns input instead. Each view/overlay owns its own useInput.
@@ -354,6 +303,40 @@ export function Router({
     });
   }
 
+  // Picker launch path: dispatch the IPC directly (the picker owns the per-key
+  // Duplicate guard + the "already running" message). Background runs surface via
+  // The task.start/complete events, which populate the running history entry.
+  function launchTask(key: string, mode: UiTaskMode) {
+    if (mode === "pane") {
+      void client.runTaskInPane(key).catch(() => {
+        /* Tmux/IPC error handled by daemon */
+      });
+    } else {
+      void client.runTask(key, {}).catch(() => {
+        /* Task execution error handled by daemon */
+      });
+    }
+  }
+
+  function openTaskPicker() {
+    // Freeze the in-flight key set at open time (the render thunk is a closure).
+    // The data model keys runs by runId; the guard is checked per task key (Q12).
+    const runningKeys = new Set(
+      taskHistory.filter((r) => r.result === "running").map((r) => r.taskKey),
+    );
+    overlay.push({
+      id: TASK_PICKER_ID,
+      render: () => (
+        <TaskPicker
+          tasks={tasks}
+          runningKeys={runningKeys}
+          defaultMode={ui.task.defaultMode}
+          onRun={launchTask}
+        />
+      ),
+    });
+  }
+
   function openPalette() {
     const selected = sortedStatuses[dashboardSel.index];
     const commands = buildCommandRegistry({
@@ -433,28 +416,11 @@ export function Router({
     restartAll,
     reloadConfig: async () => client.reloadConfig(),
     goToLogs,
-    goToTasks,
+    openTaskPicker,
     destroySession,
     paneMap,
     goToDockerRebuild: openDockerRebuild,
   };
-
-  // Tasks view input (transitional — superseded by the Phase 4 picker overlay).
-  useInput(
-    (input, key) => {
-      handleTasksInput(input, key, {
-        tasks,
-        taskShortcuts,
-        taskCount: tasks.length,
-        setIndex: tasksSel.setIndex,
-        goToDashboard,
-        moveUp: tasksSel.moveUp,
-        moveDown: tasksSel.moveDown,
-        setRunTrigger,
-      });
-    },
-    { isActive: flags.tasks },
-  );
 
   if (!ready) {
     return null;
@@ -487,18 +453,6 @@ export function Router({
         scrollUp={scrollUp}
         scrollDown={scrollDown}
         inputActive={flags.logs}
-      />
-    );
-  }
-  if (view === "tasks") {
-    return (
-      <TasksView
-        selectedIndex={tasksSel.index}
-        runTrigger={runTrigger}
-        taskShortcuts={taskShortcuts}
-        taskHistory={taskHistory}
-        runningTask={runningTask}
-        onRunStart={setRunningTask}
       />
     );
   }
