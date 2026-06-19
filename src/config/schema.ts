@@ -6,6 +6,7 @@ import type {
   OptionalContext,
   ServiceContext,
   TaskRunContext,
+  UiConfig,
 } from "./types.js";
 
 // === Commands ===
@@ -303,7 +304,7 @@ const uiTaskConfigSchema = z.object({
   defaultMode: z.enum(["background", "pane"]).default("background"),
 });
 
-const uiConfigSchema = z.object({
+export const uiConfigSchema = z.object({
   icons: z.enum(["nerd", "unicode", "ascii"]).default("nerd"),
   notifications: z.enum(["off", "bell", "osc9", "osc9+bell"]).default("osc9"),
   failOutput: z.enum(["overlay", "popup"]).default("overlay"),
@@ -312,6 +313,18 @@ const uiConfigSchema = z.object({
   task: uiTaskConfigSchema.prefault({}),
   wideThreshold: z.number().int().min(40).default(100),
 });
+
+/** Fully-resolved UI config — every field present (the schema applies defaults). */
+export type ResolvedUiConfig = z.infer<typeof uiConfigSchema>;
+
+/**
+ * Resolve a possibly-partial/absent UI config to one with every field present,
+ * so consumers (IconTheme, DetailPane, notifications) read concrete values
+ * instead of re-applying `?? default` fallbacks everywhere.
+ */
+export function resolveUiConfig(ui?: UiConfig): ResolvedUiConfig {
+  return uiConfigSchema.parse(ui ?? {});
+}
 
 // === Project Config ===
 export const projectConfigSchema = z.object({

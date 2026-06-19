@@ -93,6 +93,7 @@ async function runTui(opts: {
       initialTaskHistory={snapshot.taskHistory ?? []}
       autoStart={showSplash}
       configStale={snapshot.configStale}
+      ui={snapshot.ui}
     />,
     { patchConsole: false },
   );

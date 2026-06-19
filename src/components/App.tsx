@@ -1,10 +1,13 @@
 import type { DaemonClient } from "#src/client/daemon-client.js";
+import { resolveUiConfig } from "#src/config/index.js";
+import type { UiConfig } from "#src/config/types.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { Router } from "./Router.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { IconThemeProvider, createIconTheme, resolveIconTier } from "./theme/IconTheme.js";
 
 type PaneMap = Record<string, string>;
 
@@ -18,6 +21,7 @@ interface AppProps {
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
   configStale?: boolean;
+  ui?: UiConfig;
 }
 
 export function App({
@@ -30,21 +34,28 @@ export function App({
   initialTaskHistory,
   autoStart,
   configStale,
+  ui,
 }: AppProps) {
+  // Resolve UI config + icon tier once at the root (env override wins over config).
+  const resolvedUi = resolveUiConfig(ui);
+  const iconTheme = createIconTheme(resolveIconTier(resolvedUi.icons));
+
   return (
-    <AppProvider
-      client={client}
-      paneMap={paneMap}
-      projectName={projectName}
-      tasks={tasks}
-      servicesMeta={servicesMeta}
-      configStale={configStale}
-    >
-      <Router
-        initialStatuses={initialStatuses}
-        initialTaskHistory={initialTaskHistory}
-        autoStart={autoStart}
-      />
-    </AppProvider>
+    <IconThemeProvider value={iconTheme}>
+      <AppProvider
+        client={client}
+        paneMap={paneMap}
+        projectName={projectName}
+        tasks={tasks}
+        servicesMeta={servicesMeta}
+        configStale={configStale}
+      >
+        <Router
+          initialStatuses={initialStatuses}
+          initialTaskHistory={initialTaskHistory}
+          autoStart={autoStart}
+        />
+      </AppProvider>
+    </IconThemeProvider>
   );
 }
