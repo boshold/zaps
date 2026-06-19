@@ -295,6 +295,24 @@ const cwdConfigSchema = z.union([
   z.custom<(ctx: CwdContext) => string>((v) => typeof v === "function"),
 ]);
 
+// === UI Config ===
+// TUI-local presentation. Every field defaults, and the whole block defaults to
+// `{}` so omitting `ui` (or any field) resolves to the safe defaults. Consumers
+// (IconTheme, DetailPane, notifications) land in later phases.
+const uiTaskConfigSchema = z.object({
+  defaultMode: z.enum(["background", "pane"]).default("background"),
+});
+
+const uiConfigSchema = z.object({
+  icons: z.enum(["nerd", "unicode", "ascii"]).default("nerd"),
+  notifications: z.enum(["off", "bell", "osc9", "osc9+bell"]).default("osc9"),
+  failOutput: z.enum(["overlay", "popup"]).default("overlay"),
+  // Prefault (not default) so an omitted `task` is parsed through the schema and
+  // Picks up `defaultMode`, rather than being left as a bare `{}`.
+  task: uiTaskConfigSchema.prefault({}),
+  wideThreshold: z.number().int().min(40).default(100),
+});
+
 // === Project Config ===
 export const projectConfigSchema = z.object({
   name: z.optional(z.string()),
@@ -303,6 +321,8 @@ export const projectConfigSchema = z.object({
   tasks: z.optional(z.record(z.string(), taskConfigSchema)),
   layout: z.optional(layoutNodeSchema),
   hooks: z.optional(hooksConfigSchema),
+  // Prefault so an omitted `ui` block resolves to the full set of field defaults.
+  ui: uiConfigSchema.prefault({}),
 });
 
 /**

@@ -4,7 +4,7 @@ import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import { loadConfig } from "#src/config/loader.js";
-import type { ResolvedConfig } from "#src/config/types.js";
+import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
@@ -538,6 +538,7 @@ export class Session {
       taskHistory: this.taskHistory,
       unavailableServices: [...this.config.unavailableServices.values()],
       configStale: this.isConfigStale(),
+      ui: this.config.project.ui,
     };
   }
 
@@ -569,4 +570,6 @@ export interface SessionSnapshot {
   unavailableServices: { name: string; reason: string }[];
   /** Root config edited since the last load — drives the TUI reload hint (A4). */
   configStale: boolean;
+  /** Resolved TUI presentation config (icons, notifications, thresholds). */
+  ui?: UiConfig;
 }

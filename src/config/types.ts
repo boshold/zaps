@@ -161,6 +161,30 @@ export interface CwdContext {
   invokeDir: string;
 }
 
+// === UI Config ===
+/** Icon theme tier; resolved at startup (Phase 2 `IconTheme`). */
+export type UiIconTheme = "nerd" | "unicode" | "ascii";
+/** Failure-notification channel (mirrors Claude Code's `notifier.ts` model). */
+export type UiNotifications = "off" | "bell" | "osc9" | "osc9+bell";
+/** Default target when opening failed task output (escalation always available). */
+export type UiFailOutput = "overlay" | "popup";
+/** Default task launch mode. */
+export type UiTaskMode = "background" | "pane";
+
+export interface UiTaskConfig {
+  defaultMode?: UiTaskMode;
+}
+
+/** TUI-local presentation config. Every field is optional and has a safe default. */
+export interface UiConfig {
+  icons?: UiIconTheme;
+  notifications?: UiNotifications;
+  failOutput?: UiFailOutput;
+  task?: UiTaskConfig;
+  /** Min cols to show the detail pane (Q2). Integer ≥ 40. */
+  wideThreshold?: number;
+}
+
 // === Project ===
 export interface ProjectConfig {
   name?: string;
@@ -169,6 +193,7 @@ export interface ProjectConfig {
   tasks?: Record<string, TaskConfig>;
   layout?: LayoutNode;
   hooks?: HooksConfig;
+  ui?: UiConfig;
 }
 
 // === Library ===
