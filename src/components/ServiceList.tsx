@@ -2,6 +2,7 @@ import { Box, Text } from "ink";
 
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { ScrollableList } from "./layout/ScrollableList.js";
 import { ServiceRow } from "./ServiceRow.js";
 import { showsErrorSubRow } from "./serviceRowError.js";
 
@@ -34,7 +35,7 @@ function getGroupHeader(
 /**
  * Number of terminal rows a service's block occupies: an optional group header,
  * the service row itself, and an optional error sub-row. Every rendered row is
- * counted so the list never overflows past `maxRows` (F10).
+ * counted so the list never overflows past the budget (F10).
  */
 function rowHeight(
   status: ServiceStatus,
@@ -47,46 +48,11 @@ function rowHeight(
   return headerLines + 1 + errorLines;
 }
 
-/**
- * Pick the contiguous range of service blocks to show. Grows outward from the
- * selected block (so it stays visible), reserving a line for each "N more"
- * indicator, until the line budget (`maxRows`) is spent.
- */
-function computeWindow(
-  heights: number[],
-  selectedIndex: number,
-  maxRows: number,
-): { start: number; end: number } {
-  const n = heights.length;
-  let start = selectedIndex;
-  let end = selectedIndex + 1;
-  let used = heights[selectedIndex] ?? 0;
-
-  let grew = true;
-  while (grew) {
-    grew = false;
-    const budget = maxRows - (start > 0 ? 1 : 0) - (end < n ? 1 : 0);
-    if (end < n && used + heights[end] <= budget) {
-      used += heights[end];
-      end += 1;
-      grew = true;
-      continue;
-    }
-    if (start > 0 && used + heights[start - 1] <= budget) {
-      used += heights[start - 1];
-      start -= 1;
-      grew = true;
-    }
-  }
-
-  return { start, end };
-}
-
 function renderRow(
   s: ServiceStatus,
   i: number,
   statuses: ServiceStatus[],
-  selectedIndex: number,
+  isSelected: boolean,
   cols: number,
 ) {
   const groupHeader = getGroupHeader(s, i, statuses);
@@ -100,42 +66,22 @@ function renderRow(
           {groupHeader}
         </Text>
       )}
-      <ServiceRow status={s} isSelected={i === selectedIndex} cols={cols} indent={isGrouped} />
+      <ServiceRow status={s} isSelected={isSelected} cols={cols} indent={isGrouped} />
     </Box>
   );
 }
 
 export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceListProps) {
-  const total = statuses.length;
-  const heights = statuses.map((s, i) => rowHeight(s, i, statuses, selectedIndex));
-  const totalLines = heights.reduce((sum, h) => sum + h, 0);
-
-  if (maxRows === undefined || maxRows <= 0 || totalLines <= maxRows) {
-    return (
-      <Box flexDirection="column">
-        {statuses.map((s, i) => renderRow(s, i, statuses, selectedIndex, cols))}
-      </Box>
-    );
-  }
-
-  const { start, end } = computeWindow(heights, selectedIndex, maxRows);
-  const above = start;
-  const below = total - end;
-  const visible = statuses.slice(start, end);
-
+  // Windowing (grow-from-selected + `↑/↓ N more` + multi-line rows) lives in the
+  // Reusable ScrollableList; ServiceList only contributes its row rendering and
+  // The service-specific row-height (group headers + error sub-rows).
   return (
-    <Box flexDirection="column">
-      {above > 0 && (
-        <Text dimColor>
-          {"  "}↑ {above} more
-        </Text>
-      )}
-      {visible.map((s, i) => renderRow(s, i + start, statuses, selectedIndex, cols))}
-      {below > 0 && (
-        <Text dimColor>
-          {"  "}↓ {below} more
-        </Text>
-      )}
-    </Box>
+    <ScrollableList
+      items={statuses}
+      selectedIndex={selectedIndex}
+      maxHeight={maxRows ?? 0}
+      rowHeight={(s, i) => rowHeight(s, i, statuses, selectedIndex)}
+      renderItem={(s, i, selected) => renderRow(s, i, statuses, selected, cols)}
+    />
   );
 }

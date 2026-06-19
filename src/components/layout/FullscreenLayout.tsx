@@ -30,14 +30,24 @@ export function FullscreenLayout({ header, footer, children }: FullscreenLayoutP
 
   return (
     <Box flexDirection="column" height={rows}>
-      {header}
+      {/* FlexShrink={0} guarantees the chrome keeps its full height even under
+          pathological body overflow, so it can never be shrunk away. */}
+      {header && (
+        <Box flexShrink={0} flexDirection="column">
+          {header}
+        </Box>
+      )}
       {/* MinHeight={0} overrides flex's implicit min-content floor so flexGrow
           truly constrains the body to the leftover rows and overflowY clips
           residual overflow — the anti-blank safety net on top of measured sizing. */}
       <Box ref={ref} flexGrow={1} minHeight={0} overflowY="hidden">
         <ViewportProvider value={{ height, width }}>{children}</ViewportProvider>
       </Box>
-      {footer}
+      {footer && (
+        <Box flexShrink={0} flexDirection="column">
+          {footer}
+        </Box>
+      )}
     </Box>
   );
 }
