@@ -170,6 +170,21 @@ export class DaemonClient extends EventEmitter {
     return res.result as { success: boolean; runId?: string };
   }
 
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  public async runTaskInPane(
+    key: string,
+    target?: "pane" | "window",
+  ): Promise<{ runId: string; paneId: string }> {
+    const res = await this.request("tasks.runInPane", {
+      key,
+      ...(target ? { target } : {}),
+    });
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.result as { runId: string; paneId: string };
+  }
+
   // --- Internal ---
 
   private async request(method: string, params?: unknown): Promise<IpcResponse> {

@@ -248,6 +248,41 @@ describe("DaemonClient", () => {
     });
   });
 
+  describe("runTaskInPane", () => {
+    it("returns runId + paneId and forwards the target", async () => {
+      mockIpcRequest.mockResolvedValue({
+        id: "r1",
+        result: { runId: "run_1", paneId: "%5" },
+      });
+      const result = await client.runTaskInPane("build", "pane");
+      expect(result).toEqual({ runId: "run_1", paneId: "%5" });
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.runInPane",
+        { key: "build", target: "pane" },
+        expect.any(Number),
+        "sess1",
+      );
+    });
+
+    it("omits target when not given", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: { runId: "run_2", paneId: "%6" } });
+      await client.runTaskInPane("build");
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.runInPane",
+        { key: "build" },
+        expect.any(Number),
+        "sess1",
+      );
+    });
+
+    it("throws on error response", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "tmux_failed" });
+      await expect(client.runTaskInPane("build")).rejects.toThrow("tmux_failed");
+    });
+  });
+
   describe("event routing", () => {
     it("routes service.stateChange", () => {
       const spy = vi.fn();

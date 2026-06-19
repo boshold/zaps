@@ -18,6 +18,17 @@ vi.mock("../../../src/lib/task/runner.js", () => ({
   runTaskWithDeps: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock("../../../src/lib/tmux.js", () => ({
+  newWindow: vi.fn().mockResolvedValue("%win"),
+  splitPane: vi.fn().mockResolvedValue("%split"),
+  sendKeys: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../../src/lib/task/run-in-pane.js", () => ({
+  buildPaneCommand: vi.fn(() => "BUILT_CMD"),
+  awaitPaneOutcome: vi.fn().mockResolvedValue("success"),
+}));
+
 describe("session handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -814,6 +825,154 @@ describe("session handlers", () => {
       expect(execCommand).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({ env: { NODE_ENV: "test" } }),
+      );
+    });
+  });
+
+  describe("tasks.runInPane", () => {
+    it("returns unknown_task for a missing key", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {};
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp1",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "missing" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toBe("unknown_task");
+    });
+
+    it("creates a new window by default and returns runId + paneId", async () => {
+      const { newWindow, splitPane, sendKeys } =
+        (await import("../../../src/lib/tmux.js")) as unknown as {
+          newWindow: ReturnType<typeof vi.fn>;
+          splitPane: ReturnType<typeof vi.fn>;
+          sendKeys: ReturnType<typeof vi.fn>;
+        };
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp2",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      const result = res.result as { runId: string; paneId: string };
+      expect(result.runId).toEqual(expect.any(String));
+      expect(result.paneId).toBe("%win");
+      expect(newWindow).toHaveBeenCalledWith("test-tmux");
+      expect(splitPane).not.toHaveBeenCalled();
+      // The launched command is the one buildPaneCommand produced, sent to the pane.
+      expect(sendKeys).toHaveBeenCalledWith("%win", "BUILT_CMD");
+      // Stores runId → paneId so the pane can later be addressed (T04).
+      expect(session.panesByRun.get(result.runId)).toBe("%win");
+      // Records + broadcasts task.start with mode:"pane".
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "running", mode: "pane" }),
+      );
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.start",
+          data: expect.objectContaining({ runId: result.runId }),
+        }),
+      );
+    });
+
+    it("splits a pane when target=pane", async () => {
+      const { splitPane } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        splitPane: ReturnType<typeof vi.fn>;
+      };
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp3",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build", target: "pane" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect((res.result as { paneId: string }).paneId).toBe("%split");
+      // Splits off the reserved TUI pane.
+      expect(splitPane).toHaveBeenCalledWith("%0", "v");
+    });
+
+    it("returns tmux_failed when pane creation fails", async () => {
+      const { newWindow } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        newWindow: ReturnType<typeof vi.fn>;
+      };
+      newWindow.mockRejectedValueOnce(new Error("tmux down"));
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp4",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toBe("tmux_failed");
+    });
+
+    it("errors when the task has no shell commands", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        custom: {
+          name: "Custom",
+          run: async () => {
+            /* Noop */
+          },
+        },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp5",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "custom" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toContain("no shell commands");
+    });
+
+    it("broadcasts task.complete once the pane run finishes", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp6",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      const { runId } = res.result as { runId: string };
+
+      // Completion is detected asynchronously (awaitPaneOutcome → success).
+      await vi.waitFor(() => {
+        expect(session.broadcast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            event: "task.complete",
+            data: expect.objectContaining({ runId, result: "success" }),
+          }),
+        );
+      });
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId, result: "success", mode: "pane" }),
       );
     });
   });

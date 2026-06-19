@@ -23,6 +23,7 @@ export interface MockSession {
   tmuxSession: string;
   originPane: string;
   execInfo: Map<string, { command: string; cwd: string; env: Record<string, string> }>;
+  panesByRun: Map<string, string>;
   manager: {
     getAllStatuses: ReturnType<typeof vi.fn>;
     getStatus: ReturnType<typeof vi.fn>;
@@ -77,6 +78,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     tmuxSession: "test-tmux",
     originPane: "%0",
     execInfo: overrides.execInfo ?? new Map(),
+    panesByRun: overrides.panesByRun ?? new Map(),
     manager: {
       getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
       getStatus: vi.fn((name: string) => {

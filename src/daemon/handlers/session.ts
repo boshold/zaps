@@ -1,6 +1,6 @@
 import type { Socket } from "node:net";
 
-import type { DockerConfig, ResolvedConfig } from "#src/config/types.js";
+import type { Command, DockerConfig, ResolvedConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
@@ -10,7 +10,9 @@ import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
+import { awaitPaneOutcome, buildPaneCommand } from "#src/lib/task/run-in-pane.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import { newWindow, sendKeys, splitPane } from "#src/lib/tmux.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -21,6 +23,50 @@ function getSession(req: IpcRequest, store: SessionStore): Session | null {
     return null;
   }
   return store.get(req.session) ?? null;
+}
+
+/** Normalize a task's optional `commands` field to a flat list. */
+function normalizeCommands(commands: Command | Command[] | undefined): Command[] {
+  if (!commands) {
+    return [];
+  }
+  return Array.isArray(commands) ? commands : [commands];
+}
+
+/** Record + broadcast the terminal state of a run-in-pane run. */
+function completePaneRun(
+  session: Session,
+  runId: string,
+  taskKey: string,
+  taskName: string,
+  result: "success" | "error",
+): void {
+  session.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now(), mode: "pane" });
+  session.broadcast({
+    session: session.id,
+    event: "task.complete",
+    data: { key: taskKey, name: taskName, result, runId },
+  });
+}
+
+/**
+ * Watch a launched pane run to completion and broadcast `task.complete`. Run
+ * fire-and-forget: `tasks.runInPane` returns once the pane exists, while the run
+ * itself streams live in the pane and finishes asynchronously.
+ */
+async function watchPaneOutcome(
+  session: Session,
+  runId: string,
+  taskKey: string,
+  taskName: string,
+): Promise<void> {
+  let result: "success" | "error" = "error";
+  try {
+    result = await awaitPaneOutcome(runId);
+  } catch {
+    result = "error";
+  }
+  completePaneRun(session, runId, taskKey, taskName, result);
 }
 
 async function runPopupTaskNonInteractive(
@@ -353,6 +399,89 @@ export const sessionHandlers: Record<
     });
 
     return ipcOk(req.id, { success, runId });
+  },
+
+  async "tasks.runInPane"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+
+    const { key, target = "window" } = req.params as {
+      key: string;
+      target?: "pane" | "window";
+    };
+    const tasks = session.config.project.tasks ?? {};
+    const task = tasks[key];
+    if (!task) {
+      return ipcErr(req.id, "unknown_task");
+    }
+
+    // Resolve the task's shell commands (functions get the live service context).
+    const statuses = new Map(
+      session.manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
+    );
+    const serviceCtx = buildServiceContext(
+      statuses,
+      session.config.projectDir,
+      session.config.project.services,
+    );
+    const rawCommands = normalizeCommands(task.commands);
+    const resolvedCommands = rawCommands.map((cmd) =>
+      typeof cmd === "function" ? cmd(serviceCtx) : cmd,
+    );
+    if (resolvedCommands.length === 0) {
+      return ipcErr(req.id, `Task ${key} has no shell commands to run in a pane`);
+    }
+
+    const taskName = task.name;
+    // One runId per run correlates start/complete + the stored pane (Q12/T01).
+    const runId = newRunId();
+
+    // Create the pane/window; both helpers return the new pane id (the spec's
+    // Default target is a new window — a split would reflow the service panes).
+    let paneId = "";
+    try {
+      paneId =
+        target === "pane"
+          ? await splitPane(session.paneMap["@tui"] ?? session.originPane, "v")
+          : await newWindow(session.tmuxSession);
+    } catch {
+      return ipcErr(req.id, "tmux_failed");
+    }
+    session.panesByRun.set(runId, paneId);
+
+    // Record + broadcast task.start with mode:"pane" so the run is correlatable.
+    session.pushTaskRecord({
+      runId,
+      taskKey: key,
+      taskName,
+      result: "running",
+      timestamp: Date.now(),
+      mode: "pane",
+    });
+    session.broadcast({
+      session: session.id,
+      event: "task.start",
+      data: { key, name: taskName, runId },
+    });
+
+    const cwd = task.cwd ?? session.config.projectDir;
+    const env = resolveEnv(task.env, serviceCtx);
+    const command = buildPaneCommand(resolvedCommands, { cwd, env, runId });
+    try {
+      await sendKeys(paneId, command);
+    } catch {
+      completePaneRun(session, runId, key, taskName, "error");
+      return ipcErr(req.id, "tmux_failed");
+    }
+
+    // The run renders live in the pane; completion is detected daemon-side via
+    // The run's wait-for channel (not pane scraping), then broadcast. The pane is
+    // Left open on completion so the user can inspect output in place (Q13).
+    void watchPaneOutcome(session, runId, key, taskName);
+
+    return ipcOk(req.id, { runId, paneId });
   },
 
   async "exec-service.resolve"(req, store) {

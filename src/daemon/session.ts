@@ -107,6 +107,9 @@ export class Session {
   public readonly createdAt = Date.now();
   public readonly taskHistory: TaskRunRecord[] = [];
   public readonly execInfo = new Map<string, ExecInfo>();
+  /** `runId → paneId` for run-in-pane runs, so the pane can later be addressed
+   * (`paneExists`/`killPane`). Pane is left open on completion (Q13). */
+  public readonly panesByRun = new Map<string, string>();
   public readonly deps: ServiceManagerDeps;
 
   public name: string;
