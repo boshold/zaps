@@ -242,6 +242,19 @@ describe("DaemonClient", () => {
       expect(onProgress).toHaveBeenCalledWith("sub", "success");
     });
 
+    it("surfaces runId from the stream response", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", result: { success: true, runId: "run_7" } });
+      const result = await client.runTask("build", {});
+      expect(result).toEqual({ success: true, runId: "run_7" });
+    });
+
+    it("tolerates a stream response without a runId (older daemon)", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", result: { success: true } });
+      const result = await client.runTask("build", {});
+      expect(result.runId).toBeUndefined();
+      expect(result.success).toBe(true);
+    });
+
     it("throws on error response", async () => {
       mockIpcStream.mockResolvedValue({ id: "r1", error: "task error" });
       await expect(client.runTask("bad", {})).rejects.toThrow("task error");
@@ -338,6 +351,24 @@ describe("DaemonClient", () => {
       });
 
       expect(spy).toHaveBeenCalledWith("build", "Build", "success", "run_1");
+    });
+
+    it("re-emits task events with runId undefined when absent (older daemon)", () => {
+      const startSpy = vi.fn();
+      const completeSpy = vi.fn();
+      client.on("task.start", startSpy);
+      client.on("task.complete", completeSpy);
+      client.connect();
+
+      eventHandler({ session: "sess1", event: "task.start", data: { key: "b", name: "B" } });
+      eventHandler({
+        session: "sess1",
+        event: "task.complete",
+        data: { key: "b", name: "B", result: "success" },
+      });
+
+      expect(startSpy).toHaveBeenCalledWith("b", "B", undefined);
+      expect(completeSpy).toHaveBeenCalledWith("b", "B", "success", undefined);
     });
 
     it("routes session.destroyed", () => {
