@@ -14,6 +14,7 @@ import { killPane } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
+import { TaskOutputStore } from "./task-output-store.js";
 
 const MAX_TASK_HISTORY = 50;
 
@@ -110,6 +111,8 @@ export class Session {
   /** `runId → paneId` for run-in-pane runs, so the pane can later be addressed
    * (`paneExists`/`killPane`). Pane is left open on completion (Q13). */
   public readonly panesByRun = new Map<string, string>();
+  /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
+  public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;
 
   public name: string;
@@ -207,6 +210,7 @@ export class Session {
     });
 
     manager.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
+      this.taskOutput.start(runId, taskKey, Date.now());
       this.pushTaskRecord({
         runId,
         taskKey,
@@ -222,9 +226,15 @@ export class Session {
       });
     });
 
+    // Hook-path task output (manager-driven runs): retain lines for post-mortem.
+    manager.on("taskLine", (runId: string, line: string) => {
+      this.taskOutput.append(runId, line);
+    });
+
     manager.on(
       "taskComplete",
       (runId: string, taskKey: string, taskName: string, result: "success" | "error") => {
+        this.taskOutput.finish(runId, result, Date.now());
         this.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now() });
         this.broadcast({
           session: this.id,

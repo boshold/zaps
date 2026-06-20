@@ -329,6 +329,9 @@ export class ServiceManager extends EventEmitter {
             statuses: this.statuses,
             projectDir: config.projectDir,
             services: config.project.services,
+            onLine: (_taskKey, line) => {
+              this.emit("taskLine", runId, line);
+            },
             onProgress: (taskKey, result) => {
               this.emit("taskComplete", runId, taskKey, tasks[taskKey]?.name ?? taskKey, result);
             },

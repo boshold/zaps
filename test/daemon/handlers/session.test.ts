@@ -977,6 +977,60 @@ describe("session handlers", () => {
     });
   });
 
+  describe("tasks.output", () => {
+    it("returns the retained buffer for a known runId", async () => {
+      const session = createMockSession();
+      session.taskOutput.start("run_x", "migrate", 1000);
+      session.taskOutput.appendLines("run_x", ["line a", "line b"]);
+      session.taskOutput.finish("run_x", "success", 2000);
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro1",
+        method: "tasks.output",
+        session: session.id,
+        params: { runId: "run_x" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toBeUndefined();
+      expect(res.result).toEqual({
+        runId: "run_x",
+        taskKey: "migrate",
+        result: "success",
+        lines: ["line a", "line b"],
+        startedAt: 1000,
+        endedAt: 2000,
+      });
+    });
+
+    it("returns not_found for an unknown/evicted runId", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro2",
+        method: "tasks.output",
+        session: session.id,
+        params: { runId: "gone" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toBe("not_found");
+    });
+
+    it("returns error for unknown session", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro3",
+        method: "tasks.output",
+        session: "unknown",
+        params: { runId: "run_x" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toContain("Unknown session");
+    });
+  });
+
   describe("exec-service.resolve", () => {
     it("returns exec info and deletes it", async () => {
       const session = createMockSession();

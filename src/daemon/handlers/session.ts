@@ -1,13 +1,12 @@
 import type { Socket } from "node:net";
 
-import type { Command, DockerConfig, ResolvedConfig } from "#src/config/types.js";
+import type { Command, DockerConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { awaitPaneOutcome, buildPaneCommand } from "#src/lib/task/run-in-pane.js";
@@ -72,10 +71,11 @@ async function watchPaneOutcome(
 async function runPopupTaskNonInteractive(
   reqId: string,
   key: string,
-  config: ResolvedConfig,
-  manager: ServiceManager,
+  session: Session,
   socket: Socket,
+  runId: string,
 ): Promise<boolean> {
+  const { config, manager } = session;
   const tasks = config.project.tasks ?? {};
   const task = tasks[key];
   if (!task?.commands) {
@@ -96,6 +96,7 @@ async function runPopupTaskNonInteractive(
         cwd: taskCwd,
         ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
         onLine: (line) => {
+          session.taskOutput.append(runId, line);
           send(socket, { id: reqId, event: "line", data: line });
         },
       });
@@ -332,9 +333,12 @@ export const sessionHandlers: Record<
     const taskName = task.name;
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
-    // One runId per run correlates this run's start/complete + (Phase 5) output,
+    // One runId per run correlates this run's start/complete + output buffer,
     // So concurrent runs of the same key stay independent (Q12).
     const runId = newRunId();
+
+    // Begin retaining this run's output for post-mortem (tasks.output).
+    session.taskOutput.start(runId, key, Date.now());
 
     // Record + broadcast task.start to all subscribers
     session.pushTaskRecord({
@@ -353,13 +357,7 @@ export const sessionHandlers: Record<
 
     let success = false;
     if (isPopup) {
-      success = await runPopupTaskNonInteractive(
-        req.id,
-        key,
-        session.config,
-        session.manager,
-        socket,
-      );
+      success = await runPopupTaskNonInteractive(req.id, key, session, socket, runId);
     } else {
       const visited = new Set<string>();
       const results = new Map<string, "success" | "error">();
@@ -373,6 +371,7 @@ export const sessionHandlers: Record<
           projectDir: session.config.projectDir,
           services: session.config.project.services,
           onLine: (_taskKey, line) => {
+            session.taskOutput.append(runId, line);
             send(socket, { id: req.id, event: "line", data: line });
           },
           onProgress: (taskKey, result) => {
@@ -383,6 +382,9 @@ export const sessionHandlers: Record<
         results,
       );
     }
+
+    // Settle the retained output buffer with the run's outcome.
+    session.taskOutput.finish(runId, success ? "success" : "error", Date.now());
 
     // Record + broadcast task.complete to all subscribers
     session.pushTaskRecord({
@@ -482,6 +484,19 @@ export const sessionHandlers: Record<
     void watchPaneOutcome(session, runId, key, taskName);
 
     return ipcOk(req.id, { runId, paneId });
+  },
+
+  async "tasks.output"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId } = req.params as { runId: string };
+    const snapshot = session.taskOutput.get(runId);
+    if (!snapshot) {
+      return ipcErr(req.id, "not_found");
+    }
+    return ipcOk(req.id, snapshot);
   },
 
   async "exec-service.resolve"(req, store) {

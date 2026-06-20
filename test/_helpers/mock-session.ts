@@ -3,6 +3,7 @@ import { vi } from "vitest";
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 import type { SessionStore } from "../../src/daemon/server.js";
 import type { Session } from "../../src/daemon/session.js";
+import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
 
 export interface MockSession {
   id: string;
@@ -24,6 +25,7 @@ export interface MockSession {
   originPane: string;
   execInfo: Map<string, { command: string; cwd: string; env: Record<string, string> }>;
   panesByRun: Map<string, string>;
+  taskOutput: TaskOutputStore;
   manager: {
     getAllStatuses: ReturnType<typeof vi.fn>;
     getStatus: ReturnType<typeof vi.fn>;
@@ -79,6 +81,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     originPane: "%0",
     execInfo: overrides.execInfo ?? new Map(),
     panesByRun: overrides.panesByRun ?? new Map(),
+    taskOutput: overrides.taskOutput ?? new TaskOutputStore(),
     manager: {
       getAllStatuses: vi.fn(() => [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }]),
       getStatus: vi.fn((name: string) => {
