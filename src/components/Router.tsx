@@ -1,5 +1,5 @@
 import { useApp as useInkApp, useInput } from "ink";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { DockerConfig, UiTaskMode } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
@@ -16,6 +16,7 @@ import { buildCommandRegistry } from "#src/lib/command-registry.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { outputPopupAvailable, showOutputPopup } from "#src/lib/task/output-popup.js";
 import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
@@ -26,6 +27,7 @@ import { LogView } from "./LogView.js";
 import { COMMAND_PALETTE_ID, CommandPalette } from "./overlay/CommandPalette.js";
 import type { DockerFlags } from "./overlay/DockerRebuildOverlay.js";
 import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuildOverlay.js";
+import { FAILED_OUTPUT_ID, FailedOutputOverlay } from "./overlay/FailedOutputOverlay.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
 import { TASK_PICKER_ID, TaskPicker } from "./overlay/TaskPicker.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
@@ -44,7 +46,7 @@ export function Router({
   const { view, logTarget, goToLogs, goToDashboard } = useRouter();
   const { client, paneMap, tasks, servicesMeta, ui } = useZaps();
   // In-app notification surface: success → transient toast, failure → sticky.
-  const { notify, ackAll } = useToasts();
+  const { notify, ackAll, toasts, dismiss } = useToasts();
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
   const { connected, retry } = useConnection(client);
@@ -253,6 +255,44 @@ export function Router({
     overlay.push({ id: HELP_OVERLAY_ID, render: () => <HelpOverlay /> });
   }
 
+  // Acknowledge a single failure by clearing its sticky toast(s) (the overlay
+  // Calls this on close). dismiss-by-id is safe even against a stale list.
+  function dismissFailureToast(runId: string) {
+    for (const toast of toasts) {
+      if (toast.runId === runId && toast.sticky) {
+        dismiss(toast.id);
+      }
+    }
+  }
+
+  // Stable fetcher identity so an OverlayHost re-render (e.g. on terminal RESIZE)
+  // Doesn't change the failed-output overlay's load-effect deps — which would
+  // Otherwise re-fetch and snap the user's scroll back to the tail.
+  const fetchTaskOutput = useCallback(async (id: string) => client.getTaskOutput(id), [client]);
+
+  // Open the failed-output overlay for a run (entry point from the `f` key on a
+  // Sticky failure). Resolves popup availability first so the overlay only offers
+  // Escalation when tmux supports it. With `ui.failOutput: popup` the overlay
+  // Escalates straight to the popup on open (Q3). Closing acks the sticky toast.
+  function openFailedOutput(runId: string, taskName: string) {
+    void (async () => {
+      const canPopup = await outputPopupAvailable();
+      overlay.push({
+        id: FAILED_OUTPUT_ID,
+        render: () => (
+          <FailedOutputOverlay
+            runId={runId}
+            taskName={taskName}
+            fetchOutput={fetchTaskOutput}
+            showPopup={canPopup ? showOutputPopup : undefined}
+            startInPopup={ui.failOutput === "popup"}
+            onClose={() => dismissFailureToast(runId)}
+          />
+        ),
+      });
+    })();
+  }
+
   // --- Palette action wiring: each command reuses the same IPC the quick keys
   // Drive, including the per-service busy guard, so it is never a second path. ---
   function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
@@ -444,6 +484,16 @@ export function Router({
       }
       if (input === "?") {
         openHelp();
+        return;
+      }
+      // F: open the most-recent sticky failure's captured output overlay. The
+      // Task name is recovered from history by runId. No-op when none is sticky.
+      if (input === "f") {
+        const failure = toasts.toReversed().find((t) => t.sticky && Boolean(t.runId));
+        if (failure?.runId) {
+          const record = taskHistory.find((r) => r.runId === failure.runId);
+          openFailedOutput(failure.runId, record?.taskName ?? "Task");
+        }
         return;
       }
       // Ctrl+d: shut down — destroy session from any view.

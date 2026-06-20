@@ -47,7 +47,7 @@ export function ToastList({ toasts, stickyTotal, width }: ToastListProps) {
       ))}
       {stickyTotal > 0 && (
         <Text color="red" bold wrap="truncate-end">
-          {icon("taskError")} {stickyTotal} failure{stickyTotal === 1 ? "" : "s"} — press x to
+          {icon("taskError")} {stickyTotal} failure{stickyTotal === 1 ? "" : "s"} — [f] view [x]
           dismiss
         </Text>
       )}

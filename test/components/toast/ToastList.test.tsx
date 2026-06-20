@@ -31,7 +31,7 @@ describe("ToastList", () => {
     expect(frame).toContain("Build succeeded");
     expect(frame).toContain("Reloaded config");
     // No sticky failures → no acknowledge badge.
-    expect(frame).not.toContain("press x to dismiss");
+    expect(frame).not.toContain("[x] dismiss");
   });
 
   it("shows a persistent acknowledge badge while a sticky failure is outstanding", () => {
@@ -44,7 +44,8 @@ describe("ToastList", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Build failed");
     expect(frame).toContain("1 failure");
-    expect(frame).toContain("press x to dismiss");
+    expect(frame).toContain("[f] view");
+    expect(frame).toContain("[x] dismiss");
   });
 
   it("pluralizes the failure badge", () => {
