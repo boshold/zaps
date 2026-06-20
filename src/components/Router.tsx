@@ -10,6 +10,7 @@ import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
 import { useServices } from "#src/hooks/useServices.js";
+import { useToasts } from "#src/hooks/useToasts.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
 import { openInBrowser } from "#src/lib/open.js";
@@ -41,6 +42,8 @@ export function Router({
 }) {
   const { view, logTarget, goToLogs, goToDashboard } = useRouter();
   const { client, paneMap, tasks, servicesMeta, ui } = useZaps();
+  // In-app notification surface: success → transient toast, failure → sticky.
+  const { notify, ackAll } = useToasts();
   // First consumer of the daemon disconnect/connected surface. While offline the
   // Poll is gated (deliberate freeze of last-known state, not a silent catch).
   const { connected, retry } = useConnection(client);
@@ -126,6 +129,15 @@ export function Router({
     ) {
       onTaskComplete({ runId: runId ?? taskKey, taskKey, taskName, result, timestamp: Date.now() });
       setRunningTask((cur) => (cur === taskKey ? null : cur));
+      // In-app signal that a background run finished. Success is transient;
+      // Failure is sticky and carries the runId so the overlay (P05-T05) can
+      // Open its captured output.
+      notify({
+        level: result === "error" ? "error" : "success",
+        message: result === "error" ? `${taskName} failed` : `${taskName} succeeded`,
+        runId: runId ?? null,
+        sticky: result === "error",
+      });
     }
     client.on("task.start", handleTaskStart);
     client.on("task.complete", handleTaskComplete);
@@ -133,7 +145,7 @@ export function Router({
       client.off("task.start", handleTaskStart);
       client.off("task.complete", handleTaskComplete);
     };
-  }, [client]);
+  }, [client, notify]);
 
   // Ready gate: delay rendering for minimum splash time only
   const [ready, setReady] = useState(!autoStart);
@@ -401,6 +413,12 @@ export function Router({
       // Q / ctrl+c: detach from any view (services keep running). Works offline.
       if (input === "q" || (key.ctrl && input === "c")) {
         detachSession();
+        return;
+      }
+      // X: acknowledge — clear sticky failure toasts. Works offline (toasts are
+      // Local state) and from any view; harmless when nothing is sticky.
+      if (input === "x") {
+        ackAll();
         return;
       }
       // While disconnected the UI is inert except `r` (manual re-attach). No

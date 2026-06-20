@@ -1,9 +1,11 @@
 import { OverlayProvider } from "#src/hooks/useOverlay.js";
+import { ToastProvider } from "#src/hooks/useToasts.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { OverlayHost } from "./overlay/OverlayHost.js";
 import { Router } from "./Router.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { ToastHost } from "./toast/ToastHost.js";
 
 interface AppShellProps {
   initialStatuses: ServiceStatus[];
@@ -12,18 +14,22 @@ interface AppShellProps {
 }
 
 /**
- * Mounts the overlay stack around the Router so overlays float above the base
- * view. Kept separate from `App` to keep each component's JSX nesting shallow.
+ * Mounts the overlay stack + toast layer around the Router so both float above
+ * the base view. Kept separate from `App` to keep each component's JSX nesting
+ * shallow.
  */
 export function AppShell({ initialStatuses, initialTaskHistory, autoStart }: AppShellProps) {
   return (
     <OverlayProvider>
-      <Router
-        initialStatuses={initialStatuses}
-        initialTaskHistory={initialTaskHistory}
-        autoStart={autoStart}
-      />
-      <OverlayHost />
+      <ToastProvider>
+        <Router
+          initialStatuses={initialStatuses}
+          initialTaskHistory={initialTaskHistory}
+          autoStart={autoStart}
+        />
+        <OverlayHost />
+        <ToastHost />
+      </ToastProvider>
     </OverlayProvider>
   );
 }
