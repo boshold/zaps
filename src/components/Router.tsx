@@ -13,6 +13,7 @@ import { useServices } from "#src/hooks/useServices.js";
 import { useToasts } from "#src/hooks/useToasts.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
+import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
@@ -138,6 +139,11 @@ export function Router({
         runId: runId ?? null,
         sticky: result === "error",
       });
+      // Out-of-band desktop/terminal nudge on failure, per ui.notifications.
+      // Unconditional (no focus gate, Q6); complements the sticky toast above.
+      if (result === "error") {
+        notifyFailure(taskName, ui.notifications);
+      }
     }
     client.on("task.start", handleTaskStart);
     client.on("task.complete", handleTaskComplete);
@@ -145,7 +151,7 @@ export function Router({
       client.off("task.start", handleTaskStart);
       client.off("task.complete", handleTaskComplete);
     };
-  }, [client, notify]);
+  }, [client, notify, ui.notifications]);
 
   // Ready gate: delay rendering for minimum splash time only
   const [ready, setReady] = useState(!autoStart);
