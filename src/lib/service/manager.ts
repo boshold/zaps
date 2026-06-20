@@ -1482,6 +1482,9 @@ export interface ServiceManagerEvents {
     taskName: string,
     result: "success" | "error",
   ) => void;
+  /** A task output line from the hook-path runner; the session appends it to the
+   * run's `TaskOutputStore` buffer (keyed by `runId`). */
+  taskLine: (runId: string, line: string) => void;
   /** New detached-child log lines — the session appends + broadcasts them (E4). */
   logLines: (name: string, lines: string[]) => void;
 }

@@ -997,6 +997,19 @@ program
     await execService(name, session);
   });
 
+program
+  .command("exec-task <runId>", { hidden: true })
+  .description("Execute a run-in-pane task via wrapper (internal)")
+  .action(async (runId: string) => {
+    const session = globalSession();
+    if (!session) {
+      process.stderr.write("Error: -s/--session is required for exec-task\n");
+      process.exit(1);
+    }
+    const { execTask } = await import("./cli/exec-task.js");
+    await execTask(runId, session);
+  });
+
 // --- Daemon management ---
 
 const daemonCmd = program.command("daemon").description("Daemon management");

@@ -122,21 +122,6 @@ export async function killPane(target: string): Promise<void> {
   await run(["kill-pane", "-t", target]);
 }
 
-/**
- * Block until someone runs `wait-for -S channel` for the same channel. Used by
- * the daemon to detect a pane command's completion without scraping its output:
- * the command signals a per-run channel when it exits and this resolves. tmux
- * queues an early `-S` (fired before any waiter), so there is no start race.
- */
-export async function waitForChannel(channel: string): Promise<void> {
-  await run(["wait-for", channel]);
-}
-
-/** Wake any client blocked on `channel` (and arm the next `wait-for` if none). */
-export async function signalChannel(channel: string): Promise<void> {
-  await run(["wait-for", "-S", channel]);
-}
-
 export async function panePid(target: string): Promise<number> {
   const out = await run(["display-message", "-p", "-t", target, "#{pane_pid}"]);
   return Number.parseInt(out, 10);

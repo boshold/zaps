@@ -8,6 +8,7 @@ import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
+import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { killPane } from "#src/lib/tmux.js";
@@ -111,6 +112,9 @@ export class Session {
   /** `runId → paneId` for run-in-pane runs, so the pane can later be addressed
    * (`paneExists`/`killPane`). Pane is left open on completion (Q13). */
   public readonly panesByRun = new Map<string, string>();
+  /** `runId → resolve info + metadata` for run-in-pane runs, consumed by the
+   * `exec-task` wrapper over IPC (parallel to `execInfo` for services). */
+  public readonly paneRunInfo = new Map<string, PaneRunInfo>();
   /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
   public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;

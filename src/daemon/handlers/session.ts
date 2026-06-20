@@ -9,7 +9,7 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
-import { awaitPaneOutcome, buildPaneCommand } from "#src/lib/task/run-in-pane.js";
+import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import { newWindow, sendKeys, splitPane } from "#src/lib/tmux.js";
 
@@ -46,26 +46,6 @@ function completePaneRun(
     event: "task.complete",
     data: { key: taskKey, name: taskName, result, runId },
   });
-}
-
-/**
- * Watch a launched pane run to completion and broadcast `task.complete`. Run
- * fire-and-forget: `tasks.runInPane` returns once the pane exists, while the run
- * itself streams live in the pane and finishes asynchronously.
- */
-async function watchPaneOutcome(
-  session: Session,
-  runId: string,
-  taskKey: string,
-  taskName: string,
-): Promise<void> {
-  let result: "success" | "error" = "error";
-  try {
-    result = await awaitPaneOutcome(runId);
-  } catch {
-    result = "error";
-  }
-  completePaneRun(session, runId, taskKey, taskName, result);
 }
 
 async function runPopupTaskNonInteractive(
@@ -453,6 +433,21 @@ export const sessionHandlers: Record<
     }
     session.panesByRun.set(runId, paneId);
 
+    // Stash the resolve info the exec-task wrapper will fetch over IPC, plus the
+    // Metadata needed to complete the run when the wrapper reports its exit.
+    const cwd = task.cwd ?? session.config.projectDir;
+    const env = resolveEnv(task.env, serviceCtx);
+    session.paneRunInfo.set(runId, {
+      command: joinTaskCommands(resolvedCommands),
+      cwd,
+      env,
+      taskKey: key,
+      taskName,
+    });
+
+    // Begin retaining this run's output (the wrapper streams lines into it).
+    session.taskOutput.start(runId, key, Date.now());
+
     // Record + broadcast task.start with mode:"pane" so the run is correlatable.
     session.pushTaskRecord({
       runId,
@@ -468,22 +463,68 @@ export const sessionHandlers: Record<
       data: { key, name: taskName, runId },
     });
 
-    const cwd = task.cwd ?? session.config.projectDir;
-    const env = resolveEnv(task.env, serviceCtx);
-    const command = buildPaneCommand(resolvedCommands, { cwd, env, runId });
+    // Launch the wrapper in the pane: it resolves the command from the daemon,
+    // Runs it, tees output back into the TaskOutputStore, and reports completion
+    // — a single capture+completion path (no tmux wait-for). The pane is left
+    // Open on completion so the user can inspect output in place (Q13).
+    const command = buildWrapperCommand({
+      zapsCommand: session.deps.zapsCommand,
+      sessionId: session.deps.sessionId,
+      runId,
+    });
     try {
       await sendKeys(paneId, command);
     } catch {
+      session.paneRunInfo.delete(runId);
+      session.taskOutput.finish(runId, "error", Date.now());
       completePaneRun(session, runId, key, taskName, "error");
       return ipcErr(req.id, "tmux_failed");
     }
 
-    // The run renders live in the pane; completion is detected daemon-side via
-    // The run's wait-for channel (not pane scraping), then broadcast. The pane is
-    // Left open on completion so the user can inspect output in place (Q13).
-    void watchPaneOutcome(session, runId, key, taskName);
-
     return ipcOk(req.id, { runId, paneId });
+  },
+
+  async "exec-task.resolve"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId } = req.params as { runId: string };
+    const info = session.paneRunInfo.get(runId);
+    if (!info) {
+      return ipcErr(req.id, "not_found");
+    }
+    // Return only what the wrapper needs to spawn; keep the entry (taskKey/
+    // TaskName) until exit so the run can be completed then.
+    return ipcOk(req.id, { command: info.command, cwd: info.cwd, env: info.env });
+  },
+
+  async "exec-task.line"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId, line } = req.params as { runId: string; line: string };
+    session.taskOutput.append(runId, line);
+    return ipcOk(req.id, { ok: true });
+  },
+
+  async "exec-task.exited"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId, code } = req.params as { runId: string; code: number };
+    const info = session.paneRunInfo.get(runId);
+    if (!info) {
+      // Already completed (or never registered) — nothing to finish.
+      return ipcOk(req.id, { ok: true });
+    }
+    session.paneRunInfo.delete(runId);
+    const result = code === 0 ? "success" : "error";
+    session.taskOutput.finish(runId, result, Date.now());
+    completePaneRun(session, runId, info.taskKey, info.taskName, result);
+    return ipcOk(req.id, { ok: true });
   },
 
   async "tasks.output"(req, store) {

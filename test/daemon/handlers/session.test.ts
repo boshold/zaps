@@ -24,10 +24,7 @@ vi.mock("../../../src/lib/tmux.js", () => ({
   sendKeys: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../../src/lib/task/run-in-pane.js", () => ({
-  buildPaneCommand: vi.fn(() => "BUILT_CMD"),
-  awaitPaneOutcome: vi.fn().mockResolvedValue("success"),
-}));
+// `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
 
 describe("session handlers", () => {
   beforeEach(() => {
@@ -869,10 +866,18 @@ describe("session handlers", () => {
       expect(result.paneId).toBe("%win");
       expect(newWindow).toHaveBeenCalledWith("test-tmux");
       expect(splitPane).not.toHaveBeenCalled();
-      // The launched command is the one buildPaneCommand produced, sent to the pane.
-      expect(sendKeys).toHaveBeenCalledWith("%win", "BUILT_CMD");
+      // The launched command is the exec-task wrapper invocation for this run.
+      expect(sendKeys).toHaveBeenCalledWith("%win", `zaps -s abc123 exec-task ${result.runId}`);
       // Stores runId → paneId so the pane can later be addressed (T04).
       expect(session.panesByRun.get(result.runId)).toBe("%win");
+      // Stashes the resolve info the wrapper fetches over IPC.
+      expect(session.paneRunInfo.get(result.runId)).toMatchObject({
+        command: "echo hi",
+        taskKey: "build",
+        taskName: "Build",
+      });
+      // Begins retaining output for the run (buffer exists for the wrapper).
+      expect(session.taskOutput.get(result.runId)?.result).toBe("running");
       // Records + broadcasts task.start with mode:"pane".
       expect(session.pushTaskRecord).toHaveBeenCalledWith(
         expect.objectContaining({ runId: result.runId, result: "running", mode: "pane" }),
@@ -948,7 +953,12 @@ describe("session handlers", () => {
       expect(res.error).toContain("no shell commands");
     });
 
-    it("broadcasts task.complete once the pane run finishes", async () => {
+    it("returns tmux_failed and finishes the run as error when sendKeys fails", async () => {
+      const { sendKeys } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        sendKeys: ReturnType<typeof vi.fn>;
+      };
+      sendKeys.mockRejectedValueOnce(new Error("pane gone"));
+
       const session = createMockSession();
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
@@ -960,20 +970,139 @@ describe("session handlers", () => {
         params: { key: "build" },
       };
       const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
-      const { runId } = res.result as { runId: string };
+      expect(res.error).toBe("tmux_failed");
+      // The stashed resolve info is cleaned up and the run is completed as error.
+      const runId = [...session.paneRunInfo.keys()];
+      expect(runId).toHaveLength(0);
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.complete",
+          data: expect.objectContaining({ result: "error" }),
+        }),
+      );
+    });
+  });
 
-      // Completion is detected asynchronously (awaitPaneOutcome → success).
-      await vi.waitFor(() => {
-        expect(session.broadcast).toHaveBeenCalledWith(
-          expect.objectContaining({
-            event: "task.complete",
-            data: expect.objectContaining({ runId, result: "success" }),
-          }),
+  // ── exec-task wrapper IPC (P05-T01a) ─────────────────────────
+
+  describe("exec-task.resolve / line / exited", () => {
+    async function launchPaneRun(): Promise<{
+      session: ReturnType<typeof createMockSession>;
+      runId: string;
+    }> {
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["tasks.runInPane"](
+        { id: "x", method: "tasks.runInPane", session: session.id, params: { key: "build" } },
+        store,
+        socket as never,
+      );
+      return { session, runId: (res.result as { runId: string }).runId };
+    }
+
+    it("resolves the stashed command/cwd/env for the wrapper", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.resolve"](
+        { id: "er1", method: "exec-task.resolve", session: session.id, params: { runId } },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ command: "echo hi", cwd: "/fake" });
+    });
+
+    it("returns not_found for an unknown runId", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.resolve"](
+        { id: "er2", method: "exec-task.resolve", session: session.id, params: { runId: "nope" } },
+        store,
+        socket as never,
+      );
+      expect(res.error).toBe("not_found");
+    });
+
+    it("appends streamed lines to the run's output buffer", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      for (const line of ["building...", "done"]) {
+        // eslint-disable-next-line no-await-in-loop -- ordered line delivery
+        await sessionHandlers["exec-task.line"](
+          { id: "el", method: "exec-task.line", session: session.id, params: { runId, line } },
+          store,
+          socket as never,
         );
+      }
+      expect(session.taskOutput.get(runId)?.lines).toEqual(["building...", "done"]);
+    });
+
+    it("completes the run on exit code 0 (success) and retains the output", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      await sessionHandlers["exec-task.line"](
+        { id: "el", method: "exec-task.line", session: session.id, params: { runId, line: "ok" } },
+        store,
+        socket as never,
+      );
+      const res = await sessionHandlers["exec-task.exited"](
+        { id: "ee1", method: "exec-task.exited", session: session.id, params: { runId, code: 0 } },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ ok: true });
+      // Output is retrievable post-mortem with the settled result.
+      expect(session.taskOutput.get(runId)).toMatchObject({
+        result: "success",
+        lines: ["ok"],
       });
+      // The task.complete broadcast + history record carry runId + mode:pane.
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.complete",
+          data: expect.objectContaining({ runId, result: "success" }),
+        }),
+      );
       expect(session.pushTaskRecord).toHaveBeenCalledWith(
         expect.objectContaining({ runId, result: "success", mode: "pane" }),
       );
+      // The resolve entry is consumed so a re-exit is a no-op.
+      expect(session.paneRunInfo.has(runId)).toBe(false);
+    });
+
+    it("completes the run as error on a non-zero exit code", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      await sessionHandlers["exec-task.exited"](
+        { id: "ee2", method: "exec-task.exited", session: session.id, params: { runId, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(session.taskOutput.get(runId)?.result).toBe("error");
+    });
+
+    it("is a no-op for an already-completed (or unknown) run", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.exited"](
+        {
+          id: "ee3",
+          method: "exec-task.exited",
+          session: session.id,
+          params: { runId: "gone", code: 0 },
+        },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ ok: true });
+      expect(session.broadcast).not.toHaveBeenCalled();
     });
   });
 
