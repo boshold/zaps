@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import type { DockerConfig } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
+import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
@@ -183,6 +184,20 @@ export class DaemonClient extends EventEmitter {
       throw new Error(res.error);
     }
     return res.result as { runId: string; paneId: string };
+  }
+
+  /**
+   * Fetch a retained task-run output buffer for post-mortem inspection (used by
+   * The failed-output overlay). Rejects with `not_found` when the buffer was
+   * Evicted or the `runId` is unknown.
+   */
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  public async getTaskOutput(runId: string): Promise<TaskOutputSnapshot> {
+    const res = await this.request("tasks.output", { runId });
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.result as TaskOutputSnapshot;
   }
 
   // --- Internal ---

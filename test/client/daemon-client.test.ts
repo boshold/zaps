@@ -296,6 +296,36 @@ describe("DaemonClient", () => {
     });
   });
 
+  describe("getTaskOutput", () => {
+    it("issues tasks.output and resolves the buffer", async () => {
+      const snapshot = {
+        runId: "run_9",
+        taskKey: "build",
+        result: "error",
+        lines: ["compiling", "boom"],
+        startedAt: 1000,
+        endedAt: 2000,
+      };
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: snapshot });
+
+      const result = await client.getTaskOutput("run_9");
+
+      expect(result).toEqual(snapshot);
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.output",
+        { runId: "run_9" },
+        30_000,
+        "sess1",
+      );
+    });
+
+    it("rejects with not_found when the buffer was evicted or unknown", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "not_found" });
+      await expect(client.getTaskOutput("gone")).rejects.toThrow("not_found");
+    });
+  });
+
   describe("event routing", () => {
     it("routes service.stateChange", () => {
       const spy = vi.fn();
