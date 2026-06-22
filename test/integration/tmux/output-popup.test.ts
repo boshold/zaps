@@ -7,14 +7,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { showOutputPopup } from "#src/lib/task/output-popup.js";
 import { setEnv, tmuxSupportsPopup } from "#src/lib/tmux.js";
 
-import { hasScriptPty, hasTmux } from "../helpers/skip.js";
+import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
 import { attachClient, createTestSession } from "../helpers/tmux.js";
 
-// The `display-popup` failed-output escalation (Q3) needs an attached client,
-// Which the headless harness only gets via a real pty (`script`). Gate on both.
+// The `display-popup` failed-output escalation (Q3) needs a genuinely
+// Interactive attached client. CI runners only fake one via `script` — the pty
+// Satisfies hasScriptPty() but tmux still can't host the popup there (exit 1),
+// So skip on CI, mirroring the binary-smoke gate. Hermetic coverage of this
+// Path lives in test/lib/task/output-popup.test.ts (runs everywhere).
 const popupSupported = hasTmux() ? await tmuxSupportsPopup() : false;
-const canRunPopup = popupSupported && hasScriptPty();
+const canRunPopup = popupSupported && hasScriptPty() && !isCI;
 
 /**
  * Shadow `less` on the session PATH with a stub that copies the file it is asked
