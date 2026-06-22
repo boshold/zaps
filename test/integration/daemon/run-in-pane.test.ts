@@ -150,6 +150,57 @@ describe.skipIf(!hasTmux())("daemon tasks.runInPane integration (exec-task wrapp
     expect(await paneExists(paneId)).toBe(true);
   });
 
+  it("runs in a split pane (target: pane), captures output, completes, and leaves it open", async () => {
+    const events: DaemonEvent[] = [];
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], (event) => events.push(event));
+    await ipcRequest(daemon.socketPath, "daemon.ping");
+
+    const res = await ipcRequest(
+      daemon.socketPath,
+      "tasks.runInPane",
+      { key: "echo", target: "pane" },
+      10_000,
+      sid,
+    );
+    expect(res.error).toBeUndefined();
+    const { runId, paneId } = res.result as { runId: string; paneId: string };
+    expect(runId).toMatch(/^run_/u);
+    expect(paneId).toMatch(/^%/u);
+
+    // The split pane is a distinct, live pane.
+    expect(paneId).not.toBe(tmux.initialPaneId);
+    expect(await paneExists(paneId)).toBe(true);
+
+    const start = Date.now();
+    /* eslint-disable no-await-in-loop -- polling for the async completion event */
+    let complete: DaemonEvent | undefined;
+    while (Date.now() - start < 30_000) {
+      complete = events.find(
+        (e) => e.event === "task.complete" && (e.data as { runId?: string }).runId === runId,
+      );
+      if (complete) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    /* eslint-enable no-await-in-loop */
+    sub.close();
+
+    expect(complete).toBeDefined();
+    const data = complete?.data as { key: string; result: string; runId: string };
+    expect(data.key).toBe("echo");
+    expect(data.result).toBe("success");
+
+    const outRes = await ipcRequest(daemon.socketPath, "tasks.output", { runId }, 5000, sid);
+    expect(outRes.error).toBeUndefined();
+    const out = outRes.result as { result: string; lines: string[] };
+    expect(out.result).toBe("success");
+    expect(out.lines.join("\n")).toContain("run-in-pane-ok");
+
+    // The split pane is left open on completion (Q13).
+    expect(await paneExists(paneId)).toBe(true);
+  });
+
   it("captures the trailing line of multi-line, no-trailing-newline output (tail-chunk race)", async () => {
     const events: DaemonEvent[] = [];
     const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], (event) => events.push(event));
