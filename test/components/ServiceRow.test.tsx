@@ -40,10 +40,10 @@ describe("ServiceRow", () => {
     expect(lastFrame()).toContain(":3001");
   });
 
-  it("shows ---- when no ports", () => {
+  it("shows a dash when no ports", () => {
     const status = makeStatus({ ports: [] });
     const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
-    expect(lastFrame()).toContain(":----");
+    expect(lastFrame()).toContain("-");
   });
 
   it("shows service name", () => {
@@ -213,5 +213,31 @@ describe("ServiceRow", () => {
     const status = makeStatus({ state: "starting", retryCount: 3 });
     const { lastFrame } = render(<ServiceRow status={status} cols={60} isSelected={false} />);
     expect(lastFrame()).toBeTruthy();
+  });
+
+  it("shows an alert glyph on an unselected errored row", () => {
+    const status = makeStatus({ state: "error", lastError: "crashed" });
+    const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
+    expect(lastFrame() ?? "").toContain("⚠");
+  });
+
+  it("suppresses the inline error but keeps the alert glyph when the detail pane is visible", () => {
+    const status = makeStatus({ state: "error", lastError: "crashed" });
+    const { lastFrame } = render(
+      <ServiceRow status={status} cols={100} isSelected={false} detailVisible />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("⚠");
+    expect(frame).not.toContain("Error: crashed");
+  });
+
+  it("suppresses the inline error for the selected row when the detail pane is visible", () => {
+    const status = makeStatus({ state: "error", lastError: "crashed" });
+    const { lastFrame } = render(
+      <ServiceRow status={status} cols={100} isSelected detailVisible />,
+    );
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain(">");
+    expect(frame).not.toContain("Error: crashed");
   });
 });

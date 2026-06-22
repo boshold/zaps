@@ -1,5 +1,5 @@
 import { isReady } from "#src/lib/docker.js";
-import { selectProbeCandidates } from "#src/lib/probe.js";
+import { PROBE_HOSTS, selectProbeCandidates } from "#src/lib/probe.js";
 
 import type { ReadyConfig, ReadyDeps } from "./types.js";
 import { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "./types.js";
@@ -209,17 +209,21 @@ export async function waitForReady(
     const probePath = async (): Promise<boolean> => {
       const ports = selectProbeCandidates(await deps.detectPorts(paneTarget));
       for (const port of ports) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${String(port)}${url}`, {
-            method: "GET",
-            signal: AbortSignal.timeout(1000),
-            redirect: "manual",
-          });
-          if (checkResponse(res)) {
-            return true;
+        // A service may bind only IPv4 or only IPv6 loopback (e.g. Nuxt/Nitro
+        // Binds `[::1]` only), so probe both hosts (B8).
+        for (const host of PROBE_HOSTS) {
+          try {
+            const res = await fetch(`http://${host}:${String(port)}${url}`, {
+              method: "GET",
+              signal: AbortSignal.timeout(1000),
+              redirect: "manual",
+            });
+            if (checkResponse(res)) {
+              return true;
+            }
+          } catch {
+            // Not ready on this host/port yet.
           }
-        } catch {
-          // Not ready on this port yet.
         }
       }
       return false;

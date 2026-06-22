@@ -18,6 +18,14 @@ vi.mock("../../../src/lib/task/runner.js", () => ({
   runTaskWithDeps: vi.fn().mockResolvedValue(true),
 }));
 
+vi.mock("../../../src/lib/tmux.js", () => ({
+  newWindow: vi.fn().mockResolvedValue("%win"),
+  splitPane: vi.fn().mockResolvedValue("%split"),
+  sendKeys: vi.fn().mockResolvedValue(undefined),
+}));
+
+// `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
+
 describe("session handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -613,9 +621,22 @@ describe("session handlers", () => {
         params: { key: "build" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
-      expect(session.pushTaskRecord).toHaveBeenCalled();
-      expect(session.broadcast).toHaveBeenCalled();
+      const result = res.result as { success: boolean; runId: string };
+      expect(result.success).toBe(true);
+      // The run's id is returned for correlation, and threaded into the records.
+      expect(result.runId).toEqual(expect.any(String));
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "running", mode: "background" }),
+      );
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "success" }),
+      );
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.start",
+          data: expect.objectContaining({ runId: result.runId }),
+        }),
+      );
     });
 
     it("runs popup task non-interactively", async () => {
@@ -637,7 +658,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
     });
 
     it("runs popup task with function command", async () => {
@@ -659,7 +680,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith("dynamic-cmd", expect.anything());
     });
 
@@ -682,7 +703,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: false });
+      expect(res.result).toMatchObject({ success: false });
     });
 
     it("runs task and invokes onLine/onProgress callbacks", async () => {
@@ -710,7 +731,7 @@ describe("session handlers", () => {
         params: { key: "build" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       // Verify socket received line and progress events
       expect(socket.write).toHaveBeenCalled();
       const writes = socket.write.mock.calls.map((c: string[]) => JSON.parse(c[0]));
@@ -744,7 +765,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: false });
+      expect(res.result).toMatchObject({ success: false });
     });
 
     it("runs popup task with custom cwd", async () => {
@@ -766,7 +787,7 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({ cwd: "/custom" }),
@@ -797,11 +818,345 @@ describe("session handlers", () => {
         params: { key: "lint" },
       };
       const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toEqual({ success: true });
+      expect(res.result).toMatchObject({ success: true });
       expect(execCommand).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({ env: { NODE_ENV: "test" } }),
       );
+    });
+  });
+
+  describe("tasks.runInPane", () => {
+    it("returns unknown_task for a missing key", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {};
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp1",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "missing" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toBe("unknown_task");
+    });
+
+    it("creates a new window by default and returns runId + paneId", async () => {
+      const { newWindow, splitPane, sendKeys } =
+        (await import("../../../src/lib/tmux.js")) as unknown as {
+          newWindow: ReturnType<typeof vi.fn>;
+          splitPane: ReturnType<typeof vi.fn>;
+          sendKeys: ReturnType<typeof vi.fn>;
+        };
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp2",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      const result = res.result as { runId: string; paneId: string };
+      expect(result.runId).toEqual(expect.any(String));
+      expect(result.paneId).toBe("%win");
+      expect(newWindow).toHaveBeenCalledWith("test-tmux");
+      expect(splitPane).not.toHaveBeenCalled();
+      // The launched command is the exec-task wrapper invocation for this run.
+      expect(sendKeys).toHaveBeenCalledWith("%win", `zaps -s abc123 exec-task ${result.runId}`);
+      // Stores runId → paneId so the pane can later be addressed (T04).
+      expect(session.panesByRun.get(result.runId)).toBe("%win");
+      // Stashes the resolve info the wrapper fetches over IPC.
+      expect(session.paneRunInfo.get(result.runId)).toMatchObject({
+        command: "echo hi",
+        taskKey: "build",
+        taskName: "Build",
+      });
+      // Begins retaining output for the run (buffer exists for the wrapper).
+      expect(session.taskOutput.get(result.runId)?.result).toBe("running");
+      // Records + broadcasts task.start with mode:"pane".
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: result.runId, result: "running", mode: "pane" }),
+      );
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.start",
+          data: expect.objectContaining({ runId: result.runId }),
+        }),
+      );
+    });
+
+    it("splits a pane when target=pane", async () => {
+      const { splitPane } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        splitPane: ReturnType<typeof vi.fn>;
+      };
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp3",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build", target: "pane" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect((res.result as { paneId: string }).paneId).toBe("%split");
+      // Splits off the reserved TUI pane.
+      expect(splitPane).toHaveBeenCalledWith("%0", "v");
+    });
+
+    it("returns tmux_failed when pane creation fails", async () => {
+      const { newWindow } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        newWindow: ReturnType<typeof vi.fn>;
+      };
+      newWindow.mockRejectedValueOnce(new Error("tmux down"));
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp4",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toBe("tmux_failed");
+    });
+
+    it("errors when the task has no shell commands", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        custom: {
+          name: "Custom",
+          run: async () => {
+            /* Noop */
+          },
+        },
+      };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp5",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "custom" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toContain("no shell commands");
+    });
+
+    it("returns tmux_failed and finishes the run as error when sendKeys fails", async () => {
+      const { sendKeys } = (await import("../../../src/lib/tmux.js")) as unknown as {
+        sendKeys: ReturnType<typeof vi.fn>;
+      };
+      sendKeys.mockRejectedValueOnce(new Error("pane gone"));
+
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "rp6",
+        method: "tasks.runInPane",
+        session: session.id,
+        params: { key: "build" },
+      };
+      const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
+      expect(res.error).toBe("tmux_failed");
+      // The stashed resolve info is cleaned up and the run is completed as error.
+      const runId = [...session.paneRunInfo.keys()];
+      expect(runId).toHaveLength(0);
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.complete",
+          data: expect.objectContaining({ result: "error" }),
+        }),
+      );
+    });
+  });
+
+  // ── exec-task wrapper IPC (P05-T01a) ─────────────────────────
+
+  describe("exec-task.resolve / line / exited", () => {
+    async function launchPaneRun(): Promise<{
+      session: ReturnType<typeof createMockSession>;
+      runId: string;
+    }> {
+      const session = createMockSession();
+      session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["tasks.runInPane"](
+        { id: "x", method: "tasks.runInPane", session: session.id, params: { key: "build" } },
+        store,
+        socket as never,
+      );
+      return { session, runId: (res.result as { runId: string }).runId };
+    }
+
+    it("resolves the stashed command/cwd/env for the wrapper", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.resolve"](
+        { id: "er1", method: "exec-task.resolve", session: session.id, params: { runId } },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ command: "echo hi", cwd: "/fake" });
+    });
+
+    it("returns not_found for an unknown runId", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.resolve"](
+        { id: "er2", method: "exec-task.resolve", session: session.id, params: { runId: "nope" } },
+        store,
+        socket as never,
+      );
+      expect(res.error).toBe("not_found");
+    });
+
+    it("appends streamed lines to the run's output buffer", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      for (const line of ["building...", "done"]) {
+        // eslint-disable-next-line no-await-in-loop -- ordered line delivery
+        await sessionHandlers["exec-task.line"](
+          { id: "el", method: "exec-task.line", session: session.id, params: { runId, line } },
+          store,
+          socket as never,
+        );
+      }
+      expect(session.taskOutput.get(runId)?.lines).toEqual(["building...", "done"]);
+    });
+
+    it("completes the run on exit code 0 (success) and retains the output", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      await sessionHandlers["exec-task.line"](
+        { id: "el", method: "exec-task.line", session: session.id, params: { runId, line: "ok" } },
+        store,
+        socket as never,
+      );
+      const res = await sessionHandlers["exec-task.exited"](
+        { id: "ee1", method: "exec-task.exited", session: session.id, params: { runId, code: 0 } },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ ok: true });
+      // Output is retrievable post-mortem with the settled result.
+      expect(session.taskOutput.get(runId)).toMatchObject({
+        result: "success",
+        lines: ["ok"],
+      });
+      // The task.complete broadcast + history record carry runId + mode:pane.
+      expect(session.broadcast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: "task.complete",
+          data: expect.objectContaining({ runId, result: "success" }),
+        }),
+      );
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ runId, result: "success", mode: "pane" }),
+      );
+      // The resolve entry is consumed so a re-exit is a no-op.
+      expect(session.paneRunInfo.has(runId)).toBe(false);
+    });
+
+    it("completes the run as error on a non-zero exit code", async () => {
+      const { session, runId } = await launchPaneRun();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      await sessionHandlers["exec-task.exited"](
+        { id: "ee2", method: "exec-task.exited", session: session.id, params: { runId, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(session.taskOutput.get(runId)?.result).toBe("error");
+    });
+
+    it("is a no-op for an already-completed (or unknown) run", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const res = await sessionHandlers["exec-task.exited"](
+        {
+          id: "ee3",
+          method: "exec-task.exited",
+          session: session.id,
+          params: { runId: "gone", code: 0 },
+        },
+        store,
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ ok: true });
+      expect(session.broadcast).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("tasks.output", () => {
+    it("returns the retained buffer for a known runId", async () => {
+      const session = createMockSession();
+      session.taskOutput.start("run_x", "migrate", 1000);
+      session.taskOutput.appendLines("run_x", ["line a", "line b"]);
+      session.taskOutput.finish("run_x", "success", 2000);
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro1",
+        method: "tasks.output",
+        session: session.id,
+        params: { runId: "run_x" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toBeUndefined();
+      expect(res.result).toEqual({
+        runId: "run_x",
+        taskKey: "migrate",
+        result: "success",
+        lines: ["line a", "line b"],
+        startedAt: 1000,
+        endedAt: 2000,
+      });
+    });
+
+    it("returns not_found for an unknown/evicted runId", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro2",
+        method: "tasks.output",
+        session: session.id,
+        params: { runId: "gone" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toBe("not_found");
+    });
+
+    it("returns error for unknown session", async () => {
+      const store = createMockStore();
+      const socket = createMockSocket();
+      const req: IpcRequest = {
+        id: "ro3",
+        method: "tasks.output",
+        session: "unknown",
+        params: { runId: "run_x" },
+      };
+      const res = await sessionHandlers["tasks.output"](req, store, socket as never);
+      expect(res.error).toContain("Unknown session");
     });
   });
 

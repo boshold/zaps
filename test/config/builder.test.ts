@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createZapsLib } from "../../src/config/builder.js";
 
 describe("createZapsLib", () => {
-  it("defineProject returns equivalent config", () => {
+  it("defineProject returns the parsed config (input fields preserved + ui defaults)", () => {
     const { lib } = createZapsLib();
     const cfg = {
       name: "test",
@@ -12,7 +12,17 @@ describe("createZapsLib", () => {
       },
     };
 
-    expect(lib.defineProject(cfg)).toEqual(cfg);
+    expect(lib.defineProject(cfg)).toEqual({
+      ...cfg,
+      // The schema resolves the optional `ui` block to its defaults.
+      ui: {
+        icons: "nerd",
+        notifications: "osc9",
+        failOutput: "overlay",
+        task: { defaultMode: "background", popupPicker: false },
+        wideThreshold: 100,
+      },
+    });
   });
 
   it("throws readable error for invalid config", () => {

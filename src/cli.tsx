@@ -28,6 +28,7 @@ import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
+import { installResizeReset } from "./lib/screen-reset.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
@@ -47,6 +48,46 @@ function globalSession(): string | undefined {
 }
 
 // --- TUI ---
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readStdoutSize(): string {
+  return `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
+}
+
+/**
+ * Wait until the terminal size stops changing before the first Ink paint.
+ *
+ * Inside tmux, `zaps up` splits its service/log panes around launch, so the
+ * `@tui` pane keeps resizing for a few hundred ms. Ink only clears the screen on
+ * a width *decrease* (see ink `resized`/`shouldClearTerminalForFrame`), so a
+ * first frame painted mid-resize — typically while the pane is still *growing*
+ * into its final width — is left on screen as residue until a manual tmux resize
+ * triggers a clear. Settling the size first lets us paint exactly once at the
+ * final dimensions. Resolves fast (~150ms) when the size is already stable.
+ */
+async function waitForStableSize(maxMs = 1000, stableMs = 150, stepMs = 50): Promise<void> {
+  if (!process.stdout.isTTY) {
+    return;
+  }
+  let prev = readStdoutSize();
+  let stableFor = 0;
+  for (let waited = 0; waited < maxMs; waited += stepMs) {
+    await sleep(stepMs);
+    const cur = readStdoutSize();
+    if (cur === prev) {
+      stableFor += stepMs;
+      if (stableFor >= stableMs) {
+        return;
+      }
+    } else {
+      stableFor = 0;
+      prev = cur;
+    }
+  }
+}
 
 async function runTui(opts: {
   sessionId: string;
@@ -68,19 +109,34 @@ async function runTui(opts: {
 
   if (showSplash) {
     const { renderSplash } = await import("./components/logo.js");
+    const { resolveIconTier } = await import("./components/theme/IconTheme.js");
     const { listPanes } = await import("./lib/tmux.js");
+    const splashTier = resolveIconTier(snapshot.ui?.icons);
     const tmuxSession = await currentSession();
     const panes = await listPanes(tmuxSession);
     const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
     if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height });
+      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier);
     } else {
-      renderSplash();
+      renderSplash(undefined, splashTier);
     }
   }
 
   // Parallel: load ink + App component
   const [{ render }, { App }] = await Promise.all([import("ink"), import("./components/App.js")]);
+
+  // Let the pane size settle (after zaps' own pane splits), then clear so the
+  // First frame paints once, clean, at the final size — no splash or mid-resize
+  // Residue left behind for a manual tmux resize to mop up.
+  await waitForStableSize();
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  }
+
+  // Zaps keeps splitting/resizing the @tui pane after mount. Ink only force-
+  // Clears on a width *decrease*, so growing into the final size leaves frame
+  // Residue. Mop up the cases Ink misses; the live reflow then repaints clean.
+  const stopResizeReset = installResizeReset(process.stdout);
 
   const { waitUntilExit } = render(
     <App
@@ -93,12 +149,14 @@ async function runTui(opts: {
       initialTaskHistory={snapshot.taskHistory ?? []}
       autoStart={showSplash}
       configStale={snapshot.configStale}
+      ui={snapshot.ui}
     />,
     { patchConsole: false },
   );
 
   await waitUntilExit();
 
+  stopResizeReset();
   process.stdout.write("\x1b[?1049l");
   client.disconnect();
 }
@@ -992,6 +1050,19 @@ program
     }
     const { execService } = await import("./cli/exec-service.js");
     await execService(name, session);
+  });
+
+program
+  .command("exec-task <runId>", { hidden: true })
+  .description("Execute a run-in-pane task via wrapper (internal)")
+  .action(async (runId: string) => {
+    const session = globalSession();
+    if (!session) {
+      process.stderr.write("Error: -s/--session is required for exec-task\n");
+      process.exit(1);
+    }
+    const { execTask } = await import("./cli/exec-task.js");
+    await execTask(runId, session);
   });
 
 // --- Daemon management ---

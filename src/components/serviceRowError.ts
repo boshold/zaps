@@ -14,3 +14,18 @@ export function showsErrorSubRow(status: ServiceStatus, isSelected: boolean): bo
     (isSelected || status.state === "error" || status.state === "stopped")
   );
 }
+
+/**
+ * Whether the inline error sub-row renders in the list. When the right-hand
+ * detail pane is visible (`detailVisible`, wide layout) the selected service's
+ * full error lives there instead, so the list stays uncluttered — only the
+ * per-row alert glyph signals trouble. Narrow layouts (no detail pane) keep the
+ * inline sub-row so the error text remains reachable.
+ */
+export function showsInlineError(
+  status: ServiceStatus,
+  isSelected: boolean,
+  detailVisible: boolean,
+): boolean {
+  return !detailVisible && showsErrorSubRow(status, isSelected);
+}

@@ -2089,19 +2089,29 @@ describe("bindActions", () => {
       throw new Error("bindActions was not called");
     }
 
-    const startEvents: { taskKey: string; taskName: string }[] = [];
-    mgr.on("taskStart", (taskKey: string, taskName: string) => {
-      startEvents.push({ taskKey, taskName });
+    const startEvents: { runId: string; taskKey: string; taskName: string }[] = [];
+    mgr.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
+      startEvents.push({ runId, taskKey, taskName });
     });
-    const events: { taskKey: string; taskName: string; result: string }[] = [];
-    mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
-      events.push({ taskKey, taskName, result });
+    const events: { runId: string; taskKey: string; taskName: string; result: string }[] = [];
+    mgr.on("taskComplete", (runId: string, taskKey: string, taskName: string, result: string) => {
+      events.push({ runId, taskKey, taskName, result });
     });
 
     await capturedActions.runTask("migrate");
 
-    expect(startEvents).toEqual([{ taskKey: "migrate", taskName: "Run migrations" }]);
-    expect(events).toEqual([{ taskKey: "migrate", taskName: "Run migrations", result: "success" }]);
+    expect(startEvents).toHaveLength(1);
+    expect(startEvents[0]).toMatchObject({ taskKey: "migrate", taskName: "Run migrations" });
+    expect(startEvents[0].runId).toEqual(expect.any(String));
+    // The completion is correlated to the same run.
+    expect(events).toEqual([
+      {
+        runId: startEvents[0].runId,
+        taskKey: "migrate",
+        taskName: "Run migrations",
+        result: "success",
+      },
+    ]);
   });
 
   it("emits taskComplete with error when runTask fails", async () => {
@@ -2130,19 +2140,28 @@ describe("bindActions", () => {
       throw new Error("bindActions was not called");
     }
 
-    const startEvents: { taskKey: string; taskName: string }[] = [];
-    mgr.on("taskStart", (taskKey: string, taskName: string) => {
-      startEvents.push({ taskKey, taskName });
+    const startEvents: { runId: string; taskKey: string; taskName: string }[] = [];
+    mgr.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
+      startEvents.push({ runId, taskKey, taskName });
     });
-    const events: { taskKey: string; taskName: string; result: string }[] = [];
-    mgr.on("taskComplete", (taskKey: string, taskName: string, result: string) => {
-      events.push({ taskKey, taskName, result });
+    const events: { runId: string; taskKey: string; taskName: string; result: string }[] = [];
+    mgr.on("taskComplete", (runId: string, taskKey: string, taskName: string, result: string) => {
+      events.push({ runId, taskKey, taskName, result });
     });
 
     await expect(capturedActions.runTask("broken")).rejects.toThrow("Task 'broken' failed");
 
-    expect(startEvents).toEqual([{ taskKey: "broken", taskName: "Broken task" }]);
-    expect(events).toEqual([{ taskKey: "broken", taskName: "Broken task", result: "error" }]);
+    expect(startEvents).toHaveLength(1);
+    expect(startEvents[0]).toMatchObject({ taskKey: "broken", taskName: "Broken task" });
+    expect(startEvents[0].runId).toEqual(expect.any(String));
+    expect(events).toEqual([
+      {
+        runId: startEvents[0].runId,
+        taskKey: "broken",
+        taskName: "Broken task",
+        result: "error",
+      },
+    ]);
   });
 
   it("calls bindActions with working service methods", async () => {

@@ -610,4 +610,81 @@ describe("projectConfigSchema", () => {
       expect(result.success).toBe(true);
     });
   });
+
+  describe("ui config block", () => {
+    const base = { services: { api: { start: "npm dev" } } };
+
+    it("applies all defaults when ui is omitted", () => {
+      const result = projectConfigSchema.safeParse(base);
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.ui).toEqual({
+          icons: "nerd",
+          notifications: "osc9",
+          failOutput: "overlay",
+          task: { defaultMode: "background", popupPicker: false },
+          wideThreshold: 100,
+        });
+      }
+    });
+
+    it("fills missing fields when ui is partial", () => {
+      const result = projectConfigSchema.safeParse({ ...base, ui: { icons: "ascii" } });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.ui.icons).toBe("ascii");
+        expect(result.data.ui.notifications).toBe("osc9");
+        expect(result.data.ui.task.defaultMode).toBe("background");
+        expect(result.data.ui.task.popupPicker).toBe(false);
+        expect(result.data.ui.wideThreshold).toBe(100);
+      }
+    });
+
+    it("accepts ui.task.popupPicker opt-in", () => {
+      const result = projectConfigSchema.safeParse({
+        ...base,
+        ui: { task: { popupPicker: true } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.ui.task.popupPicker).toBe(true);
+        // Sibling default still applied.
+        expect(result.data.ui.task.defaultMode).toBe("background");
+      }
+    });
+
+    it("accepts every valid enum and a custom wideThreshold", () => {
+      const result = projectConfigSchema.safeParse({
+        ...base,
+        ui: {
+          icons: "unicode",
+          notifications: "osc9+bell",
+          failOutput: "popup",
+          task: { defaultMode: "pane" },
+          wideThreshold: 48,
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an invalid icons value", () => {
+      const result = projectConfigSchema.safeParse({ ...base, ui: { icons: "emoji" } });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an invalid notifications value", () => {
+      const result = projectConfigSchema.safeParse({ ...base, ui: { notifications: "toast" } });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects wideThreshold below 40", () => {
+      const result = projectConfigSchema.safeParse({ ...base, ui: { wideThreshold: 39 } });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects a non-integer wideThreshold", () => {
+      const result = projectConfigSchema.safeParse({ ...base, ui: { wideThreshold: 80.5 } });
+      expect(result.success).toBe(false);
+    });
+  });
 });

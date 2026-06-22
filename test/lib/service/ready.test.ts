@@ -423,6 +423,36 @@ describe("waitForReady", () => {
       );
     });
 
+    it("path mode: falls back to [::1] when 127.0.0.1 is refused (IPv6-only bind)", async () => {
+      mockDetectPorts.mockResolvedValue([3000]);
+
+      mockFetch.mockImplementation(async (input) => {
+        const target = typeof input === "string" ? input : "";
+        if (target.startsWith("http://[::1]:3000")) {
+          return new Response("ok", { status: 200 });
+        }
+        // 127.0.0.1 has no listener — the service binds IPv6 loopback only.
+        throw new Error("ECONNREFUSED");
+      });
+
+      const controller = new AbortController();
+      const config: ReadyConfig = { http: "/health" };
+
+      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      await vi.advanceTimersByTimeAsync(500);
+
+      const ports = await promise;
+      expect(ports).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://127.0.0.1:3000/health",
+        expect.objectContaining({ method: "GET", redirect: "manual" }),
+      );
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://[::1]:3000/health",
+        expect.objectContaining({ method: "GET", redirect: "manual" }),
+      );
+    });
+
     it("full URL mode: probes directly without port detection", async () => {
       mockFetch.mockResolvedValue(new Response("ok", { status: 200 }));
 

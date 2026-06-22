@@ -6,8 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { Dashboard } from "../../src/components/Dashboard.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
+import { resolveUiConfig } from "../../src/config/index.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
+
+// Keep these single-column assertions in the narrow layout; the wide detail pane
+// Has its own dedicated test (DetailPane.test).
+const NARROW_UI = resolveUiConfig({ wideThreshold: 999 });
 
 function makeStatus(
   name: string,
@@ -57,6 +62,7 @@ function renderDashboard(opts: {
       projectName={opts.projectName ?? "test-project"}
       tasks={[]}
       servicesMeta={[]}
+      ui={NARROW_UI}
     >
       <Dashboard
         statuses={opts.statuses}
@@ -100,7 +106,7 @@ describe("Dashboard", () => {
     const { lastFrame } = renderDashboard({ statuses });
 
     expect(lastFrame()).toContain("[t]asks");
-    expect(lastFrame()).toContain("[q]uit");
+    expect(lastFrame()).toContain("[q]uit/detach");
   });
 
   it("highlights selected service", () => {
@@ -128,12 +134,19 @@ describe("Dashboard", () => {
     const statuses = [makeStatus("db")];
     const taskHistory: TaskRunRecord[] = [
       {
+        runId: "migrate",
         taskKey: "migrate",
         taskName: "Prisma Migrate",
         result: "success",
         timestamp: Date.now() - 120_000,
       },
-      { taskKey: "build", taskName: "Build", result: "error", timestamp: Date.now() - 300_000 },
+      {
+        runId: "build",
+        taskKey: "build",
+        taskName: "Build",
+        result: "error",
+        timestamp: Date.now() - 300_000,
+      },
     ];
 
     const { lastFrame } = renderDashboard({ statuses, taskHistory });
@@ -157,18 +170,6 @@ describe("Dashboard", () => {
     expect(frame).toContain("[l]ogs");
   });
 
-  it("shows [o]pen only when selected service has url", () => {
-    const withUrl = [makeStatus("db"), makeStatus("api")];
-    withUrl[0].url = "http://localhost:5432";
-    const withoutUrl = [makeStatus("db"), makeStatus("api")];
-
-    const { lastFrame: f1 } = renderDashboard({ statuses: withUrl });
-    expect(f1()).toContain("[o]pen");
-
-    const { lastFrame: f2 } = renderDashboard({ statuses: withoutUrl });
-    expect(f2()).not.toContain("[o]pen");
-  });
-
   it("hides recent tasks when history is empty", () => {
     const statuses = [makeStatus("db")];
 
@@ -176,6 +177,25 @@ describe("Dashboard", () => {
 
     const frame = lastFrame() ?? "";
     expect(frame).not.toContain("Recent Tasks");
+  });
+
+  it("reserves rows for the Recent Tasks section so the list never overflows the pane", () => {
+    // 14 single-line services fit when there is no history (maxRows 17 at the
+    // 24-row default), but the Recent Tasks block (title + 3 rows + margin)
+    // Shrinks the budget below 14, so the list must truncate instead of
+    // Overflowing the pane and blanking the alternate-screen frame.
+    const statuses = Array.from({ length: 14 }, (_, i) => makeStatus(`svc-${String(i)}`));
+    const taskHistory: TaskRunRecord[] = [
+      { runId: "a", taskKey: "a", taskName: "Task A", result: "success", timestamp: Date.now() },
+      { runId: "b", taskKey: "b", taskName: "Task B", result: "success", timestamp: Date.now() },
+      { runId: "c", taskKey: "c", taskName: "Task C", result: "success", timestamp: Date.now() },
+    ];
+
+    const { lastFrame: withoutHistory } = renderDashboard({ statuses });
+    expect(withoutHistory() ?? "").not.toContain("more");
+
+    const { lastFrame: withHistory } = renderDashboard({ statuses, taskHistory });
+    expect(withHistory() ?? "").toContain("more");
   });
 
   it("marks only the detached service row as detached", () => {

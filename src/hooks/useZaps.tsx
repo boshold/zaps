@@ -3,9 +3,14 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 
 /* eslint-disable eslint-plugin-react/only-export-components -- Provider + hook co-located by design */
 import type { DaemonClient } from "#src/client/daemon-client.js";
+import { resolveUiConfig } from "#src/config/index.js";
+import type { ResolvedUiConfig } from "#src/config/index.js";
 import type { ServiceMeta, SessionSnapshot, TaskInfo } from "#src/daemon/session.js";
 
 type PaneMap = Record<string, string>;
+
+/** Fallback when no resolved UI config is supplied (e.g. isolated tests). */
+const DEFAULT_RESOLVED_UI = resolveUiConfig();
 
 interface AppContextValue {
   client: DaemonClient;
@@ -14,6 +19,8 @@ interface AppContextValue {
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
   configStale: boolean;
+  /** Resolved TUI config (icons, wideThreshold, notifications, …). */
+  ui: ResolvedUiConfig;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -25,6 +32,7 @@ export function AppProvider({
   tasks: initialTasks,
   servicesMeta: initialServicesMeta,
   configStale: initialConfigStale = false,
+  ui = DEFAULT_RESOLVED_UI,
   children,
 }: {
   client: DaemonClient;
@@ -33,6 +41,7 @@ export function AppProvider({
   tasks: TaskInfo[];
   servicesMeta: ServiceMeta[];
   configStale?: boolean;
+  ui?: ResolvedUiConfig;
   children: ReactNode;
 }) {
   const [paneMap, setPaneMap] = useState(initialPaneMap);
@@ -62,8 +71,8 @@ export function AppProvider({
   }, [client]);
 
   const value = useMemo(
-    () => ({ client, paneMap, projectName, tasks, servicesMeta, configStale }),
-    [client, paneMap, projectName, tasks, servicesMeta, configStale],
+    () => ({ client, paneMap, projectName, tasks, servicesMeta, configStale, ui }),
+    [client, paneMap, projectName, tasks, servicesMeta, configStale, ui],
   );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

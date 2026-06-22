@@ -1,15 +1,17 @@
 import type { Socket } from "node:net";
 
-import type { DockerConfig, ResolvedConfig } from "#src/config/types.js";
+import type { Command, DockerConfig } from "#src/config/types.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { newRunId } from "#src/lib/task/run-id.js";
+import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import { newWindow, sendKeys, splitPane } from "#src/lib/tmux.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -22,13 +24,38 @@ function getSession(req: IpcRequest, store: SessionStore): Session | null {
   return store.get(req.session) ?? null;
 }
 
+/** Normalize a task's optional `commands` field to a flat list. */
+function normalizeCommands(commands: Command | Command[] | undefined): Command[] {
+  if (!commands) {
+    return [];
+  }
+  return Array.isArray(commands) ? commands : [commands];
+}
+
+/** Record + broadcast the terminal state of a run-in-pane run. */
+function completePaneRun(
+  session: Session,
+  runId: string,
+  taskKey: string,
+  taskName: string,
+  result: "success" | "error",
+): void {
+  session.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now(), mode: "pane" });
+  session.broadcast({
+    session: session.id,
+    event: "task.complete",
+    data: { key: taskKey, name: taskName, result, runId },
+  });
+}
+
 async function runPopupTaskNonInteractive(
   reqId: string,
   key: string,
-  config: ResolvedConfig,
-  manager: ServiceManager,
+  session: Session,
   socket: Socket,
+  runId: string,
 ): Promise<boolean> {
+  const { config, manager } = session;
   const tasks = config.project.tasks ?? {};
   const task = tasks[key];
   if (!task?.commands) {
@@ -49,6 +76,7 @@ async function runPopupTaskNonInteractive(
         cwd: taskCwd,
         ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
         onLine: (line) => {
+          session.taskOutput.append(runId, line);
           send(socket, { id: reqId, event: "line", data: line });
         },
       });
@@ -285,23 +313,31 @@ export const sessionHandlers: Record<
     const taskName = task.name;
     const isPopup = Boolean(task.popup) && task.commands && !task.run;
 
+    // One runId per run correlates this run's start/complete + output buffer,
+    // So concurrent runs of the same key stay independent (Q12).
+    const runId = newRunId();
+
+    // Begin retaining this run's output for post-mortem (tasks.output).
+    session.taskOutput.start(runId, key, Date.now());
+
     // Record + broadcast task.start to all subscribers
-    session.pushTaskRecord({ taskKey: key, taskName, result: "running", timestamp: Date.now() });
+    session.pushTaskRecord({
+      runId,
+      taskKey: key,
+      taskName,
+      result: "running",
+      timestamp: Date.now(),
+      mode: "background",
+    });
     session.broadcast({
       session: session.id,
       event: "task.start",
-      data: { key, name: taskName },
+      data: { key, name: taskName, runId },
     });
 
     let success = false;
     if (isPopup) {
-      success = await runPopupTaskNonInteractive(
-        req.id,
-        key,
-        session.config,
-        session.manager,
-        socket,
-      );
+      success = await runPopupTaskNonInteractive(req.id, key, session, socket, runId);
     } else {
       const visited = new Set<string>();
       const results = new Map<string, "success" | "error">();
@@ -315,6 +351,7 @@ export const sessionHandlers: Record<
           projectDir: session.config.projectDir,
           services: session.config.project.services,
           onLine: (_taskKey, line) => {
+            session.taskOutput.append(runId, line);
             send(socket, { id: req.id, event: "line", data: line });
           },
           onProgress: (taskKey, result) => {
@@ -326,8 +363,12 @@ export const sessionHandlers: Record<
       );
     }
 
+    // Settle the retained output buffer with the run's outcome.
+    session.taskOutput.finish(runId, success ? "success" : "error", Date.now());
+
     // Record + broadcast task.complete to all subscribers
     session.pushTaskRecord({
+      runId,
       taskKey: key,
       taskName,
       result: success ? "success" : "error",
@@ -336,10 +377,167 @@ export const sessionHandlers: Record<
     session.broadcast({
       session: session.id,
       event: "task.complete",
-      data: { key, name: taskName, result: success ? "success" : "error" },
+      data: { key, name: taskName, result: success ? "success" : "error", runId },
     });
 
-    return ipcOk(req.id, { success });
+    return ipcOk(req.id, { success, runId });
+  },
+
+  async "tasks.runInPane"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+
+    const { key, target = "window" } = req.params as {
+      key: string;
+      target?: "pane" | "window";
+    };
+    const tasks = session.config.project.tasks ?? {};
+    const task = tasks[key];
+    if (!task) {
+      return ipcErr(req.id, "unknown_task");
+    }
+
+    // Resolve the task's shell commands (functions get the live service context).
+    const statuses = new Map(
+      session.manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
+    );
+    const serviceCtx = buildServiceContext(
+      statuses,
+      session.config.projectDir,
+      session.config.project.services,
+    );
+    const rawCommands = normalizeCommands(task.commands);
+    const resolvedCommands = rawCommands.map((cmd) =>
+      typeof cmd === "function" ? cmd(serviceCtx) : cmd,
+    );
+    if (resolvedCommands.length === 0) {
+      return ipcErr(req.id, `Task ${key} has no shell commands to run in a pane`);
+    }
+
+    const taskName = task.name;
+    // One runId per run correlates start/complete + the stored pane (Q12/T01).
+    const runId = newRunId();
+
+    // Create the pane/window; both helpers return the new pane id (the spec's
+    // Default target is a new window — a split would reflow the service panes).
+    let paneId = "";
+    try {
+      paneId =
+        target === "pane"
+          ? await splitPane(session.paneMap["@tui"] ?? session.originPane, "v")
+          : await newWindow(session.tmuxSession);
+    } catch {
+      return ipcErr(req.id, "tmux_failed");
+    }
+    session.panesByRun.set(runId, paneId);
+
+    // Stash the resolve info the exec-task wrapper will fetch over IPC, plus the
+    // Metadata needed to complete the run when the wrapper reports its exit.
+    const cwd = task.cwd ?? session.config.projectDir;
+    const env = resolveEnv(task.env, serviceCtx);
+    session.paneRunInfo.set(runId, {
+      command: joinTaskCommands(resolvedCommands),
+      cwd,
+      env,
+      taskKey: key,
+      taskName,
+    });
+
+    // Begin retaining this run's output (the wrapper streams lines into it).
+    session.taskOutput.start(runId, key, Date.now());
+
+    // Record + broadcast task.start with mode:"pane" so the run is correlatable.
+    session.pushTaskRecord({
+      runId,
+      taskKey: key,
+      taskName,
+      result: "running",
+      timestamp: Date.now(),
+      mode: "pane",
+    });
+    session.broadcast({
+      session: session.id,
+      event: "task.start",
+      data: { key, name: taskName, runId },
+    });
+
+    // Launch the wrapper in the pane: it resolves the command from the daemon,
+    // Runs it, tees output back into the TaskOutputStore, and reports completion
+    // — a single capture+completion path (no tmux wait-for). The pane is left
+    // Open on completion so the user can inspect output in place (Q13).
+    const command = buildWrapperCommand({
+      zapsCommand: session.deps.zapsCommand,
+      sessionId: session.deps.sessionId,
+      runId,
+    });
+    try {
+      await sendKeys(paneId, command);
+    } catch {
+      session.paneRunInfo.delete(runId);
+      session.taskOutput.finish(runId, "error", Date.now());
+      completePaneRun(session, runId, key, taskName, "error");
+      return ipcErr(req.id, "tmux_failed");
+    }
+
+    return ipcOk(req.id, { runId, paneId });
+  },
+
+  async "exec-task.resolve"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId } = req.params as { runId: string };
+    const info = session.paneRunInfo.get(runId);
+    if (!info) {
+      return ipcErr(req.id, "not_found");
+    }
+    // Return only what the wrapper needs to spawn; keep the entry (taskKey/
+    // TaskName) until exit so the run can be completed then.
+    return ipcOk(req.id, { command: info.command, cwd: info.cwd, env: info.env });
+  },
+
+  async "exec-task.line"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId, line } = req.params as { runId: string; line: string };
+    session.taskOutput.append(runId, line);
+    return ipcOk(req.id, { ok: true });
+  },
+
+  async "exec-task.exited"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId, code } = req.params as { runId: string; code: number };
+    const info = session.paneRunInfo.get(runId);
+    if (!info) {
+      // Already completed (or never registered) — nothing to finish.
+      return ipcOk(req.id, { ok: true });
+    }
+    session.paneRunInfo.delete(runId);
+    const result = code === 0 ? "success" : "error";
+    session.taskOutput.finish(runId, result, Date.now());
+    completePaneRun(session, runId, info.taskKey, info.taskName, result);
+    return ipcOk(req.id, { ok: true });
+  },
+
+  async "tasks.output"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { runId } = req.params as { runId: string };
+    const snapshot = session.taskOutput.get(runId);
+    if (!snapshot) {
+      return ipcErr(req.id, "not_found");
+    }
+    return ipcOk(req.id, snapshot);
   },
 
   async "exec-service.resolve"(req, store) {

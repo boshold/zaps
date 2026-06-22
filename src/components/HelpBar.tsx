@@ -2,6 +2,8 @@ import { Box, Text } from "ink";
 
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { GLOBAL_HINTS } from "./hintText.js";
+
 interface HelpBarProps {
   compact?: boolean;
   status?: ServiceStatus;
@@ -13,21 +15,21 @@ export function HelpBar({ compact, status }: HelpBarProps) {
     // Compact: merge action hints + nav into one line
     return (
       <Box>
-        <Text dimColor>[r]estart [s]top [t]asks [q]uit [d]own</Text>
+        <Text dimColor>[r]estart [s]top [t]asks [q]uit/detach [d] down</Text>
       </Box>
     );
   }
   if (compact && isUnavailable) {
     return (
       <Box>
-        <Text dimColor>[t]asks [q]uit [d]own</Text>
+        <Text dimColor>[t]asks [q]uit/detach [d] down</Text>
       </Box>
     );
   }
 
   return (
     <Box>
-      <Text dimColor>[t]asks [a]ll restart [q]uit [d]own</Text>
+      <Text dimColor>{GLOBAL_HINTS}</Text>
     </Box>
   );
 }

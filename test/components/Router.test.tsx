@@ -5,10 +5,15 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
-import { DOCKER_REBUILD_FLAGS } from "../../src/components/DockerRebuildView.js";
+import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
+import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
 import type { TaskRunRecord } from "../../src/components/TaskRunRecord.js";
+import { resolveUiConfig } from "../../src/config/index.js";
+import type { ResolvedUiConfig } from "../../src/config/index.js";
 import type { ServiceMeta, TaskInfo } from "../../src/daemon/session.js";
+import type { OverlayApi } from "../../src/hooks/useOverlay.js";
+import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 
@@ -23,8 +28,14 @@ vi.mock("../../src/lib/tmux.js", () => ({
   editPaneCapture: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../src/lib/task/popup-picker.js", () => ({
+  popupPickerAvailable: vi.fn().mockResolvedValue(false),
+  runPopupPicker: vi.fn().mockResolvedValue(null),
+}));
+
 const { openInBrowser } = await import("../../src/lib/open.js");
 const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
+const { popupPickerAvailable, runPopupPicker } = await import("../../src/lib/task/popup-picker.js");
 
 // ── helpers ────────────────────────────────────────────────────────────
 
@@ -51,6 +62,7 @@ function createMockClient(): DaemonClient {
     restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
+    runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
   return client as unknown as DaemonClient;
 }
@@ -65,6 +77,16 @@ function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
   };
 }
 
+// Captures the live overlay API so tests can assert the stack (the palette,
+// Help, and docker-rebuild overlays render position="absolute" and are not
+// Capturable by ink-testing-library, so frame text isn't reliable for them).
+let overlay: OverlayApi | undefined;
+
+function OverlayController() {
+  overlay = useOverlay();
+  return null;
+}
+
 function renderRouter(
   opts: {
     statuses?: ServiceStatus[];
@@ -74,6 +96,7 @@ function renderRouter(
     taskHistory?: TaskRunRecord[];
     autoStart?: boolean;
     client?: DaemonClient;
+    ui?: ResolvedUiConfig;
   } = {},
 ) {
   const client = opts.client ?? createMockClient();
@@ -84,19 +107,24 @@ function renderRouter(
   const taskHistory = opts.taskHistory ?? [];
 
   const result = render(
-    <AppProvider
-      client={client}
-      paneMap={paneMap}
-      projectName="test-project"
-      tasks={tasks}
-      servicesMeta={servicesMeta}
-    >
-      <Router
-        initialStatuses={statuses}
-        initialTaskHistory={taskHistory}
-        autoStart={opts.autoStart}
-      />
-    </AppProvider>,
+    <OverlayProvider>
+      <AppProvider
+        client={client}
+        paneMap={paneMap}
+        projectName="test-project"
+        tasks={tasks}
+        servicesMeta={servicesMeta}
+        ui={opts.ui}
+      >
+        <OverlayController />
+        <Router
+          initialStatuses={statuses}
+          initialTaskHistory={taskHistory}
+          autoStart={opts.autoStart}
+        />
+        <OverlayHost />
+      </AppProvider>
+    </OverlayProvider>,
   );
 
   return { ...result, client };
@@ -110,6 +138,16 @@ async function pressEscape(stdin: { write: (data: string) => void }) {
   });
 }
 
+// Send a key inside act + settle. The mock stdin can drop the first keystroke
+// Aimed at a just-pushed overlay's `useInput`, so callers warm up with an
+// Ignored key first.
+async function pressKey(stdin: { write: (data: string) => void }, data: string) {
+  await act(async () => {
+    stdin.write(data);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  });
+}
+
 // ── tests ──────────────────────────────────────────────────────────────
 
 describe("Router", () => {
@@ -119,6 +157,7 @@ describe("Router", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    overlay = undefined;
   });
 
   // ── rendering ─────────────────────────────────────────────────
@@ -241,7 +280,7 @@ describe("Router", () => {
 
   // ── dashboard input: docker rebuild (R) ──────────────────────
 
-  it("enters docker rebuild view with R for docker service", async () => {
+  it("opens the docker-rebuild overlay with R for a docker service", async () => {
     const statuses = [makeStatus({ isDocker: true })];
     const servicesMeta: ServiceMeta[] = [
       {
@@ -257,25 +296,22 @@ describe("Router", () => {
         },
       },
     ];
-    const { stdin, lastFrame } = renderRouter({ statuses, servicesMeta });
+    const { stdin } = renderRouter({ statuses, servicesMeta });
     stdin.write("R");
     await act(async () => {
       /* Flush */
     });
-    const frame = lastFrame() ?? "";
-    // Dashboard still renders underneath popup
-    expect(frame).toContain("web");
-    // Pressing escape proves we were in docker rebuild view
+    expect(overlay?.top?.id).toBe("docker-rebuild");
+    // Esc is owned by OverlayHost (overlay binds no Esc) → closes it.
     await pressEscape(stdin);
-    expect(lastFrame()).toContain("web");
+    expect(overlay?.isOpen).toBe(false);
   });
 
   it("ignores R for non-docker service", () => {
     const statuses = [makeStatus({ isDocker: false })];
-    const { stdin, lastFrame } = renderRouter({ statuses });
-    const frameBefore = lastFrame();
+    const { stdin } = renderRouter({ statuses });
     stdin.write("R");
-    expect(lastFrame()).toBe(frameBefore);
+    expect(overlay?.isOpen).toBe(false);
   });
 
   // ── dashboard input: zoom pane (z) ──────────────────────────
@@ -337,17 +373,13 @@ describe("Router", () => {
     expect(lastFrame() ?? "").toContain("worker");
   });
 
-  // ── dashboard input: tasks view (t) ──────────────────────────
+  // ── dashboard input: task picker (t) ─────────────────────────
 
-  it("navigates to tasks view with t key", async () => {
+  it("opens the task picker overlay with t key", async () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
+    const { stdin } = renderRouter({ tasks });
+    await pressKey(stdin, "t");
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
   });
 
   // ── dashboard input: restart all (a) ─────────────────────────
@@ -445,78 +477,94 @@ describe("Router", () => {
     expect(frame).toContain("zaps");
   });
 
-  // ── tasks view input ─────────────────────────────────────────
+  // ── task picker overlay (Router integration) ─────────────────
+  // Detailed filter/highlight/empty/guard behavior lives in the dedicated
+  // TaskPicker test; here we assert the Router wiring only (open/close/run).
 
-  it("returns to dashboard from tasks on escape", async () => {
+  it("closes the task picker on escape (host owns Esc)", async () => {
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(lastFrame()).toContain("[enter] run");
+    const { stdin } = renderRouter({ tasks });
+    await pressKey(stdin, "t");
+    expect(overlay?.isOpen).toBe(true);
+    await pressKey(stdin, "x"); // Warm-up (ignored by the just-pushed overlay)
     await pressEscape(stdin);
-    expect(lastFrame()).toContain("zaps");
+    expect(overlay?.isOpen).toBe(false);
   });
 
-  it("triggers task run on enter in tasks view", async () => {
+  it("runs the selected task in the background on enter", async () => {
+    const client = createMockClient();
     const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("\r");
-    await act(async () => {
-      /* Flush */
-    });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
+    const { stdin } = renderRouter({ tasks, client });
+    await pressKey(stdin, "t");
+    // Double Enter: the first may be dropped by the just-pushed overlay; the
+    // Second lands. Whichever runs, the task fires once and the overlay closes.
+    await pressKey(stdin, "\r");
+    await pressKey(stdin, "\r");
+    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
+    expect(overlay?.isOpen).toBe(false);
   });
 
-  it("matches task shortcut in tasks view", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null, shortcut: "m" },
-      { key: "seed", name: "Seed DB", description: null, shortcut: "s" },
-    ];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
+  // ── optional fzf popup picker (P04-T05) ──────────────────────
+
+  it("opens the fzf popup picker and runs the selection in the background when enabled + available", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
+    vi.mocked(runPopupPicker).mockResolvedValue("migrate");
+    const client = createMockClient();
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      client,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
     });
-    stdin.write("s");
+    await pressKey(stdin, "t");
+    // Let the async popup flow settle.
     await act(async () => {
-      /* Flush */
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("[enter] run");
+    expect(runPopupPicker).toHaveBeenCalled();
+    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
+    // No in-app overlay — the popup is the whole UI.
+    expect(overlay?.isOpen).toBe(false);
   });
 
-  it("navigates tasks list with j/k in tasks view", async () => {
-    const tasks: TaskInfo[] = [
-      { key: "migrate", name: "Run migrations", description: null },
-      { key: "seed", name: "Seed DB", description: null },
-    ];
-    const { stdin, lastFrame } = renderRouter({ tasks });
-    stdin.write("t");
-    await act(async () => {
-      /* Flush */
+  it("falls back to the in-app picker when the popup is unavailable (old tmux / no fzf)", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(false);
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
     });
-    stdin.write("j");
-    stdin.write("k");
+    await pressKey(stdin, "t");
     await act(async () => {
-      /* Flush */
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    const frame = lastFrame() ?? "";
-    expect(frame).toContain("Run migrations");
+    expect(runPopupPicker).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
   });
 
-  // ── docker rebuild input ─────────────────────────────────────
+  it("falls back to the in-app picker when the popup launch errors", async () => {
+    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
+    vi.mocked(runPopupPicker).mockRejectedValue(new Error("popup blew up"));
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const { stdin } = renderRouter({
+      tasks,
+      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    });
+    await pressKey(stdin, "t");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
+  });
 
-  describe("docker rebuild view", () => {
-    function enterDockerRebuild() {
-      const statuses = [makeStatus({ isDocker: true })];
-      const servicesMeta: ServiceMeta[] = [
+  // ── docker rebuild overlay (Router integration) ──────────────
+  // Detailed flag-toggle / move / clamp behavior lives in the dedicated
+  // DockerRebuildOverlay test (the overlay is position="absolute" and
+  // Uncapturable), so here we assert the Router wiring only.
+
+  describe("docker rebuild overlay", () => {
+    function dockerMeta(): ServiceMeta[] {
+      return [
         {
           name: "web",
           dependsOn: [],
@@ -530,133 +578,52 @@ describe("Router", () => {
           },
         },
       ];
+    }
+
+    function enterDockerRebuild() {
       const client = createMockClient();
-      const result = renderRouter({ statuses, servicesMeta, client });
+      client.rebuildDocker = vi.fn().mockResolvedValue(undefined);
+      const result = renderRouter({
+        statuses: [makeStatus({ isDocker: true })],
+        servicesMeta: dockerMeta(),
+        client,
+      });
       result.stdin.write("R");
       return { ...result, client };
     }
 
-    it("exits with escape", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      await pressEscape(stdin);
-      const frame = lastFrame() ?? "";
-      expect(frame).toContain("zaps");
-    });
-
-    it("toggles flag with space without crashing", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write(" ");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("navigates flags with j/k without crashing", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("j");
-      stdin.write("k");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("clamps flag index at boundaries", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("k");
-      stdin.write("k");
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-      for (let i = 0; i < DOCKER_REBUILD_FLAGS.length + 2; i += 1) {
-        stdin.write("j");
-      }
-      await act(async () => {
-        /* Flush */
-      });
-      expect(lastFrame()).toBeDefined();
-    });
-
-    it("rebuilds on enter and returns to dashboard", async () => {
-      const { stdin, lastFrame } = enterDockerRebuild();
-      await act(async () => {
-        /* Flush */
-      });
-      stdin.write("\r");
-      await act(async () => {
-        /* Flush */
-      });
-      const frame = lastFrame() ?? "";
-      expect(frame).toContain("zaps");
-    });
-
-    it("ignores enter when busy", async () => {
+    it("cancels on Esc without rebuilding (host owns Esc)", async () => {
       const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      stdin.write("\r");
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressEscape(stdin);
+      expect(overlay?.isOpen).toBe(false);
+      expect(client.rebuildDocker).not.toHaveBeenCalled();
+    });
+
+    it("rebuilds on Enter and closes", async () => {
+      const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      stdin.write("R");
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressKey(stdin, "\r");
+      expect(client.rebuildDocker).toHaveBeenCalledWith("web", {});
+      expect(overlay?.isOpen).toBe(false);
+    });
+
+    it("sends toggled flags as overrides on Enter", async () => {
+      const { stdin, client } = enterDockerRebuild();
       await act(async () => {
         /* Flush */
       });
-      expect(client.disconnect).not.toHaveBeenCalled();
+      await pressKey(stdin, "x"); // Warm-up (ignored)
+      await pressKey(stdin, " "); // Toggle --build (index 0)
+      await pressKey(stdin, "\r");
+      expect(client.rebuildDocker).toHaveBeenCalledWith("web", { build: true });
     });
-  });
-
-  // ── buildDockerOverrides via docker rebuild ──────────────────
-
-  it("builds overrides from toggled flags", async () => {
-    const statuses = [makeStatus({ isDocker: true })];
-    const servicesMeta: ServiceMeta[] = [
-      {
-        name: "web",
-        dependsOn: [],
-        hasDocker: true,
-        dockerDefaults: {
-          build: false,
-          forceRecreate: false,
-          renewVolumes: false,
-          pull: false,
-          removeOrphans: false,
-        },
-      },
-    ];
-    const client = createMockClient();
-    const { stdin } = renderRouter({ statuses, servicesMeta, client });
-
-    stdin.write("R");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write(" ");
-    stdin.write("j");
-    stdin.write(" ");
-    await act(async () => {
-      /* Flush */
-    });
-    stdin.write("\r");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(client.disconnect).not.toHaveBeenCalled();
   });
 
   // ── onTaskComplete via daemon events ─────────────────────────
@@ -693,6 +660,35 @@ describe("Router", () => {
       /* Flush */
     });
     expect(lastFrame()).toBeDefined();
+  });
+
+  it("keeps the top-level running record when a dep-graph completion shares its runId", async () => {
+    // Manager/hook path: one task.start for the top key, then a dep of the graph
+    // Completes carrying the SAME runId. The dep must prepend as its own row and
+    // NOT clobber the still-running top-level record (mirrors session matching).
+    const client = createMockClient();
+    const { lastFrame } = renderRouter({ client });
+    client.emit("task.start", "build", "BuildTopLevel", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    client.emit("task.complete", "lint", "LintDep", "success", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    const frame = lastFrame() ?? "";
+    // Top-level "BuildTopLevel" is still shown as running (not relabeled to the dep).
+    expect(frame).toContain("BuildTopLevel");
+    expect(frame).toContain("running");
+    // The dep appears as its own completed row.
+    expect(frame).toContain("LintDep");
+
+    // Top-level completion now resolves the running record.
+    client.emit("task.complete", "build", "BuildTopLevel", "success", "run_1");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(lastFrame() ?? "").toContain("BuildTopLevel");
   });
 
   // ── ready gate with autoStart ────────────────────────────────

@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 
 import type { DockerConfig } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
+import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
@@ -10,8 +11,8 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 export interface DaemonClientEvents {
   "service.stateChange": (name: string, status: ServiceStatus) => void;
   "log.lines": (service: string, lines: string[]) => void;
-  "task.start": (key: string, name: string) => void;
-  "task.complete": (key: string, name: string, result: "success" | "error") => void;
+  "task.start": (key: string, name: string, runId?: string) => void;
+  "task.complete": (key: string, name: string, result: "success" | "error", runId?: string) => void;
   "session.destroyed": () => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
   "session.configStale": () => void;
@@ -148,7 +149,7 @@ export class DaemonClient extends EventEmitter {
       onLine?: (line: string) => void;
       onProgress?: (taskKey: string, result: "success" | "error") => void;
     },
-  ): Promise<{ success: boolean }> {
+  ): Promise<{ success: boolean; runId?: string }> {
     const res = await ipcStream(
       this.socketPath,
       "tasks.run",
@@ -167,7 +168,36 @@ export class DaemonClient extends EventEmitter {
     if (res.error) {
       throw new Error(res.error);
     }
-    return res.result as { success: boolean };
+    return res.result as { success: boolean; runId?: string };
+  }
+
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  public async runTaskInPane(
+    key: string,
+    target?: "pane" | "window",
+  ): Promise<{ runId: string; paneId: string }> {
+    const res = await this.request("tasks.runInPane", {
+      key,
+      ...(target ? { target } : {}),
+    });
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.result as { runId: string; paneId: string };
+  }
+
+  /**
+   * Fetch a retained task-run output buffer for post-mortem inspection (used by
+   * The failed-output overlay). Rejects with `not_found` when the buffer was
+   * Evicted or the `runId` is unknown.
+   */
+  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
+  public async getTaskOutput(runId: string): Promise<TaskOutputSnapshot> {
+    const res = await this.request("tasks.output", { runId });
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    return res.result as TaskOutputSnapshot;
   }
 
   // --- Internal ---
@@ -188,11 +218,11 @@ export class DaemonClient extends EventEmitter {
         break;
       }
       case "task.start": {
-        this.emit("task.start", data.key, data.name);
+        this.emit("task.start", data.key, data.name, data.runId);
         break;
       }
       case "task.complete": {
-        this.emit("task.complete", data.key, data.name, data.result);
+        this.emit("task.complete", data.key, data.name, data.result, data.runId);
         break;
       }
       case "session.destroyed": {

@@ -242,9 +242,87 @@ describe("DaemonClient", () => {
       expect(onProgress).toHaveBeenCalledWith("sub", "success");
     });
 
+    it("surfaces runId from the stream response", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", result: { success: true, runId: "run_7" } });
+      const result = await client.runTask("build", {});
+      expect(result).toEqual({ success: true, runId: "run_7" });
+    });
+
+    it("tolerates a stream response without a runId (older daemon)", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", result: { success: true } });
+      const result = await client.runTask("build", {});
+      expect(result.runId).toBeUndefined();
+      expect(result.success).toBe(true);
+    });
+
     it("throws on error response", async () => {
       mockIpcStream.mockResolvedValue({ id: "r1", error: "task error" });
       await expect(client.runTask("bad", {})).rejects.toThrow("task error");
+    });
+  });
+
+  describe("runTaskInPane", () => {
+    it("returns runId + paneId and forwards the target", async () => {
+      mockIpcRequest.mockResolvedValue({
+        id: "r1",
+        result: { runId: "run_1", paneId: "%5" },
+      });
+      const result = await client.runTaskInPane("build", "pane");
+      expect(result).toEqual({ runId: "run_1", paneId: "%5" });
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.runInPane",
+        { key: "build", target: "pane" },
+        expect.any(Number),
+        "sess1",
+      );
+    });
+
+    it("omits target when not given", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: { runId: "run_2", paneId: "%6" } });
+      await client.runTaskInPane("build");
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.runInPane",
+        { key: "build" },
+        expect.any(Number),
+        "sess1",
+      );
+    });
+
+    it("throws on error response", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "tmux_failed" });
+      await expect(client.runTaskInPane("build")).rejects.toThrow("tmux_failed");
+    });
+  });
+
+  describe("getTaskOutput", () => {
+    it("issues tasks.output and resolves the buffer", async () => {
+      const snapshot = {
+        runId: "run_9",
+        taskKey: "build",
+        result: "error",
+        lines: ["compiling", "boom"],
+        startedAt: 1000,
+        endedAt: 2000,
+      };
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: snapshot });
+
+      const result = await client.getTaskOutput("run_9");
+
+      expect(result).toEqual(snapshot);
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.output",
+        { runId: "run_9" },
+        30_000,
+        "sess1",
+      );
+    });
+
+    it("rejects with not_found when the buffer was evicted or unknown", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "not_found" });
+      await expect(client.getTaskOutput("gone")).rejects.toThrow("not_found");
     });
   });
 
@@ -285,10 +363,10 @@ describe("DaemonClient", () => {
       eventHandler({
         session: "sess1",
         event: "task.start",
-        data: { key: "build", name: "Build" },
+        data: { key: "build", name: "Build", runId: "run_1" },
       });
 
-      expect(spy).toHaveBeenCalledWith("build", "Build");
+      expect(spy).toHaveBeenCalledWith("build", "Build", "run_1");
     });
 
     it("routes task.complete", () => {
@@ -299,10 +377,28 @@ describe("DaemonClient", () => {
       eventHandler({
         session: "sess1",
         event: "task.complete",
-        data: { key: "build", name: "Build", result: "success" },
+        data: { key: "build", name: "Build", result: "success", runId: "run_1" },
       });
 
-      expect(spy).toHaveBeenCalledWith("build", "Build", "success");
+      expect(spy).toHaveBeenCalledWith("build", "Build", "success", "run_1");
+    });
+
+    it("re-emits task events with runId undefined when absent (older daemon)", () => {
+      const startSpy = vi.fn();
+      const completeSpy = vi.fn();
+      client.on("task.start", startSpy);
+      client.on("task.complete", completeSpy);
+      client.connect();
+
+      eventHandler({ session: "sess1", event: "task.start", data: { key: "b", name: "B" } });
+      eventHandler({
+        session: "sess1",
+        event: "task.complete",
+        data: { key: "b", name: "B", result: "success" },
+      });
+
+      expect(startSpy).toHaveBeenCalledWith("b", "B", undefined);
+      expect(completeSpy).toHaveBeenCalledWith("b", "B", "success", undefined);
     });
 
     it("routes session.destroyed", () => {

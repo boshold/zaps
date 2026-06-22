@@ -1,56 +1,131 @@
-import { Box } from "ink";
+import { Box, Text } from "ink";
+import type { ReactNode } from "react";
 
+import { useIcons } from "#src/components/theme/IconTheme.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
-import { ActionHints } from "./ActionHints.js";
 import { ColumnHeaders } from "./ColumnHeaders.js";
+import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
+import { useDashboardInput } from "./dashboard/useDashboardInput.js";
+import { buildRule } from "./dashboardRule.js";
+import { DashboardServiceList } from "./DashboardServiceList.js";
+import { DashboardSplit } from "./DashboardSplit.js";
+import { FooterHints } from "./FooterHints.js";
 import { Header } from "./Header.js";
-import { HelpBar } from "./HelpBar.js";
-import { ServiceList } from "./ServiceList.js";
+import { FullscreenLayout } from "./layout/FullscreenLayout.js";
 import { TaskHistorySection } from "./TaskHistorySection.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { DashboardToasts } from "./toast/DashboardToasts.js";
+
+// Wide-layout minimums. The schema allows wideThreshold >= 40, but a split needs
+// List + detail + a 1-col gap. Below this total the split cannot fit, so we never
+// Enter wide mode under it regardless of config (prevents horizontal overflow).
+const LIST_MIN_COLS = 48;
+const DETAIL_MIN_COLS = 32;
+const MIN_WIDE_COLS = LIST_MIN_COLS + DETAIL_MIN_COLS + 1;
 
 interface DashboardProps {
   /** Pre-sorted in Router (single source of truth shared with the input handler, F8). */
   statuses: ServiceStatus[];
   selectedIndex: number;
   taskHistory: TaskRunRecord[];
+  /** Optional sticky top slot — e.g. the disconnect banner when offline. */
+  banner?: ReactNode;
+  /** Key-handler context; when present and `inputActive`, the dashboard owns input. */
+  input?: DashboardInputContext;
+  /** Whether the Router has routed input to the dashboard (false → inert). */
+  inputActive?: boolean;
 }
 
-export function Dashboard({ statuses, selectedIndex, taskHistory }: DashboardProps) {
-  const { projectName, configStale } = useZaps();
-  const { cols, rows, compact } = useDimensions();
-  const width = Math.min(cols, 100);
+export function Dashboard({
+  statuses,
+  selectedIndex,
+  taskHistory,
+  banner,
+  input,
+  inputActive = false,
+}: DashboardProps) {
+  const { projectName, configStale, ui } = useZaps();
+  const { cols, compact } = useDimensions();
+  const { icon } = useIcons();
+  const selected = statuses[selectedIndex];
 
-  // Compute chrome rows to determine maxRows for service list
-  // Normal: Header(2) + ColumnHeaders(2) + ActionHints(2) + HelpBar(1) = 7
-  // Compact: Header(1) + HelpBar(1) = 2
-  const chromeRows = compact ? 2 : 7;
-  const maxRows = Math.max(1, rows - chromeRows);
+  // The dashboard owns its own input (gated by the Router via `inputActive`).
+  useDashboardInput(input, inputActive);
+
+  // Wide layout (Q2): on roomy terminals split the body into list + detail pane.
+  // Detail pane ~38% clamped to [32, 50] cols; the list keeps the rest (min 48).
+  const wide = !compact && cols >= Math.max(ui.wideThreshold, MIN_WIDE_COLS);
+  const detailWidth = wide ? Math.min(50, Math.max(DETAIL_MIN_COLS, Math.floor(cols * 0.38))) : 0;
+  const listCols = wide ? Math.max(LIST_MIN_COLS, cols - detailWidth - 1) : Math.min(cols, 100);
+  const headerWidth = wide ? cols : listCols;
+
+  // Wide mode runs the full pane split (column headers + list + Recent Tasks live
+  // In the left column so the vertical divider spans them); narrow mode keeps the
+  // Single-column body with column headers in the header chrome.
+  const split = wide && statuses.length > 0;
+
+  // Header and footer are fixed chrome; the service list fills the measured body.
+  const header = (
+    <Box flexDirection="column">
+      {banner}
+      <Header
+        projectName={projectName}
+        statuses={statuses}
+        width={headerWidth}
+        compact={compact}
+        configStale={configStale}
+        dividerCol={split ? listCols : undefined}
+      />
+      {!compact && !split && <ColumnHeaders cols={listCols} />}
+    </Box>
+  );
+
+  // Full-width horizontal rules (matching the header rule, Header.tsx) bracket the
+  // Footer chrome so it reads as structure, not a gap. Hidden in compact mode
+  // (single-line footer). In split mode Recent Tasks moved into the body's left
+  // Column, so the footer leads with a rule placed directly under the body that
+  // Carries a `┴` junction at the divider column — merging the vertical divider
+  // Into a closed pane frame — followed by notifications + the single hint line.
+  // Narrow mode keeps its Recent Tasks + plain rules above the hints. DashboardToasts
+  // Renders the failure badge / toasts as reserved rows (never the old absolute
+  // Float that overprinted the service list on short panes).
+  const rule = <Text color="gray">{buildRule(headerWidth, icon("divider"))}</Text>;
+  const splitBottomRule = (
+    <Text color="gray">
+      {buildRule(headerWidth, icon("divider"), { char: icon("dividerBottom"), col: listCols })}
+    </Text>
+  );
+  const footer = (
+    <Box flexDirection="column">
+      {!compact && split && splitBottomRule}
+      <DashboardToasts />
+      {!compact && !split && taskHistory.length > 0 && rule}
+      {!compact && !split && (
+        <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
+      )}
+      {!compact && !split && rule}
+      <FooterHints compact={compact} status={selected} width={headerWidth} />
+    </Box>
+  );
+
+  const body = split ? (
+    <DashboardSplit
+      statuses={statuses}
+      selectedIndex={selectedIndex}
+      listCols={listCols}
+      detailWidth={detailWidth}
+      taskHistory={taskHistory}
+    />
+  ) : (
+    <DashboardServiceList statuses={statuses} selectedIndex={selectedIndex} cols={listCols} />
+  );
 
   return (
-    <Box height={rows} alignItems="center" justifyContent="center">
-      <Box flexDirection="column" width={width}>
-        <Header
-          projectName={projectName}
-          statuses={statuses}
-          width={width}
-          compact={compact}
-          configStale={configStale}
-        />
-        {!compact && <ColumnHeaders cols={width} />}
-        <ServiceList
-          statuses={statuses}
-          selectedIndex={selectedIndex}
-          maxRows={maxRows}
-          cols={width}
-        />
-        {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
-        {!compact && <ActionHints status={statuses[selectedIndex]} />}
-        <HelpBar compact={compact} status={statuses[selectedIndex]} />
-      </Box>
-    </Box>
+    <FullscreenLayout header={header} footer={footer}>
+      {body}
+    </FullscreenLayout>
   );
 }

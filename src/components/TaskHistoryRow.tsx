@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { relativeTime } from "#src/lib/relativeTime.js";
 
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { useIcons } from "./theme/IconTheme.js";
 
-const SPINNER_FRAMES = ["◐", "◑", "◒", "◓"];
 const SPINNER_INTERVAL = 150;
 
 interface TaskHistoryRowProps {
@@ -13,14 +13,16 @@ interface TaskHistoryRowProps {
   maxWidth?: number;
 }
 
-function truncate(str: string, max: number): string {
+function truncate(str: string, max: number, ellipsis: string): string {
   if (str.length <= max) {
     return str;
   }
-  return `${str.slice(0, max - 1)}…`;
+  return `${str.slice(0, Math.max(0, max - ellipsis.length))}${ellipsis}`;
 }
 
 export function TaskHistoryRow({ record, maxWidth }: TaskHistoryRowProps) {
+  const { icon, spinnerFrames } = useIcons();
+  const ellipsis = icon("ellipsis");
   const [frame, setFrame] = useState(0);
 
   useEffect(() => {
@@ -28,19 +30,19 @@ export function TaskHistoryRow({ record, maxWidth }: TaskHistoryRowProps) {
       return;
     }
     const id = setInterval(() => {
-      setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
+      setFrame((f) => (f + 1) % spinnerFrames.length);
     }, SPINNER_INTERVAL);
     return () => {
       clearInterval(id);
     };
-  }, [record.result]);
+  }, [record.result, spinnerFrames.length]);
 
   if (record.result === "running") {
-    const icon = SPINNER_FRAMES[frame];
-    const suffix = " running…";
+    const spinner = spinnerFrames[frame % spinnerFrames.length];
+    const suffix = ` running${ellipsis}`;
     // Icon(1) + space(1) + name + space(1) + suffix
-    const full = `${icon} ${record.taskName}${suffix}`;
-    const display = maxWidth !== undefined ? truncate(full, maxWidth) : full;
+    const full = `${spinner} ${record.taskName}${suffix}`;
+    const display = maxWidth !== undefined ? truncate(full, maxWidth, ellipsis) : full;
     return (
       <Text>
         <Text color="yellow">{display.slice(0, 1)}</Text>
@@ -49,11 +51,11 @@ export function TaskHistoryRow({ record, maxWidth }: TaskHistoryRowProps) {
     );
   }
 
-  const icon = record.result === "success" ? "✔" : "✖";
+  const resultIcon = record.result === "success" ? icon("taskSuccess") : icon("taskError");
   const iconColor = record.result === "success" ? "green" : "red";
   const time = ` ${relativeTime(record.timestamp)}`;
-  const full = `${icon} ${record.taskName}${time}`;
-  const display = maxWidth !== undefined ? truncate(full, maxWidth) : full;
+  const full = `${resultIcon} ${record.taskName}${time}`;
+  const display = maxWidth !== undefined ? truncate(full, maxWidth, ellipsis) : full;
 
   // Split: icon(1), space+name, time suffix
   const nameEnd = 2 + record.taskName.length;

@@ -67,6 +67,7 @@ vi.mock("#src/lib/tmux.js", () => ({
   getWindowName: vi.fn(),
   getWindowOption: vi.fn(),
   setWindowOption: vi.fn(),
+  resyncPaneSizes: vi.fn(),
 }));
 
 vi.mock("#src/lib/port.js", () => ({

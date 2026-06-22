@@ -4,16 +4,18 @@ import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import { loadConfig } from "#src/config/loader.js";
-import type { ResolvedConfig } from "#src/config/types.js";
+import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
+import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { killPane } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
+import { TaskOutputStore } from "./task-output-store.js";
 
 const MAX_TASK_HISTORY = 50;
 
@@ -107,6 +109,14 @@ export class Session {
   public readonly createdAt = Date.now();
   public readonly taskHistory: TaskRunRecord[] = [];
   public readonly execInfo = new Map<string, ExecInfo>();
+  /** `runId → paneId` for run-in-pane runs, so the pane can later be addressed
+   * (`paneExists`/`killPane`). Pane is left open on completion (Q13). */
+  public readonly panesByRun = new Map<string, string>();
+  /** `runId → resolve info + metadata` for run-in-pane runs, consumed by the
+   * `exec-task` wrapper over IPC (parallel to `execInfo` for services). */
+  public readonly paneRunInfo = new Map<string, PaneRunInfo>();
+  /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
+  public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;
 
   public name: string;
@@ -203,23 +213,40 @@ export class Session {
       });
     });
 
-    manager.on("taskStart", (taskKey: string, taskName: string) => {
-      this.pushTaskRecord({ taskKey, taskName, result: "running", timestamp: Date.now() });
+    manager.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
+      this.taskOutput.start(runId, taskKey, Date.now());
+      this.pushTaskRecord({
+        runId,
+        taskKey,
+        taskName,
+        result: "running",
+        timestamp: Date.now(),
+        mode: "background",
+      });
       this.broadcast({
         session: this.id,
         event: "task.start",
-        data: { key: taskKey, name: taskName },
+        data: { key: taskKey, name: taskName, runId },
       });
     });
 
-    manager.on("taskComplete", (taskKey: string, taskName: string, result: "success" | "error") => {
-      this.pushTaskRecord({ taskKey, taskName, result, timestamp: Date.now() });
-      this.broadcast({
-        session: this.id,
-        event: "task.complete",
-        data: { key: taskKey, name: taskName, result },
-      });
+    // Hook-path task output (manager-driven runs): retain lines for post-mortem.
+    manager.on("taskLine", (runId: string, line: string) => {
+      this.taskOutput.append(runId, line);
     });
+
+    manager.on(
+      "taskComplete",
+      (runId: string, taskKey: string, taskName: string, result: "success" | "error") => {
+        this.taskOutput.finish(runId, result, Date.now());
+        this.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now() });
+        this.broadcast({
+          session: this.id,
+          event: "task.complete",
+          data: { key: taskKey, name: taskName, result, runId },
+        });
+      },
+    );
   }
 
   public pushTaskRecord(record: TaskRunRecord): void {
@@ -230,8 +257,12 @@ export class Session {
       }
       return;
     }
+    // Match the in-flight record by runId so concurrent runs of the same task
+    // Key resolve independently (Q12). taskKey is kept as a secondary guard for
+    // The manager/hook path, where a run's sub-task completions share its runId
+    // But must not replace the top-level "running" record.
     const runningIdx = this.taskHistory.findIndex(
-      (r) => r.taskKey === record.taskKey && r.result === "running",
+      (r) => r.runId === record.runId && r.taskKey === record.taskKey && r.result === "running",
     );
     if (runningIdx !== -1) {
       this.taskHistory[runningIdx] = record;
@@ -538,6 +569,7 @@ export class Session {
       taskHistory: this.taskHistory,
       unavailableServices: [...this.config.unavailableServices.values()],
       configStale: this.isConfigStale(),
+      ui: this.config.project.ui,
     };
   }
 
@@ -569,4 +601,6 @@ export interface SessionSnapshot {
   unavailableServices: { name: string; reason: string }[];
   /** Root config edited since the last load — drives the TUI reload hint (A4). */
   configStale: boolean;
+  /** Resolved TUI presentation config (icons, notifications, thresholds). */
+  ui?: UiConfig;
 }
