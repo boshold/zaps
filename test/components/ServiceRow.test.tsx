@@ -40,10 +40,10 @@ describe("ServiceRow", () => {
     expect(lastFrame()).toContain(":3001");
   });
 
-  it("shows ---- when no ports", () => {
+  it("shows a dash when no ports", () => {
     const status = makeStatus({ ports: [] });
     const { lastFrame } = render(<ServiceRow status={status} cols={100} isSelected={false} />);
-    expect(lastFrame()).toContain(":----");
+    expect(lastFrame()).toContain("-");
   });
 
   it("shows service name", () => {

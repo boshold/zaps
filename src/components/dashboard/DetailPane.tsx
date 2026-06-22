@@ -33,11 +33,17 @@ function formatUptime(readySince: number | undefined): string {
  */
 export function DetailPane({ status, width }: DetailPaneProps) {
   const { icon } = useIcons();
+  // Vertical divider drawn as the themed tree-branch glyph (│ nerd / | ascii) at
+  // The start of every rendered line, rather than an Ink border — an Ink border
+  // Renders box-drawing chars unconditionally, which would break the ascii tier's
+  // 7-bit invariant (glyphsByTier.test). Per-line prefixing also matches the
+  // Content height exactly without measuring the flexed body.
+  const bar = icon("treeBranch");
 
   if (!status) {
     return (
-      <Box width={width} flexDirection="column" paddingLeft={1}>
-        <Text dimColor>No service selected</Text>
+      <Box width={width} flexDirection="column">
+        <Text dimColor>{`${bar} No service selected`}</Text>
       </Box>
     );
   }
@@ -57,15 +63,23 @@ export function DetailPane({ status, width }: DetailPaneProps) {
   ];
 
   return (
-    <Box width={width} flexDirection="column" paddingLeft={1}>
-      <Text bold>{status.name}</Text>
-      <Box marginTop={1} flexDirection="column">
-        {fields.map((f) => (
-          <DetailField key={f.label} label={f.label} value={f.value} />
-        ))}
+    <Box width={width} flexDirection="column">
+      <Box>
+        <Text dimColor>{`${bar} `}</Text>
+        <Text bold>{status.name}</Text>
       </Box>
+      <Text dimColor>{bar}</Text>
+      {fields.map((f) => (
+        <Box key={f.label}>
+          <Text dimColor>{`${bar} `}</Text>
+          <DetailField label={f.label} value={f.value} />
+        </Box>
+      ))}
       {status.lastError ? (
-        <DetailField label={`${icon("treeBranch")} error`} value={status.lastError} color="red" />
+        <Box>
+          <Text dimColor>{`${bar} `}</Text>
+          <DetailField label="error" value={status.lastError} color="red" />
+        </Box>
       ) : null}
     </Box>
   );

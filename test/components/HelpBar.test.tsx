@@ -15,7 +15,7 @@ describe("HelpBar", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[t]asks");
     expect(frame).toContain("[a]ll restart");
-    expect(frame).toContain("[q]uit");
+    expect(frame).toContain("[q]uit/detach");
   });
 
   it("does not render per-service shortcuts", () => {
@@ -31,7 +31,7 @@ describe("HelpBar", () => {
     const frame = lastFrame() ?? "";
     expect(frame).toContain("[r]estart");
     expect(frame).toContain("[s]top");
-    expect(frame).toContain("[q]uit");
+    expect(frame).toContain("[q]uit/detach");
   });
 
   it("renders default mode when compact=true but no status", () => {

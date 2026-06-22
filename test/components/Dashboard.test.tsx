@@ -106,7 +106,7 @@ describe("Dashboard", () => {
     const { lastFrame } = renderDashboard({ statuses });
 
     expect(lastFrame()).toContain("[t]asks");
-    expect(lastFrame()).toContain("[q]uit");
+    expect(lastFrame()).toContain("[q]uit/detach");
   });
 
   it("highlights selected service", () => {

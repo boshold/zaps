@@ -15,7 +15,7 @@ interface ServiceRowProps {
 
 function formatPorts(ports: number[]): string {
   if (ports.length === 0) {
-    return ":----";
+    return "-";
   }
   return ports.map((p) => `:${p}`).join(" ");
 }

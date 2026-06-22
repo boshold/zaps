@@ -1,6 +1,7 @@
-import { Box } from "ink";
+import { Box, Text } from "ink";
 import type { ReactNode } from "react";
 
+import { useIcons } from "#src/components/theme/IconTheme.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
@@ -46,6 +47,7 @@ export function Dashboard({
 }: DashboardProps) {
   const { projectName, configStale, ui } = useZaps();
   const { cols, compact } = useDimensions();
+  const { icon } = useIcons();
   const selected = statuses[selectedIndex];
 
   // The dashboard owns its own input (gated by the Router via `inputActive`).
@@ -75,10 +77,17 @@ export function Dashboard({
     </Box>
   );
 
+  // Full-width horizontal rules (matching the header rule, Header.tsx) bracket the
+  // Footer chrome so the dead-space above Recent Tasks reads as structure, not a
+  // Gap. Hidden in compact mode (single-line footer). The leading rule only shows
+  // When Recent Tasks actually renders (history present), so it never dangles.
+  const rule = <Text dimColor>{icon("divider").repeat(headerWidth)}</Text>;
   const footer = (
     <Box flexDirection="column">
+      {!compact && taskHistory.length > 0 && rule}
       {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
       {!compact && <ActionHints status={selected} />}
+      {!compact && rule}
       <HelpBar compact={compact} status={selected} />
     </Box>
   );

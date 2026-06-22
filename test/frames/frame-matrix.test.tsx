@@ -239,6 +239,54 @@ describe("detail pane wideThreshold boundary", () => {
     expect(frame).toContain("uptime");
     expect(frame).toContain("retries");
   });
+
+  it("draws a vertical divider column beside the detail pane", () => {
+    // The themed tree-branch glyph (│) is prefixed to every detail line, so the
+    // Wide frame carries many more bars than the collapsed one (which has at most
+    // The errored service's sub-row). Distinguishes the divider from incidental
+    // Glyphs without depending on an exact count.
+    setSize(30, 120);
+    const wide = renderInApp(
+      <Dashboard statuses={POPULATED} selectedIndex={0} taskHistory={HISTORY} />,
+      ui,
+    ).lastFrame();
+    setSize(30, 80);
+    const narrow = renderInApp(
+      <Dashboard statuses={POPULATED} selectedIndex={0} taskHistory={HISTORY} />,
+      ui,
+    ).lastFrame();
+    const bars = (s: string | undefined) => (s?.match(/│/g) ?? []).length;
+    expect(bars(wide)).toBeGreaterThanOrEqual(5);
+    expect(bars(wide)).toBeGreaterThan(bars(narrow));
+  });
+});
+
+describe("footer rules", () => {
+  it("brackets the footer chrome with full-width rules when not compact", () => {
+    setSize(30, 120);
+    const { lastFrame } = renderInApp(
+      <Dashboard statuses={POPULATED} selectedIndex={0} taskHistory={HISTORY} />,
+    );
+    const frame = lastFrame() ?? "";
+    fits(frame, 30);
+    // Header rule + a rule above Recent Tasks + a rule above the keymap = >= 3
+    // Lines made entirely of the divider glyph. (Without the footer rules there
+    // Is only the single header rule.)
+    const ruleLines = frame.split("\n").filter((l) => /^─+$/.test(l.trim()));
+    expect(ruleLines.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("omits the footer rules in compact mode", () => {
+    setSize(11, 60);
+    const { lastFrame } = renderInApp(
+      <Dashboard statuses={POPULATED} selectedIndex={0} taskHistory={HISTORY} />,
+    );
+    const frame = lastFrame() ?? "";
+    fits(frame, 11);
+    const ruleLines = frame.split("\n").filter((l) => /^─+$/.test(l.trim()));
+    // Compact hides the header rule and the footer rules alike.
+    expect(ruleLines.length).toBe(0);
+  });
 });
 
 describe("overlay body frames", () => {
