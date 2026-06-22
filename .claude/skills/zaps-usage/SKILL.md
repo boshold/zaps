@@ -54,6 +54,47 @@ zaps daemon stop  # full cleanup: stops every service in every session, then shu
                   #   prints `Stopped <n> session(s), <m> service(s).`
 ```
 
+### TUI
+
+`zaps up` attaches the interactive dashboard. Key interactions:
+
+```
+Global
+  Ctrl-K / :  command palette (fuzzy actions)
+  ?           help overlay
+  t           task picker
+  f           open the latest failure's captured output
+  x           acknowledge (clear sticky failure toasts)
+  q / Ctrl-C  detach (services keep running)
+  Ctrl-D      shut down the session
+  Esc         close overlay / leave view
+
+Dashboard
+  ↑↓ / j k    navigate services
+  r / s       restart / start-stop selected
+  a / c       restart all / reload config
+  l / o       logs / open URL
+  R           docker rebuild     z / Z  zoom service / TUI pane
+  E           edit-capture pane  d      shut down session
+
+Task picker (t)
+  type        fuzzy filter
+  Enter       run in the default mode (ui.task.defaultMode, default background)
+  Tab         run live in a tmux pane
+  Esc         close
+
+Log view (l)
+  ↑↓ / j k    scroll (scroll to bottom resumes live follow)
+  Esc         back
+```
+
+**Run modes:** a task launched with `Enter` runs in the configured default mode
+(`background` unless `ui.task.defaultMode: pane`); `Tab` always runs it live in a
+tmux pane that stays open on completion. Background runs notify via a toast —
+transient on success, sticky on failure (ack with `x`); failures also fire an
+out-of-band terminal notification per `ui.notifications`. Press `f` for the
+failed-output overlay, then `p` to escalate to a tmux popup.
+
 ### Other
 
 ```

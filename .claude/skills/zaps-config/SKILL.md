@@ -29,6 +29,7 @@ Activate this skill when the user:
 | `references/07-tasks.md`           | TaskConfig: commands vs run, popup, shortcuts, TaskRunContext             |
 | `references/08-layout.md`          | LayoutNode tree: rows/columns, @tui pane, size/focus                      |
 | `references/09-hooks.md`           | Project + per-service hooks, library actions                              |
+| `references/10-ui.md`              | `ui` block: icons, notifications, failOutput, task mode, wideThreshold    |
 
 ## Config Skeleton
 
@@ -105,6 +106,21 @@ tasks: {
     name: "Seed DB",
     commands: "npx prisma db seed",
     shortcut: "s",
+  },
+}
+```
+
+### UI config (all fields optional, defaults shown)
+
+```ts
+ui: {
+  icons: "nerd",              // "nerd" | "unicode" | "ascii"
+  notifications: "osc9",      // "off" | "bell" | "osc9" | "osc9+bell"
+  failOutput: "overlay",      // "overlay" | "popup"
+  wideThreshold: 100,         // min cols for the detail pane (int ≥ 40)
+  task: {
+    defaultMode: "background", // "background" | "pane" (Enter in the task picker)
+    popupPicker: false,        // fzf tmux popup picker
   },
 }
 ```

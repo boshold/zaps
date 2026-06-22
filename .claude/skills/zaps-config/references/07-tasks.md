@@ -98,7 +98,7 @@ tasks: {
 
 ## Shortcuts
 
-`shortcut` is a **single key** that triggers the task from the TUI tasks view.
+`shortcut` is a **single key** shown as a hint beside the task in the `t` task picker (display-only — it does not trigger the task).
 
 ```ts
 tasks: {
@@ -115,7 +115,7 @@ is not already used and not reserved.
 
 ### Reserved keys (`q`, `j`, `k`)
 
-`q`, `j`, and `k` are **reserved** by the TUI (`q` quits, `j`/`k` navigate lists) and are:
+`q`, `j`, and `k` are **reserved** by the TUI (`q` detaches, `j`/`k` navigate lists) and are:
 
 - **never auto-assigned** to a task, and
 - **dropped** (no fallback) if a task explicitly requests one via `shortcut`.

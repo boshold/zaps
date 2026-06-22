@@ -200,9 +200,19 @@ export function config({ defineProject }: Library) {
       onStart: () => console.log("All services started"),
       onStop: () => console.log("Shutting down"),
     },
+
+    ui: {
+      icons: "nerd",
+      notifications: "osc9",
+      failOutput: "overlay",
+      wideThreshold: 100,
+      task: { defaultMode: "background", popupPicker: false },
+    },
   });
 }
 ```
+
+See [UI Config](#ui-config) for the full `ui` block reference.
 
 ## Project Options
 
@@ -630,13 +640,13 @@ tasks: {
 | Option        | Type                                             | Default | Description                                                     |
 | ------------- | ------------------------------------------------ | ------- | --------------------------------------------------------------- |
 | `name`        | `string`                                         | —       | Display name in the TUI                                         |
-| `description` | `string`                                         | —       | Description shown in tasks view                                 |
+| `description` | `string`                                         | —       | Description shown in the task picker                            |
 | `commands`    | `string \| string[]`                             | —       | Shell command(s) to run                                         |
 | `run`         | `(ctx: TaskRunContext) => void \| Promise<void>` | —       | Programmatic task function (mutually exclusive with `commands`) |
 | `cwd`         | `string`                                         | —       | Working directory                                               |
 | `env`         | `Record<string, string>`                         | —       | Environment variables                                           |
 | `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                       |
-| `shortcut`    | `string`                                         | —       | Key for chord mode quick execution                              |
+| `shortcut`    | `string`                                         | —       | Hint key shown beside the task in the picker                    |
 | `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run in tmux popup window (commands only)                        |
 
 Task dependencies are resolved and executed before the task itself.
@@ -685,13 +695,16 @@ tasks: {
 
 ### Shortcuts
 
-Tasks can define a `shortcut` key for quick execution via chord mode. If no shortcut is specified, ZAPS auto-assigns the first unique character from the task key.
+Tasks can define a `shortcut` key, shown as a hint beside the task in the picker.
+If no shortcut is specified, ZAPS auto-assigns the first unique character from the
+task key.
 
-Press `t` on the dashboard to enter chord mode. Then press a shortcut key to immediately run that task. Any unmatched key or `Enter` opens the full tasks list instead.
+Press `t` on the dashboard to open the fuzzy task picker, then type to filter and
+`Enter`/`Tab` to run (see [Task picker](#task-picker-t)).
 
 #### Reserved keys
 
-The keys **`q`, `j`, and `k` are reserved** and are never auto-assigned to a task (`q` quits, `j`/`k` are list navigation). If a task explicitly requests one of them via `shortcut`, the shortcut is **dropped** (no fallback is assigned) and ZAPS prints a load-time warning:
+The keys **`q`, `j`, and `k` are reserved** and are never auto-assigned to a task (`q` detaches, `j`/`k` are list navigation). If a task explicitly requests one of them via `shortcut`, the shortcut is **dropped** (no fallback is assigned) and ZAPS prints a load-time warning:
 
 ```
 Warning: task 'deploy' ('Deploy') requests reserved shortcut 'q'; 'q' is reserved (q=quit, j/k=navigation) and the shortcut is dropped.
@@ -727,43 +740,122 @@ layout: {
 
 If no layout is specified, `@tui` gets the main pane and each service gets a background window.
 
-## TUI Keyboard Shortcuts
+## TUI
+
+The TUI is built around a dashboard, overlays (command palette, task picker, help,
+failed-output), and a responsive layout that adapts to the pane size.
+
+### Global keys
+
+Work from any base view; survive a disconnect; yield to an open overlay.
+
+| Key          | Action                                          |
+| ------------ | ----------------------------------------------- |
+| `Ctrl-K` `:` | Open the command palette (fuzzy actions)        |
+| `?`          | Toggle the help overlay                         |
+| `t`          | Open the task picker                            |
+| `f`          | Open the captured output of the latest failure  |
+| `x`          | Acknowledge — clear sticky failure toasts       |
+| `q` `Ctrl-C` | Detach (services keep running)                  |
+| `Ctrl-D`     | Shut down the session (stop services + destroy) |
+| `Esc`        | Close the top overlay / leave the current view  |
 
 ### Dashboard
 
-| Key           | Action                         |
-| ------------- | ------------------------------ |
-| `Up/Down/j/k` | Navigate services              |
-| `r`           | Restart selected service       |
-| `s`           | Start/stop selected service    |
-| `l`           | View logs for selected service |
-| `o`           | Open service URL in browser    |
-| `t`           | Tasks (chord mode or list)     |
-| `a`           | Restart all services           |
-| `c`           | Reload config (when idle)      |
-| `q`           | Stop all and quit              |
+| Key           | Action                               |
+| ------------- | ------------------------------------ |
+| `Up/Down/j/k` | Navigate services                    |
+| `r`           | Restart selected service             |
+| `s`           | Start/stop selected service          |
+| `l`           | View logs for selected service       |
+| `o`           | Open service URL in browser          |
+| `R`           | Docker rebuild (docker services)     |
+| `z` / `Z`     | Zoom the service pane / the TUI pane |
+| `E`           | Edit-capture the selected pane       |
+| `a`           | Restart all services                 |
+| `c`           | Reload config (when changed + idle)  |
+| `t`           | Open the task picker                 |
+| `d`           | Shut down the session                |
 
-### Chord Mode
+On wide panes a **detail pane** shows the selected service's fields; it collapses
+when `cols < ui.wideThreshold` (default `100`). See [UI Config](#ui-config).
 
-Shown when any task has a shortcut. Press a shortcut key to run it, `Esc` to cancel, `Enter` or any unmatched key to open the tasks list.
+### Command palette (`Ctrl-K` / `:`)
 
-### Tasks View
+| Key       | Action               |
+| --------- | -------------------- |
+| type      | Fuzzy-filter actions |
+| `Up/Down` | Move selection       |
+| `Enter`   | Run / confirm        |
+| `Esc`     | Close                |
 
-| Key           | Action                   |
-| ------------- | ------------------------ |
-| `Up/Down/j/k` | Navigate tasks           |
-| `Enter`       | Run selected task        |
-| `[key]`       | Run task by shortcut key |
-| `Esc`         | Back to dashboard        |
+### Task picker (`t`)
 
-The tasks view shows the last 10 task runs with a result icon and relative timestamp. The dashboard footer also displays the 3 most recent task runs.
+Fuzzy picker over the project's tasks. Each task can run in two modes:
 
-### Log View
+| Key       | Action                                                                |
+| --------- | --------------------------------------------------------------------- |
+| type      | Fuzzy-filter tasks                                                    |
+| `Up/Down` | Move selection                                                        |
+| `Enter`   | Run in the default mode (`ui.task.defaultMode`, default `background`) |
+| `Tab`     | Run live in a tmux pane                                               |
+| `Esc`     | Close                                                                 |
+
+- **Background** runs stream into the daemon's retained output buffer; success
+  shows a transient toast, failure a sticky one.
+- **Run-in-pane** opens a tmux pane/window running the task live; the pane stays
+  open on completion so the output stays inspectable.
+
+Set `ui.task.popupPicker: true` to use an `fzf` tmux popup instead of the in-app
+picker (falls back to the in-app picker when tmux < 3.2 or `fzf` is absent).
+
+### Log view (`l`)
 
 | Key           | Action            |
 | ------------- | ----------------- |
 | `Up/Down/j/k` | Scroll logs       |
 | `Esc`         | Back to dashboard |
+
+Scroll up to pause auto-follow; scroll back to the bottom to resume live tailing.
+
+### Notifications & failed output
+
+A finished background task raises an in-app toast: **success** is transient,
+**failure** is sticky and stays until acknowledged with `x`. On failure ZAPS also
+emits an out-of-band terminal notification per `ui.notifications` (default
+`osc9`).
+
+Press `f` to open the **failed-output overlay** for the latest sticky failure
+(`Up/Down/j/k` scroll, `Esc` close). Inside it, `p` escalates to a larger tmux
+`display-popup` (when tmux supports it). With `ui.failOutput: popup` the overlay
+escalates straight to the popup on open.
+
+## UI Config
+
+The optional `ui` block tunes TUI presentation. Every field has a safe default,
+so omitting `ui` (or any field) is fine.
+
+```typescript
+ui: {
+  icons: "nerd",              // "nerd" | "unicode" | "ascii"
+  notifications: "osc9",      // "off" | "bell" | "osc9" | "osc9+bell"
+  failOutput: "overlay",      // "overlay" | "popup"
+  wideThreshold: 100,         // min cols to show the detail pane (integer ≥ 40)
+  task: {
+    defaultMode: "background", // "background" | "pane" — Enter in the task picker
+    popupPicker: false,        // open the task picker as an fzf tmux popup
+  },
+}
+```
+
+| Option             | Type                                       | Default        | Description                                                                                 |
+| ------------------ | ------------------------------------------ | -------------- | ------------------------------------------------------------------------------------------- |
+| `icons`            | `"nerd" \| "unicode" \| "ascii"`           | `"nerd"`       | Glyph tier. `ZAPS_ICONS` env overrides the config value.                                    |
+| `notifications`    | `"off" \| "bell" \| "osc9" \| "osc9+bell"` | `"osc9"`       | Out-of-band failure notification channel (OSC 9 desktop notification and/or terminal bell). |
+| `failOutput`       | `"overlay" \| "popup"`                     | `"overlay"`    | Where the `f` failed-output view opens; `popup` escalates straight to a tmux popup.         |
+| `wideThreshold`    | `number` (int ≥ 40)                        | `100`          | Minimum terminal columns to show the detail pane; below it the pane collapses.              |
+| `task.defaultMode` | `"background" \| "pane"`                   | `"background"` | Mode for `Enter` in the task picker (`Tab` always runs in a pane).                          |
+| `task.popupPicker` | `boolean`                                  | `false`        | Use an `fzf` tmux popup picker instead of the in-app one (falls back when unavailable).     |
 
 ## Service States
 
