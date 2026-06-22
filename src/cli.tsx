@@ -48,6 +48,43 @@ function globalSession(): string | undefined {
 
 // --- TUI ---
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Wait until the terminal size stops changing before the first Ink paint.
+ *
+ * Inside tmux, `zaps up` splits its service/log panes around launch, so the
+ * `@tui` pane keeps resizing for a few hundred ms. Ink only clears the screen on
+ * a width *decrease* (see ink `resized`/`shouldClearTerminalForFrame`), so a
+ * first frame painted mid-resize — typically while the pane is still *growing*
+ * into its final width — is left on screen as residue until a manual tmux resize
+ * triggers a clear. Settling the size first lets us paint exactly once at the
+ * final dimensions. Resolves fast (~150ms) when the size is already stable.
+ */
+async function waitForStableSize(maxMs = 1000, stableMs = 150, stepMs = 50): Promise<void> {
+  if (!process.stdout.isTTY) {
+    return;
+  }
+  const read = (): string => `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
+  let prev = read();
+  let stableFor = 0;
+  for (let waited = 0; waited < maxMs; waited += stepMs) {
+    await sleep(stepMs);
+    const cur = read();
+    if (cur === prev) {
+      stableFor += stepMs;
+      if (stableFor >= stableMs) {
+        return;
+      }
+    } else {
+      stableFor = 0;
+      prev = cur;
+    }
+  }
+}
+
 async function runTui(opts: {
   sessionId: string;
   socketPath: string;
@@ -83,6 +120,14 @@ async function runTui(opts: {
 
   // Parallel: load ink + App component
   const [{ render }, { App }] = await Promise.all([import("ink"), import("./components/App.js")]);
+
+  // Let the pane size settle (after zaps' own pane splits), then clear so the
+  // First frame paints once, clean, at the final size — no splash or mid-resize
+  // Residue left behind for a manual tmux resize to mop up.
+  await waitForStableSize();
+  if (process.stdout.isTTY) {
+    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+  }
 
   const { waitUntilExit } = render(
     <App
