@@ -170,18 +170,6 @@ describe("Dashboard", () => {
     expect(frame).toContain("[l]ogs");
   });
 
-  it("shows [o]pen only when selected service has url", () => {
-    const withUrl = [makeStatus("db"), makeStatus("api")];
-    withUrl[0].url = "http://localhost:5432";
-    const withoutUrl = [makeStatus("db"), makeStatus("api")];
-
-    const { lastFrame: f1 } = renderDashboard({ statuses: withUrl });
-    expect(f1()).toContain("[o]pen");
-
-    const { lastFrame: f2 } = renderDashboard({ statuses: withoutUrl });
-    expect(f2()).not.toContain("[o]pen");
-  });
-
   it("hides recent tasks when history is empty", () => {
     const statuses = [makeStatus("db")];
 

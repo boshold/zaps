@@ -6,16 +6,18 @@ import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
-import { ActionHints } from "./ActionHints.js";
 import { ColumnHeaders } from "./ColumnHeaders.js";
 import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
 import { useDashboardInput } from "./dashboard/useDashboardInput.js";
+import { buildRule } from "./dashboardRule.js";
 import { DashboardServiceList } from "./DashboardServiceList.js";
+import { DashboardSplit } from "./DashboardSplit.js";
+import { FooterHints } from "./FooterHints.js";
 import { Header } from "./Header.js";
-import { HelpBar } from "./HelpBar.js";
 import { FullscreenLayout } from "./layout/FullscreenLayout.js";
 import { TaskHistorySection } from "./TaskHistorySection.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
+import { DashboardToasts } from "./toast/DashboardToasts.js";
 
 // Wide-layout minimums. The schema allows wideThreshold >= 40, but a split needs
 // List + detail + a 1-col gap. Below this total the split cannot fit, so we never
@@ -60,9 +62,12 @@ export function Dashboard({
   const listCols = wide ? Math.max(LIST_MIN_COLS, cols - detailWidth - 1) : Math.min(cols, 100);
   const headerWidth = wide ? cols : listCols;
 
+  // Wide mode runs the full pane split (column headers + list + Recent Tasks live
+  // In the left column so the vertical divider spans them); narrow mode keeps the
+  // Single-column body with column headers in the header chrome.
+  const split = wide && statuses.length > 0;
+
   // Header and footer are fixed chrome; the service list fills the measured body.
-  // Recent Tasks lives in the footer so its height is part of the natural chrome
-  // Measurement, never a manual row budget (the v1 chromeRows blanking bug).
   const header = (
     <Box flexDirection="column">
       {banner}
@@ -72,34 +77,55 @@ export function Dashboard({
         width={headerWidth}
         compact={compact}
         configStale={configStale}
+        dividerCol={split ? listCols : undefined}
       />
-      {!compact && <ColumnHeaders cols={listCols} />}
+      {!compact && !split && <ColumnHeaders cols={listCols} />}
     </Box>
   );
 
   // Full-width horizontal rules (matching the header rule, Header.tsx) bracket the
-  // Footer chrome so the dead-space above Recent Tasks reads as structure, not a
-  // Gap. Hidden in compact mode (single-line footer). The leading rule only shows
-  // When Recent Tasks actually renders (history present), so it never dangles.
-  const rule = <Text dimColor>{icon("divider").repeat(headerWidth)}</Text>;
+  // Footer chrome so it reads as structure, not a gap. Hidden in compact mode
+  // (single-line footer). In split mode Recent Tasks moved into the body's left
+  // Column, so the footer leads with a rule placed directly under the body that
+  // Carries a `┴` junction at the divider column — merging the vertical divider
+  // Into a closed pane frame — followed by notifications + the single hint line.
+  // Narrow mode keeps its Recent Tasks + plain rules above the hints. DashboardToasts
+  // Renders the failure badge / toasts as reserved rows (never the old absolute
+  // Float that overprinted the service list on short panes).
+  const rule = <Text color="gray">{buildRule(headerWidth, icon("divider"))}</Text>;
+  const splitBottomRule = (
+    <Text color="gray">
+      {buildRule(headerWidth, icon("divider"), { char: icon("dividerBottom"), col: listCols })}
+    </Text>
+  );
   const footer = (
     <Box flexDirection="column">
-      {!compact && taskHistory.length > 0 && rule}
-      {!compact && <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />}
-      {!compact && <ActionHints status={selected} />}
-      {!compact && rule}
-      <HelpBar compact={compact} status={selected} />
+      {!compact && split && splitBottomRule}
+      <DashboardToasts />
+      {!compact && !split && taskHistory.length > 0 && rule}
+      {!compact && !split && (
+        <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
+      )}
+      {!compact && !split && rule}
+      <FooterHints compact={compact} status={selected} width={headerWidth} />
     </Box>
+  );
+
+  const body = split ? (
+    <DashboardSplit
+      statuses={statuses}
+      selectedIndex={selectedIndex}
+      listCols={listCols}
+      detailWidth={detailWidth}
+      taskHistory={taskHistory}
+    />
+  ) : (
+    <DashboardServiceList statuses={statuses} selectedIndex={selectedIndex} cols={listCols} />
   );
 
   return (
     <FullscreenLayout header={header} footer={footer}>
-      <DashboardServiceList
-        statuses={statuses}
-        selectedIndex={selectedIndex}
-        cols={listCols}
-        detailWidth={detailWidth}
-      />
+      {body}
     </FullscreenLayout>
   );
 }

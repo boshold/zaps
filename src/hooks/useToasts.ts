@@ -54,8 +54,8 @@ const NOOP_TOASTS: ToastApi = {
 
 /**
  * Owns the toast queue + auto-dismiss timers and provides it to the tree. The
- * Router calls `notify`/`ackAll`; the {@link ToastHost} reads `toasts`. Timers
- * are tracked in a ref and cleared on dismiss/ack/unmount so none leak.
+ * Router calls `notify`/`ackAll`; `DashboardToasts` reads `toasts`. Timers are
+ * tracked in a ref and cleared on dismiss/ack/unmount so none leak.
  */
 function ToastProvider({
   children,

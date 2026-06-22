@@ -103,6 +103,7 @@ function HelpOverlay() {
       flexDirection="column"
       borderStyle="round"
       borderColor="cyan"
+      backgroundColor="default"
       paddingX={1}
     >
       <Text bold>{`zaps — help  (v${VERSION})`}</Text>

@@ -38,6 +38,7 @@ function CommandPalette({ commands }: CommandPaletteProps) {
       flexDirection="column"
       borderStyle="round"
       borderColor="cyan"
+      backgroundColor="default"
       paddingX={1}
     >
       <CommandPaletteBody commands={commands} isActive={isTop(COMMAND_PALETTE_ID)} onClose={pop} />

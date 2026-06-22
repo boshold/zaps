@@ -4,13 +4,15 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { ScrollableList } from "./layout/ScrollableList.js";
 import { ServiceRow } from "./ServiceRow.js";
-import { showsErrorSubRow } from "./serviceRowError.js";
+import { showsInlineError } from "./serviceRowError.js";
 
 interface ServiceListProps {
   statuses: ServiceStatus[];
   selectedIndex: number;
   maxRows?: number;
   cols: number;
+  /** Whether the right-hand detail pane is shown — suppresses inline error rows. */
+  detailVisible?: boolean;
 }
 
 /**
@@ -42,9 +44,10 @@ function rowHeight(
   index: number,
   statuses: ServiceStatus[],
   selectedIndex: number,
+  detailVisible: boolean,
 ): number {
   const headerLines = getGroupHeader(status, index, statuses) ? 1 : 0;
-  const errorLines = showsErrorSubRow(status, index === selectedIndex) ? 1 : 0;
+  const errorLines = showsInlineError(status, index === selectedIndex, detailVisible) ? 1 : 0;
   return headerLines + 1 + errorLines;
 }
 
@@ -54,6 +57,7 @@ function renderRow(
   statuses: ServiceStatus[],
   isSelected: boolean,
   cols: number,
+  detailVisible: boolean,
 ) {
   const groupHeader = getGroupHeader(s, i, statuses);
   const isGrouped = Boolean(s.group);
@@ -66,12 +70,24 @@ function renderRow(
           {groupHeader}
         </Text>
       )}
-      <ServiceRow status={s} isSelected={isSelected} cols={cols} indent={isGrouped} />
+      <ServiceRow
+        status={s}
+        isSelected={isSelected}
+        cols={cols}
+        indent={isGrouped}
+        detailVisible={detailVisible}
+      />
     </Box>
   );
 }
 
-export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceListProps) {
+export function ServiceList({
+  statuses,
+  selectedIndex,
+  maxRows,
+  cols,
+  detailVisible = false,
+}: ServiceListProps) {
   // Windowing (grow-from-selected + overflow markers + multi-line rows) lives in the
   // Reusable ScrollableList; ServiceList only contributes its row rendering and
   // The service-specific row-height (group headers + error sub-rows).
@@ -80,8 +96,8 @@ export function ServiceList({ statuses, selectedIndex, maxRows, cols }: ServiceL
       items={statuses}
       selectedIndex={selectedIndex}
       maxHeight={maxRows ?? 0}
-      rowHeight={(s, i) => rowHeight(s, i, statuses, selectedIndex)}
-      renderItem={(s, i, selected) => renderRow(s, i, statuses, selected, cols)}
+      rowHeight={(s, i) => rowHeight(s, i, statuses, selectedIndex, detailVisible)}
+      renderItem={(s, i, selected) => renderRow(s, i, statuses, selected, cols, detailVisible)}
     />
   );
 }

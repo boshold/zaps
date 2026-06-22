@@ -114,4 +114,61 @@ describe("useDimensions", () => {
     unmount();
     expect(fakeStdout.listenerCount()).toBe(0);
   });
+
+  it("converges to the real size via the warm-up poll when the resize event is missed", () => {
+    vi.useFakeTimers();
+    try {
+      // Mount at a transient startup size, the way a mid-split pane would seed.
+      fakeStdout.columns = 105;
+      fakeStdout.rows = 18;
+      const { lastFrame } = render(<Probe />);
+      expect(lastFrame()).toContain("105x18");
+
+      // Pane settles wider but NO resize event reaches the listener (the
+      // Startup race). The warm-up poll must still pick up the new size.
+      act(() => {
+        fakeStdout.columns = 152;
+        fakeStdout.rows = 18;
+      });
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
+
+      expect(lastFrame()).toContain("152x18");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops polling after the warm-up window", () => {
+    vi.useFakeTimers();
+    try {
+      fakeStdout.columns = 100;
+      fakeStdout.rows = 30;
+      const { lastFrame } = render(<Probe />);
+
+      // Run out the warm-up window (15 ticks * 100ms), then change size with no
+      // Event: the poll is gone, so the frame must stay put.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      act(() => {
+        fakeStdout.columns = 200;
+        fakeStdout.rows = 50;
+      });
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      expect(lastFrame()).toContain("100x30");
+
+      // The steady-state resize listener still works after warm-up.
+      act(() => {
+        fakeStdout.emitResize();
+      });
+      expect(lastFrame()).toContain("200x50");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -9,6 +9,14 @@ function socketArgs(): string[] {
   return socket ? ["-L", socket] : [];
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Minimum pause (ms) for tmux's event loop to process a resize and push the new
+ *  pty winsize before the next command. Measured threshold ~100ms; 150 for margin. */
+const RESYNC_SETTLE_MS = 150;
+
 async function run(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: ["ignore", "pipe", "pipe"] });
@@ -184,6 +192,53 @@ export async function setWindowOption(
   value: string,
 ): Promise<void> {
   await run(["set-window-option", "-t", target, option, value]);
+}
+
+export async function getWindowSize(target: string): Promise<{ width: number; height: number }> {
+  const out = await run([
+    "display-message",
+    "-p",
+    "-t",
+    target,
+    "#{window_width} #{window_height}",
+  ]);
+  const [width, height] = out.split(" ").map((n) => Number.parseInt(n, 10));
+  return { width, height };
+}
+
+export async function resizeWindow(target: string, x: number, y: number): Promise<void> {
+  await run(["resize-window", "-t", target, "-x", String(x), "-y", String(y)]);
+}
+
+/**
+ * Force tmux to re-push every pane's kernel pty winsize in `target`'s window.
+ *
+ * Building the layout splits panes repeatedly off the @tui pane; tmux can leave
+ * a *split-from* pane's pty winsize stale at its larger pre-split size (verified
+ * live: a 152-col pane whose pty still reported 255 cols). The in-process TUI
+ * then paints to the stale width and wraps into garbage until a manual resize.
+ * tmux only re-pushes a winsize when a pane's size genuinely changes AND once
+ * its event loop has processed that change — so nudge the whole window smaller,
+ * let it settle, restore it, settle again. `window-size manual` makes the resize
+ * stick despite the attached client; the prior option is restored afterwards.
+ * Best-effort: any failure is swallowed so it can never block session startup.
+ */
+export async function resyncPaneSizes(target: string, settleMs = RESYNC_SETTLE_MS): Promise<void> {
+  try {
+    const { width, height } = await getWindowSize(target);
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      return;
+    }
+    const prevOption = await getWindowOption(target, "window-size");
+    await setWindowOption(target, "window-size", "manual");
+    await resizeWindow(target, Math.max(width - 10, 20), Math.max(height - 2, 5));
+    await sleep(settleMs);
+    await resizeWindow(target, width, height);
+    await sleep(settleMs);
+    await setWindowOption(target, "window-size", prevOption || "latest");
+  } catch {
+    // Resync is best-effort; never let it block startup.
+  }
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   paneExists,
   panePid,
   renameWindow,
+  resyncPaneSizes,
   selectPane,
   sendCtrlC,
   sendKeys,
@@ -182,6 +183,10 @@ class DaemonServer implements SessionStore {
       config.project.services,
       config.groups,
     );
+    // Splitting panes off @tui can leave its kernel pty winsize stale at the
+    // Pre-split width, garbling the in-process TUI until a manual resize. Force
+    // Tmux to re-push every pane's winsize now that the layout is final.
+    await resyncPaneSizes(paneMap["@tui"] ?? focusPane);
     await selectPane(focusPane);
 
     // Late-bound ref so storeExecInfo closure can capture session before it's created

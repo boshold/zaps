@@ -1,11 +1,9 @@
-import { OverlayProvider } from "#src/hooks/useOverlay.js";
-import { ToastProvider } from "#src/hooks/useToasts.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { OverlayHost } from "./overlay/OverlayHost.js";
 import { Router } from "./Router.js";
+import { ShellProviders } from "./ShellProviders.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
-import { ToastHost } from "./toast/ToastHost.js";
 
 interface AppShellProps {
   initialStatuses: ServiceStatus[];
@@ -14,22 +12,20 @@ interface AppShellProps {
 }
 
 /**
- * Mounts the overlay stack + toast layer around the Router so both float above
- * the base view. Kept separate from `App` to keep each component's JSX nesting
- * shallow.
+ * Mounts the overlay stack around the Router so it floats above the base view.
+ * Toast notifications are rendered in-flow by the dashboard footer
+ * ({@link DashboardToasts}), not as an absolute sibling here — a bottom-anchored
+ * float overprinted the service list on short panes.
  */
 export function AppShell({ initialStatuses, initialTaskHistory, autoStart }: AppShellProps) {
   return (
-    <OverlayProvider>
-      <ToastProvider>
-        <Router
-          initialStatuses={initialStatuses}
-          initialTaskHistory={initialTaskHistory}
-          autoStart={autoStart}
-        />
-        <OverlayHost />
-        <ToastHost />
-      </ToastProvider>
-    </OverlayProvider>
+    <ShellProviders>
+      <Router
+        initialStatuses={initialStatuses}
+        initialTaskHistory={initialTaskHistory}
+        autoStart={autoStart}
+      />
+      <OverlayHost />
+    </ShellProviders>
   );
 }

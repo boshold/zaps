@@ -45,6 +45,7 @@ function TaskPicker({ tasks, runningKeys, defaultMode, onRun }: TaskPickerProps)
       flexDirection="column"
       borderStyle="round"
       borderColor="cyan"
+      backgroundColor="default"
       paddingX={1}
     >
       <TaskPickerBody

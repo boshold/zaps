@@ -28,6 +28,7 @@ import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
+import { installResizeReset } from "./lib/screen-reset.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
@@ -48,8 +49,12 @@ function globalSession(): string | undefined {
 
 // --- TUI ---
 
-function sleep(ms: number): Promise<void> {
+async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readStdoutSize(): string {
+  return `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
 }
 
 /**
@@ -67,12 +72,11 @@ async function waitForStableSize(maxMs = 1000, stableMs = 150, stepMs = 50): Pro
   if (!process.stdout.isTTY) {
     return;
   }
-  const read = (): string => `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
-  let prev = read();
+  let prev = readStdoutSize();
   let stableFor = 0;
   for (let waited = 0; waited < maxMs; waited += stepMs) {
     await sleep(stepMs);
-    const cur = read();
+    const cur = readStdoutSize();
     if (cur === prev) {
       stableFor += stepMs;
       if (stableFor >= stableMs) {
@@ -129,6 +133,11 @@ async function runTui(opts: {
     process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
   }
 
+  // Zaps keeps splitting/resizing the @tui pane after mount. Ink only force-
+  // Clears on a width *decrease*, so growing into the final size leaves frame
+  // Residue. Mop up the cases Ink misses; the live reflow then repaints clean.
+  const stopResizeReset = installResizeReset(process.stdout);
+
   const { waitUntilExit } = render(
     <App
       client={client}
@@ -147,6 +156,7 @@ async function runTui(opts: {
 
   await waitUntilExit();
 
+  stopResizeReset();
   process.stdout.write("\x1b[?1049l");
   client.disconnect();
 }

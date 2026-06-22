@@ -2,6 +2,8 @@ import { Box, Text } from "ink";
 
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { GLOBAL_HINTS } from "./hintText.js";
+
 interface HelpBarProps {
   compact?: boolean;
   status?: ServiceStatus;
@@ -27,7 +29,7 @@ export function HelpBar({ compact, status }: HelpBarProps) {
 
   return (
     <Box>
-      <Text dimColor>[t]asks [a]ll restart [q]uit/detach [d] down</Text>
+      <Text dimColor>{GLOBAL_HINTS}</Text>
     </Box>
   );
 }

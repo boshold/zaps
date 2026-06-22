@@ -30,10 +30,10 @@ interface ToastListProps {
 }
 
 /**
- * The absolute-free toast body (rendered inside {@link ToastHost}'s float). One
- * line per visible toast plus a persistent badge while any sticky failure is
- * outstanding, reminding the user of the dismiss key. Kept positioning-free so
- * it stays render-testable (ink-testing-library cannot capture absolute boxes).
+ * The toast body, rendered in-flow by {@link DashboardToasts} in the dashboard
+ * footer. One line per visible toast plus a persistent badge while any sticky
+ * failure is outstanding, reminding the user of the dismiss key. Positioning-free
+ * so it stays render-testable and never overprints content.
  */
 export function ToastList({ toasts, stickyTotal, width }: ToastListProps) {
   const { icon } = useIcons();

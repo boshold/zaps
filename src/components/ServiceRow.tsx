@@ -3,14 +3,18 @@ import { Box, Text } from "ink";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { ErrorSubRow } from "./ErrorSubRow.js";
-import { showsErrorSubRow } from "./serviceRowError.js";
+import { showsInlineError } from "./serviceRowError.js";
 import { StatusCell } from "./StatusCell.js";
+import { useIcons } from "./theme/IconTheme.js";
 
 interface ServiceRowProps {
   status: ServiceStatus;
   isSelected: boolean;
   cols: number;
   indent?: boolean;
+  /** Whether the right-hand detail pane is shown (wide layout) — suppresses the
+   * inline error sub-row, since the pane carries the full text instead. */
+  detailVisible?: boolean;
 }
 
 function formatPorts(ports: number[]): string {
@@ -62,13 +66,32 @@ function trailingInfo(status: ServiceStatus): string {
 const PREFIX_WIDTH = 4;
 const INDENT_WIDTH = 2;
 
-export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps) {
+export function ServiceRow({
+  status,
+  isSelected,
+  cols,
+  indent,
+  detailVisible = false,
+}: ServiceRowProps) {
+  const { icon } = useIcons();
   const dim = status.state === "unavailable";
   const bold = isSelected && !dim;
   const portsStr = formatPorts(status.ports);
   const indentStr = indent ? "  " : "";
   const effectiveCols = indent ? cols - INDENT_WIDTH : cols;
   const available = effectiveCols - PREFIX_WIDTH;
+  const showError = showsInlineError(status, isSelected, detailVisible);
+
+  // 2-col gutter: selection marker, else a red alert glyph for a service with a
+  // Lingering error (so trouble is visible even when the row isn't selected),
+  // Else blank. The selected row keeps `>` — its error shows in the detail pane
+  // (wide) or inline below (narrow).
+  let gutter = <Text>{"  "}</Text>;
+  if (isSelected) {
+    gutter = <Text>{"> "}</Text>;
+  } else if (status.lastError) {
+    gutter = <Text color="red">{`${icon("alert")} `}</Text>;
+  }
 
   // Cols >= 80: NAME(24) STATUS(10) PORTS(24) URL(rest)
   // Cols >= 50: NAME(20) STATUS(10) PORTS(rest)
@@ -80,7 +103,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
       <Box flexDirection="column">
         <Box>
           <Text>{indentStr}</Text>
-          <Text>{isSelected ? "> " : "  "}</Text>
+          {gutter}
           <StatusCell status={status} />
           <Text> </Text>
           <Text bold={bold} dimColor={dim}>
@@ -92,9 +115,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {trailingInfo(status).padEnd(Math.max(0, available - 24 - 10 - 24))}
           </Text>
         </Box>
-        {status.lastError && showsErrorSubRow(status, isSelected) && (
-          <ErrorSubRow error={status.lastError} />
-        )}
+        {showError && status.lastError && <ErrorSubRow error={status.lastError} />}
       </Box>
     );
   }
@@ -106,7 +127,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
       <Box flexDirection="column">
         <Box>
           <Text>{indentStr}</Text>
-          <Text>{isSelected ? "> " : "  "}</Text>
+          {gutter}
           <StatusCell status={status} />
           <Text> </Text>
           <Text bold={bold} dimColor={dim}>
@@ -117,9 +138,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {status.isDetached ? `detached ${portsStr}` : portsStr}
           </Text>
         </Box>
-        {status.lastError && showsErrorSubRow(status, isSelected) && (
-          <ErrorSubRow error={status.lastError} />
-        )}
+        {showError && status.lastError && <ErrorSubRow error={status.lastError} />}
       </Box>
     );
   }
@@ -131,7 +150,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
       <Box flexDirection="column">
         <Box>
           <Text>{indentStr}</Text>
-          <Text>{isSelected ? "> " : "  "}</Text>
+          {gutter}
           <StatusCell status={status} />
           <Text> </Text>
           <Text bold={bold} dimColor={dim}>
@@ -141,9 +160,7 @@ export function ServiceRow({ status, isSelected, cols, indent }: ServiceRowProps
             {stateLabel(status).slice(0, statusWidth)}
           </Text>
         </Box>
-        {status.lastError && showsErrorSubRow(status, isSelected) && (
-          <ErrorSubRow error={status.lastError} />
-        )}
+        {showError && status.lastError && <ErrorSubRow error={status.lastError} />}
       </Box>
     );
   }

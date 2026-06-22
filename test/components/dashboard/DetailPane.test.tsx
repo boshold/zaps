@@ -136,3 +136,61 @@ describe("DetailPane (wide layout)", () => {
     expect(lineCount(frame)).toBeLessThanOrEqual(24);
   });
 });
+
+const { DetailPane } = await import("../../../src/components/dashboard/DetailPane.js");
+
+describe("DetailPane (direct)", () => {
+  it("renders the service name and fields cleanly (no shrink/overlap garble)", () => {
+    const status: ServiceStatus = {
+      name: "api",
+      state: "ready",
+      ports: [3000],
+      retryCount: 0,
+      readySince: Date.now() - 120_000,
+    };
+    const { lastFrame } = render(<DetailPane status={status} width={30} maxLines={12} />);
+    const frame = lastFrame() ?? "";
+    // The full name renders (the old fixed-height border garbled it to "ev").
+    expect(frame).toContain("api");
+    expect(frame).toContain("state: ready");
+    expect(frame).toContain("uptime: 2m");
+    expect(frame).toContain("ports: :3000");
+    // No "+N more" marker when everything fits.
+    expect(frame).not.toContain("more");
+  });
+
+  it("collapses the field tail into a +N more marker when the budget is too short", () => {
+    const status: ServiceStatus = {
+      name: "api",
+      state: "ready",
+      ports: [3000],
+      retryCount: 0,
+      url: "http://localhost:3000",
+      readySince: Date.now() - 120_000,
+    };
+    // 2 fixed rows (name + blank) + 3 field rows: state + url fit, the rest fold
+    // Into a "+N more" line so the pane never overflows a cramped body.
+    const { lastFrame } = render(<DetailPane status={status} width={30} maxLines={5} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("state: ready");
+    expect(frame).toMatch(/\+\d+ more/);
+    expect(frame).not.toContain("retries:");
+  });
+
+  it("renders the empty state when no service is selected", () => {
+    const { lastFrame } = render(<DetailPane status={undefined} width={30} maxLines={8} />);
+    expect(lastFrame() ?? "").toContain("No service selected");
+  });
+
+  it("formats uptime in hours", () => {
+    const status: ServiceStatus = {
+      name: "api",
+      state: "ready",
+      ports: [],
+      retryCount: 0,
+      readySince: Date.now() - 3_700_000,
+    };
+    const { lastFrame } = render(<DetailPane status={status} width={30} maxLines={12} />);
+    expect(lastFrame() ?? "").toMatch(/uptime: 1h/);
+  });
+});

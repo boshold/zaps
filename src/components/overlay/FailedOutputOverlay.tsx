@@ -134,6 +134,7 @@ function FailedOutputOverlay({
       flexDirection="column"
       borderStyle="round"
       borderColor="red"
+      backgroundColor="default"
       paddingX={1}
     >
       <FailedOutputBody

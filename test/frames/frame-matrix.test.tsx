@@ -269,11 +269,12 @@ describe("footer rules", () => {
     );
     const frame = lastFrame() ?? "";
     fits(frame, 30);
-    // Header rule + a rule above Recent Tasks + a rule above the keymap = >= 3
-    // Lines made entirely of the divider glyph. (Without the footer rules there
-    // Is only the single header rule.)
-    const ruleLines = frame.split("\n").filter((l) => /^─+$/.test(l.trim()));
-    expect(ruleLines.length).toBeGreaterThanOrEqual(3);
+    // Header rule (┬ junction) + a rule under the body (┴ junction) = >= 2 lines
+    // Made of the divider glyph and the pane-frame tee junctions. (In split mode
+    // Recent Tasks lives in the left column, not the footer, so its rule is no
+    // Longer a full-width line.)
+    const ruleLines = frame.split("\n").filter((l) => /^[─┬┴]+$/.test(l.trim()));
+    expect(ruleLines.length).toBeGreaterThanOrEqual(2);
   });
 
   it("omits the footer rules in compact mode", () => {
@@ -283,7 +284,7 @@ describe("footer rules", () => {
     );
     const frame = lastFrame() ?? "";
     fits(frame, 11);
-    const ruleLines = frame.split("\n").filter((l) => /^─+$/.test(l.trim()));
+    const ruleLines = frame.split("\n").filter((l) => /^[─┬┴]+$/.test(l.trim()));
     // Compact hides the header rule and the footer rules alike.
     expect(ruleLines.length).toBe(0);
   });

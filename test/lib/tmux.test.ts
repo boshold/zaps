@@ -36,6 +36,9 @@ import {
   displayPopup,
   getWindowOption,
   setWindowOption,
+  getWindowSize,
+  resizeWindow,
+  resyncPaneSizes,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -455,5 +458,70 @@ describe("setWindowOption", () => {
       ["set-window-option", "-t", "%0", "automatic-rename", "on"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
+  });
+});
+
+describe("getWindowSize", () => {
+  it("parses window width and height", async () => {
+    mockSpawn.mockReturnValue(createMockProc("255 63"));
+    const size = await getWindowSize("%0");
+    expect(size).toEqual({ width: 255, height: 63 });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "-t", "%0", "#{window_width} #{window_height}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("resizeWindow", () => {
+  it("issues resize-window with explicit dimensions", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await resizeWindow("%0", 200, 50);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["resize-window", "-t", "%0", "-x", "200", "-y", "50"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("resyncPaneSizes", () => {
+  it("nudges the window smaller and back to force a pty re-push", async () => {
+    // Sequence: read size -> read window-size opt -> manual -> shrink -> restore -> opt back.
+    // Each call needs a fresh proc (a proc emits "close" only once).
+    mockSpawn
+      .mockImplementationOnce(() => createMockProc("152 18")) // GetWindowSize
+      .mockImplementationOnce(() => createMockProc("latest")) // GetWindowOption(window-size)
+      .mockImplementation(() => createMockProc("")); // All set/resize calls
+
+    await resyncPaneSizes("%7", 0);
+
+    const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
+    expect(calls).toEqual([
+      "display-message -p -t %7 #{window_width} #{window_height}",
+      "show-window-option -v -t %7 window-size",
+      "set-window-option -t %7 window-size manual",
+      "resize-window -t %7 -x 142 -y 16", // Width-10, height-2
+      "resize-window -t %7 -x 152 -y 18", // Restored
+      "set-window-option -t %7 window-size latest", // Prior option restored
+    ]);
+  });
+
+  it("clamps the nudged size to sane minimums on tiny windows", async () => {
+    mockSpawn
+      .mockImplementationOnce(() => createMockProc("12 4"))
+      .mockImplementationOnce(() => createMockProc("latest"))
+      .mockImplementation(() => createMockProc(""));
+
+    await resyncPaneSizes("%7", 0);
+
+    const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
+    expect(calls).toContain("resize-window -t %7 -x 20 -y 5"); // Floored, not 2 / 2
+  });
+
+  it("swallows errors so startup is never blocked", async () => {
+    mockSpawn.mockImplementation(() => createMockProc("", 1, "boom"));
+    await expect(resyncPaneSizes("%7", 0)).resolves.toBeUndefined();
   });
 });

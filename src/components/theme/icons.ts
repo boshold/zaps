@@ -11,12 +11,15 @@ type IconKey =
   | "stopped"
   | "error"
   | "unavailable"
+  | "alert"
   // List chrome
   | "selection"
   | "overflowUp"
   | "overflowDown"
   | "divider"
   | "treeBranch"
+  | "dividerTop"
+  | "dividerBottom"
   // Task results
   | "taskSuccess"
   | "taskError"
@@ -44,11 +47,14 @@ const nerd: IconMap = {
   stopped: "○",
   error: "✖",
   unavailable: "○",
+  alert: "⚠",
   selection: ">",
   overflowUp: "↑",
   overflowDown: "↓",
   divider: "─",
   treeBranch: "│",
+  dividerTop: "┬",
+  dividerBottom: "┴",
   taskSuccess: "✔",
   taskError: "✖",
   taskPending: "○",
@@ -70,11 +76,14 @@ const ascii: IconMap = {
   stopped: "o",
   error: "x",
   unavailable: "-",
+  alert: "!",
   selection: ">",
   overflowUp: "^",
   overflowDown: "v",
   divider: "-",
   treeBranch: "|",
+  dividerTop: "+",
+  dividerBottom: "+",
   taskSuccess: "+",
   taskError: "x",
   taskPending: ".",
