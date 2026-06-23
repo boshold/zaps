@@ -11,6 +11,7 @@ import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
+import { LayoutReflow } from "#src/lib/tmux-reflow.js";
 import { killPane } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -125,8 +126,28 @@ export class Session {
   public manager: ServiceManager;
   public logBuffers: Map<string, LogBuffer>;
   public logMonitor: LogMonitor;
-  /** Monitor key (pane id) → member service names sharing it; drives fan-out (D2). */
-  private paneMembers: Map<string, string[]>;
+  /**
+   * Monitor key (pane id) → shared `LogBuffer`. This is the SAME map instance the
+   * `LogMonitor` holds internally — `allocatePaneLog`/`freePaneLog` mutate it so
+   * the monitor's `start(key,…)` finds the new buffer by pane-id without any
+   * pipeline rebuild. Reassigned (not mutated) on reload, in lockstep with
+   * `logMonitor`/`logBuffers`/`paneMembers` (E14 invariant).
+   */
+  public paneBuffers: Map<string, LogBuffer>;
+  /**
+   * Monitor key (pane id) → member service names sharing it; drives fan-out (D2).
+   * Public for the same reason `paneBuffers` is: dynamic insert/remove mutates
+   * this map in lockstep with `paneBuffers`/`logBuffers`/`logMonitor`, and
+   * tests need to assert the lockstep without surfacing a side accessor.
+   */
+  public paneMembers: Map<string, string[]>;
+  /**
+   * Pre-built `LayoutReflow` whose deps are CLOSURES over `this`, so reload's
+   * reassignment of `config`/`paneMap`/`logMonitor`/log maps is visible without
+   * re-constructing the reflow. Insert/remove invocations from Phase 4 will
+   * call into this instance; the hooks below wire dynamic log allocation.
+   */
+  public readonly reflow: LayoutReflow;
   /** Tracked in-flight `startAll`; reload/destroy abort then await its settlement. */
   public startPromise: Promise<void> | null = null;
   /** Set once `destroy()` runs; guards the reload-after-destroy race (A5). */
@@ -160,7 +181,25 @@ export class Session {
     const pipeline = this.buildLogPipeline(this.config, this.paneMap);
     this.logBuffers = pipeline.buffers;
     this.logMonitor = pipeline.monitor;
+    this.paneBuffers = pipeline.paneBuffers;
     this.paneMembers = pipeline.paneMembers;
+
+    // Pre-build LayoutReflow with LIVE-getter deps. The closures dereference
+    // `this.config`/`this.paneMap`/etc. at call time, so a post-construction
+    // Reload that reassigns those fields is transparent to the reflow. Hooks
+    // Bind through `this` for the same reason — they re-read `this.logMonitor`
+    // And the log maps fresh on every fire, never closing over stale instances.
+    this.reflow = new LayoutReflow({
+      getLayout: () => this.config.project.layout,
+      getPaneMap: () => this.paneMap,
+      getWindowTarget: () => this.tmuxSession,
+      onPaneInserted: (name, paneId) => {
+        this.allocatePaneLog(name, paneId);
+      },
+      onPaneRemoved: (name, paneId) => {
+        this.freePaneLog(name, paneId);
+      },
+    });
 
     this.wireManagerEvents(manager);
   }
@@ -173,7 +212,12 @@ export class Session {
   private buildLogPipeline(
     config: ResolvedConfig,
     paneMap: PaneMap,
-  ): { buffers: Map<string, LogBuffer>; monitor: LogMonitor; paneMembers: Map<string, string[]> } {
+  ): {
+    buffers: Map<string, LogBuffer>;
+    monitor: LogMonitor;
+    paneBuffers: Map<string, LogBuffer>;
+    paneMembers: Map<string, string[]>;
+  } {
     const { buffers, paneBuffers, paneMembers } = allocateLogBuffers(config, paneMap);
     const monitor = new LogMonitor(
       { capturePane: this.deps.capturePane },
@@ -188,7 +232,7 @@ export class Session {
         }
       },
     );
-    return { buffers, monitor, paneMembers };
+    return { buffers, monitor, paneBuffers, paneMembers };
   }
 
   private wireManagerEvents(manager: ServiceManager): void {
@@ -403,6 +447,7 @@ export class Session {
     this.manager = newManager;
     this.logBuffers = pipeline.buffers;
     this.logMonitor = pipeline.monitor;
+    this.paneBuffers = pipeline.paneBuffers;
     this.paneMembers = pipeline.paneMembers;
 
     this.wireManagerEvents(newManager);
@@ -512,6 +557,67 @@ export class Session {
     } else {
       this.staleNotified = false;
     }
+  }
+
+  /**
+   * Re-point the service's pane-less private buffer to a pane-shared `LogBuffer`
+   * and start monitoring the new pane. Called by `LayoutReflow.insertPane` via
+   * the `onPaneInserted` hook, AFTER `paneMap[name]` is set.
+   *
+   * All map dereferences read `this.*` AT CALL TIME — reload reassigns the four
+   * log fields to fresh instances, and capturing any of them would silently
+   * leak inserts into the dead pipeline.
+   *
+   * Idempotent: re-invoking with the same `(name, paneId)` is a no-op (the
+   * monitor's `start` is already idempotent — `log-monitor.ts:36-38`). This
+   * matters because `insertPane`'s rollback runs AFTER the hook fires; a
+   * retry must not orphan the just-allocated buffer or duplicate membership.
+   */
+  public allocatePaneLog(name: string, paneId: string): void {
+    // Idempotent fast path: already wired to this exact pane with the same
+    // Pane-shared buffer → just ensure the monitor + membership invariants
+    // Without creating a new buffer (would orphan the previously-referenced
+    // One and break any consumer holding a reference).
+    const existingPaneBuf = this.paneBuffers.get(paneId);
+    if (existingPaneBuf && this.logBuffers.get(name) === existingPaneBuf) {
+      const members = this.paneMembers.get(paneId) ?? [];
+      if (!members.includes(name)) {
+        members.push(name);
+        this.paneMembers.set(paneId, members);
+      }
+      this.logMonitor.start(paneId, paneId);
+      return;
+    }
+
+    // Re-point: replace whatever buffer the service had (the pane-less private
+    // One from boot, or a stale entry) with a fresh pane-shared `LogBuffer`.
+    const buf = new LogBuffer();
+    this.logBuffers.set(name, buf);
+    this.paneBuffers.set(paneId, buf);
+    this.paneMembers.set(paneId, [name]);
+    this.logMonitor.start(paneId, paneId);
+  }
+
+  /**
+   * Stop the pane's monitor and drop the pane-keyed entries. Round 7 invariant:
+   * **`this.logBuffers[name]` is intentionally RETAINED** so the stopped lazy
+   * service still snapshots its history (matching every other stopped service)
+   * — deleting it would make `logs.snapshot(name)` throw `Unknown service`
+   * (`handlers/session.ts:578`) and drop the service from `attachSnapshot`
+   * (`session.ts:521`).
+   *
+   * Idempotent: re-calling with an already-freed `paneId` is a no-op (the
+   * monitor's `stop` is idempotent — `log-monitor.ts:105-114`); the
+   * `delete` returns false on missing keys.
+   *
+   * No unbounded growth: `paneBuffers`/`paneMembers` shrink in lockstep with
+   * `paneMap`, mirroring the `D6` invariant in `log-monitor.ts`.
+   */
+  public freePaneLog(_name: string, paneId: string): void {
+    this.logMonitor.stop(paneId);
+    this.paneBuffers.delete(paneId);
+    this.paneMembers.delete(paneId);
+    // NOTE: `this.logBuffers[name]` is RETAINED on purpose — see method docstring.
   }
 
   /**

@@ -68,6 +68,12 @@ vi.mock("#src/lib/tmux.js", () => ({
   getWindowOption: vi.fn(),
   setWindowOption: vi.fn(),
   resyncPaneSizes: vi.fn(),
+  // LayoutReflow (constructed by Session) imports these too.
+  getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
+  paneIndexOrder: vi.fn().mockResolvedValue([]),
+  selectLayout: vi.fn().mockResolvedValue(undefined),
+  splitPane: vi.fn().mockResolvedValue("%99"),
+  swapPanes: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("#src/lib/port.js", () => ({
