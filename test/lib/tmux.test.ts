@@ -39,6 +39,10 @@ import {
   getWindowSize,
   resizeWindow,
   resyncPaneSizes,
+  swapPanes,
+  selectLayout,
+  windowLayout,
+  paneIndexOrder,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -143,7 +147,7 @@ describe("killSession", () => {
 });
 
 describe("splitPane", () => {
-  it("splits horizontally without percent", async () => {
+  it("splits horizontally without options", async () => {
     mockSpawn.mockReturnValue(createMockProc("%2"));
     const paneId = await splitPane("%0", "h");
     expect(paneId).toBe("%2");
@@ -156,13 +160,104 @@ describe("splitPane", () => {
 
   it("splits vertically with percent", async () => {
     mockSpawn.mockReturnValue(createMockProc("%5"));
-    const paneId = await splitPane("%1", "v", 30);
+    const paneId = await splitPane("%1", "v", { percent: 30 });
     expect(paneId).toBe("%5");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
       ["split-window", "-v", "-t", "%1", "-l", "30%", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
+  });
+
+  it("passes -d so the new pane does not steal focus", async () => {
+    mockSpawn.mockReturnValue(createMockProc("%6"));
+    await splitPane("%0", "h", { detached: true });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["split-window", "-h", "-d", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+
+  it("passes -b so the new pane is inserted before the target", async () => {
+    mockSpawn.mockReturnValue(createMockProc("%7"));
+    await splitPane("%0", "h", { before: true });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["split-window", "-h", "-b", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+
+  it("combines before + detached + percent in the documented order", async () => {
+    mockSpawn.mockReturnValue(createMockProc("%8"));
+    await splitPane("%0", "v", { before: true, detached: true, percent: 25 });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["split-window", "-v", "-b", "-d", "-t", "%0", "-l", "25%", "-P", "-F", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("swapPanes", () => {
+  it("issues swap-pane with -s and -t", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await swapPanes("%2", "%4");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["swap-pane", "-s", "%2", "-t", "%4"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+});
+
+describe("selectLayout", () => {
+  it("passes the layout string as a single argv element", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    const layout = "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}";
+    await selectLayout("@0", layout);
+    // CRITICAL: layout is one element — the `{`/`[` never need shell escaping.
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["select-layout", "-t", "@0", layout], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    // Pin "layout is ONE argv element" — guards against accidental .join(" ").
+    const [[, argv]] = mockSpawn.mock.calls;
+    expect(Array.isArray(argv) && argv.at(-1)).toBe(layout);
+  });
+});
+
+describe("windowLayout", () => {
+  it("reads #{window_layout} via display-message", async () => {
+    const layout = "a87d,100x30,0,0,0";
+    mockSpawn.mockReturnValue(createMockProc(layout));
+    expect(await windowLayout("@0")).toBe(layout);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "-t", "@0", "#{window_layout}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+});
+
+describe("paneIndexOrder", () => {
+  it("parses pane index + id, sorted ascending by index", async () => {
+    // Feed an out-of-order stream to assert the sort.
+    mockSpawn.mockReturnValue(createMockProc("3 %7\n1 %5\n2 %6"));
+    const order = await paneIndexOrder("@0");
+    expect(order).toEqual([
+      { index: 1, id: "%5" },
+      { index: 2, id: "%6" },
+      { index: 3, id: "%7" },
+    ]);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["list-panes", "-t", "@0", "-F", "#{pane_index} #{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+
+  it("returns an empty array when the window has no panes", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    expect(await paneIndexOrder("@0")).toEqual([]);
   });
 });
 

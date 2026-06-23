@@ -70,7 +70,7 @@ async function walkLayout(
       const childRemaining = parentRemaining - sizes[i - 1];
       const tmuxPercent = Math.round((childRemaining / parentRemaining) * 100);
 
-      const newPaneId = await splitPane(splitTarget, dir, tmuxPercent);
+      const newPaneId = await splitPane(splitTarget, dir, { percent: tmuxPercent });
       createdPanes.push(newPaneId);
       paneIds.push(newPaneId);
       splitTarget = newPaneId;

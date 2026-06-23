@@ -86,7 +86,7 @@ describe("createLayout", () => {
     expect(paneMap.api).toBe("%1");
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
     // Direction "rows" maps to "v"
-    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 50);
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", { percent: 50 });
   });
 
   it("nested layout: correct split sequence and pane mapping", async () => {
@@ -142,9 +142,9 @@ describe("createLayout", () => {
     expect(paneMap.web).toBe("%2");
 
     // Child 1 (api): split from %0, remaining = 60, tmux = round(60/100*100) = 60
-    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 60);
+    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", { percent: 60 });
     // Child 2 (web): split from %1, remaining = 30, tmux = round(30/60*100) = 50
-    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", 50);
+    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", { percent: 50 });
   });
 
   it("services not in layout get split panes", async () => {
@@ -186,7 +186,7 @@ describe("createLayout", () => {
 
     // Implicit child gets remainder: 100 - 60 = 40
     // CurrentPaneSize = 100, tmux = round(40/100*100) = 40
-    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 40);
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", { percent: 40 });
   });
 
   it("returns focusPane when a leaf has focus: true", async () => {
