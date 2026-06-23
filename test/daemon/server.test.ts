@@ -74,6 +74,7 @@ vi.mock("#src/lib/tmux.js", () => ({
   selectLayout: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue("%99"),
   swapPanes: vi.fn().mockResolvedValue(undefined),
+  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
 }));
 
 vi.mock("#src/lib/port.js", () => ({

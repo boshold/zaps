@@ -199,6 +199,14 @@ export class Session {
       onPaneRemoved: (name, paneId) => {
         this.freePaneLog(name, paneId);
       },
+      onPaneInsertFailed: (name, paneId) => {
+        // Symmetric with `onPaneRemoved` — same freePaneLog cleanup. Closes the
+        // Round-7 buffer-leak path: after a failed insert (split succeeded but
+        // ApplyGeometry/select-pane threw), `paneBuffers[paneId]` + the running
+        // Monitor key would otherwise orphan when a retry with a NEW pane id
+        // Lands (idempotency only covers same-id retry).
+        this.freePaneLog(name, paneId);
+      },
     });
 
     this.wireManagerEvents(manager);

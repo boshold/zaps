@@ -34,6 +34,7 @@ vi.mock("#src/lib/tmux.js", () => ({
   selectPane: vi.fn().mockResolvedValue(undefined),
   splitPane: vi.fn().mockResolvedValue("%99"),
   swapPanes: vi.fn().mockResolvedValue(undefined),
+  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
 }));
 
 function createMockManager(): ServiceManager {
