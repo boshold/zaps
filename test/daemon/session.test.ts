@@ -15,6 +15,8 @@ vi.mock("../../src/lib/taskShortcuts.js", () => ({
 
 vi.mock("#src/config/loader.js", () => ({
   loadConfig: vi.fn(),
+  // P04-T03: rebuildLayout calls computeBootSkip during reload.
+  computeBootSkip: vi.fn(() => new Set<string>()),
 }));
 
 vi.mock("#src/lib/tmux-layout.js", () => ({

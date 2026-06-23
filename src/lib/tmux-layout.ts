@@ -498,11 +498,19 @@ export async function createLayout(
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
   groups?: Map<string, string[]>,
-  options?: { reserveTuiPane?: boolean },
+  options?: { reserveTuiPane?: boolean; skip?: Set<string> },
 ): Promise<{ paneMap: PaneMap; focusPane: string }> {
   const reserveTuiPane = options?.reserveTuiPane ?? false;
+  const skip = options?.skip;
+  const hasSkip = skip !== undefined && skip.size > 0;
   const paneMap: PaneMap = {};
-  const serviceNames = Object.keys(services);
+  // Pane-less lazy services don't get a leftover-pane split. `skip` is pre-
+  // Resolved by the loader (P04-T02 lazyPaneByService) AND the autostart guard
+  // (`flags?.start === false`). Group members + detached are guaranteed absent
+  // From `skip` by P04-T02's guard-first rule, so no group-pane desync here.
+  const serviceNames = hasSkip
+    ? Object.keys(services).filter((n) => !skip.has(n))
+    : Object.keys(services);
   const groupChildNames = collectGroupChildNames(groups);
   const createdPanes: string[] = [];
 
@@ -524,11 +532,32 @@ export async function createLayout(
       return { paneMap, focusPane: paneMap["@tui"] };
     }
 
-    // Case 2: Layout tree provided.
-    const focusName = await walkLayout(layout, startPaneId, paneMap, createdPanes);
+    // Case 2: Layout tree provided. When a skip set is in play, filter the tree
+    // To the boot-visible leaf set BEFORE walking. The SAME filtered tree must
+    // Feed both `walkLayout` and `reserveStartPaneForTui` — otherwise
+    // FirstLeafName on the raw layout could disagree with the leaf walkLayout
+    // Actually mapped, mislabeling `@tui` on the reload path (Round-5 sharp edge).
+    let bootLayout: LayoutNode | undefined = layout;
+    if (hasSkip) {
+      const visible = new Set<string>();
+      for (const name of collectPaneNames(layout)) {
+        if (!skip.has(name)) {
+          visible.add(name);
+        }
+      }
+      // eslint-disable-next-line no-use-before-define -- `filterTree` is a top-level function declaration (hoisted); keeping it next to other exports
+      bootLayout = filterTree(layout, visible);
+    }
+    if (!bootLayout) {
+      throw new Error(
+        "createLayout: every layout leaf is skipped (the @tui slot must always be visible)",
+      );
+    }
+
+    const focusName = await walkLayout(bootLayout, startPaneId, paneMap, createdPanes);
 
     if (reserveTuiPane) {
-      reserveStartPaneForTui(layout, startPaneId, paneMap);
+      reserveStartPaneForTui(bootLayout, startPaneId, paneMap);
     }
 
     if (groups) {

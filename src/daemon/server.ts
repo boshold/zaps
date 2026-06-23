@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 
-import { loadConfig } from "#src/config/loader.js";
+import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -176,12 +176,19 @@ class DaemonServer implements SessionStore {
     // Load config
     const config = await loadConfig(params.configPath, params.projectDir);
 
-    // Build pane layout
+    // Build pane layout. Boot-skip the pane for any service that is lazy
+    // (P04-T02 resolved `lazyPaneByService`) AND won't autostart
+    // (`flags?.start === false`). The guard-first resolution already forces
+    // `lazyPaneByService=false` for `_combined` members + detached, so the
+    // Skip predicate never fires for those — group/detached panes are built
+    // Exactly as before.
+    const skip = computeBootSkip(config);
     const { paneMap, focusPane } = await createLayout(
       params.originPane,
       config.project.layout,
       config.project.services,
       config.groups,
+      { skip },
     );
     // Splitting panes off @tui can leave its kernel pty winsize stale at the
     // Pre-split width, garbling the in-process TUI until a manual resize. Force

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import type net from "node:net";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
-import { loadConfig } from "#src/config/loader.js";
+import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -397,12 +397,15 @@ export class Session {
    */
   private async rebuildLayout(tuiPaneId: string, newConfig: ResolvedConfig): Promise<PaneMap> {
     try {
+      // Reload uses the SAME boot-skip predicate as initial boot so a
+      // Non-running lazy service stays pane-less after a config edit.
+      const skip = computeBootSkip(newConfig);
       const { paneMap } = await createLayout(
         tuiPaneId,
         newConfig.project.layout,
         newConfig.project.services,
         newConfig.groups,
-        { reserveTuiPane: true },
+        { reserveTuiPane: true, skip },
       );
       return paneMap;
     } catch (error) {

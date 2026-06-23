@@ -46,6 +46,9 @@ vi.mock("node:fs", () => ({
 
 vi.mock("#src/config/loader.js", () => ({
   loadConfig: vi.fn(),
+  // P04-T03: computeBootSkip is called by buildSession before createLayout.
+  // Empty set → no boot-skips (matches every existing test's expectation).
+  computeBootSkip: vi.fn(() => new Set<string>()),
 }));
 
 const loaderModule = await import("#src/config/loader.js");

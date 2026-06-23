@@ -321,6 +321,133 @@ describe("createLayout", () => {
     // Exactly two splits: api (%1) + the single shared group pane (%2).
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
   });
+
+  describe("boot-skip (P04-T03)", () => {
+    it("skipped layout-referenced leaf gets no paneMap entry; survivors still mapped", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker" }],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      expect(paneMap["@tui"]).toBeDefined();
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+    });
+
+    it("skipped leftover service (no layout) gets no paneMap entry", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+
+      const { paneMap } = await createLayout("%0", undefined, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+      // Exactly ONE split — `api` only (`worker` skipped).
+      expect(mockSplitPane).toHaveBeenCalledTimes(1);
+    });
+
+    it("@tui reserve survives skipping slot-0 leaf (Round-5 regression)", async () => {
+      // The CRITICAL regression: layout slot 0 declares the lazy service, NOT
+      // `@tui`. If reserveStartPaneForTui sees the raw layout it would treat
+      // `worker` as the first leaf — but walkLayout (against the filtered
+      // Tree) actually maps `@tui` to slot 0. The two views must agree.
+      const services: Record<string, ServiceConfig> = {
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+        api: { start: "npm start" },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "worker" }, { pane: "@tui" }, { pane: "api" }],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+        reserveTuiPane: true,
+      });
+
+      // @tui maps to the start pane (the SURVIVING first leaf in the filtered
+      // Tree). If reserveStartPaneForTui had been fed the raw layout, it
+      // Would see `worker` first and swap @tui off %0 — mislabeling the Ink
+      // Pane and producing a relaid/killed TUI on the next reload.
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+    });
+
+    it("no-skip path: byte-identical paneMap to the pre-skip behavior", async () => {
+      // Sanity: with `skip` omitted/empty the result is byte-identical to today.
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js" },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker" }],
+      };
+
+      const ref = await createLayout("%0", layout, services);
+      paneCounter = 0;
+      vi.clearAllMocks();
+      mockSplitPane.mockImplementation(async () => `%${(paneCounter += 1)}`);
+      mockKillPane.mockResolvedValue(undefined);
+      const withEmptySkip = await createLayout("%0", layout, services, undefined, {
+        skip: new Set<string>(),
+      });
+
+      expect(withEmptySkip.paneMap).toEqual(ref.paneMap);
+      expect(withEmptySkip.focusPane).toBe(ref.focusPane);
+    });
+
+    it("skipped focus leaf falls back to @tui as focus pane", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker", focus: true }],
+      };
+
+      const { paneMap, focusPane } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      // Worker was the declared focus target but it's skipped → fallback @tui.
+      expect(focusPane).toBe(paneMap["@tui"]);
+    });
+
+    it("throws when every layout leaf is skipped (impossible with @tui present)", async () => {
+      // Defensive: if the caller manages to skip @tui somehow we surface a clear error
+      // Rather than producing a paneMap-less window. P04-T02's guard ensures the
+      // Real caller never skips @tui, but this pins the contract.
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "api" }],
+      };
+
+      await expect(
+        createLayout("%0", layout, services, undefined, {
+          skip: new Set(["api"]),
+        }),
+      ).rejects.toThrow(/every layout leaf is skipped/);
+    });
+  });
 });
 
 describe("filterTree", () => {

@@ -615,5 +615,25 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
   };
 }
 
+/**
+ * Boot-skip predicate (P04-T03): the set of service names that should NOT get
+ * A pane at session boot (or reload). A service skips iff it is lazy
+ * (loader-resolved `lazyPaneByService` is `true`) AND it won't autostart
+ * (`flags?.start === false`). Group members + detached services have
+ * `lazyPaneByService=false` enforced by P04-T02's guard, so they are never
+ * Skipped here — no group-pane desync. Used by both `buildSession` (boot)
+ * And `Session.rebuildLayout` (reload) so the boot-pane decision is identical
+ * Across the two paths.
+ */
+export function computeBootSkip(config: ResolvedConfig): Set<string> {
+  const skip = new Set<string>();
+  for (const [name, svc] of Object.entries(config.project.services)) {
+    if (config.lazyPaneByService.get(name) === true && svc.flags?.start === false) {
+      skip.add(name);
+    }
+  }
+  return skip;
+}
+
 /** @internal Exported for testing */
 export { collapseLayoutTree, resolveOptionalServices, stripUnavailableServices };
