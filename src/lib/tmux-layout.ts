@@ -667,3 +667,40 @@ export function layoutString(
   const { body } = serializeNode(tree, rects, paneNumbers);
   return `${checksum(body)},${body}`;
 }
+
+/**
+ * Resolve the swap pairs that turn `current` spatial pane order into `target` DFS
+ * order via selection sort: for each slot `i`, if `current[i]` is wrong, swap in
+ * the pane that belongs there and emit the pair `[current[i], target[i]]`. Each
+ * pair maps 1:1 to a `swap-pane -s <from> -t <to>` call (positions swap, both
+ * processes stay attached). Returns `[]` when already in order.
+ *
+ * This is the reorder *fallback* — the primary insert path is a zero-swap
+ * adjacency split. `current` and `target` must be permutations of the same
+ * multiset of pane ids; a mismatch is a programmer error and throws.
+ */
+export function resolvePermutation(current: string[], target: string[]): [string, string][] {
+  const sortedCurrent = [...current].toSorted();
+  const sortedTarget = [...target].toSorted();
+  if (
+    sortedCurrent.length !== sortedTarget.length ||
+    sortedCurrent.some((value, i) => value !== sortedTarget[i])
+  ) {
+    throw new Error(
+      `resolvePermutation: current [${current.join(", ")}] and target [${target.join(", ")}] are not permutations of the same set`,
+    );
+  }
+
+  const work = [...current];
+  const swaps: [string, string][] = [];
+  for (let i = 0; i < work.length; i += 1) {
+    if (work[i] === target[i]) {
+      continue;
+    }
+    // The pane that belongs at slot i currently sits later in `work`.
+    const j = work.indexOf(target[i], i + 1);
+    swaps.push([work[i], target[i]]);
+    [work[i], work[j]] = [work[j], work[i]];
+  }
+  return swaps;
+}

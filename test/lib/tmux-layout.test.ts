@@ -15,6 +15,7 @@ import {
   filterTree,
   layoutString,
   PaneTooSmallError,
+  resolvePermutation,
   validateLayout,
   validateLayoutSizes,
 } from "../../src/lib/tmux-layout.js";
@@ -804,6 +805,74 @@ describe("layoutString", () => {
 
     expect(() => layoutString(tree, rects, paneNumbers)).toThrow(
       /no rect computed for pane 'right'/,
+    );
+  });
+});
+
+describe("resolvePermutation", () => {
+  /** Apply the emitted swap pairs to `current` (mirrors tmux `swap-pane`). */
+  function applySwaps(current: string[], swaps: [string, string][]): string[] {
+    const work = [...current];
+    for (const [from, to] of swaps) {
+      const i = work.indexOf(from);
+      const j = work.indexOf(to);
+      [work[i], work[j]] = [work[j], work[i]];
+    }
+    return work;
+  }
+
+  const cases: { name: string; current: string[]; target: string[] }[] = [
+    { name: "already sorted", current: ["A", "B", "C"], target: ["A", "B", "C"] },
+    { name: "single swap", current: ["A", "B"], target: ["B", "A"] },
+    { name: "reverse order", current: ["A", "B", "C", "D"], target: ["D", "C", "B", "A"] },
+    { name: "[A,B,C] → [C,A,B]", current: ["A", "B", "C"], target: ["C", "A", "B"] },
+    {
+      name: "5-element shuffle",
+      current: ["%0", "%1", "%2", "%3", "%4"],
+      target: ["%3", "%0", "%4", "%2", "%1"],
+    },
+    { name: "empty", current: [], target: [] },
+  ];
+
+  for (const { name, current, target } of cases) {
+    it(`produces swaps that transform ${name} into the target`, () => {
+      const swaps = resolvePermutation(current, target);
+      expect(applySwaps(current, swaps)).toEqual(target);
+    });
+  }
+
+  it("returns [] when current already equals target", () => {
+    expect(resolvePermutation(["A", "B", "C"], ["A", "B", "C"])).toEqual([]);
+  });
+
+  it("resolves the [A,B,C] → [C,A,B] 3-cycle in the minimal 2 swaps", () => {
+    // A pure 3-cycle needs k−1 = 2 transpositions; selection sort is optimal here.
+    // (The architecture note's "1 swap" is the insert+swap scenario, not a relabel.)
+    const swaps = resolvePermutation(["A", "B", "C"], ["C", "A", "B"]);
+    expect(swaps).toEqual([
+      ["A", "C"],
+      ["B", "A"],
+    ]);
+    expect(applySwaps(["A", "B", "C"], swaps)).toEqual(["C", "A", "B"]);
+  });
+
+  it("does not mutate the input arrays", () => {
+    const current = ["A", "B", "C"];
+    const target = ["C", "B", "A"];
+    resolvePermutation(current, target);
+    expect(current).toEqual(["A", "B", "C"]);
+    expect(target).toEqual(["C", "B", "A"]);
+  });
+
+  it("throws when the arrays are not permutations of the same set", () => {
+    expect(() => resolvePermutation(["A", "B"], ["A", "C"])).toThrow(
+      /not permutations of the same set/,
+    );
+  });
+
+  it("throws when the arrays differ in length", () => {
+    expect(() => resolvePermutation(["A", "B", "C"], ["A", "B"])).toThrow(
+      /not permutations of the same set/,
     );
   });
 });
