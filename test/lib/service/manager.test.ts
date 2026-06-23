@@ -3480,6 +3480,31 @@ describe("lazy-pane lifecycle", () => {
     expect(deps.reflowRemove).toHaveBeenCalledWith("worker");
   });
 
+  it("restartService on a STOPPED pane-less lazy service CALLS reflowInsert (re-creates pane)", async () => {
+    // Symmetric to startService for the lazy pane-less case: a stopped lazy
+    // Service has no paneMap entry, so restartServiceInternal's internal
+    // `startServiceInternal` would throw `Unknown service`. The wrapper-level
+    // ReflowInsert (mirroring `startService`) populates paneMap before the
+    // Locked body runs. Op-lock-outermost is preserved (call OUTSIDE
+    // WithServiceLock). The running-restart case (next test) does NOT fire
+    // ReflowInsert because `paneMap[name]` already exists.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" }; // Worker stopped + pane-less.
+    const deps = createMockDeps();
+    deps.reflowInsert = vi.fn(async (name: string) => {
+      paneMap[name] = "%worker";
+    });
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // RestartService on a stopped pane-less lazy: would throw `Unknown service`
+    // Without the wrapper reflowInsert. Drive it forward and assert reflowInsert ran.
+    void mgr.restartService("worker");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(deps.reflowInsert).toHaveBeenCalledWith("worker");
+    expect(paneMap.worker).toBe("%worker");
+  });
+
   it("restartService never calls the reflow hooks (pane kept by design)", async () => {
     // RestartServiceInternal re-sends the start command to the existing pane;
     // It never touches reflowInsert or reflowRemove. The public wrapper

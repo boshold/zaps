@@ -1106,6 +1106,18 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    // Same lazy-pane invariant as `startService`: if the service is pane-less +
+    // Lazy, ensure the pane exists BEFORE entering the lock-guarded body —
+    // `restartServiceInternal` eventually calls `startServiceInternal`, which
+    // Throws `Unknown service` on a missing pane. The OUTSIDE-the-lock
+    // Placement keeps op-lock-outermost: the Round-4 trap stays closed for
+    // Restart just as it is for start. A restart of an ALREADY-paned service
+    // (the common "restart the running worker") sees `paneMap[name]` already
+    // Set and skips this — preserving the existing pane id (P04-T04 Flow E).
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (isLazy && !this.paneMap[name]) {
+      await this.deps.reflowInsert(name);
+    }
     return this.withServiceLock(name, async () => this.restartServiceInternal(name));
   }
 

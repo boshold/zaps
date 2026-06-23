@@ -21,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
@@ -48,10 +48,42 @@ import { createTestSession } from "../helpers/tmux.js";
 
 // --- Helpers ---------------------------------------------------------------
 
+/**
+ * Minimal `ChildProcess`-shaped fake for the detached-service test. Mirrors the
+ * `FakeDetachedChild` in `test/lib/service/manager.test.ts` — same shape, kept
+ * Inline here so the integration suite is self-contained.
+ */
+class FakeDetachedChild extends EventEmitter {
+  public readonly stdout = new EventEmitter();
+  public readonly stderr = new EventEmitter();
+  public readonly pid: number;
+
+  public constructor(pid: number) {
+    super();
+    this.pid = pid;
+  }
+
+  // eslint-disable-next-line class-methods-use-this -- ChildProcess interface requires instance methods
+  public kill(): void {
+    /* No-op; the test doesn't terminate the fake child */
+  }
+
+  // eslint-disable-next-line class-methods-use-this -- ChildProcess interface requires instance methods
+  public unref(): void {
+    /* No-op */
+  }
+}
+
 interface LiveSession {
   testSession: TestSession;
   session: Session;
   manager: ServiceManager;
+  /**
+   * Fake detached children registered by `detachedSpawn`. The detached test
+   * Uses these to emit `exit` on stop (real `process.kill` doesn't reach the
+   * Fake; the test mirrors the unit-test pattern at `manager.test.ts:3167`).
+   */
+  detachedChildren: FakeDetachedChild[];
   cleanup: () => Promise<void>;
 }
 
@@ -174,6 +206,8 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
   );
 
   const ref: { session: Session | null } = { session: null };
+  const detachedChildren: FakeDetachedChild[] = [];
+  let nextDetachedPid = 7000;
   const deps: ServiceManagerDeps = {
     sendKeys,
     sendCtrlC,
@@ -202,6 +236,24 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     },
     sessionId: "p04-t05",
     zapsCommand: "zaps",
+    // Detached services (E4) bypass the pane flow entirely — they spawn via
+    // `detachedSpawn` and use PID-based port detection. We inject a FAKE spawn
+    // So the detached-service test can run without touching the OS; the fake
+    // Child's `stdout`/`stderr` event emitters satisfy DetachedRunner's
+    // Interface. `detectPortsForPid` returns empty so the service goes ready
+    // Immediately without a port check.
+    detachedSpawn: ((file: string, argv: string[]) => {
+      void file;
+      void argv;
+      const child = new FakeDetachedChild(nextDetachedPid);
+      nextDetachedPid += 1;
+      detachedChildren.push(child);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- spawn shape matches ChildProcess subset
+      return child as unknown as ReturnType<NonNullable<ServiceManagerDeps["detachedSpawn"]>>;
+    }) as unknown as ServiceManagerDeps["detachedSpawn"],
+    // Return a synthetic port so a detached service reaches `ready`
+    // Immediately without a real listener (mirrors the unit-test pattern).
+    detectPortsForPid: async () => [4000],
     reflowInsert: async (name: string) => {
       if (!ref.session) {
         throw new Error("reflowInsert: session not yet wired");
@@ -233,7 +285,16 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     testSession,
     session,
     manager,
+    detachedChildren,
     async cleanup() {
+      // Before driving stopAll, signal every still-alive fake detached child
+      // To exit — DetachedRunner.stop awaits the real OS process to emit
+      // `exit`, which a fake never does. Without this, afterEach hangs.
+      for (const child of detachedChildren) {
+        if (child.listenerCount("exit") > 0) {
+          child.emit("exit", null, "SIGTERM");
+        }
+      }
       try {
         await manager.stopAll();
       } catch {
@@ -471,6 +532,46 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
     expect(after).toBe(before);
   });
 
+  it("Flow E (stopped): restartService on a STOPPED pane-less lazy CREATES the pane", async () => {
+    // Explicit AC: "restarting a stopped (pane-less) lazy service CREATES the
+    // Pane." This drives the wrapper-level reflowInsert that mirrors what
+    // StartService does — without it, `startServiceInternal` (inside
+    // `restartServiceInternal`) would throw `Unknown service` on the missing
+    // PaneMap entry.
+    const config = makeResolvedConfig(
+      { worker: { start: idleCmd, flags: { start: false } } },
+      { direction: "columns", children: [{ pane: "@tui" }, { pane: "worker" }] },
+      { worker: true },
+    );
+
+    live = await buildLiveSession(config);
+    // (1) Start → pane created.
+    await live.manager.startService("worker");
+    await waitForState(live.manager, "worker", "ready");
+    const firstPaneId = live.session.paneMap.worker;
+    expect(firstPaneId).toBeDefined();
+
+    // (2) Stop → pane removed.
+    await live.manager.stopService("worker");
+    await waitForState(live.manager, "worker", "stopped");
+    expect(live.session.paneMap.worker).toBeUndefined();
+    expect(await paneCount(live.testSession.name)).toBe(1); // Only @tui survives.
+
+    // (3) restartService on stopped + pane-less must re-create the pane and
+    // Land it at the declared slot. The pane id is fresh (tmux generates a
+    // New `%N`); paneMap is repopulated and the live window has 2 panes.
+    await live.manager.restartService("worker");
+    await waitForState(live.manager, "worker", "ready");
+
+    const secondPaneId = live.session.paneMap.worker;
+    expect(secondPaneId).toBeDefined();
+    expect(secondPaneId).not.toBe(firstPaneId); // New pane, not the killed one.
+    expect(await paneCount(live.testSession.name)).toBe(2);
+    // Spatial order: @tui, worker (declared DFS).
+    const order2 = await paneIndexOrder(live.testSession.name);
+    expect(order2.map((p) => p.id)).toEqual([live.session.paneMap["@tui"], secondPaneId]);
+  });
+
   // ===========================================================================
   // Flow F — Opt-in autostart
   // ===========================================================================
@@ -704,6 +805,79 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
     expect(post).toBe(pre);
   });
 
+  it("Real detached service: never paneed; start/stop bypass reflowInsert/Remove entirely", async () => {
+    // Explicit AC seal with a REAL `detached: true` service (not just a
+    // Modeled lazyMap entry). `detached: true` services run pane-less via
+    // `detachedSpawn`; the loader's guard (P04-T02) forces
+    // `lazyPaneByService=false` for them regardless of `flags.start`, so the
+    // Lifecycle wrappers' lazy predicate (`isLazy && !paneMap[name]`) is
+    // FALSE on both sides and neither reflowInsert nor reflowRemove ever runs.
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "tail" }],
+    };
+    const config = makeResolvedConfig(
+      {
+        // Non-autostart, detached. P04-T02 forces lazy=false even if
+        // Flags.start === false. We model that here directly (matches
+        // What `resolveLazyPanes` would emit).
+        bgWorker: { start: "node w.js", detached: true, flags: { start: false } },
+        tail: { start: idleCmd },
+      },
+      layout,
+      { bgWorker: false, tail: false },
+    );
+
+    live = await buildLiveSession(config);
+    // (1) At boot: detached service has NO pane (never paned). The visible
+    // Window has @tui + tail only — same as if `bgWorker` didn't exist.
+    expect(live.session.paneMap.bgWorker).toBeUndefined();
+    expect(live.session.paneMap.tail).toBeDefined();
+    expect(await paneCount(live.testSession.name)).toBe(2);
+
+    // Spy on the deps reflow callbacks by wrapping — capture the original,
+    // Swap in a counter, assert it stayed zero across start/stop.
+    let reflowInsertCalls = 0;
+    let reflowRemoveCalls = 0;
+    const mgrDeps = (live.manager as unknown as { deps: ServiceManagerDeps }).deps;
+    const origInsert = mgrDeps.reflowInsert;
+    const origRemove = mgrDeps.reflowRemove;
+    mgrDeps.reflowInsert = async (n: string) => {
+      reflowInsertCalls += 1;
+      await origInsert(n);
+    };
+    mgrDeps.reflowRemove = async (n: string) => {
+      reflowRemoveCalls += 1;
+      await origRemove(n);
+    };
+
+    // (2) Start the detached service. The fake `detachedSpawn` returns a
+    // Pseudo-child whose stdout never emits; `detectPortsForPid` returns []
+    // → service goes to `ready` immediately. No pane allocation happens
+    // (manager's detached branch in `startServiceInternal`).
+    await live.manager.startService("bgWorker");
+    await waitForState(live.manager, "bgWorker", "ready");
+    expect(live.session.paneMap.bgWorker).toBeUndefined();
+    expect(await paneCount(live.testSession.name)).toBe(2);
+    expect(reflowInsertCalls).toBe(0);
+
+    // (3) Stop the detached service. Same invariant — pane logic untouched.
+    // DetachedRunner.stop awaits the OS-level `exit` event; the fake doesn't
+    // Emit one on its own (mirrors `manager.test.ts:3167`'s pattern), so we
+    // Trigger it manually after kicking the stop.
+    const stopPromise = live.manager.stopService("bgWorker");
+    // Give the lock body a tick to enter `detachedRunner.stop` and arm
+    // `onStopped`; then emit exit to unblock it.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    for (const child of live.detachedChildren) {
+      child.emit("exit", null, "SIGTERM");
+    }
+    await stopPromise;
+    expect(live.manager.getStatus("bgWorker").state).toBe("stopped");
+    expect(live.session.paneMap.bgWorker).toBeUndefined();
+    expect(reflowRemoveCalls).toBe(0);
+  });
+
   // ===========================================================================
   // Concurrency — two parallel lazy starts
   // ===========================================================================
@@ -805,8 +979,3 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
     }
   });
 });
-
-// Suppress unused-var warning on imports kept for typing context only.
-void EventEmitter;
-void vi;
-void beforeEach;
