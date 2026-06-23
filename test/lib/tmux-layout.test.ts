@@ -9,9 +9,11 @@ vi.mock("../../src/lib/tmux.js", () => ({
 }));
 
 import {
+  checksum,
   computeRects,
   createLayout,
   filterTree,
+  layoutString,
   PaneTooSmallError,
   validateLayout,
   validateLayoutSizes,
@@ -666,6 +668,143 @@ describe("computeRects", () => {
     };
 
     expect(() => computeRects(tree, 80, 0)).toThrow(PaneTooSmallError);
+  });
+});
+
+describe("checksum", () => {
+  // Golden strings captured live from tmux next-3.7 via `#{window_layout}`:
+  // `tmux -L test new-session -d -x 100 -y 30; tmux -L test split-window ...;
+  //  Tmux -L test display -p '#{window_layout}'`.
+  const GOLDENS: { name: string; full: string }[] = [
+    { name: "single", full: "a87d,100x30,0,0,0" },
+    { name: "columns", full: "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}" },
+    { name: "rows", full: "4892,100x30,0,0[100x15,0,0,3,100x14,0,16,4]" },
+    {
+      name: "nested",
+      full: "a80c,100x30,0,0[100x15,0,0,5,100x14,0,16{50x14,0,16,6,49x14,51,16,7}]",
+    },
+  ];
+
+  for (const { name, full } of GOLDENS) {
+    it(`matches tmux's checksum prefix for the ${name} layout`, () => {
+      const comma = full.indexOf(",");
+      const prefix = full.slice(0, comma);
+      const body = full.slice(comma + 1);
+      expect(checksum(body)).toBe(prefix);
+    });
+  }
+
+  it("returns a lowercase, zero-padded 4-hex-digit string", () => {
+    const result = checksum("100x30,0,0,0");
+    expect(result).toMatch(/^[0-9a-f]{4}$/);
+  });
+});
+
+describe("layoutString", () => {
+  it("single-pane tree → bare leaf cell, no braces (byte-for-byte vs tmux)", () => {
+    const tree: LayoutNode = { pane: "@tui" };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([["@tui", 0]]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe("a87d,100x30,0,0,0");
+  });
+
+  it("flat columns round-trips a captured tmux string", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}",
+    );
+  });
+
+  it("flat rows round-trips a captured tmux string", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "top" }, { pane: "bottom" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["top", 3],
+      ["bottom", 4],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "4892,100x30,0,0[100x15,0,0,3,100x14,0,16,4]",
+    );
+  });
+
+  it("3-level nested round-trips a captured tmux string byte-for-byte", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [
+        { pane: "A" },
+        {
+          direction: "columns",
+          children: [{ pane: "B" }, { pane: "C" }],
+        },
+      ],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["A", 5],
+      ["B", 6],
+      ["C", 7],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "a80c,100x30,0,0[100x15,0,0,5,100x14,0,16{50x14,0,16,6,49x14,51,16,7}]",
+    );
+  });
+
+  it("checksum prefix equals checksum(body) of the emitted string", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    const result = layoutString(tree, rects, paneNumbers);
+    const body = result.slice(result.indexOf(",") + 1);
+    expect(result.startsWith(`${checksum(body)},`)).toBe(true);
+  });
+
+  it("throws when a leaf has no pane number", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([["left", 1]]);
+
+    expect(() => layoutString(tree, rects, paneNumbers)).toThrow(/no pane number for pane 'right'/);
+  });
+
+  it("throws when a leaf has no computed rect", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects({ pane: "left" }, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    expect(() => layoutString(tree, rects, paneNumbers)).toThrow(
+      /no rect computed for pane 'right'/,
+    );
   });
 });
 

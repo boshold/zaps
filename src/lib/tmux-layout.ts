@@ -357,6 +357,50 @@ function fillRects(
 }
 
 /**
+ * Bounding rectangle of a set of child rects. For a layout split the children
+ * plus their dividers fill the parent exactly, so the union equals the split's
+ * own rect — which is what the tmux layout grammar prints before its `{}`/`[]`.
+ */
+function unionRect(rects: Rect[]): Rect {
+  const x = Math.min(...rects.map((rect) => rect.x));
+  const y = Math.min(...rects.map((rect) => rect.y));
+  const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+  const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+/**
+ * Recursively serialize a node to its tmux layout body and bounding rect. A leaf
+ * prints `WxH,X,Y,<paneNumber>`; a split prints its own `WxH,X,Y` followed by its
+ * children wrapped in `{...}` (columns) or `[...]` (rows), comma-separated in DFS
+ * order. Throws if a leaf has no computed rect or no pane number.
+ */
+function serializeNode(
+  node: LayoutNode,
+  rects: Map<string, Rect>,
+  paneNumbers: Map<string, number>,
+): { rect: Rect; body: string } {
+  if (isLayoutLeaf(node)) {
+    const rect = rects.get(node.pane);
+    if (!rect) {
+      throw new Error(`layoutString: no rect computed for pane '${node.pane}'`);
+    }
+    const paneNumber = paneNumbers.get(node.pane);
+    if (paneNumber === undefined) {
+      throw new Error(`layoutString: no pane number for pane '${node.pane}'`);
+    }
+    return { rect, body: `${rect.width}x${rect.height},${rect.x},${rect.y},${paneNumber}` };
+  }
+
+  const childResults = node.children.map((child) => serializeNode(child, rects, paneNumbers));
+  const rect = unionRect(childResults.map((result) => result.rect));
+  const open = node.direction === "columns" ? "{" : "[";
+  const close = node.direction === "columns" ? "}" : "]";
+  const inner = childResults.map((result) => result.body).join(",");
+  return { rect, body: `${rect.width}x${rect.height},${rect.x},${rect.y}${open}${inner}${close}` };
+}
+
+/**
  * Validate split sizes before any tmux call (E15). Per split: explicit sizes
  * must sum to < 100, or ≤ 100 only when the split has no implicit-size siblings;
  * and every computed tmux split percent must be ≥ 1. Violations are config
@@ -587,4 +631,39 @@ export function computeRects(tree: LayoutNode, width: number, height: number): M
   const rects = new Map<string, Rect>();
   fillRects(tree, 0, 0, width, height, rects);
   return rects;
+}
+
+/**
+ * Tmux's layout checksum over the layout body (verified character-identical to
+ * tmux `layout-custom.c` against a live `#{window_layout}` string). Returns a
+ * lowercase, zero-padded 4-hex-digit string. `select-layout` rejects a layout
+ * string whose checksum prefix does not equal this for the body.
+ */
+export function checksum(body: string): string {
+  // 65_535 === 0xFFFF — a 16-bit mask (decimal avoids the oxfmt/oxlint hex-case conflict).
+  /* eslint-disable no-bitwise -- tmux's checksum is defined in terms of bit ops; must match byte-for-byte */
+  let c = 0;
+  for (const ch of body) {
+    c = ((c >> 1) + ((c & 1) << 15)) & 65_535;
+    c = (c + ch.charCodeAt(0)) & 65_535;
+  }
+  return c.toString(16).padStart(4, "0");
+  /* eslint-enable no-bitwise */
+}
+
+/**
+ * Serialize a layout tree + computed rects + pane numbers into the exact
+ * `<checksum>,<body>` string tmux's `select-layout` accepts. The body encodes the
+ * cell tree in tmux grammar — leaves as `WxH,X,Y,<paneNumber>`, columns splits
+ * wrapped in `{...}`, rows splits in `[...]`, DFS order; a single-pane tree emits
+ * a bare leaf cell with no braces. `rects` must come from `computeRects` for the
+ * same tree so the divider geometry matches tmux byte-for-byte.
+ */
+export function layoutString(
+  tree: LayoutNode,
+  rects: Map<string, Rect>,
+  paneNumbers: Map<string, number>,
+): string {
+  const { body } = serializeNode(tree, rects, paneNumbers);
+  return `${checksum(body)},${body}`;
 }
