@@ -215,6 +215,24 @@ function validateDetachedGroups(project: ProjectConfig): void {
   }
 }
 
+/**
+ * Reject `lazyPane: true` on a docker-group member (Q5 resolved: v1 load error;
+ * Group-granularity lazy is a follow-up). Group members share a pane, so a
+ * Per-member opt-out is ambiguous — does the whole group go lazy, or just the
+ * Member's slice? Punt by erroring; the user can add `lazyPane` to the wrapping
+ * Group once group-granularity lazy ships. Runs after expansion so the
+ * `_combined` meta carries the owning group name.
+ */
+function validateLazyPaneGroups(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    if (svc.lazyPane === true && svc._combined) {
+      throw new Error(
+        `Service '${name}': 'lazyPane: true' is not supported on members of combined group '${svc._combined.group}' (group-granularity lazy panes are a follow-up). Remove 'lazyPane' from this member, or apply it at the group level once that is supported.`,
+      );
+    }
+  }
+}
+
 // Explicit task shortcuts colliding with a reserved key (q/j/k) are dropped by getTaskShortcuts.
 // Warn at load time so the user knows their requested key was ignored.
 function warnReservedTaskShortcuts(project: ProjectConfig): void {
@@ -233,6 +251,7 @@ function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>
   warnNonAutostartDeps(project);
   warnReservedTaskShortcuts(project);
   validateDetachedGroups(project);
+  validateLazyPaneGroups(project);
 
   // Validate task dependsOn refs
   if (project.tasks) {

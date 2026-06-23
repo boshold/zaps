@@ -138,6 +138,44 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("lazyPane validation (P04)", () => {
+    const hasError = (
+      result: ReturnType<typeof projectConfigSchema.safeParse>,
+      needle: string,
+    ): boolean => !result.success && result.error.issues.some((i) => i.message.includes(needle));
+
+    it("accepts lazyPane: true", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", lazyPane: true } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts lazyPane: false", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev", lazyPane: false } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects lazyPane: true + detached: true, naming the service and the conflict", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, lazyPane: true } },
+      });
+      expect(hasError(result, "worker")).toBe(true);
+      expect(hasError(result, "'lazyPane: true' cannot be combined with 'detached: true'")).toBe(
+        true,
+      );
+    });
+
+    it("accepts lazyPane: false alongside detached: true (only true conflicts)", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { worker: { start: "node w.js", detached: true, lazyPane: false } },
+      });
+      expect(result.success).toBe(true);
+    });
+  });
+
   describe("service raw option", () => {
     it("accepts raw: true", () => {
       const result = projectConfigSchema.safeParse({

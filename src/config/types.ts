@@ -83,6 +83,13 @@ export interface ServiceConfig {
   run?: Command;
   stop?: Command;
   detached?: boolean;
+  /**
+   * Opt out of getting a tmux pane at boot. The service starts pane-less and
+   * Receives its pane only when explicitly started (Flow B). Implementing the
+   * `applyDefaults` rule for this field is P04-T02; this is the type + schema
+   * Field only.
+   */
+  lazyPane?: boolean;
   docker?: DockerConfig;
   ready?: ReadyConfig;
   dependsOn?: string[];

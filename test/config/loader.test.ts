@@ -909,4 +909,30 @@ describe("docker expand", () => {
       );
     });
   });
+
+  describe("lazyPane validation (P04)", () => {
+    it("rejects lazyPane: true on a docker-group member (expand override)", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: {
+              cache: {
+                docker: {
+                  service: ["redis", "memcached"],
+                  expand: { redis: { lazyPane: true } },
+                },
+              },
+            },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        /Service 'redis': 'lazyPane: true' is not supported on members of combined group 'cache'/,
+      );
+    });
+  });
 });
