@@ -3460,6 +3460,49 @@ describe("lazy-pane lifecycle", () => {
     // Assertion above.)
   });
 
+  it("startService skips reflowInsert when shuttingDown (re-entrance guard, deadlock fix)", async () => {
+    // Symmetric to the stopService shuttingDown guard. The deadlock the guard
+    // Closes:
+    //   `reload` holds withOpLock → `manager.stopAll()` → `stopService(svc1)`
+    //   → `onStop` hook → `lib.startService(svc2)` → wrapper-level
+    //   `deps.reflowInsert(svc2)` → `Session.reflowInsert` → withOpLock
+    //   (not re-entrant) → chains AFTER outer reload fn → permanent hang.
+    // `lib.startService`/`restartService` are exposed to hooks
+    // (config/builder.ts:49-53), so this is a real reachable footgun. The
+    // Guard short-circuits reflowInsert when `shuttingDown` is true —
+    // RunStopAll sets it BEFORE iterating, so every hook-driven start during
+    // Reload sees it.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    // Simulate the shutdown phase (what runStopAll sets at line 496).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
+    (mgr as any).shuttingDown = true;
+
+    // StartService on a lazy pane-less service during shutdown: reflowInsert
+    // Is skipped. `startServiceInternal` will throw `Unknown service` since
+    // PaneMap[worker] is absent — the rejection is the existing contract,
+    // What matters is reflowInsert isn't called (no withOpLock re-entrance).
+    await expect(mgr.startService("worker")).rejects.toThrow(/Unknown service/);
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+  });
+
+  it("restartService skips reflowInsert when shuttingDown (re-entrance guard)", async () => {
+    // Companion to the startService guard test. lib.restartService is also
+    // Hook-reachable (config/builder.ts:49-53), so the wrapper carries the
+    // Same shuttingDown short-circuit.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
+    (mgr as any).shuttingDown = true;
+
+    await expect(mgr.restartService("worker")).rejects.toBeDefined();
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+  });
+
   it("manual stopService (no shutdown) still calls reflowRemove (positive control)", async () => {
     // Companion to the shuttingDown guard test: confirms the guard ONLY fires
     // During shutdown, not on the manual path.

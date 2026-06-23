@@ -583,8 +583,23 @@ export class ServiceManager extends EventEmitter {
     // Already-paned (e.g. autostart after first start, or explicit
     // `lazyPane: true` on an autostart service) and detached services bypass
     // The reflow entirely — non-lazy behavior is byte-identical to before.
+    // CRITICAL: skip reflowInsert during shutdown (reload/destroy). Same deadlock
+    // Class as the reflowRemove guard in `stopService` — a `onStop` hook is
+    // Allowed to call `lib.startService`/`lib.restartService` (config/builder.ts:49-53),
+    // And `onStop` fires during reload's stopAll loop. Without this guard:
+    //   Reload holds withOpLock → manager.stopAll → stopService(svc1) →
+    //   StopServiceInternal → onStop hook → lib.startService(svc2) →
+    //   Deps.reflowInsert(svc2) → Session.reflowInsert → withOpLock (not
+    //   Re-entrant) → chains AFTER the outer reload fn → permanent hang.
+    // Safe to skip during shutdown: services aren't meaningfully starting
+    // During stopAll, and `_reload` rebuilds the layout fresh via `createLayout
+    // + computeBootSkip` afterwards — any service that ends up running post-
+    // Reload gets its pane via the rebuild, not via a hook-driven reflowInsert
+    // Mid-stopAll. `startServiceInternal` will throw `Unknown service` on the
+    // Missing paneMap entry (existing contract); the hook's promise rejects,
+    // Which is preferable to deadlocking the whole reload.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
@@ -1114,8 +1129,12 @@ export class ServiceManager extends EventEmitter {
     // Restart just as it is for start. A restart of an ALREADY-paned service
     // (the common "restart the running worker") sees `paneMap[name]` already
     // Set and skips this — preserving the existing pane id (P04-T04 Flow E).
+    // CRITICAL: same shuttingDown guard as `startService` — `onStop` hooks can
+    // Reach `lib.restartService` during reload's stopAll loop; without the
+    // Guard we'd re-enter withOpLock through reflowInsert and deadlock. See
+    // `startService` for the full chain.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.restartServiceInternal(name));

@@ -714,6 +714,82 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
   });
 
   // ===========================================================================
+  // Hook-during-reload SEAL: onStop → lib.restartService re-entrance fix
+  // ===========================================================================
+
+  it("SEAL (hook deadlock): reload with onStop→lib.restartService(other lazy) completes under bounded timeout", async () => {
+    // The DEEPER deadlock class the shuttingDown guard on reflowInsert closes:
+    //   `reload` holds withOpLock → `manager.stopAll()` → `stopService(svc1)`
+    //   → `stopServiceInternal` → `onStop` hook (config/builder.ts:49-53
+    //   Exposes `lib.startService`/`lib.restartService` to hooks) →
+    //   `manager.restartService(svc2)` → wrapper `await deps.reflowInsert(svc2)`
+    //   → `Session.reflowInsert` → `withOpLock` (not re-entrant) → chains
+    //   AFTER the outer reload fn → permanent hang.
+    // With the guard: reflowInsert is skipped during shutdown, the hook's
+    // `restartService` call's internal `startServiceInternal` throws
+    // `Unknown service` (pane-less + non-detached). `onStop` catches that
+    // Into `lastError` (manager.ts:1029-1034) and the stop continues.
+    // Reload converges; post-reload `createLayout` rebuilds the layout
+    // From the new config (boot-skip handles the lazy non-autostart),
+    // So svc2 ends up exactly where the config says — no observable harm
+    // From the skipped mid-stopAll insert.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-p04-t05-hook-"));
+    try {
+      const { configPath, projectDir } = writeZapsFile(
+        tmpDir,
+        `
+          export function config(lib) {
+            return lib.defineProject({
+              services: {
+                svc1: {
+                  start: ${JSON.stringify(idleCmd)},
+                  raw: true,
+                  onStop: () => {
+                    // Hook calls back into the library mid-stop. This is the
+                    // Path that would have deadlocked the reload before the
+                    // ShuttingDown guard on reflowInsert.
+                    return lib.restartService("svc2").catch(() => {
+                      // Throws \`Unknown service\` because svc2 is pane-less +
+                      // The guard skips reflowInsert during shutdown. We
+                      // Catch so the hook doesn't propagate a noisy error.
+                    });
+                  },
+                },
+                svc2: {
+                  start: ${JSON.stringify(idleCmd)},
+                  raw: true,
+                  flags: { start: false },
+                },
+              },
+              layout: {
+                direction: "columns",
+                children: [{ pane: "@tui" }, { pane: "svc1" }, { pane: "svc2" }],
+              },
+            });
+          }
+        `,
+      );
+      const config = await loadConfig(configPath, projectDir);
+      config.configPath = configPath;
+      config.projectDir = projectDir;
+
+      live = await buildLiveSession(config);
+      await live.manager.startService("svc1");
+      await waitForState(live.manager, "svc1", "ready");
+      // Sanity preconditions: svc1 paned + ready, svc2 pane-less + lazy.
+      expect(live.session.paneMap.svc1).toBeDefined();
+      expect(live.session.paneMap.svc2).toBeUndefined();
+
+      // The seal: reload must complete (its stopAll fires svc1's onStop which
+      // Calls lib.restartService("svc2") which would re-enter withOpLock).
+      // Without the guard, hangs forever. With it, completes sub-second.
+      await raceTimeout(live.session.reload(), 10_000, "Session.reload (hook-driven re-entrance)");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // ===========================================================================
   // @tui-reserve under boot-skip (Round-5 sharp edge)
   // ===========================================================================
 
