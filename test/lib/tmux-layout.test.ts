@@ -9,8 +9,10 @@ vi.mock("../../src/lib/tmux.js", () => ({
 }));
 
 import {
+  computeRects,
   createLayout,
   filterTree,
+  PaneTooSmallError,
   validateLayout,
   validateLayoutSizes,
 } from "../../src/lib/tmux-layout.js";
@@ -500,6 +502,170 @@ describe("filterTree", () => {
     };
 
     expect(filterTree(layout, new Set())).toBeUndefined();
+  });
+});
+
+describe("computeRects", () => {
+  function sum(values: number[]): number {
+    return values.reduce((acc, value) => acc + value, 0);
+  }
+
+  it("2-pane columns 80x24: first child takes the rounded-up half", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%" },
+      ],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    // Captured from live tmux: 80x24 column split → 40 | divider@40 | 39.
+    expect(rects.get("@tui")).toEqual({ x: 0, y: 0, width: 40, height: 24 });
+    expect(rects.get("api")).toEqual({ x: 41, y: 0, width: 39, height: 24 });
+    // Divider accounting: 40 + 39 + 1 divider === 80.
+    expect(40 + 39 + 1).toBe(80);
+  });
+
+  it("2-pane rows 80x24: first child takes the rounded-up half of the height", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    // Content = 24 - 1 = 23; round(23 * 0.5) = 12, last = 11.
+    expect(rects.get("@tui")).toEqual({ x: 0, y: 0, width: 80, height: 12 });
+    expect(rects.get("api")).toEqual({ x: 0, y: 13, width: 80, height: 11 });
+  });
+
+  it("3-pane columns: extents + dividers fill the parent exactly", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    const widths = ["@tui", "api", "web"].map((name) => rects.get(name)?.width ?? 0);
+    // Content = 80 - 2 = 78, three equal implicit shares → 26 each.
+    expect(widths).toEqual([26, 26, 26]);
+    expect(sum(widths) + 2).toBe(80);
+    // Each child offset = previous offset + extent + 1 divider.
+    expect(rects.get("@tui")?.x).toBe(0);
+    expect(rects.get("api")?.x).toBe(27);
+    expect(rects.get("web")?.x).toBe(54);
+    // Cross-axis matches the parent.
+    for (const name of ["@tui", "api", "web"]) {
+      expect(rects.get(name)?.height).toBe(24);
+    }
+  });
+
+  it("3-level nested layout reproduces the captured tmux geometry (100x30)", () => {
+    // Captured string: 100x30,0,0{50x30,0,0,A[49x15,...B{24x14,...C 24x14,...D}]}
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "A" },
+        {
+          direction: "rows",
+          children: [
+            { pane: "B" },
+            {
+              direction: "columns",
+              children: [{ pane: "C" }, { pane: "D" }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const rects = computeRects(tree, 100, 30);
+
+    expect(rects.get("A")).toEqual({ x: 0, y: 0, width: 50, height: 30 });
+    expect(rects.get("B")).toEqual({ x: 51, y: 0, width: 49, height: 15 });
+    expect(rects.get("C")).toEqual({ x: 51, y: 16, width: 24, height: 14 });
+    expect(rects.get("D")).toEqual({ x: 76, y: 16, width: 24, height: 14 });
+  });
+
+  it("rescales surviving proportions to fill (no gap after a filterTree drop)", () => {
+    // FilterTree leaves survivors with their declared percents (here 30% + 30%,
+    // Summing to 60 < 100). computeRects MUST normalize them to fill the extent.
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "api", size: "30%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    const api = rects.get("api");
+    const web = rects.get("web");
+    expect(api).toEqual({ x: 0, y: 0, width: 40, height: 24 });
+    expect(web).toEqual({ x: 41, y: 0, width: 39, height: 24 });
+    // Exactly fills: no leftover gap on the right edge.
+    expect((web?.x ?? 0) + (web?.width ?? 0)).toBe(80);
+  });
+
+  it("end-to-end with filterTree: dropping a middle child reclaims its space", () => {
+    const declared: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    const filtered = filterTree(declared, new Set(["@tui", "web"]));
+    const rects = computeRects(filtered!, 80, 24);
+
+    // @tui 30% + web 30% rescaled to fill 80 cols with a 1-cell divider.
+    const tui = rects.get("@tui");
+    const web = rects.get("web");
+    expect(tui?.x).toBe(0);
+    expect((web?.x ?? 0) + (web?.width ?? 0)).toBe(80);
+    expect((tui?.width ?? 0) + (web?.width ?? 0) + 1).toBe(80);
+  });
+
+  it("single-leaf tree fills the whole window", () => {
+    expect(computeRects({ pane: "@tui" }, 80, 24)).toEqual(
+      new Map([["@tui", { x: 0, y: 0, width: 80, height: 24 }]]),
+    );
+  });
+
+  it("throws PaneTooSmallError naming the pane when an extent < 1", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    // Width 2, 3 children → content = 0, every extent collapses below 1.
+    let thrown: unknown;
+    try {
+      computeRects(tree, 2, 24);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PaneTooSmallError);
+    if (!(thrown instanceof PaneTooSmallError)) {
+      throw new Error("expected a PaneTooSmallError");
+    }
+    expect(thrown.pane).toBe("@tui");
+    expect(thrown.code).toBe("PANE_TOO_SMALL");
+  });
+
+  it("throws PaneTooSmallError on a zero-height window for a rows split", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(() => computeRects(tree, 80, 0)).toThrow(PaneTooSmallError);
   });
 });
 

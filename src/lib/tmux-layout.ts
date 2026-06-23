@@ -212,6 +212,150 @@ function withSize(node: LayoutNode, size: string | undefined): LayoutNode {
   return split;
 }
 
+/** Absolute tmux cell rectangle of a single pane (declared here, exported below). */
+interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Thrown by `computeRects` when a pane's computed extent drops below 1 cell, so
+ * an invalid geometry is never serialized into a `select-layout` string. Carries
+ * the offending pane name and a stable `code` for callers to branch on.
+ */
+class PaneTooSmallError extends Error {
+  public readonly code = "PANE_TOO_SMALL" as const;
+  public readonly pane: string;
+
+  public constructor(pane: string, dimension: "width" | "height", value: number) {
+    super(`Layout pane '${pane}' computes ${dimension} ${value}; minimum is 1 cell`);
+    this.name = "PaneTooSmallError";
+    this.pane = pane;
+  }
+}
+
+/**
+ * Per-child proportional weight, reusing the createLayout/validateLayoutSizes
+ * size math: explicit-size children weigh their percent, implicit children each
+ * weigh an equal share of the remainder. The weights are normalized against
+ * their own sum in `distributeExtents`, which rescales surviving proportions to
+ * fill the available extent (so a filtered split whose survivors no longer sum
+ * to 100 still fills the parent without a gap).
+ */
+function childWeights(children: LayoutNode[]): number[] {
+  const explicitTotal = children.reduce(
+    (sum, child) => sum + (child.size ? Number.parseInt(child.size, 10) : 0),
+    0,
+  );
+  const implicitCount = children.filter((child) => !child.size).length;
+  const implicitSize = implicitCount > 0 ? Math.floor((100 - explicitTotal) / implicitCount) : 0;
+  return children.map((child) => (child.size ? Number.parseInt(child.size, 10) : implicitSize));
+}
+
+/**
+ * Split `parentExtent` cells among `children` along one axis, charging a 1-cell
+ * divider per boundary. The children share `content = parentExtent − (n − 1)`
+ * cells, distributed by cumulative-boundary rounding of their normalized
+ * weights: boundary_i = round(content · Σweights≤i / Σweights), each child's
+ * extent is the gap between successive boundaries. This matches tmux's own
+ * division (an 80-col 2-way split yields 40|39, the first child taking the
+ * rounded-up half), guarantees `Σextents === content` exactly (the last child
+ * absorbs the residual), and rescales survivors to fill after a filter drop.
+ */
+/**
+ * Cumulative boundary cell after child `i` (1-based count `i + 1`). The last
+ * child's boundary is pinned to `content` so the extents always sum exactly;
+ * earlier boundaries round the normalized cumulative weight, with an even-split
+ * fallback for the degenerate all-zero-weight case.
+ */
+function cumulativeBoundary(
+  i: number,
+  n: number,
+  content: number,
+  cumulativeWeight: number,
+  totalWeight: number,
+): number {
+  if (i === n - 1) {
+    return content;
+  }
+  if (totalWeight > 0) {
+    return Math.round((content * cumulativeWeight) / totalWeight);
+  }
+  return Math.round((content * (i + 1)) / n);
+}
+
+function distributeExtents(children: LayoutNode[], parentExtent: number): number[] {
+  const n = children.length;
+  const weights = childWeights(children);
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const content = parentExtent - (n - 1);
+
+  const extents: number[] = [];
+  let previousBoundary = 0;
+  let cumulativeWeight = 0;
+  for (let i = 0; i < n; i += 1) {
+    cumulativeWeight += weights[i];
+    const boundary = cumulativeBoundary(i, n, content, cumulativeWeight, totalWeight);
+    extents.push(boundary - previousBoundary);
+    previousBoundary = boundary;
+  }
+  return extents;
+}
+
+/**
+ * Recursively place `node` into the absolute rectangle (`x`, `y`, `width`,
+ * `height`), writing each leaf's `Rect` into `out`. Columns splits divide width
+ * (children share full height), rows splits divide height; each child after the
+ * first starts one divider cell past its predecessor. Throws `PaneTooSmallError`
+ * the moment any extent drops below 1 cell.
+ */
+function fillRects(
+  node: LayoutNode,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  out: Map<string, Rect>,
+): void {
+  if (isLayoutLeaf(node)) {
+    if (width < 1) {
+      throw new PaneTooSmallError(node.pane, "width", width);
+    }
+    if (height < 1) {
+      throw new PaneTooSmallError(node.pane, "height", height);
+    }
+    out.set(node.pane, { x, y, width, height });
+    return;
+  }
+
+  if (isLayoutSplit(node)) {
+    const { children, direction } = node;
+    const isColumns = direction === "columns";
+    const axisExtent = isColumns ? width : height;
+    const extents = distributeExtents(children, axisExtent);
+
+    let offset = isColumns ? x : y;
+    for (let i = 0; i < children.length; i += 1) {
+      const extent = extents[i];
+      if (extent < 1) {
+        throw new PaneTooSmallError(
+          firstLeafName(children[i]) ?? "?",
+          isColumns ? "width" : "height",
+          extent,
+        );
+      }
+      if (isColumns) {
+        fillRects(children[i], offset, y, extent, height, out);
+      } else {
+        fillRects(children[i], x, offset, width, extent, out);
+      }
+      offset += extent + 1; // +1 cell for the divider after this child
+    }
+  }
+}
+
 /**
  * Validate split sizes before any tmux call (E15). Per split: explicit sizes
  * must sum to < 100, or ≤ 100 only when the split has no implicit-size siblings;
@@ -422,4 +566,25 @@ export function filterTree(
   }
 
   return undefined;
+}
+
+export type { Rect };
+export { PaneTooSmallError };
+
+/**
+ * Convert a (filtered) proportional layout tree into absolute tmux cell
+ * rectangles per pane name, exactly honoring tmux's geometry rules so the result
+ * can be serialized into a `select-layout` string tmux accepts without
+ * normalization. `width`/`height` are the tmux window dimensions.
+ *
+ * Each split charges a 1-cell divider per boundary (`Σ child extents + (n − 1)
+ * === parent extent` on the split axis; cross-axis matches the parent), the last
+ * child absorbs the integer-division residual, and surviving proportions are
+ * rescaled to fill the extent. Throws `PaneTooSmallError` (naming the pane) if
+ * any pane would be smaller than 1 cell.
+ */
+export function computeRects(tree: LayoutNode, width: number, height: number): Map<string, Rect> {
+  const rects = new Map<string, Rect>();
+  fillRects(tree, 0, 0, width, height, rects);
+  return rects;
 }
