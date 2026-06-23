@@ -2,25 +2,26 @@
 
 ## Options
 
-| Field       | Type                                      | Default     | Description                                    |
-| ----------- | ----------------------------------------- | ----------- | ---------------------------------------------- |
-| `start`     | `string \| () => string`                  | —           | Long-running process command (server)          |
-| `run`       | `string \| () => string`                  | —           | One-shot command                               |
-| `stop`      | `string \| () => string`                  | —           | Custom stop command                            |
-| `cwd`       | `string`                                  | —           | Working directory for the service              |
-| `detached`  | `boolean`                                 | `false`     | Run pane-less (outside the tmux layout)        |
-| `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference)   |
-| `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)          |
-| `dependsOn` | `string[]`                                | —           | Services that must be ready first              |
-| `env`       | `EnvConfig`                               | —           | Environment variables                          |
-| `flags`     | `ServiceFlags`                            | —           | `{ start?: boolean, open?: boolean }`          |
-| `url`       | `string \| false \| (ctx) => string`      | auto-detect | URL for the service                            |
-| `raw`       | `boolean`                                 | `false`     | Bypass wrapper — show env vars inline in pane  |
-| `restart`   | `{ maxRetries?, backoff? }`               | —           | Restart policy with exponential backoff        |
-| `onReady`   | `() => void \| Promise<void>`             | —           | Hook: service reached ready state              |
-| `onStop`    | `() => void \| Promise<void>`             | —           | Hook: service stopped                          |
-| `onOutput`  | `(line: string) => void \| Promise<void>` | —           | Hook: new output line from tmux pane           |
-| `optional`  | `boolean \| () => Promise<boolean>`       | —           | Mark service as optional (skip if unavailable) |
+| Field       | Type                                      | Default     | Description                                                                                |
+| ----------- | ----------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
+| `start`     | `string \| () => string`                  | —           | Long-running process command (server)                                                      |
+| `run`       | `string \| () => string`                  | —           | One-shot command                                                                           |
+| `stop`      | `string \| () => string`                  | —           | Custom stop command                                                                        |
+| `cwd`       | `string`                                  | —           | Working directory for the service                                                          |
+| `detached`  | `boolean`                                 | `false`     | Run pane-less (outside the tmux layout)                                                    |
+| `lazyPane`  | `boolean`                                 | _auto_      | Pane created on start, dropped on explicit stop (default `true` when `flags.start: false`) |
+| `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference)                                               |
+| `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)                                                      |
+| `dependsOn` | `string[]`                                | —           | Services that must be ready first                                                          |
+| `env`       | `EnvConfig`                               | —           | Environment variables                                                                      |
+| `flags`     | `ServiceFlags`                            | —           | `{ start?: boolean, open?: boolean }`                                                      |
+| `url`       | `string \| false \| (ctx) => string`      | auto-detect | URL for the service                                                                        |
+| `raw`       | `boolean`                                 | `false`     | Bypass wrapper — show env vars inline in pane                                              |
+| `restart`   | `{ maxRetries?, backoff? }`               | —           | Restart policy with exponential backoff                                                    |
+| `onReady`   | `() => void \| Promise<void>`             | —           | Hook: service reached ready state                                                          |
+| `onStop`    | `() => void \| Promise<void>`             | —           | Hook: service stopped                                                                      |
+| `onOutput`  | `(line: string) => void \| Promise<void>` | —           | Hook: new output line from tmux pane                                                       |
+| `optional`  | `boolean \| () => Promise<boolean>`       | —           | Mark service as optional (skip if unavailable)                                             |
 
 **Required**: Every service must have at least one of `start`, `run`, or `docker`.
 
@@ -64,6 +65,62 @@ services: {
   },
 }
 ```
+
+## Lazy Panes
+
+A lazy service's tmux pane only exists while the process is running:
+
+- Pane **created on start** at the exact declared layout position (insert);
+  pane **destroyed on explicit stop** (remove); survivors re-expand.
+- **Crash keeps the pane** (post-mortem output stays visible).
+- **Restart keeps the pane** (process replaced in place; restarting a
+  stopped pane-less lazy service re-creates the pane at the declared slot).
+- Service `logs` history is retained across the lazy stop, so
+  `zaps logs <name>` still returns prior output after the pane is gone.
+
+**Default rule:** `lazyPane` defaults to `true` for non-autostart services
+(`flags.start: false`) and `false` for autostart services. An explicit value
+always wins.
+
+**Group members and detached services are never lazy.** A docker-group
+member (a child expanded from `docker.service: [...]` with `expand`) and a
+`detached: true` service both resolve to `lazyPane: false` even when
+`flags.start: false` is set — the group's shared pane / pane-less detached
+behavior is unchanged. The boot-skip predicate only fires for own-pane
+services.
+
+```ts
+services: {
+  // Non-autostart → defaults to lazyPane:true (pane appears on first start)
+  mailpit: {
+    start: "mailpit",
+    flags: { start: false },
+    ready: { port: 8025 },
+  },
+
+  // Explicit opt-in lazy on an autostart service: boots paned, but a manual
+  // stop drops the pane (vs the non-lazy default of keeping it).
+  worker: {
+    start: "node worker.js",
+    lazyPane: true,
+  },
+
+  // Explicit opt-out: keep the legacy empty-reserved-pane-at-boot behavior.
+  legacyConsole: {
+    start: "tail -f /var/log/app.log",
+    flags: { start: false },
+    lazyPane: false,
+  },
+}
+```
+
+**Illegal combinations** (config load errors):
+
+- `lazyPane: true` + `detached: true` — a detached service has no pane.
+  Schema-level rejection.
+- `lazyPane: true` on a docker-group member (a child of `docker.service: [...]`
+  with `expand`) — group members share one pane, so per-member lazy is
+  ambiguous. Loader-level rejection after expansion.
 
 ## Flags
 
