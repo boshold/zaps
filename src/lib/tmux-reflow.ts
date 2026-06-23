@@ -11,6 +11,7 @@ import {
 import type { Rect } from "./tmux-layout.js";
 import {
   getWindowSize as defaultGetWindowSize,
+  killPane as defaultKillPane,
   paneIndexOrder as defaultPaneIndexOrder,
   resyncPaneSizes as defaultResyncPaneSizes,
   selectLayout as defaultSelectLayout,
@@ -52,6 +53,8 @@ interface LayoutReflowDeps {
   splitPane?: (target: string, direction: "h" | "v", options?: SplitPaneOptions) => Promise<string>;
   /** Move tmux's active pane to `target`. Used for conditional focus after insert. */
   selectPane?: (target: string) => Promise<void>;
+  /** Destroy a tmux pane (`kill-pane -t <paneId>`). Survivors keep their relative order. */
+  killPane?: (target: string) => Promise<void>;
   /**
    * Session-provided hook fired AFTER `paneMap[name]` is set during `insertPane`.
    * The session uses this to allocate the log buffer, register the pane in the
@@ -200,6 +203,7 @@ class LayoutReflow {
       options?: SplitPaneOptions,
     ) => Promise<string>;
     selectPane: (target: string) => Promise<void>;
+    killPane: (target: string) => Promise<void>;
   };
 
   public constructor(deps: LayoutReflowDeps) {
@@ -213,6 +217,7 @@ class LayoutReflow {
       resyncPaneSizes: deps.resyncPaneSizes ?? defaultResyncPaneSizes,
       splitPane: deps.splitPane ?? defaultSplitPane,
       selectPane: deps.selectPane ?? defaultSelectPane,
+      killPane: deps.killPane ?? defaultKillPane,
     };
   }
 
@@ -389,6 +394,69 @@ class LayoutReflow {
       }
       throw error;
     }
+  }
+
+  /**
+   * Destroy the tmux pane for an explicitly-stopped service and re-expand the
+   * survivors to their declared geometry — Flow C in `10_functional.md`.
+   * Killing one pane leaves the survivors in their relative DFS order, so this
+   * is `kill-pane` + ONE `applyGeometry`; no `swap-pane` is ever needed.
+   *
+   * Idempotent: a no-op when `name` is not in `paneMap` (the caller may invoke
+   * it from `stopServiceInternal` without first checking pane ownership).
+   * Refuses to remove the `@tui` pane — it is the TUI host and must always
+   * own a tmux pane while the session is alive.
+   *
+   * Buffer retention (Round 7 invariant): the `onPaneRemoved` hook stops the
+   * monitor and drops the pane-keyed entries (`paneBuffers`/`paneMembers`),
+   * but the SERVICE-keyed `buffers[name]` entry is intentionally retained so
+   * `logs.snapshot(name)` still returns the stopped service's history and
+   * `attachSnapshot` continues to surface it — the same behavior as any
+   * normal stopped service. This method only fires the hook; the real
+   * buffer/monitor wiring lands in P03-T03.
+   *
+   * Failure semantics: on `kill-pane` failure, `paneMap` is untouched (we
+   * never reached the delete). On a later `applyGeometry` failure the tmux
+   * pane is already gone, so `paneMap` stays deleted (the invariant
+   * paneMap ⊇ visible already holds — visible no longer contains `name`).
+   * Full visual rollback is the responsibility of P03-T04.
+   */
+  public async removePane(name: string): Promise<void> {
+    if (name === "@tui") {
+      throw new Error("LayoutReflow.removePane: refusing to remove the '@tui' pane");
+    }
+
+    const paneMap = this.deps.getPaneMap();
+    const paneId = paneMap[name];
+    if (!paneId) {
+      // Idempotent — nothing to do for a service that doesn't own a pane.
+      return;
+    }
+
+    const layout = this.deps.getLayout();
+    if (!layout) {
+      throw new Error("LayoutReflow.removePane: no declared layout to reflow against");
+    }
+
+    // TODO(P03-T04): a true rollback after a kill-then-reflow failure requires
+    // Re-splitting the pane and restoring the service's process — out of scope
+    // For this primitive. For now: on a `kill-pane` failure, `paneMap` is
+    // Untouched (we never reached the delete). On a later `applyGeometry`
+    // Failure the kill has already happened, so `paneMap` stays deleted and
+    // The paneMap-⊇-visible invariant still holds (visible no longer contains
+    // `name`). The thrown error propagates to the session for higher-level
+    // Recovery.
+    // Capture pane id BEFORE deleting so the hook can stop the monitor by id.
+    await this.tmux.killPane(paneId);
+
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- removing the just-killed entry
+    delete paneMap[name];
+    this.deps.onPaneRemoved?.(name, paneId);
+
+    // Re-expand survivors: visible = remaining paneMap keys. The @tui pane is
+    // Always still present; the filtered tree is guaranteed non-empty.
+    const remainingVisible = new Set<string>(Object.keys(paneMap));
+    await this.applyGeometry(remainingVisible);
   }
 }
 

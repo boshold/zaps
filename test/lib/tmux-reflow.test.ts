@@ -16,6 +16,7 @@ interface FakeTmux {
     (target: string, direction: "h" | "v", options?: SplitPaneOptions) => Promise<string>
   >;
   selectPane: Mock<(target: string) => Promise<void>>;
+  killPane: Mock<(target: string) => Promise<void>>;
 }
 
 function makeFakeTmux(spatialOrder: string[], size = { width: 100, height: 30 }): FakeTmux {
@@ -29,6 +30,7 @@ function makeFakeTmux(spatialOrder: string[], size = { width: 100, height: 30 })
     resyncPaneSizes: vi.fn<FakeTmux["resyncPaneSizes"]>().mockResolvedValue(undefined),
     splitPane: vi.fn<FakeTmux["splitPane"]>().mockResolvedValue("%99"),
     selectPane: vi.fn<FakeTmux["selectPane"]>().mockResolvedValue(undefined),
+    killPane: vi.fn<FakeTmux["killPane"]>().mockResolvedValue(undefined),
   };
 }
 
@@ -49,6 +51,7 @@ function makeReflow(
     resyncPaneSizes: tmux.resyncPaneSizes,
     splitPane: tmux.splitPane,
     selectPane: tmux.selectPane,
+    killPane: tmux.killPane,
     ...extra,
   };
   return { reflow: new LayoutReflow(deps), deps };
@@ -477,5 +480,129 @@ describe("LayoutReflow.insertPane — zero-swap adjacency split", () => {
     const { reflow } = makeReflow(undefined, { "@tui": "%1" }, tmux);
 
     await expect(reflow.insertPane("api")).rejects.toThrow(/no declared layout/);
+  });
+});
+
+describe("LayoutReflow.removePane — kill + re-expand survivors", () => {
+  const layout: LayoutNode = {
+    direction: "columns",
+    children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+  };
+
+  it("kills the pane, deletes the paneMap entry, and re-expands survivors", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2", web: "%3" };
+    // After kill, survivors in DFS order = [%1, %3] → zero swaps in applyGeometry.
+    const tmux = makeFakeTmux(["%1", "%3"]);
+    const onPaneRemoved = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneRemoved });
+
+    await reflow.removePane("api");
+
+    // Kill with the pre-delete pane id.
+    expect(tmux.killPane).toHaveBeenCalledTimes(1);
+    expect(tmux.killPane).toHaveBeenCalledWith("%2");
+    // PaneMap entry removed.
+    expect(paneMap.api).toBeUndefined();
+    expect(paneMap["@tui"]).toBe("%1");
+    expect(paneMap.web).toBe("%3");
+    // Hook fired with (name, OLD paneId) — captured pre-delete.
+    expect(onPaneRemoved).toHaveBeenCalledTimes(1);
+    expect(onPaneRemoved).toHaveBeenCalledWith("api", "%2");
+    // ApplyGeometry ran ONE selectLayout, ZERO swaps.
+    expect(tmux.selectLayout).toHaveBeenCalledTimes(1);
+    expect(tmux.swapPanes).not.toHaveBeenCalled();
+  });
+
+  it("passes the remaining visible set to applyGeometry (survivors only)", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2", web: "%3" };
+    const tmux = makeFakeTmux(["%1", "%3"]);
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.removePane("api");
+
+    // The select-layout body should encode pane numbers 1 and 3 (the survivors),
+    // And NOT contain pane number 2 (the just-killed `api`).
+    const [[, layoutStr]] = tmux.selectLayout.mock.calls;
+    expect(layoutStr).toMatch(/,1\b/u);
+    expect(layoutStr).toMatch(/,3\b/u);
+    expect(layoutStr).not.toMatch(/,2\b/u);
+  });
+
+  it("is idempotent — no-op when the name has no pane in paneMap", async () => {
+    const paneMap: PaneMap = { "@tui": "%1" }; // No `api` entry.
+    const tmux = makeFakeTmux(["%1"]);
+    const onPaneRemoved = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneRemoved });
+
+    await expect(reflow.removePane("api")).resolves.toBeUndefined();
+
+    expect(tmux.killPane).not.toHaveBeenCalled();
+    expect(onPaneRemoved).not.toHaveBeenCalled();
+    expect(tmux.selectLayout).not.toHaveBeenCalled();
+    // PaneMap unchanged.
+    expect(paneMap).toEqual({ "@tui": "%1" });
+  });
+
+  it("refuses to remove the '@tui' pane", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1", "%2"]);
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await expect(reflow.removePane("@tui")).rejects.toThrow(/refusing to remove the '@tui'/);
+    // Nothing else fired.
+    expect(tmux.killPane).not.toHaveBeenCalled();
+    expect(paneMap["@tui"]).toBe("%1");
+  });
+
+  it("leaves paneMap untouched on kill-pane failure", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1", "%2"]);
+    tmux.killPane.mockRejectedValue(new Error("tmux: kill-pane failed"));
+    const onPaneRemoved = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneRemoved });
+
+    await expect(reflow.removePane("api")).rejects.toThrow(/kill-pane failed/);
+
+    // Pre-delete kill failed → paneMap entry still present.
+    expect(paneMap.api).toBe("%2");
+    expect(onPaneRemoved).not.toHaveBeenCalled();
+    expect(tmux.selectLayout).not.toHaveBeenCalled();
+  });
+
+  it("hook is optional — removePane completes without onPaneRemoved", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1"]);
+    const { reflow } = makeReflow(layout, paneMap, tmux); // No onPaneRemoved.
+
+    await expect(reflow.removePane("api")).resolves.toBeUndefined();
+    expect(paneMap.api).toBeUndefined();
+  });
+
+  it("captures pane id BEFORE deleting (hook receives the old id, not undefined)", async () => {
+    // Regression guard against a refactor that delete-first / fire-second.
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1"]);
+    let observedPaneId: string | undefined;
+    const onPaneRemoved = vi.fn((name: string, paneId: string) => {
+      observedPaneId = paneId;
+      // Inside the hook, paneMap.api must already be deleted (the hook fires
+      // AFTER the delete) — but `paneId` is the captured pre-delete value.
+      expect(paneMap[name]).toBeUndefined();
+    });
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneRemoved });
+
+    await reflow.removePane("api");
+    expect(observedPaneId).toBe("%2");
+  });
+
+  it("throws when no layout is declared (cannot reflow survivors)", async () => {
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1"]);
+    const { reflow } = makeReflow(undefined, paneMap, tmux);
+
+    await expect(reflow.removePane("api")).rejects.toThrow(/no declared layout/);
+    // PaneMap untouched — we bailed before the kill.
+    expect(paneMap.api).toBe("%2");
+    expect(tmux.killPane).not.toHaveBeenCalled();
   });
 });
