@@ -1,14 +1,24 @@
-import type { LayoutNode } from "#src/config/types.js";
+import type { LayoutLeaf, LayoutNode } from "#src/config/types.js";
+import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
-import { computeRects, filterTree, layoutString, resolvePermutation } from "./tmux-layout.js";
+import {
+  computeRects,
+  filterTree,
+  layoutString,
+  resolvePermutation,
+  splitAnchor,
+} from "./tmux-layout.js";
 import type { Rect } from "./tmux-layout.js";
 import {
   getWindowSize as defaultGetWindowSize,
   paneIndexOrder as defaultPaneIndexOrder,
   resyncPaneSizes as defaultResyncPaneSizes,
   selectLayout as defaultSelectLayout,
+  selectPane as defaultSelectPane,
+  splitPane as defaultSplitPane,
   swapPanes as defaultSwapPanes,
 } from "./tmux.js";
+import type { SplitPaneOptions } from "./tmux.js";
 
 /** Map from pane/service name → tmux pane id (e.g. `"%17"`). */
 type PaneMap = Record<string, string>;
@@ -38,6 +48,27 @@ interface LayoutReflowDeps {
   selectLayout?: (target: string, layout: string) => Promise<void>;
   /** Fallback resync (no-op by default); the reflow only calls it when explicitly enabled. */
   resyncPaneSizes?: (target: string) => Promise<void>;
+  /** Create a new pane by splitting an existing one; returns the new pane id (`%N`). */
+  splitPane?: (target: string, direction: "h" | "v", options?: SplitPaneOptions) => Promise<string>;
+  /** Move tmux's active pane to `target`. Used for conditional focus after insert. */
+  selectPane?: (target: string) => Promise<void>;
+  /**
+   * Session-provided hook fired AFTER `paneMap[name]` is set during `insertPane`.
+   * The session uses this to allocate the log buffer, register the pane in the
+   * shared-buffer map, and start the pane monitor (the Round-7 buffer invariant
+   * — pre-start writes go to a private buffer; the hook re-points it to the
+   * pane-shared buffer so monitor output isn't lost). Optional: when absent
+   * (unit tests, headless harnesses), insertPane completes the geometry work
+   * without any log-buffer side-effects.
+   */
+  onPaneInserted?: (name: string, paneId: string) => void;
+  /**
+   * Session-provided hook fired AFTER `removePane` kills the tmux pane and deletes
+   * `paneMap[name]`. P03-T02 wires the real impl (stop monitor, fold buffer); the
+   * field is declared here so P03-T01's deps interface is the same one P03-T02
+   * extends — both methods share one constructor surface.
+   */
+  onPaneRemoved?: (name: string, paneId: string) => void;
 }
 
 /** DFS leaf order of `tree`. Mirrors `collectPaneNames` in tmux-layout.ts. */
@@ -71,6 +102,57 @@ function arraysEqual<T>(a: T[], b: T[]): boolean {
     return false;
   }
   return a.every((value, i) => value === b[i]);
+}
+
+/**
+ * Locate the layout leaf with `pane === name` anywhere in `tree`. Returns the
+ * declared leaf (so callers can read `focus`/`size`) or `undefined` when the
+ * name isn't in the layout — both insert and the `focus` check need this.
+ */
+function findLeaf(tree: LayoutNode, name: string): LayoutLeaf | undefined {
+  if (isLayoutLeaf(tree)) {
+    return tree.pane === name ? tree : undefined;
+  }
+  if (isLayoutSplit(tree)) {
+    for (const child of tree.children) {
+      const hit = findLeaf(child, name);
+      if (hit) {
+        return hit;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The split direction of the leaf's PARENT in the filtered target tree —
+ * `"h"` for a columns parent (left/right split), `"v"` for a rows parent
+ * (top/bottom). Determines which axis `split-window` should split along so
+ * the new pane lands on the right side of the boundary and the transient
+ * pre-reflow shape already matches the declared layout's axis (geometry is
+ * still re-snapped by `applyGeometry`, but a same-axis split avoids a visible
+ * mid-frame orientation flip).
+ *
+ * Returns undefined only when `name` is the root leaf (no parent split) — that
+ * case is impossible for `insertPane` because `splitAnchor` already requires
+ * `name` to share the tree with at least one other leaf.
+ */
+function leafParentDirection(tree: LayoutNode, name: string): "h" | "v" | undefined {
+  if (isLayoutLeaf(tree)) {
+    return undefined;
+  }
+  if (isLayoutSplit(tree)) {
+    for (const child of tree.children) {
+      if (isLayoutLeaf(child) && child.pane === name) {
+        return tree.direction === "rows" ? "v" : "h";
+      }
+      const inner = leafParentDirection(child, name);
+      if (inner) {
+        return inner;
+      }
+    }
+  }
+  return undefined;
 }
 
 /** Per-call options. `resyncFallback` is off by default (the no-resync fast path). */
@@ -112,6 +194,12 @@ class LayoutReflow {
     swapPanes: (src: string, dst: string) => Promise<void>;
     selectLayout: (target: string, layout: string) => Promise<void>;
     resyncPaneSizes: (target: string) => Promise<void>;
+    splitPane: (
+      target: string,
+      direction: "h" | "v",
+      options?: SplitPaneOptions,
+    ) => Promise<string>;
+    selectPane: (target: string) => Promise<void>;
   };
 
   public constructor(deps: LayoutReflowDeps) {
@@ -123,6 +211,8 @@ class LayoutReflow {
       swapPanes: deps.swapPanes ?? defaultSwapPanes,
       selectLayout: deps.selectLayout ?? defaultSelectLayout,
       resyncPaneSizes: deps.resyncPaneSizes ?? defaultResyncPaneSizes,
+      splitPane: deps.splitPane ?? defaultSplitPane,
+      selectPane: deps.selectPane ?? defaultSelectPane,
     };
   }
 
@@ -193,6 +283,111 @@ class LayoutReflow {
     //    Queries, so it can only ever be resynced, not detected. Off by default.
     if (options?.resyncFallback) {
       await this.tmux.resyncPaneSizes(target);
+    }
+  }
+
+  /**
+   * Create the tmux pane for a currently pane-less service at its declared
+   * position. Zero-swap adjacency split — verified in `20_architecture.md`
+   * Smoothness: pick a neighbor leaf in the FILTERED target tree (predecessor
+   * preferred), split off it with `-d` so focus doesn't move, then snap exact
+   * geometry with `applyGeometry`.
+   *
+   * The `-d` flag is critical: a plain `split-window` makes the new pane active
+   * (verified) and subsequent `select-layout`/`swap-pane` keep that activation
+   * — focus would jump from whatever the user was looking at to the freshly-
+   * inserted background service. With `-d`, the previously-active pane stays
+   * active unless the declared layout leaf has `focus: true`, in which case we
+   * explicitly `select-pane` AFTER the geometry settles.
+   *
+   * The service process itself is NOT started here — `insertPane` only manages
+   * the pane; the service manager (Phase 4) starts the process and writes into
+   * the pane that this method created.
+   *
+   * Failure semantics: on any error before `paneMap[name]` is set, `paneMap` is
+   * untouched. On an error AFTER the split but before geometry settles, the
+   * new pane id is removed from `paneMap` so the lifecycle invariant
+   * (paneMap ⊇ visible) holds; the dangling tmux pane and a full visual
+   * restore are the responsibility of P03-T04 (rollback) — a TODO seam below.
+   */
+  public async insertPane(name: string): Promise<void> {
+    const layout = this.deps.getLayout();
+    if (!layout) {
+      throw new Error("LayoutReflow.insertPane: no declared layout to insert into");
+    }
+    if (!findLeaf(layout, name)) {
+      throw new Error(
+        `LayoutReflow.insertPane: pane '${name}' is not a leaf in the declared layout`,
+      );
+    }
+    const paneMap = this.deps.getPaneMap();
+    if (paneMap[name]) {
+      throw new Error(`LayoutReflow.insertPane: pane '${name}' already has a tmux pane`);
+    }
+
+    // Target visible = current visible (paneMap keys) ∪ {name}. paneMap is the
+    // Authoritative source of "currently owns a tmux pane" — @tui is always in
+    // It, and Phase-3 lifecycle hooks keep it in lockstep with reality.
+    const targetVisible = new Set<string>([...Object.keys(paneMap), name]);
+    const targetTree = filterTree(layout, targetVisible);
+    if (!targetTree) {
+      throw new Error("LayoutReflow.insertPane: filtered target tree is empty");
+    }
+
+    // Anchor — predecessor (after) or successor (before) — gives the
+    // Adjacency-split that lands the new pane in its DFS slot with zero swaps.
+    const anchor = splitAnchor(targetTree, name);
+    const anchorName = anchor.mode === "after" ? anchor.predecessor : anchor.successor;
+    const anchorPaneId = paneMap[anchorName];
+    if (!anchorPaneId) {
+      throw new Error(`LayoutReflow.insertPane: anchor pane '${anchorName}' is not in paneMap`);
+    }
+
+    // Mirror the parent split axis so the transient pre-reflow shape already
+    // Matches the declared orientation; `applyGeometry` snaps the size anyway,
+    // But same-axis avoids a mid-frame orientation flip.
+    const direction = leafParentDirection(targetTree, name);
+    if (!direction) {
+      // Defensive: splitAnchor would have thrown when there's no neighbor, so
+      // The leaf must have a parent split in `targetTree`.
+      throw new Error(
+        `LayoutReflow.insertPane: could not determine parent split direction for '${name}'`,
+      );
+    }
+
+    let newPaneId: string | undefined = undefined;
+    try {
+      newPaneId = await this.tmux.splitPane(anchorPaneId, direction, {
+        detached: true,
+        before: anchor.mode === "before",
+      });
+
+      // Mutate paneMap THEN fire the hook so the session sees a consistent view
+      // (paneMap already contains the new id when it allocates the log buffer).
+      paneMap[name] = newPaneId;
+      this.deps.onPaneInserted?.(name, newPaneId);
+
+      // Snap exact geometry — common path is zero swaps (adjacency split landed
+      // It in the target DFS slot).
+      await this.applyGeometry(targetVisible);
+
+      // Conditional focus: only steal focus when the layout explicitly opted
+      // In via `focus: true` on this leaf. Read from the ORIGINAL layout (focus
+      // Is a declared property, not derived from the filtered tree).
+      const leaf = findLeaf(layout, name);
+      if (leaf?.focus) {
+        await this.tmux.selectPane(newPaneId);
+      }
+    } catch (error) {
+      // TODO(P03-T04): full rollback — kill the dangling tmux pane and restore
+      // The pre-insert window_layout so the user never sees a half-applied
+      // State. For now we only restore the paneMap invariant; the dangling
+      // Pane is left for P03-T04 to clean up.
+      if (newPaneId !== undefined && paneMap[name] === newPaneId) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- rollback removes the just-inserted entry
+        delete paneMap[name];
+      }
+      throw error;
     }
   }
 }

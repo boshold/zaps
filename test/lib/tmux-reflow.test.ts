@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LayoutNode } from "../../src/config/types.js";
 import { LayoutReflow } from "../../src/lib/tmux-reflow.js";
 import type { LayoutReflowDeps, PaneMap } from "../../src/lib/tmux-reflow.js";
+import type { SplitPaneOptions } from "../../src/lib/tmux.js";
 
 interface FakeTmux {
   getWindowSize: Mock<(target: string) => Promise<{ width: number; height: number }>>;
@@ -11,6 +12,10 @@ interface FakeTmux {
   swapPanes: Mock<(src: string, dst: string) => Promise<void>>;
   selectLayout: Mock<(target: string, layout: string) => Promise<void>>;
   resyncPaneSizes: Mock<(target: string) => Promise<void>>;
+  splitPane: Mock<
+    (target: string, direction: "h" | "v", options?: SplitPaneOptions) => Promise<string>
+  >;
+  selectPane: Mock<(target: string) => Promise<void>>;
 }
 
 function makeFakeTmux(spatialOrder: string[], size = { width: 100, height: 30 }): FakeTmux {
@@ -22,6 +27,8 @@ function makeFakeTmux(spatialOrder: string[], size = { width: 100, height: 30 })
     swapPanes: vi.fn<FakeTmux["swapPanes"]>().mockResolvedValue(undefined),
     selectLayout: vi.fn<FakeTmux["selectLayout"]>().mockResolvedValue(undefined),
     resyncPaneSizes: vi.fn<FakeTmux["resyncPaneSizes"]>().mockResolvedValue(undefined),
+    splitPane: vi.fn<FakeTmux["splitPane"]>().mockResolvedValue("%99"),
+    selectPane: vi.fn<FakeTmux["selectPane"]>().mockResolvedValue(undefined),
   };
 }
 
@@ -29,6 +36,7 @@ function makeReflow(
   layout: LayoutNode | undefined,
   paneMap: PaneMap,
   tmux: FakeTmux,
+  extra: Partial<LayoutReflowDeps> = {},
 ): { reflow: LayoutReflow; deps: LayoutReflowDeps } {
   const deps: LayoutReflowDeps = {
     getLayout: () => layout,
@@ -39,6 +47,9 @@ function makeReflow(
     swapPanes: tmux.swapPanes,
     selectLayout: tmux.selectLayout,
     resyncPaneSizes: tmux.resyncPaneSizes,
+    splitPane: tmux.splitPane,
+    selectPane: tmux.selectPane,
+    ...extra,
   };
   return { reflow: new LayoutReflow(deps), deps };
 }
@@ -256,5 +267,215 @@ describe("LayoutReflow — live getters survive Session._reload's paneMap reassi
     const [, [, secondLayout]] = tmux.selectLayout.mock.calls;
     expect(secondLayout.includes("[")).toBe(true); // Rows → `[...]`.
     expect(secondLayout.includes("{")).toBe(false);
+  });
+});
+
+describe("LayoutReflow.insertPane — zero-swap adjacency split", () => {
+  it("splits off the predecessor with -d for a middle insert", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1", web: "%3" }; // Api currently pane-less.
+    // Post-split spatial order = target DFS order → zero swaps in applyGeometry.
+    const tmux = makeFakeTmux(["%1", "%99", "%3"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const onPaneInserted = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneInserted });
+
+    await reflow.insertPane("api");
+
+    // Split off the PREDECESSOR (@tui = %1) with detached + columns axis (-h).
+    expect(tmux.splitPane).toHaveBeenCalledTimes(1);
+    expect(tmux.splitPane).toHaveBeenCalledWith("%1", "h", {
+      detached: true,
+      before: false,
+    });
+    // PaneMap updated.
+    expect(paneMap.api).toBe("%99");
+    // Hook fired with (name, paneId).
+    expect(onPaneInserted).toHaveBeenCalledTimes(1);
+    expect(onPaneInserted).toHaveBeenCalledWith("api", "%99");
+    // ApplyGeometry ran exactly one selectLayout afterwards.
+    expect(tmux.selectLayout).toHaveBeenCalledTimes(1);
+    expect(tmux.swapPanes).not.toHaveBeenCalled();
+    // No focus stolen (leaf has no focus:true).
+    expect(tmux.selectPane).not.toHaveBeenCalled();
+  });
+
+  it("uses successor + before:true when inserting at the first position", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "api" }, { pane: "@tui" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%99", "%1"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    expect(tmux.splitPane).toHaveBeenCalledWith("%1", "h", {
+      detached: true,
+      before: true,
+    });
+    expect(paneMap.api).toBe("%99");
+  });
+
+  it("mirrors the parent split axis — rows → 'v', columns → 'h'", async () => {
+    const layout: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1", "%99"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    expect(tmux.splitPane).toHaveBeenCalledWith("%1", "v", {
+      detached: true,
+      before: false,
+    });
+  });
+
+  it("calls applyGeometry with the target visible set (current ∪ {name})", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1", web: "%3" };
+    const tmux = makeFakeTmux(["%1", "%99", "%3"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    // SelectLayout layout string is the body of applyGeometry's work; since
+    // The fake's spatialOrder = target DFS order, zero swaps happened, and the
+    // ONE selectLayout proves applyGeometry ran over the {@tui, api, web} set.
+    expect(tmux.selectLayout).toHaveBeenCalledTimes(1);
+    const [[, layoutStr]] = tmux.selectLayout.mock.calls;
+    // Encoded pane numbers 1, 99, 3 (from paneMap) must appear in DFS order.
+    expect(layoutStr).toMatch(/,1\b.*,99\b.*,3\b/u);
+  });
+
+  it("moves focus to the new pane only when the layout leaf has focus:true", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api", focus: true }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1", "%99"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    expect(tmux.selectPane).toHaveBeenCalledTimes(1);
+    expect(tmux.selectPane).toHaveBeenCalledWith("%99");
+  });
+
+  it("leaves the previously active pane active when focus:true is absent", async () => {
+    // Already covered above but pinned explicitly here so a future regression
+    // That defaults focus=true is impossible to ship.
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1", "%99"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    expect(tmux.selectPane).not.toHaveBeenCalled();
+  });
+
+  it("hook is optional — insertPane completes without onPaneInserted", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1", "%99"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux); // No onPaneInserted.
+
+    await expect(reflow.insertPane("api")).resolves.toBeUndefined();
+    expect(paneMap.api).toBe("%99");
+  });
+
+  it("leaves paneMap unchanged when the split itself fails", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1"]);
+    tmux.splitPane.mockRejectedValue(new Error("tmux: split-window failed"));
+    const onPaneInserted = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneInserted });
+
+    await expect(reflow.insertPane("api")).rejects.toThrow(/split-window failed/);
+    expect(paneMap.api).toBeUndefined();
+    expect(onPaneInserted).not.toHaveBeenCalled();
+    expect(tmux.selectLayout).not.toHaveBeenCalled();
+  });
+
+  it("rolls back paneMap when applyGeometry fails after the split succeeded", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1", "%99"]);
+    tmux.splitPane.mockResolvedValue("%99");
+    tmux.selectLayout.mockRejectedValue(new Error("tmux: select-layout failed"));
+    const onPaneInserted = vi.fn();
+    const { reflow } = makeReflow(layout, paneMap, tmux, { onPaneInserted });
+
+    await expect(reflow.insertPane("api")).rejects.toThrow(/select-layout failed/);
+    // The session hook DID fire (paneMap was momentarily set), but the rollback
+    // Removed the entry to keep the paneMap-⊇-visible invariant honest.
+    expect(onPaneInserted).toHaveBeenCalledWith("api", "%99");
+    expect(paneMap.api).toBeUndefined();
+  });
+
+  it("throws when the pane already has a tmux pane", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1", api: "%2" };
+    const tmux = makeFakeTmux(["%1", "%2"]);
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await expect(reflow.insertPane("api")).rejects.toThrow(/already has a tmux pane/);
+    expect(tmux.splitPane).not.toHaveBeenCalled();
+  });
+
+  it("throws when the pane is not declared in the layout", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1" };
+    const tmux = makeFakeTmux(["%1"]);
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await expect(reflow.insertPane("unknown")).rejects.toThrow(
+      /is not a leaf in the declared layout/,
+    );
+    expect(tmux.splitPane).not.toHaveBeenCalled();
+  });
+
+  it("throws when there is no declared layout", async () => {
+    const tmux = makeFakeTmux([]);
+    const { reflow } = makeReflow(undefined, { "@tui": "%1" }, tmux);
+
+    await expect(reflow.insertPane("api")).rejects.toThrow(/no declared layout/);
   });
 });
