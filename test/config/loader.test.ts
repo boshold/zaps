@@ -910,6 +910,132 @@ describe("docker expand", () => {
     });
   });
 
+  describe("lazyPane resolution (P04-T02 default rule)", () => {
+    it("autostart + no explicit lazyPane → false", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: { api: { start: "npm dev" } },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect(resolved.lazyPaneByService.get("api")).toBe(false);
+    });
+
+    it("non-autostart (flags.start === false) + no explicit lazyPane → true", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: { worker: { start: "node w.js", flags: { start: false } } },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect(resolved.lazyPaneByService.get("worker")).toBe(true);
+    });
+
+    it("explicit lazyPane: true wins over autostart default", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: { api: { start: "npm dev", lazyPane: true } },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect(resolved.lazyPaneByService.get("api")).toBe(true);
+    });
+
+    it("explicit lazyPane: false wins over non-autostart default", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: { worker: { start: "node w.js", flags: { start: false }, lazyPane: false } },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect(resolved.lazyPaneByService.get("worker")).toBe(false);
+    });
+
+    it("non-autostart detached service → false (guard beats default)", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: {
+              worker: { start: "node w.js", detached: true, flags: { start: false } },
+            },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect(resolved.lazyPaneByService.get("worker")).toBe(false);
+    });
+
+    it("non-autostart docker-group member → false (guard beats default)", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: {
+              cache: {
+                docker: {
+                  service: ["redis", "memcached"],
+                  expand: { redis: { flags: { start: false } } },
+                },
+              },
+            },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      // Redis is a _combined member; even though its expand override turns it
+      // Non-autostart, the guard forces lazyPane → false (would otherwise
+      // Repoint paneMap['redis'] off the shared 'cache' pane in P04-T04).
+      expect(resolved.lazyPaneByService.get("redis")).toBe(false);
+      expect(resolved.lazyPaneByService.get("memcached")).toBe(false);
+    });
+
+    it("every resolved service is present in lazyPaneByService", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.defineProject({
+            services: {
+              api: { start: "npm dev" },
+              worker: { start: "node w.js", flags: { start: false } },
+              detached: { start: "node d.js", detached: true },
+            },
+          });
+        }
+      `,
+      );
+      const resolved = await loadConfig(configPath, tmpDir);
+      expect([...resolved.lazyPaneByService.keys()].toSorted()).toEqual(
+        Object.keys(resolved.project.services).toSorted(),
+      );
+    });
+  });
+
   describe("lazyPane validation (P04)", () => {
     it("rejects lazyPane: true on a docker-group member (expand override)", async () => {
       const configPath = writeConfig(

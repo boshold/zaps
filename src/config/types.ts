@@ -236,6 +236,21 @@ export interface ResolvedConfig {
   /** Maps group name → expanded child service names (from docker expand) */
   groups: Map<string, string[]>;
   unavailableServices: Map<string, UnavailableServiceInfo>;
+  /**
+   * Resolved per-service `lazyPane` boolean (P04-T02). Computed ONCE here so the
+   * Manager + `createLayout` never re-derive the rule. The exact rule, with the
+   * Group/detached guard applied FIRST:
+   *
+   *   (svc.detached || svc._combined != null) ? false
+   *                                           : (svc.lazyPane ?? (flags.start === false))
+   *
+   * Group members share a pane and detached services own no pane — `true` would
+   * Drive a spurious separate-pane insert (P04-T04) or a desynced boot-skip
+   * (P04-T03), so the guard forces `false` even if the user explicitly set
+   * `lazyPane: true` (the LOAD error for that case is P04-T01's job; this map
+   * Refuses to emit `true` in either situation).
+   */
+  lazyPaneByService: Map<string, boolean>;
 }
 
 // === Type Guards ===

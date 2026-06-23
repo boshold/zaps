@@ -64,6 +64,7 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
       projectDir: "/test",
       groups: new Map(),
       unavailableServices: new Map(),
+      lazyPaneByService: new Map(),
     } as SessionCreateParams["config"],
     paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "main",
@@ -404,6 +405,7 @@ describe("Session", () => {
           projectDir: "/test",
           groups: new Map(),
           unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
         } as SessionCreateParams["config"],
         paneMap: { "@tui": "%0", api: "%1" },
       });
@@ -432,6 +434,7 @@ describe("Session", () => {
           projectDir: "/test",
           groups: new Map(),
           unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
         } as SessionCreateParams["config"],
       });
 
@@ -481,6 +484,7 @@ describe("Session per-pane log buffers (D2)", () => {
         projectDir: "/test",
         groups: new Map([["grp", ["a", "b", "c"]]]),
         unavailableServices: new Map(),
+        lazyPaneByService: new Map(),
       } as SessionCreateParams["config"],
       paneMap: { "@tui": "%0", grp: "%1", a: "%1", b: "%1", c: "%1" },
     });
@@ -551,6 +555,7 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
         projectDir: "/test",
         groups: new Map(),
         unavailableServices: new Map(),
+        lazyPaneByService: new Map(),
       } as SessionCreateParams["config"],
       paneMap: { "@tui": "%0", api: "%1" }, // `web` deliberately pane-less.
     });

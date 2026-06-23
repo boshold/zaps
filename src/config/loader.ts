@@ -235,6 +235,46 @@ function validateLazyPaneGroups(project: ProjectConfig): void {
 
 // Explicit task shortcuts colliding with a reserved key (q/j/k) are dropped by getTaskShortcuts.
 // Warn at load time so the user knows their requested key was ignored.
+/**
+ * Resolve every service's effective `lazyPane` boolean (P04-T02).
+ *
+ * Rule, guard-FIRST so the default never leaks `true` to a service that has no
+ * Own pane:
+ *
+ *   effective = (detached || _combined) ? false
+ *                                       : (svc.lazyPane ?? (flags.start === false))
+ *
+ * Autostart semantics mirror `manager.ts:419` exactly — `flags?.start !== false`
+ * Means "autostart", so the lazy default is `flags?.start === false`. We use the
+ * SAME interpretation here.
+ *
+ * P04-T01 catches the load error for an EXPLICIT `lazyPane: true` on a group
+ * Member or detached service, but does NOT stop the *default* rule from
+ * Computing `true` for a non-autostart member/detached service. The guard
+ * Closes that gap: every group member and detached service resolves to `false`
+ * Here unconditionally, so downstream consumers (manager boot-skip in P04-T03,
+ * InsertPane wiring in P04-T04) cannot misfire.
+ */
+function resolveLazyPanes(project: ProjectConfig): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const [name, svc] of Object.entries(project.services)) {
+    // Guard first: no own pane → never lazy (Q5 + Round-6 risk closure).
+    // `_combined` is set by `expandDockerServices` (loader.ts:145) or absent;
+    // It is never explicitly `null`, so `!== undefined` is the right test.
+    if (svc.detached === true || svc._combined !== undefined) {
+      out.set(name, false);
+      continue;
+    }
+    if (svc.lazyPane !== undefined) {
+      out.set(name, svc.lazyPane);
+      continue;
+    }
+    // Default: non-autostart (`flags.start === false`) opts in to lazy.
+    out.set(name, svc.flags?.start === false);
+  }
+  return out;
+}
+
 function warnReservedTaskShortcuts(project: ProjectConfig): void {
   for (const [key, task] of Object.entries(project.tasks ?? {})) {
     if (task.shortcut && RESERVED_TASK_SHORTCUT_KEYS.has(task.shortcut)) {
@@ -560,6 +600,10 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
 
   validateSemantics(resolved, groups);
 
+  // Derived per-service `lazyPane` resolved ONCE — manager + createLayout read
+  // From this map instead of re-implementing the rule + guard.
+  const lazyPaneByService = resolveLazyPanes(resolved);
+
   return {
     project: resolved,
     configPath,
@@ -567,6 +611,7 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
     bindActions,
     groups,
     unavailableServices,
+    lazyPaneByService,
   };
 }
 

@@ -132,6 +132,7 @@ function makeConfig(
     projectDir: "/test",
     groups: new Map(),
     unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
   } as ResolvedConfig;
 }
 
