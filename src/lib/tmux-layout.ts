@@ -1,4 +1,4 @@
-import type { LayoutNode, ServiceConfig } from "#src/config/types.js";
+import type { LayoutLeaf, LayoutNode, LayoutSplit, ServiceConfig } from "#src/config/types.js";
 import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
 import { killPane, splitPane } from "./tmux.js";
@@ -189,6 +189,30 @@ function reserveStartPaneForTui(layout: LayoutNode, startPaneId: string, paneMap
 }
 
 /**
+ * Shallow-clone `node`, replacing its `size` with `size` (omitted when undefined).
+ * Used when collapsing a single-child split: the lone survivor takes over the
+ * split's slot, so it must inherit the split's size — its own size was relative
+ * to the now-gone split and is no longer meaningful.
+ */
+function withSize(node: LayoutNode, size: string | undefined): LayoutNode {
+  if (isLayoutLeaf(node)) {
+    const leaf: LayoutLeaf = { pane: node.pane };
+    if (size !== undefined) {
+      leaf.size = size;
+    }
+    if (node.focus !== undefined) {
+      leaf.focus = node.focus;
+    }
+    return leaf;
+  }
+  const split: LayoutSplit = { direction: node.direction, children: node.children };
+  if (size !== undefined) {
+    split.size = size;
+  }
+  return split;
+}
+
+/**
  * Validate split sizes before any tmux call (E15). Per split: explicit sizes
  * must sum to < 100, or ≤ 100 only when the split has no implicit-size siblings;
  * and every computed tmux split percent must be ≥ 1. Violations are config
@@ -346,4 +370,56 @@ export async function createLayout(
     }
     throw error;
   }
+}
+
+/**
+ * Filter a declared layout tree down to the currently-visible panes.
+ *
+ * Returns a NEW tree (no input mutation) where:
+ * - leaves whose `pane` is not in `visible` are dropped;
+ * - a split that ends up with one child is collapsed into that child
+ *   (recursively), with the child inheriting the split's slot size;
+ * - a split that ends up with zero visible children returns `undefined`.
+ *
+ * Surviving siblings keep their declared sizes: explicit-size survivors keep
+ * their percent and implicit survivors share the remainder. Because removal can
+ * only lower a split's explicit total, the result never has explicit sizes ≥ 100
+ * alongside implicit siblings — so it is always valid input to `computeRects`,
+ * which normalizes the surviving proportions against the available extent
+ * (e.g. dropping one of two all-explicit survivors leaves the geometry pass to
+ * rescale them). Redistribution math is intentionally NOT duplicated here.
+ */
+export function filterTree(
+  node: LayoutNode | undefined,
+  visible: Set<string>,
+): LayoutNode | undefined {
+  if (!node) {
+    return undefined;
+  }
+
+  if (isLayoutLeaf(node)) {
+    return visible.has(node.pane) ? { ...node } : undefined;
+  }
+
+  if (isLayoutSplit(node)) {
+    const children = node.children
+      .map((child) => filterTree(child, visible))
+      .filter((child): child is LayoutNode => child !== undefined);
+
+    if (children.length === 0) {
+      return undefined;
+    }
+    if (children.length === 1) {
+      // Collapse: the lone survivor takes over this split's slot.
+      return withSize(children[0], node.size);
+    }
+
+    const split: LayoutSplit = { direction: node.direction, children };
+    if (node.size !== undefined) {
+      split.size = node.size;
+    }
+    return split;
+  }
+
+  return undefined;
 }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ServiceConfig } from "../../src/config/types.js";
+import type { LayoutNode, ServiceConfig } from "../../src/config/types.js";
 
 // Mock tmux functions
 vi.mock("../../src/lib/tmux.js", () => ({
@@ -8,7 +8,12 @@ vi.mock("../../src/lib/tmux.js", () => ({
   killPane: vi.fn(),
 }));
 
-import { createLayout, validateLayout, validateLayoutSizes } from "../../src/lib/tmux-layout.js";
+import {
+  createLayout,
+  filterTree,
+  validateLayout,
+  validateLayoutSizes,
+} from "../../src/lib/tmux-layout.js";
 import { killPane, splitPane } from "../../src/lib/tmux.js";
 
 const mockSplitPane = vi.mocked(splitPane);
@@ -309,6 +314,192 @@ describe("createLayout", () => {
     expect(paneMap.dbB).toBe("%2");
     // Exactly two splits: api (%1) + the single shared group pane (%2).
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("filterTree", () => {
+  it("returns undefined for an undefined tree", () => {
+    expect(filterTree(undefined, new Set(["@tui"]))).toBeUndefined();
+  });
+
+  it("keeps a visible leaf (cloned) and drops an invisible one", () => {
+    const leaf: LayoutNode = { pane: "@tui", size: "50%", focus: true };
+
+    const kept = filterTree(leaf, new Set(["@tui"]));
+    expect(kept).toEqual({ pane: "@tui", size: "50%", focus: true });
+    expect(kept).not.toBe(leaf); // New object, no mutation
+
+    expect(filterTree(leaf, new Set(["api"]))).toBeUndefined();
+  });
+
+  it("all-visible: tree is structurally unchanged (and not the same reference)", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui", size: "30%" }, { pane: "api", size: "40%" }, { pane: "web" }],
+    };
+
+    const result = filterTree(layout, new Set(["@tui", "api", "web"]));
+    expect(result).toEqual(layout);
+    expect(result).not.toBe(layout);
+  });
+
+  it("does not mutate the input tree", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "70%" },
+      ],
+    };
+    const snapshot = structuredClone(layout);
+
+    filterTree(layout, new Set(["@tui"]));
+
+    expect(layout).toEqual(snapshot);
+  });
+
+  it("@tui-only: a flat split collapses to the single surviving leaf", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    // The collapsed leaf takes over the whole split slot, so it has no size.
+    expect(filterTree(layout, new Set(["@tui"]))).toEqual({ pane: "@tui" });
+  });
+
+  it("flat columns, middle child removed: survivors keep their declared sizes", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    expect(filterTree(layout, new Set(["@tui", "web"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "web", size: "30%" },
+      ],
+    });
+  });
+
+  it("removed explicit-size sibling: an implicit survivor reclaims the freed space", () => {
+    // @tui 70%, api 20%, web implicit (gets remainder 10%). Drop @tui (70%):
+    // Api keeps its explicit 20%, web stays implicit and so absorbs the freed
+    // Pool — the result is valid computeRects input (explicit 20% < 100, one
+    // Implicit sibling), which then resolves web to the remaining 80%.
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui", size: "70%" }, { pane: "api", size: "20%" }, { pane: "web" }],
+    };
+
+    const result = filterTree(layout, new Set(["api", "web"]));
+    expect(result).toEqual({
+      direction: "columns",
+      children: [{ pane: "api", size: "20%" }, { pane: "web" }],
+    });
+    // The survivors remain valid input to computeRects (no overflow).
+    expect(() => validateLayoutSizes(result!)).not.toThrow();
+  });
+
+  it("nested split fully removed: parent collapses past the empty branch", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        {
+          direction: "rows",
+          size: "70%",
+          children: [
+            { pane: "api", size: "50%" },
+            { pane: "web", size: "50%" },
+          ],
+        },
+      ],
+    };
+
+    // Api+web invisible → inner split drops → outer collapses to @tui leaf.
+    expect(filterTree(layout, new Set(["@tui"]))).toEqual({ pane: "@tui" });
+  });
+
+  it("collapsing a single-child split: survivor inherits the split's slot size", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        {
+          direction: "rows",
+          size: "70%",
+          children: [
+            { pane: "api", size: "50%" },
+            { pane: "web", size: "50%" },
+          ],
+        },
+      ],
+    };
+
+    // Only web invisible: inner split keeps api (single child) and api takes
+    // Over the inner split's 70% slot in the outer columns.
+    expect(filterTree(layout, new Set(["@tui", "api"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "70%" },
+      ],
+    });
+  });
+
+  it("deeply nested collapse: survivor inherits the outermost collapsing slot size", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "40%" },
+        {
+          direction: "rows",
+          size: "60%",
+          children: [
+            {
+              direction: "columns",
+              children: [
+                { pane: "api", size: "50%" },
+                { pane: "worker", size: "50%" },
+              ],
+            },
+            { pane: "web" },
+          ],
+        },
+      ],
+    };
+
+    // Keep @tui + api only: worker and web drop, both nested splits collapse,
+    // Api bubbles up to the outer 60% slot.
+    expect(filterTree(layout, new Set(["@tui", "api"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "40%" },
+        { pane: "api", size: "60%" },
+      ],
+    });
+  });
+
+  it("everything invisible: returns undefined", () => {
+    const layout: LayoutNode = {
+      direction: "rows",
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%" },
+      ],
+    };
+
+    expect(filterTree(layout, new Set())).toBeUndefined();
   });
 });
 
