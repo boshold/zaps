@@ -16,6 +16,7 @@ import {
   layoutString,
   PaneTooSmallError,
   resolvePermutation,
+  splitAnchor,
   validateLayout,
   validateLayoutSizes,
 } from "../../src/lib/tmux-layout.js";
@@ -874,6 +875,98 @@ describe("resolvePermutation", () => {
     expect(() => resolvePermutation(["A", "B", "C"], ["A", "B"])).toThrow(
       /not permutations of the same set/,
     );
+  });
+});
+
+describe("splitAnchor", () => {
+  it("flat columns, insert at middle: splits after the previous leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "after", predecessor: "@tui" });
+  });
+
+  it("flat columns, insert at end: splits after the last existing leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "web")).toEqual({ mode: "after", predecessor: "api" });
+  });
+
+  it("flat columns, insert at front: splits before the next leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "api" }, { pane: "@tui" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "@tui" });
+  });
+
+  it("nested layout: uses DFS leaf order across sub-splits (predecessor)", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui" },
+        {
+          direction: "rows",
+          children: [{ pane: "api" }, { pane: "worker" }, { pane: "web" }],
+        },
+      ],
+    };
+
+    // DFS leaf order: @tui, api, worker, web. Inserting "worker" → after "api".
+    expect(splitAnchor(tree, "worker")).toEqual({ mode: "after", predecessor: "api" });
+  });
+
+  it("nested layout: first leaf inside a sub-split anchors before the next DFS leaf", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [
+        {
+          direction: "columns",
+          children: [{ pane: "api" }, { pane: "web" }],
+        },
+        { pane: "@tui" },
+      ],
+    };
+
+    // DFS leaf order: api, web, @tui. Inserting "api" (slot 0) → before "web".
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "web" });
+  });
+
+  it("single other pane: front insert anchors before that pane", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "api" }, { pane: "@tui" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "@tui" });
+  });
+
+  it("single other pane: end insert anchors after that pane", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "after", predecessor: "@tui" });
+  });
+
+  it("throws when the pane is not a leaf in the tree", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(() => splitAnchor(tree, "missing")).toThrow(/not a leaf in the target tree/);
+  });
+
+  it("throws when the pane is the only leaf (no neighbor)", () => {
+    expect(() => splitAnchor({ pane: "@tui" }, "@tui")).toThrow(/only leaf/);
   });
 });
 

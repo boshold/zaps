@@ -704,3 +704,34 @@ export function resolvePermutation(current: string[], target: string[]): [string
   }
   return swaps;
 }
+
+/**
+ * Where to split so a newly-inserted pane lands at its target spatial slot with
+ * zero swaps. `tree` is the TARGET filtered tree (the visible set *including* the
+ * pane being inserted); `name` is the inserted pane. Using the tree's DFS leaf
+ * order: a pane at slot `k > 0` splits *after* the leaf at `k − 1`
+ * (`split-window` default), and a pane at slot `0` splits *before* the next leaf
+ * (`split-window -b`). tmux gives the new pane the adjacent `pane_index`, so the
+ * spatial order already matches the target and no `swap-pane` is needed.
+ *
+ * Throws if `name` is not a leaf in `tree`, or if it is the only leaf (no
+ * neighbor to anchor against — `@tui` is always visible, so this should not
+ * happen in practice).
+ */
+export function splitAnchor(
+  tree: LayoutNode,
+  name: string,
+): { mode: "after"; predecessor: string } | { mode: "before"; successor: string } {
+  const leaves = collectPaneNames(tree);
+  const k = leaves.indexOf(name);
+  if (k === -1) {
+    throw new Error(`splitAnchor: pane '${name}' is not a leaf in the target tree`);
+  }
+  if (leaves.length < 2) {
+    throw new Error(`splitAnchor: pane '${name}' is the only leaf; no neighbor to anchor against`);
+  }
+  if (k > 0) {
+    return { mode: "after", predecessor: leaves[k - 1] };
+  }
+  return { mode: "before", successor: leaves[1] };
+}
