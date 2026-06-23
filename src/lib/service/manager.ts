@@ -938,8 +938,20 @@ export class ServiceManager extends EventEmitter {
     // (`handleCrash`) and restart (`restartServiceInternal`) intentionally
     // Skip it so the pane survives across a crash-restart loop.
     const result = await this.withServiceLock(name, async () => this.stopServiceInternal(name));
+    // CRITICAL: skip reflowRemove during shutdown (reload/destroy). The session
+    // Op-lock holds `_reload`/`destroy`, which calls `manager.stopAll()`, which
+    // Sets `this.shuttingDown = true` BEFORE iterating `stopAllServices`
+    // (manager.ts:496). Without this guard, every stopService inside that loop
+    // Would await `deps.reflowRemove` → `Session.reflowRemove` → `withOpLock`,
+    // Which is a promise-chain mutex and not re-entrant — the inner reflow
+    // Would chain AFTER the outer reload's `fn`, which is itself awaiting
+    // `stopAll` → permanent hang. Skipping is correct in addition to safe:
+    // `_reload` step 4 (session.ts:434-440) already kill-panes every non-`@tui`
+    // Pane before rebuilding the layout, so a reflowRemove here would be both
+    // Redundant and deadlock-prone. The manual stop path (no reload/destroy
+    // In flight) still runs reflowRemove as intended.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (isLazy && this.paneMap[name] !== undefined) {
+    if (!this.shuttingDown && isLazy && this.paneMap[name] !== undefined) {
       await this.deps.reflowRemove(name);
     }
     return result;

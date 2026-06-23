@@ -3416,6 +3416,70 @@ describe("lazy-pane lifecycle", () => {
     expect(paneMap.worker).toBe("%worker");
   });
 
+  it("stopAll skips reflowRemove for every lazy service (shuttingDown guard, deadlock fix)", async () => {
+    // The deadlock that would fire without the guard:
+    //   `Session.reload`/`destroy` hold `withOpLock` → `manager.stopAll()` →
+    //   `stopAllServices` → per-service `stopService` → `reflowRemove` →
+    //   `Session.reflowRemove` → `withOpLock` (NOT re-entrant) → chains AFTER
+    //   The outer reload `fn` that is awaiting `stopAll` → permanent hang.
+    // The guard short-circuits `reflowRemove` while `this.shuttingDown` is
+    // True — which `runStopAll` sets BEFORE iterating, so EVERY stopService
+    // Called from within stopAll sees it. _reload step 4 (session.ts:434-440)
+    // Kill-panes anyway, so this is also redundant in the reload path.
+    const config = lazyConfig(
+      {
+        worker: { start: "node w.js" },
+        api: { start: "npm dev" },
+      },
+      ["worker"], // Only `worker` is lazy.
+    );
+    const paneMap = makePaneMap(["worker", "api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Get both services to `ready` first.
+    await mgr.startService("worker");
+    await mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(deps.reflowInsert).mockClear();
+    vi.mocked(deps.reflowRemove).mockClear();
+
+    // StopAll: the shuttingDown guard MUST suppress reflowRemove on `worker`.
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]); // Process exits.
+    await mgr.stopAll();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+    // Sanity: non-shutdown stopService still fires reflowRemove for lazy.
+    // (We can't easily verify post-stopAll because shuttingDown reset to false
+    // After stopAllServices returned — fire a manual stopService now: the
+    // Service is already stopped so it'll be a noop, and reflowRemove won't
+    // Fire because paneMap mutations from stopAll left the world unchanged
+    // For non-lazy services either. The point of THIS test is the negative
+    // Assertion above.)
+  });
+
+  it("manual stopService (no shutdown) still calls reflowRemove (positive control)", async () => {
+    // Companion to the shuttingDown guard test: confirms the guard ONLY fires
+    // During shutdown, not on the manual path.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap = makePaneMap(["worker"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await mgr.startService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(deps.reflowRemove).mockClear();
+
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    await mgr.stopService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(deps.reflowRemove).toHaveBeenCalledWith("worker");
+  });
+
   it("restartService never calls the reflow hooks (pane kept by design)", async () => {
     // RestartServiceInternal re-sends the start command to the existing pane;
     // It never touches reflowInsert or reflowRemove. The public wrapper
