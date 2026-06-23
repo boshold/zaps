@@ -31,6 +31,24 @@ function firstLeafName(node: LayoutNode): string | undefined {
   return undefined;
 }
 
+/**
+ * Per-child proportional weight, reusing the createLayout/validateLayoutSizes
+ * size math: explicit-size children weigh their percent, implicit children each
+ * weigh an equal share of the remainder. The weights are normalized against
+ * their own sum in `distributeExtents` (reflow) and against the running parent
+ * remainder in `walkLayout` (boot), so a filtered split whose survivors no
+ * longer sum to 100 still fills the parent without a gap.
+ */
+function childWeights(children: LayoutNode[]): number[] {
+  const explicitTotal = children.reduce(
+    (sum, child) => sum + (child.size ? Number.parseInt(child.size, 10) : 0),
+    0,
+  );
+  const implicitCount = children.filter((child) => !child.size).length;
+  const implicitSize = implicitCount > 0 ? Math.floor((100 - explicitTotal) / implicitCount) : 0;
+  return children.map((child) => (child.size ? Number.parseInt(child.size, 10) : implicitSize));
+}
+
 async function walkLayout(
   node: LayoutNode,
   currentPaneId: string,
@@ -46,29 +64,33 @@ async function walkLayout(
     const { children, direction } = node;
     const dir = direction === "rows" ? "v" : "h";
 
-    // Parse sizes: explicit sizes kept, implicit get equal share of remainder
-    const explicitTotal = children.reduce(
-      (sum, child) => sum + (child.size ? Number.parseInt(child.size, 10) : 0),
-      0,
-    );
-    const implicitCount = children.filter((child) => !child.size).length;
-    const implicitSize = implicitCount > 0 ? Math.floor((100 - explicitTotal) / implicitCount) : 0;
-
-    const sizes = children.map((child) =>
-      child.size ? Number.parseInt(child.size, 10) : implicitSize,
-    );
+    // Per-child weights — explicit sizes kept, implicit get equal share of the
+    // Remainder, exactly the math `computeRects` uses on the reflow path. The
+    // Sum is treated as 100% of the parent: when survivors of a `filterTree`
+    // Drop no longer sum to 100 (e.g. `[40, 20]` after lazy siblings vanish),
+    // Normalizing against `totalWeight` rescales them proportionally instead of
+    // Handing the missing share to the last survivor. See `childWeights` + the
+    // `cumulativeBoundary` math in `distributeExtents` for the canonical
+    // Form — `walkLayout` mirrors it in tmux split-percent space because the
+    // Boot path drives `split-window -p N` instead of `select-layout`.
+    const weights = childWeights(children);
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
 
     // First child inherits the current pane
     const paneIds: string[] = [currentPaneId];
 
     // Children 2..N: split from the *previous* pane so tmux inserts each
-    // New pane after its predecessor, preserving the declared order.
+    // New pane after its predecessor, preserving the declared order. `parentRemaining`
+    // Starts at `totalWeight` (not a hard-coded 100) so the percents are derived
+    // From the actual survivor weights — the all-100 case is byte-identical to the
+    // Old behavior; the < 100 case now redistributes proportionally.
     let splitTarget = currentPaneId;
-    let parentRemaining = 100;
+    let parentRemaining = totalWeight;
 
     for (let i = 1; i < children.length; i += 1) {
-      const childRemaining = parentRemaining - sizes[i - 1];
-      const tmuxPercent = Math.round((childRemaining / parentRemaining) * 100);
+      const childRemaining = parentRemaining - weights[i - 1];
+      const tmuxPercent =
+        parentRemaining > 0 ? Math.round((childRemaining / parentRemaining) * 100) : 0;
 
       const newPaneId = await splitPane(splitTarget, dir, { percent: tmuxPercent });
       createdPanes.push(newPaneId);
@@ -234,24 +256,6 @@ class PaneTooSmallError extends Error {
     this.name = "PaneTooSmallError";
     this.pane = pane;
   }
-}
-
-/**
- * Per-child proportional weight, reusing the createLayout/validateLayoutSizes
- * size math: explicit-size children weigh their percent, implicit children each
- * weigh an equal share of the remainder. The weights are normalized against
- * their own sum in `distributeExtents`, which rescales surviving proportions to
- * fill the available extent (so a filtered split whose survivors no longer sum
- * to 100 still fills the parent without a gap).
- */
-function childWeights(children: LayoutNode[]): number[] {
-  const explicitTotal = children.reduce(
-    (sum, child) => sum + (child.size ? Number.parseInt(child.size, 10) : 0),
-    0,
-  );
-  const implicitCount = children.filter((child) => !child.size).length;
-  const implicitSize = implicitCount > 0 ? Math.floor((100 - explicitTotal) / implicitCount) : 0;
-  return children.map((child) => (child.size ? Number.parseInt(child.size, 10) : implicitSize));
 }
 
 /**

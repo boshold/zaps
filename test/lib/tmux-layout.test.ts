@@ -429,6 +429,48 @@ describe("createLayout", () => {
       expect(focusPane).toBe(paneMap["@tui"]);
     });
 
+    it("survivors with explicit sizes < 100 split proportionally (not last-absorbs)", async () => {
+      // Regression for the dev/db 40/60 bug: declared `[dev:40, db:20, rainfrog:20,
+      // Mailtrap:20]` with rainfrog+mailtrap skipped should give surviving siblings
+      // `[40, 20]`. Old walkLayout normalized against a hard-coded 100, so the second
+      // Split asked tmux for `round((100 - 40) / 100 * 100) = 60` and db ended up
+      // Owning 60 % (dev kept 40 %). The fix normalizes against the survivors' own
+      // Weight sum (60), so the second split asks for `round((60 - 40) / 60 * 100) =
+      // 33` and dev gets ~67 %, db ~33 % — proportional to their declared shares.
+      const services: Record<string, ServiceConfig> = {
+        dev: { start: "pnpm dev" },
+        db: { start: "pnpm db" },
+        rainfrog: { start: "rainfrog", flags: { start: false }, lazyPane: true },
+        mailtrap: { start: "mailpit", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [
+          { pane: "@tui", size: "10%" },
+          { pane: "dev", size: "40%" },
+          { pane: "db", size: "20%" },
+          { pane: "rainfrog", size: "20%" },
+          { pane: "mailtrap", size: "20%" },
+        ],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["rainfrog", "mailtrap"]),
+      });
+
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.dev).toBeDefined();
+      expect(paneMap.db).toBeDefined();
+      expect(paneMap.rainfrog).toBeUndefined();
+      expect(paneMap.mailtrap).toBeUndefined();
+      // Survivor weights = [10, 40, 20], total = 70.
+      // Split 1: @tui keeps 10/70, rest = 60/70 → tmux percent = round(60/70*100) = 86.
+      // Split 2: dev keeps 40/60, rest = 20/60 → tmux percent = round(20/60*100) = 33.
+      expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", { percent: 86 });
+      expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", { percent: 33 });
+      expect(mockSplitPane).toHaveBeenCalledTimes(2);
+    });
+
     it("throws when every layout leaf is skipped (impossible with @tui present)", async () => {
       // Defensive: if the caller manages to skip @tui somehow we surface a clear error
       // Rather than producing a paneMap-less window. P04-T02's guard ensures the

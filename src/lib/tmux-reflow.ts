@@ -473,8 +473,11 @@ class LayoutReflow {
       this.deps.onPaneInserted?.(name, newPaneId);
 
       // Snap exact geometry — common path is zero swaps (adjacency split landed
-      // It in the target DFS slot).
-      await this.applyGeometry(targetVisible);
+      // It in the target DFS slot). Resync unconditionally: an attached client's
+      // Pty winsize after a split is tmux-query-invisible (70_risks.md Round 7),
+      // So a running TUI (e.g. nuxt dev) keeps drawing at the pre-split width
+      // Unless we nudge tmux to re-push every pane's winsize.
+      await this.applyGeometry(targetVisible, { resyncFallback: true });
 
       // Conditional focus: only steal focus when the layout explicitly opted
       // In via `focus: true` on this leaf. Read from the ORIGINAL layout (focus
@@ -593,7 +596,9 @@ class LayoutReflow {
     // Only "rollback" possible is best-effort reconciliation — see below.
     try {
       const remainingVisible = new Set<string>(Object.keys(paneMap));
-      await this.applyGeometry(remainingVisible);
+      // Same Round-7 reason as insertPane: removing a pane resizes its siblings,
+      // And the survivors' pty winsizes may stay stale for an attached client.
+      await this.applyGeometry(remainingVisible, { resyncFallback: true });
     } catch (error) {
       await this.tryRollback("rollback:reconcilePaneMap", async () => {
         await this.reconcilePaneMap(target);
