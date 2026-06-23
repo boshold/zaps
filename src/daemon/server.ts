@@ -225,6 +225,24 @@ class DaemonServer implements SessionStore {
       },
       sessionId: id,
       zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+      // Reflow hooks late-bind to the session (same ref pattern as
+      // `storeExecInfo`). They always invoke `session.reflowInsert/Remove`,
+      // Which wrap `withOpLock` around the LIVE-getter `Session.reflow`. After
+      // A reload, `ref.session` is the same Session instance but
+      // `session.paneMap`/`session.config` have been atomically swapped — the
+      // Reflow's live getters pick that up without any reconstruction here.
+      reflowInsert: async (name: string) => {
+        if (!ref.session) {
+          throw new Error("reflowInsert: session not yet wired");
+        }
+        await ref.session.reflowInsert(name);
+      },
+      reflowRemove: async (name: string) => {
+        if (!ref.session) {
+          throw new Error("reflowRemove: session not yet wired");
+        }
+        await ref.session.reflowRemove(name);
+      },
     };
 
     // Create ServiceManager

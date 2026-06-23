@@ -571,6 +571,22 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
+    // Lazy-pane services start pane-less and acquire their pane on first
+    // Start (Flow B). MUST insert BEFORE `withServiceLock`:
+    //   1. `startServiceInternal` (manager.ts:577) throws `Unknown service`
+    //      If `paneMap[name]` is missing for a non-detached service, so the
+    //      Insert is REQUIRED before the lock-guarded body runs.
+    //   2. The reflow takes the SESSION op-lock; calling it INSIDE the per-
+    //      Service lock would invert the global lock order (`reload` already
+    //      Holds op-lock then takes service-lock via stopAll/startAll) and
+    //      Deadlock a concurrent manual start + reload (Round-4 trap).
+    // Already-paned (e.g. autostart after first start, or explicit
+    // `lazyPane: true` on an autostart service) and detached services bypass
+    // The reflow entirely — non-lazy behavior is byte-identical to before.
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (isLazy && !this.paneMap[name]) {
+      await this.deps.reflowInsert(name);
+    }
     return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
   }
 
@@ -916,7 +932,17 @@ export class ServiceManager extends EventEmitter {
    * Stop a single service (serialized per service).
    */
   public async stopService(name: string): Promise<ServiceActionResult> {
-    return this.withServiceLock(name, async () => this.stopServiceInternal(name));
+    // Stop the process inside `withServiceLock` (state machine + side effects),
+    // Then drop the pane OUTSIDE the lock — same op-lock-outermost discipline
+    // As `startService`. This is the ONLY call site for `reflowRemove`; crash
+    // (`handleCrash`) and restart (`restartServiceInternal`) intentionally
+    // Skip it so the pane survives across a crash-restart loop.
+    const result = await this.withServiceLock(name, async () => this.stopServiceInternal(name));
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (isLazy && this.paneMap[name] !== undefined) {
+      await this.deps.reflowRemove(name);
+    }
+    return result;
   }
 
   private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
@@ -1514,6 +1540,16 @@ export interface ServiceManagerDeps {
   storeExecInfo: (service: string, info: ExecInfo) => void;
   sessionId: string;
   zapsCommand: string;
+  /**
+   * Lazy-pane reflow hooks (P04-T04). Both run under the SESSION op-lock so they
+   * Serialize against each other AND against `_reload` (no half-applied geometry
+   * Visible across a config edit). `startService` calls `reflowInsert` BEFORE
+   * Taking the per-service lock; `stopService` calls `reflowRemove` AFTER
+   * Releasing it. The op-lock-outermost discipline is what prevents the
+   * Round-4 deadlock (manual start + reload).
+   */
+  reflowInsert: (name: string) => Promise<void>;
+  reflowRemove: (name: string) => Promise<void>;
 }
 
 export { diffOutput };

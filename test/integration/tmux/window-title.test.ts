@@ -40,6 +40,12 @@ const deps = {
   },
   sessionId: "test-session-id",
   zapsCommand: "zaps",
+  reflowInsert: async () => {
+    /* No-op for tests that don't exercise lazy lifecycle */
+  },
+  reflowRemove: async () => {
+    /* No-op */
+  },
 };
 
 describe.skipIf(!hasTmux())("window-title integration", () => {

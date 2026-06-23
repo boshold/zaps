@@ -571,6 +571,27 @@ export class Session {
   }
 
   /**
+   * Public entry points for the manager's lazy-lifecycle wiring (P04-T04).
+   * Both insert and remove run under the SESSION op-lock, so they cannot race
+   * Each other or `_reload`. The op-lock is OUTERMOST: callers (manager
+   * `startService`/`stopService` wrappers) MUST call these BEFORE/AFTER any
+   * `withServiceLock`, NEVER while holding it — otherwise a concurrent manual
+   * Start + reload deadlocks (reload holds op-lock → blocks on service-lock;
+   * The other path holds service-lock → blocks on op-lock).
+   */
+  public async reflowInsert(name: string): Promise<void> {
+    await this.withOpLock(async () => {
+      await this.reflow.insertPane(name);
+    });
+  }
+
+  public async reflowRemove(name: string): Promise<void> {
+    await this.withOpLock(async () => {
+      await this.reflow.removePane(name);
+    });
+  }
+
+  /**
    * Re-point the service's pane-less private buffer to a pane-shared `LogBuffer`
    * and start monitoring the new pane. Called by `LayoutReflow.insertPane` via
    * the `onPaneInserted` hook, AFTER `paneMap[name]` is set.
