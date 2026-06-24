@@ -16,6 +16,7 @@ export interface DaemonClientEvents {
   "session.destroyed": () => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
   "session.configStale": () => void;
+  "session.paneMap": (paneMap: Record<string, string>) => void;
   disconnect: () => void;
 }
 
@@ -235,6 +236,10 @@ export class DaemonClient extends EventEmitter {
       }
       case "session.configStale": {
         this.emit("session.configStale");
+        break;
+      }
+      case "session.paneMap": {
+        this.emit("session.paneMap", data.paneMap);
         break;
       }
       default: {

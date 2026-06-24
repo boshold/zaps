@@ -467,6 +467,38 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(apiEvent).toBeDefined();
   });
 
+  it("broadcasts session.paneMap on lazy insert and remove (keeps TUI paneMap live)", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const config = makeConfig(["api"], layout);
+    const paneMap: PaneMap = { "@tui": session.initialPaneId };
+    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
+
+    await zapsSession.reflow.insertPane("api");
+
+    const insertMaps = broadcastSpy.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.event === "session.paneMap")
+      .map((event) => (event.data as { paneMap: PaneMap }).paneMap);
+    expect(insertMaps.length).toBeGreaterThan(0);
+    const insertMap = insertMaps[insertMaps.length - 1];
+    expect(insertMap.api).toBeDefined();
+    expect(insertMap.api).toBe(zapsSession.paneMap.api);
+
+    broadcastSpy.mockClear();
+    await zapsSession.reflow.removePane("api");
+
+    const removeMaps = broadcastSpy.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.event === "session.paneMap")
+      .map((event) => (event.data as { paneMap: PaneMap }).paneMap);
+    expect(removeMaps.length).toBeGreaterThan(0);
+    expect(removeMaps[removeMaps.length - 1].api).toBeUndefined();
+  });
+
   it("after remove the monitor key is gone; logBuffers[name] is RETAINED with history", async () => {
     const layout: LayoutNode = {
       direction: "columns",

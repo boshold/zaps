@@ -4,6 +4,7 @@ import type { DaemonClient } from "#src/client/daemon-client.js";
 import { resolveUiConfig } from "#src/config/index.js";
 import type { UiConfig } from "#src/config/types.js";
 import type { ServiceMeta, TaskInfo } from "#src/daemon/session.js";
+import { usePaneMap } from "#src/hooks/usePaneMap.js";
 import { AppProvider } from "#src/hooks/useZaps.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
@@ -43,11 +44,15 @@ export function App({
   const resolvedUi = useMemo(() => resolveUiConfig(ui), [ui]);
   const iconTheme = useMemo(() => createIconTheme(resolveIconTier(resolvedUi.icons)), [resolvedUi]);
 
+  // Lazy panes are created/destroyed after attach, so keep the map live (the
+  // `paneMap` prop is only the startup snapshot). Drives `z`/`E` pane targeting.
+  const livePaneMap = usePaneMap(client, paneMap);
+
   return (
     <IconThemeProvider value={iconTheme}>
       <AppProvider
         client={client}
-        paneMap={paneMap}
+        paneMap={livePaneMap}
         projectName={projectName}
         tasks={tasks}
         servicesMeta={servicesMeta}
