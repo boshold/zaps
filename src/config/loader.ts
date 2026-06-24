@@ -215,8 +215,66 @@ function validateDetachedGroups(project: ProjectConfig): void {
   }
 }
 
+/**
+ * Reject `lazyPane: true` on a docker-group member (Q5 resolved: v1 load error;
+ * Group-granularity lazy is a follow-up). Group members share a pane, so a
+ * Per-member opt-out is ambiguous — does the whole group go lazy, or just the
+ * Member's slice? Punt by erroring; the user can add `lazyPane` to the wrapping
+ * Group once group-granularity lazy ships. Runs after expansion so the
+ * `_combined` meta carries the owning group name.
+ */
+function validateLazyPaneGroups(project: ProjectConfig): void {
+  for (const [name, svc] of Object.entries(project.services)) {
+    if (svc.lazyPane === true && svc._combined) {
+      throw new Error(
+        `Service '${name}': 'lazyPane: true' is not supported on members of combined group '${svc._combined.group}' (group-granularity lazy panes are a follow-up). Remove 'lazyPane' from this member, or apply it at the group level once that is supported.`,
+      );
+    }
+  }
+}
+
 // Explicit task shortcuts colliding with a reserved key (q/j/k) are dropped by getTaskShortcuts.
 // Warn at load time so the user knows their requested key was ignored.
+/**
+ * Resolve every service's effective `lazyPane` boolean (P04-T02).
+ *
+ * Rule, guard-FIRST so the default never leaks `true` to a service that has no
+ * Own pane:
+ *
+ *   effective = (detached || _combined) ? false
+ *                                       : (svc.lazyPane ?? (flags.start === false))
+ *
+ * Autostart semantics mirror `manager.ts:419` exactly — `flags?.start !== false`
+ * Means "autostart", so the lazy default is `flags?.start === false`. We use the
+ * SAME interpretation here.
+ *
+ * P04-T01 catches the load error for an EXPLICIT `lazyPane: true` on a group
+ * Member or detached service, but does NOT stop the *default* rule from
+ * Computing `true` for a non-autostart member/detached service. The guard
+ * Closes that gap: every group member and detached service resolves to `false`
+ * Here unconditionally, so downstream consumers (manager boot-skip in P04-T03,
+ * InsertPane wiring in P04-T04) cannot misfire.
+ */
+function resolveLazyPanes(project: ProjectConfig): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const [name, svc] of Object.entries(project.services)) {
+    // Guard first: no own pane → never lazy (Q5 + Round-6 risk closure).
+    // `_combined` is set by `expandDockerServices` (loader.ts:145) or absent;
+    // It is never explicitly `null`, so `!== undefined` is the right test.
+    if (svc.detached === true || svc._combined !== undefined) {
+      out.set(name, false);
+      continue;
+    }
+    if (svc.lazyPane !== undefined) {
+      out.set(name, svc.lazyPane);
+      continue;
+    }
+    // Default: non-autostart (`flags.start === false`) opts in to lazy.
+    out.set(name, svc.flags?.start === false);
+  }
+  return out;
+}
+
 function warnReservedTaskShortcuts(project: ProjectConfig): void {
   for (const [key, task] of Object.entries(project.tasks ?? {})) {
     if (task.shortcut && RESERVED_TASK_SHORTCUT_KEYS.has(task.shortcut)) {
@@ -233,6 +291,7 @@ function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>
   warnNonAutostartDeps(project);
   warnReservedTaskShortcuts(project);
   validateDetachedGroups(project);
+  validateLazyPaneGroups(project);
 
   // Validate task dependsOn refs
   if (project.tasks) {
@@ -541,6 +600,10 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
 
   validateSemantics(resolved, groups);
 
+  // Derived per-service `lazyPane` resolved ONCE — manager + createLayout read
+  // From this map instead of re-implementing the rule + guard.
+  const lazyPaneByService = resolveLazyPanes(resolved);
+
   return {
     project: resolved,
     configPath,
@@ -548,7 +611,28 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
     bindActions,
     groups,
     unavailableServices,
+    lazyPaneByService,
   };
+}
+
+/**
+ * Boot-skip predicate (P04-T03): the set of service names that should NOT get
+ * A pane at session boot (or reload). A service skips iff it is lazy
+ * (loader-resolved `lazyPaneByService` is `true`) AND it won't autostart
+ * (`flags?.start === false`). Group members + detached services have
+ * `lazyPaneByService=false` enforced by P04-T02's guard, so they are never
+ * Skipped here — no group-pane desync. Used by both `buildSession` (boot)
+ * And `Session.rebuildLayout` (reload) so the boot-pane decision is identical
+ * Across the two paths.
+ */
+export function computeBootSkip(config: ResolvedConfig): Set<string> {
+  const skip = new Set<string>();
+  for (const [name, svc] of Object.entries(config.project.services)) {
+    if (config.lazyPaneByService.get(name) === true && svc.flags?.start === false) {
+      skip.add(name);
+    }
+  }
+  return skip;
 }
 
 /** @internal Exported for testing */

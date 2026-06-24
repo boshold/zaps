@@ -46,6 +46,9 @@ vi.mock("node:fs", () => ({
 
 vi.mock("#src/config/loader.js", () => ({
   loadConfig: vi.fn(),
+  // P04-T03: computeBootSkip is called by buildSession before createLayout.
+  // Empty set → no boot-skips (matches every existing test's expectation).
+  computeBootSkip: vi.fn(() => new Set<string>()),
 }));
 
 const loaderModule = await import("#src/config/loader.js");
@@ -68,6 +71,13 @@ vi.mock("#src/lib/tmux.js", () => ({
   getWindowOption: vi.fn(),
   setWindowOption: vi.fn(),
   resyncPaneSizes: vi.fn(),
+  // LayoutReflow (constructed by Session) imports these too.
+  getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
+  paneIndexOrder: vi.fn().mockResolvedValue([]),
+  selectLayout: vi.fn().mockResolvedValue(undefined),
+  splitPane: vi.fn().mockResolvedValue("%99"),
+  swapPanes: vi.fn().mockResolvedValue(undefined),
+  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
 }));
 
 vi.mock("#src/lib/port.js", () => ({

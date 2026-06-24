@@ -94,6 +94,7 @@ const serviceConfigBaseSchema = z.object({
   run: z.optional(commandSchema),
   stop: z.optional(commandSchema),
   detached: z.optional(z.boolean()),
+  lazyPane: z.optional(z.boolean()),
   docker: z.optional(dockerConfigSchema),
   ready: z.optional(readyConfigSchema),
   dependsOn: z.optional(z.array(z.string())),
@@ -183,6 +184,26 @@ function dockerReadyIssues(name: string, svc: ServiceConfigInput): string[] {
   return [];
 }
 
+/**
+ * `lazyPane: true` services start pane-less and acquire their pane only on
+ * Explicit start (Flow B). `detached: true` services NEVER own a pane (they
+ * Run process-only) — the combination is contradictory, so reject as a load
+ * Error here. Docker-group-membership rejection lives in the loader where
+ * `_combined` expansion is known (P04-T01 NOTE in the task file).
+ */
+function lazyPaneIssues(name: string, svc: ServiceConfigInput): string[] {
+  if (svc.lazyPane !== true) {
+    return [];
+  }
+  const issues: string[] = [];
+  if (svc.detached) {
+    issues.push(
+      `Service '${name}': 'lazyPane: true' cannot be combined with 'detached: true' — a detached service has no pane.`,
+    );
+  }
+  return issues;
+}
+
 /** `optional: true` needs a string command so the binary-availability probe can run. */
 function optionalIssues(name: string, svc: ServiceConfigInput): string[] {
   if (svc.optional !== true) {
@@ -210,6 +231,7 @@ const servicesSchema = z.record(z.string(), serviceConfigBaseSchema).superRefine
   for (const [name, svc] of entries) {
     const issues = [
       ...detachedIssues(name, svc),
+      ...lazyPaneIssues(name, svc),
       ...baseCommandIssues(name, svc),
       ...dockerReadyIssues(name, svc),
       ...optionalIssues(name, svc),

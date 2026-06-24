@@ -113,17 +113,71 @@ export async function killSession(name: string): Promise<void> {
   await run(["kill-session", "-t", name]);
 }
 
+export interface SplitPaneOptions {
+  /** Percentage of the parent pane the new pane should occupy. */
+  percent?: number;
+  /** When true, pass `-d` so the new pane does NOT steal focus from the active pane. */
+  detached?: boolean;
+  /** When true, pass `-b` so the new pane is inserted *before* `target` in spatial order. */
+  before?: boolean;
+}
+
 export async function splitPane(
   target: string,
   direction: "h" | "v",
-  percent?: number,
+  options?: SplitPaneOptions,
 ): Promise<string> {
-  const args = ["split-window", `-${direction}`, "-t", target];
-  if (typeof percent === "number") {
-    args.push("-l", `${percent}%`);
+  const args = ["split-window", `-${direction}`];
+  if (options?.before) {
+    args.push("-b");
+  }
+  if (options?.detached) {
+    args.push("-d");
+  }
+  args.push("-t", target);
+  if (typeof options?.percent === "number") {
+    args.push("-l", `${options.percent}%`);
   }
   args.push("-P", "-F", "#{pane_id}");
   return run(args);
+}
+
+/** Swap two panes' positions (`swap-pane -s <src> -t <dst>`). Processes stay attached. */
+export async function swapPanes(src: string, dst: string): Promise<void> {
+  await run(["swap-pane", "-s", src, "-t", dst]);
+}
+
+/**
+ * Apply an absolute layout string to `target`'s window via `select-layout -t <target> <layout>`.
+ * `layout` is passed as a single argv element so the `{` / `[` characters never hit a shell —
+ * `run` already spawns tmux directly without one.
+ */
+export async function selectLayout(target: string, layout: string): Promise<void> {
+  await run(["select-layout", "-t", target, layout]);
+}
+
+/** Read the live `#{window_layout}` string for `target`'s window (for tests/rollback). */
+export async function windowLayout(target: string): Promise<string> {
+  return run(["display-message", "-p", "-t", target, "#{window_layout}"]);
+}
+
+/**
+ * The current spatial order of panes in `target`'s window, sorted by `pane_index`.
+ * tmux assigns `pane_index` in spatial DFS order, so this is exactly the order
+ * `select-layout` binds panes to layout cells.
+ */
+export async function paneIndexOrder(target: string): Promise<{ index: number; id: string }[]> {
+  const out = await run(["list-panes", "-t", target, "-F", "#{pane_index} #{pane_id}"]);
+  if (!out) {
+    return [];
+  }
+  return out
+    .split("\n")
+    .map((line) => {
+      const [indexStr, id] = line.split(" ");
+      return { index: Number.parseInt(indexStr, 10), id };
+    })
+    .toSorted((a, b) => a.index - b.index);
 }
 
 export async function killPane(target: string): Promise<void> {

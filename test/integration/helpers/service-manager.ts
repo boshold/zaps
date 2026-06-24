@@ -32,6 +32,12 @@ export const tmuxDeps = {
   },
   sessionId: "test-session-id",
   zapsCommand: "zaps",
+  reflowInsert: async () => {
+    /* No-op for tests that don't exercise lazy lifecycle */
+  },
+  reflowRemove: async () => {
+    /* No-op */
+  },
 };
 
 export async function waitForState(

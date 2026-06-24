@@ -300,26 +300,27 @@ service is mid-operation) to apply it.
 
 ### Options
 
-| Option          | Type                                        | Default | Description                                                                      |
-| --------------- | ------------------------------------------- | ------- | -------------------------------------------------------------------------------- |
-| `start`         | `string \| () => string`                    | —       | Command to start the service                                                     |
-| `run`           | `string \| () => string`                    | —       | Alias for `start`                                                                |
-| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                            |
-| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                    |
-| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                               |
-| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                |
-| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                            |
-| `cwd`           | `string`                                    | —       | Working directory                                                                |
-| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                   |
-| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready |
-| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                       |
-| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                    |
-| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                            |
-| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                  |
-| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                              |
-| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                      |
-| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                  |
-| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                             |
+| Option          | Type                                        | Default | Description                                                                                   |
+| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                    | —       | Command to start the service                                                                  |
+| `run`           | `string \| () => string`                    | —       | Alias for `start`                                                                             |
+| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                         |
+| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                 |
+| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                            |
+| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                             |
+| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                         |
+| `cwd`           | `string`                                    | —       | Working directory                                                                             |
+| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                |
+| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready              |
+| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                    |
+| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`) |
+| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                 |
+| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                         |
+| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                               |
+| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                           |
+| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                   |
+| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                               |
+| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                          |
 
 ### Optional Services
 
@@ -389,6 +390,52 @@ services: {
   log buffer (`zaps logs worker`, `-f` to stream).
 - A detached service **must not** appear in `layout`, and cannot be combined with
   `docker` or `raw` (both need a pane) — these are config load errors.
+
+### Lazy Panes
+
+A **lazy** service is one whose tmux pane only exists while the process is
+running: the pane is created at its exact declared layout position when the
+service is started, and destroyed when the service is **explicitly** stopped.
+A crash keeps the pane (so you can inspect the post-mortem output); a restart
+keeps the pane (the process is replaced in place). The first manual start
+brings the pane in; the first manual stop takes it out.
+
+```typescript
+services: {
+  mailpit: {
+    start: "mailpit",
+    flags: { start: false }, // No autostart — opt-in via `s` / TUI / CLI.
+    ready: { port: 8025 },
+  },
+}
+```
+
+**Default rule:** `lazyPane: true` when the service is non-autostart
+(`flags.start: false`); `lazyPane: false` for autostart services. An explicit
+`lazyPane: true | false` always wins.
+
+**Docker groups and detached services are never lazy** — even when
+`flags.start: false` is set, a docker-group member keeps its shared group pane
+and a `detached: true` service stays pane-less. The boot-skip rule applies to
+own-pane services only, so the group/detached behavior is unchanged.
+
+`lazyPane` is the lifecycle counterpart to [`detached`](#detached-services):
+**detached** services are NEVER paned (no terminal at all), while **lazy**
+services are paned **on demand** (a real pane appears at start and disappears
+on explicit stop).
+
+**Illegal combinations** (config load errors):
+
+- `lazyPane: true` with `detached: true` — a detached service has no pane.
+- `lazyPane: true` on a docker-group member (a service expanded from
+  `docker.service: [...]` with `expand`) — group members share one pane, so
+  per-member lazy is ambiguous; apply `lazyPane` at the group level once
+  group-granularity lazy ships.
+
+**Migration note.** Before this version, every non-autostart service got an
+empty reserved tmux pane at boot. Non-autostart services now boot **pane-less**
+by default. To keep the old behavior (an idle empty pane reserved at boot),
+set `lazyPane: false` on the service.
 
 ### Ready Detection
 

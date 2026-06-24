@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ServiceConfig } from "../../src/config/types.js";
+import type { LayoutNode, ServiceConfig } from "../../src/config/types.js";
 
 // Mock tmux functions
 vi.mock("../../src/lib/tmux.js", () => ({
@@ -8,7 +8,18 @@ vi.mock("../../src/lib/tmux.js", () => ({
   killPane: vi.fn(),
 }));
 
-import { createLayout, validateLayout, validateLayoutSizes } from "../../src/lib/tmux-layout.js";
+import {
+  checksum,
+  computeRects,
+  createLayout,
+  filterTree,
+  layoutString,
+  PaneTooSmallError,
+  resolvePermutation,
+  splitAnchor,
+  validateLayout,
+  validateLayoutSizes,
+} from "../../src/lib/tmux-layout.js";
 import { killPane, splitPane } from "../../src/lib/tmux.js";
 
 const mockSplitPane = vi.mocked(splitPane);
@@ -75,7 +86,7 @@ describe("createLayout", () => {
     expect(paneMap.api).toBe("%1");
     expect(mockSplitPane).toHaveBeenCalledTimes(1);
     // Direction "rows" maps to "v"
-    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 50);
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", { percent: 50 });
   });
 
   it("nested layout: correct split sequence and pane mapping", async () => {
@@ -131,9 +142,9 @@ describe("createLayout", () => {
     expect(paneMap.web).toBe("%2");
 
     // Child 1 (api): split from %0, remaining = 60, tmux = round(60/100*100) = 60
-    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", 60);
+    expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", { percent: 60 });
     // Child 2 (web): split from %1, remaining = 30, tmux = round(30/60*100) = 50
-    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", 50);
+    expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", { percent: 50 });
   });
 
   it("services not in layout get split panes", async () => {
@@ -175,7 +186,7 @@ describe("createLayout", () => {
 
     // Implicit child gets remainder: 100 - 60 = 40
     // CurrentPaneSize = 100, tmux = round(40/100*100) = 40
-    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", 40);
+    expect(mockSplitPane).toHaveBeenCalledWith("%0", "v", { percent: 40 });
   });
 
   it("returns focusPane when a leaf has focus: true", async () => {
@@ -309,6 +320,822 @@ describe("createLayout", () => {
     expect(paneMap.dbB).toBe("%2");
     // Exactly two splits: api (%1) + the single shared group pane (%2).
     expect(mockSplitPane).toHaveBeenCalledTimes(2);
+  });
+
+  describe("boot-skip (P04-T03)", () => {
+    it("skipped layout-referenced leaf gets no paneMap entry; survivors still mapped", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker" }],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      expect(paneMap["@tui"]).toBeDefined();
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+    });
+
+    it("skipped leftover service (no layout) gets no paneMap entry", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+
+      const { paneMap } = await createLayout("%0", undefined, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+      // Exactly ONE split — `api` only (`worker` skipped).
+      expect(mockSplitPane).toHaveBeenCalledTimes(1);
+    });
+
+    it("@tui reserve survives skipping slot-0 leaf (Round-5 regression)", async () => {
+      // The CRITICAL regression: layout slot 0 declares the lazy service, NOT
+      // `@tui`. If reserveStartPaneForTui sees the raw layout it would treat
+      // `worker` as the first leaf — but walkLayout (against the filtered
+      // Tree) actually maps `@tui` to slot 0. The two views must agree.
+      const services: Record<string, ServiceConfig> = {
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+        api: { start: "npm start" },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "worker" }, { pane: "@tui" }, { pane: "api" }],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+        reserveTuiPane: true,
+      });
+
+      // @tui maps to the start pane (the SURVIVING first leaf in the filtered
+      // Tree). If reserveStartPaneForTui had been fed the raw layout, it
+      // Would see `worker` first and swap @tui off %0 — mislabeling the Ink
+      // Pane and producing a relaid/killed TUI on the next reload.
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.api).toBeDefined();
+      expect(paneMap.worker).toBeUndefined();
+    });
+
+    it("no-skip path: byte-identical paneMap to the pre-skip behavior", async () => {
+      // Sanity: with `skip` omitted/empty the result is byte-identical to today.
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js" },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker" }],
+      };
+
+      const ref = await createLayout("%0", layout, services);
+      paneCounter = 0;
+      vi.clearAllMocks();
+      mockSplitPane.mockImplementation(async () => `%${(paneCounter += 1)}`);
+      mockKillPane.mockResolvedValue(undefined);
+      const withEmptySkip = await createLayout("%0", layout, services, undefined, {
+        skip: new Set<string>(),
+      });
+
+      expect(withEmptySkip.paneMap).toEqual(ref.paneMap);
+      expect(withEmptySkip.focusPane).toBe(ref.focusPane);
+    });
+
+    it("skipped focus leaf falls back to @tui as focus pane", async () => {
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start" },
+        worker: { start: "node w.js", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker", focus: true }],
+      };
+
+      const { paneMap, focusPane } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["worker"]),
+      });
+
+      // Worker was the declared focus target but it's skipped → fallback @tui.
+      expect(focusPane).toBe(paneMap["@tui"]);
+    });
+
+    it("survivors with explicit sizes < 100 split proportionally (not last-absorbs)", async () => {
+      // Regression for the dev/db 40/60 bug: declared `[dev:40, db:20, rainfrog:20,
+      // Mailtrap:20]` with rainfrog+mailtrap skipped should give surviving siblings
+      // `[40, 20]`. Old walkLayout normalized against a hard-coded 100, so the second
+      // Split asked tmux for `round((100 - 40) / 100 * 100) = 60` and db ended up
+      // Owning 60 % (dev kept 40 %). The fix normalizes against the survivors' own
+      // Weight sum (60), so the second split asks for `round((60 - 40) / 60 * 100) =
+      // 33` and dev gets ~67 %, db ~33 % — proportional to their declared shares.
+      const services: Record<string, ServiceConfig> = {
+        dev: { start: "pnpm dev" },
+        db: { start: "pnpm db" },
+        rainfrog: { start: "rainfrog", flags: { start: false }, lazyPane: true },
+        mailtrap: { start: "mailpit", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [
+          { pane: "@tui", size: "10%" },
+          { pane: "dev", size: "40%" },
+          { pane: "db", size: "20%" },
+          { pane: "rainfrog", size: "20%" },
+          { pane: "mailtrap", size: "20%" },
+        ],
+      };
+
+      const { paneMap } = await createLayout("%0", layout, services, undefined, {
+        skip: new Set(["rainfrog", "mailtrap"]),
+      });
+
+      expect(paneMap["@tui"]).toBe("%0");
+      expect(paneMap.dev).toBeDefined();
+      expect(paneMap.db).toBeDefined();
+      expect(paneMap.rainfrog).toBeUndefined();
+      expect(paneMap.mailtrap).toBeUndefined();
+      // Survivor weights = [10, 40, 20], total = 70.
+      // Split 1: @tui keeps 10/70, rest = 60/70 → tmux percent = round(60/70*100) = 86.
+      // Split 2: dev keeps 40/60, rest = 20/60 → tmux percent = round(20/60*100) = 33.
+      expect(mockSplitPane).toHaveBeenNthCalledWith(1, "%0", "h", { percent: 86 });
+      expect(mockSplitPane).toHaveBeenNthCalledWith(2, "%1", "h", { percent: 33 });
+      expect(mockSplitPane).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws when every layout leaf is skipped (impossible with @tui present)", async () => {
+      // Defensive: if the caller manages to skip @tui somehow we surface a clear error
+      // Rather than producing a paneMap-less window. P04-T02's guard ensures the
+      // Real caller never skips @tui, but this pins the contract.
+      const services: Record<string, ServiceConfig> = {
+        api: { start: "npm start", flags: { start: false }, lazyPane: true },
+      };
+      const layout: LayoutNode = {
+        direction: "columns",
+        children: [{ pane: "api" }],
+      };
+
+      await expect(
+        createLayout("%0", layout, services, undefined, {
+          skip: new Set(["api"]),
+        }),
+      ).rejects.toThrow(/every layout leaf is skipped/);
+    });
+  });
+});
+
+describe("filterTree", () => {
+  it("returns undefined for an undefined tree", () => {
+    expect(filterTree(undefined, new Set(["@tui"]))).toBeUndefined();
+  });
+
+  it("keeps a visible leaf (cloned) and drops an invisible one", () => {
+    const leaf: LayoutNode = { pane: "@tui", size: "50%", focus: true };
+
+    const kept = filterTree(leaf, new Set(["@tui"]));
+    expect(kept).toEqual({ pane: "@tui", size: "50%", focus: true });
+    expect(kept).not.toBe(leaf); // New object, no mutation
+
+    expect(filterTree(leaf, new Set(["api"]))).toBeUndefined();
+  });
+
+  it("all-visible: tree is structurally unchanged (and not the same reference)", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui", size: "30%" }, { pane: "api", size: "40%" }, { pane: "web" }],
+    };
+
+    const result = filterTree(layout, new Set(["@tui", "api", "web"]));
+    expect(result).toEqual(layout);
+    expect(result).not.toBe(layout);
+  });
+
+  it("does not mutate the input tree", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "70%" },
+      ],
+    };
+    const snapshot = structuredClone(layout);
+
+    filterTree(layout, new Set(["@tui"]));
+
+    expect(layout).toEqual(snapshot);
+  });
+
+  it("@tui-only: a flat split collapses to the single surviving leaf", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    // The collapsed leaf takes over the whole split slot, so it has no size.
+    expect(filterTree(layout, new Set(["@tui"]))).toEqual({ pane: "@tui" });
+  });
+
+  it("flat columns, middle child removed: survivors keep their declared sizes", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    expect(filterTree(layout, new Set(["@tui", "web"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "web", size: "30%" },
+      ],
+    });
+  });
+
+  it("removed explicit-size sibling: an implicit survivor reclaims the freed space", () => {
+    // @tui 70%, api 20%, web implicit (gets remainder 10%). Drop @tui (70%):
+    // Api keeps its explicit 20%, web stays implicit and so absorbs the freed
+    // Pool — the result is valid computeRects input (explicit 20% < 100, one
+    // Implicit sibling), which then resolves web to the remaining 80%.
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui", size: "70%" }, { pane: "api", size: "20%" }, { pane: "web" }],
+    };
+
+    const result = filterTree(layout, new Set(["api", "web"]));
+    expect(result).toEqual({
+      direction: "columns",
+      children: [{ pane: "api", size: "20%" }, { pane: "web" }],
+    });
+    // The survivors remain valid input to computeRects (no overflow).
+    expect(() => validateLayoutSizes(result!)).not.toThrow();
+  });
+
+  it("nested split fully removed: parent collapses past the empty branch", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        {
+          direction: "rows",
+          size: "70%",
+          children: [
+            { pane: "api", size: "50%" },
+            { pane: "web", size: "50%" },
+          ],
+        },
+      ],
+    };
+
+    // Api+web invisible → inner split drops → outer collapses to @tui leaf.
+    expect(filterTree(layout, new Set(["@tui"]))).toEqual({ pane: "@tui" });
+  });
+
+  it("collapsing a single-child split: survivor inherits the split's slot size", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        {
+          direction: "rows",
+          size: "70%",
+          children: [
+            { pane: "api", size: "50%" },
+            { pane: "web", size: "50%" },
+          ],
+        },
+      ],
+    };
+
+    // Only web invisible: inner split keeps api (single child) and api takes
+    // Over the inner split's 70% slot in the outer columns.
+    expect(filterTree(layout, new Set(["@tui", "api"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "70%" },
+      ],
+    });
+  });
+
+  it("deeply nested collapse: survivor inherits the outermost collapsing slot size", () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "40%" },
+        {
+          direction: "rows",
+          size: "60%",
+          children: [
+            {
+              direction: "columns",
+              children: [
+                { pane: "api", size: "50%" },
+                { pane: "worker", size: "50%" },
+              ],
+            },
+            { pane: "web" },
+          ],
+        },
+      ],
+    };
+
+    // Keep @tui + api only: worker and web drop, both nested splits collapse,
+    // Api bubbles up to the outer 60% slot.
+    expect(filterTree(layout, new Set(["@tui", "api"]))).toEqual({
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "40%" },
+        { pane: "api", size: "60%" },
+      ],
+    });
+  });
+
+  it("everything invisible: returns undefined", () => {
+    const layout: LayoutNode = {
+      direction: "rows",
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%" },
+      ],
+    };
+
+    expect(filterTree(layout, new Set())).toBeUndefined();
+  });
+});
+
+describe("computeRects", () => {
+  function sum(values: number[]): number {
+    return values.reduce((acc, value) => acc + value, 0);
+  }
+
+  it("2-pane columns 80x24: first child takes the rounded-up half", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "50%" },
+        { pane: "api", size: "50%" },
+      ],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    // Captured from live tmux: 80x24 column split → 40 | divider@40 | 39.
+    expect(rects.get("@tui")).toEqual({ x: 0, y: 0, width: 40, height: 24 });
+    expect(rects.get("api")).toEqual({ x: 41, y: 0, width: 39, height: 24 });
+    // Divider accounting: 40 + 39 + 1 divider === 80.
+    expect(40 + 39 + 1).toBe(80);
+  });
+
+  it("2-pane rows 80x24: first child takes the rounded-up half of the height", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    // Content = 24 - 1 = 23; round(23 * 0.5) = 12, last = 11.
+    expect(rects.get("@tui")).toEqual({ x: 0, y: 0, width: 80, height: 12 });
+    expect(rects.get("api")).toEqual({ x: 0, y: 13, width: 80, height: 11 });
+  });
+
+  it("3-pane columns: extents + dividers fill the parent exactly", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    const widths = ["@tui", "api", "web"].map((name) => rects.get(name)?.width ?? 0);
+    // Content = 80 - 2 = 78, three equal implicit shares → 26 each.
+    expect(widths).toEqual([26, 26, 26]);
+    expect(sum(widths) + 2).toBe(80);
+    // Each child offset = previous offset + extent + 1 divider.
+    expect(rects.get("@tui")?.x).toBe(0);
+    expect(rects.get("api")?.x).toBe(27);
+    expect(rects.get("web")?.x).toBe(54);
+    // Cross-axis matches the parent.
+    for (const name of ["@tui", "api", "web"]) {
+      expect(rects.get(name)?.height).toBe(24);
+    }
+  });
+
+  it("3-level nested layout reproduces the captured tmux geometry (100x30)", () => {
+    // Captured string: 100x30,0,0{50x30,0,0,A[49x15,...B{24x14,...C 24x14,...D}]}
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "A" },
+        {
+          direction: "rows",
+          children: [
+            { pane: "B" },
+            {
+              direction: "columns",
+              children: [{ pane: "C" }, { pane: "D" }],
+            },
+          ],
+        },
+      ],
+    };
+
+    const rects = computeRects(tree, 100, 30);
+
+    expect(rects.get("A")).toEqual({ x: 0, y: 0, width: 50, height: 30 });
+    expect(rects.get("B")).toEqual({ x: 51, y: 0, width: 49, height: 15 });
+    expect(rects.get("C")).toEqual({ x: 51, y: 16, width: 24, height: 14 });
+    expect(rects.get("D")).toEqual({ x: 76, y: 16, width: 24, height: 14 });
+  });
+
+  it("rescales surviving proportions to fill (no gap after a filterTree drop)", () => {
+    // FilterTree leaves survivors with their declared percents (here 30% + 30%,
+    // Summing to 60 < 100). computeRects MUST normalize them to fill the extent.
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "api", size: "30%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    const rects = computeRects(tree, 80, 24);
+
+    const api = rects.get("api");
+    const web = rects.get("web");
+    expect(api).toEqual({ x: 0, y: 0, width: 40, height: 24 });
+    expect(web).toEqual({ x: 41, y: 0, width: 39, height: 24 });
+    // Exactly fills: no leftover gap on the right edge.
+    expect((web?.x ?? 0) + (web?.width ?? 0)).toBe(80);
+  });
+
+  it("end-to-end with filterTree: dropping a middle child reclaims its space", () => {
+    const declared: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui", size: "30%" },
+        { pane: "api", size: "40%" },
+        { pane: "web", size: "30%" },
+      ],
+    };
+
+    const filtered = filterTree(declared, new Set(["@tui", "web"]));
+    const rects = computeRects(filtered!, 80, 24);
+
+    // @tui 30% + web 30% rescaled to fill 80 cols with a 1-cell divider.
+    const tui = rects.get("@tui");
+    const web = rects.get("web");
+    expect(tui?.x).toBe(0);
+    expect((web?.x ?? 0) + (web?.width ?? 0)).toBe(80);
+    expect((tui?.width ?? 0) + (web?.width ?? 0) + 1).toBe(80);
+  });
+
+  it("single-leaf tree fills the whole window", () => {
+    expect(computeRects({ pane: "@tui" }, 80, 24)).toEqual(
+      new Map([["@tui", { x: 0, y: 0, width: 80, height: 24 }]]),
+    );
+  });
+
+  it("throws PaneTooSmallError naming the pane when an extent < 1", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    // Width 2, 3 children → content = 0, every extent collapses below 1.
+    let thrown: unknown;
+    try {
+      computeRects(tree, 2, 24);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PaneTooSmallError);
+    if (!(thrown instanceof PaneTooSmallError)) {
+      throw new Error("expected a PaneTooSmallError");
+    }
+    expect(thrown.pane).toBe("@tui");
+    expect(thrown.code).toBe("PANE_TOO_SMALL");
+  });
+
+  it("throws PaneTooSmallError on a zero-height window for a rows split", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(() => computeRects(tree, 80, 0)).toThrow(PaneTooSmallError);
+  });
+});
+
+describe("checksum", () => {
+  // Golden strings captured live from tmux next-3.7 via `#{window_layout}`:
+  // `tmux -L test new-session -d -x 100 -y 30; tmux -L test split-window ...;
+  //  Tmux -L test display -p '#{window_layout}'`.
+  const GOLDENS: { name: string; full: string }[] = [
+    { name: "single", full: "a87d,100x30,0,0,0" },
+    { name: "columns", full: "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}" },
+    { name: "rows", full: "4892,100x30,0,0[100x15,0,0,3,100x14,0,16,4]" },
+    {
+      name: "nested",
+      full: "a80c,100x30,0,0[100x15,0,0,5,100x14,0,16{50x14,0,16,6,49x14,51,16,7}]",
+    },
+  ];
+
+  for (const { name, full } of GOLDENS) {
+    it(`matches tmux's checksum prefix for the ${name} layout`, () => {
+      const comma = full.indexOf(",");
+      const prefix = full.slice(0, comma);
+      const body = full.slice(comma + 1);
+      expect(checksum(body)).toBe(prefix);
+    });
+  }
+
+  it("returns a lowercase, zero-padded 4-hex-digit string", () => {
+    const result = checksum("100x30,0,0,0");
+    expect(result).toMatch(/^[0-9a-f]{4}$/);
+  });
+});
+
+describe("layoutString", () => {
+  it("single-pane tree → bare leaf cell, no braces (byte-for-byte vs tmux)", () => {
+    const tree: LayoutNode = { pane: "@tui" };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([["@tui", 0]]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe("a87d,100x30,0,0,0");
+  });
+
+  it("flat columns round-trips a captured tmux string", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}",
+    );
+  });
+
+  it("flat rows round-trips a captured tmux string", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [{ pane: "top" }, { pane: "bottom" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["top", 3],
+      ["bottom", 4],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "4892,100x30,0,0[100x15,0,0,3,100x14,0,16,4]",
+    );
+  });
+
+  it("3-level nested round-trips a captured tmux string byte-for-byte", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [
+        { pane: "A" },
+        {
+          direction: "columns",
+          children: [{ pane: "B" }, { pane: "C" }],
+        },
+      ],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["A", 5],
+      ["B", 6],
+      ["C", 7],
+    ]);
+
+    expect(layoutString(tree, rects, paneNumbers)).toBe(
+      "a80c,100x30,0,0[100x15,0,0,5,100x14,0,16{50x14,0,16,6,49x14,51,16,7}]",
+    );
+  });
+
+  it("checksum prefix equals checksum(body) of the emitted string", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    const result = layoutString(tree, rects, paneNumbers);
+    const body = result.slice(result.indexOf(",") + 1);
+    expect(result.startsWith(`${checksum(body)},`)).toBe(true);
+  });
+
+  it("throws when a leaf has no pane number", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects(tree, 100, 30);
+    const paneNumbers = new Map([["left", 1]]);
+
+    expect(() => layoutString(tree, rects, paneNumbers)).toThrow(/no pane number for pane 'right'/);
+  });
+
+  it("throws when a leaf has no computed rect", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "left" }, { pane: "right" }],
+    };
+    const rects = computeRects({ pane: "left" }, 100, 30);
+    const paneNumbers = new Map([
+      ["left", 1],
+      ["right", 2],
+    ]);
+
+    expect(() => layoutString(tree, rects, paneNumbers)).toThrow(
+      /no rect computed for pane 'right'/,
+    );
+  });
+});
+
+describe("resolvePermutation", () => {
+  /** Apply the emitted swap pairs to `current` (mirrors tmux `swap-pane`). */
+  function applySwaps(current: string[], swaps: [string, string][]): string[] {
+    const work = [...current];
+    for (const [from, to] of swaps) {
+      const i = work.indexOf(from);
+      const j = work.indexOf(to);
+      [work[i], work[j]] = [work[j], work[i]];
+    }
+    return work;
+  }
+
+  const cases: { name: string; current: string[]; target: string[] }[] = [
+    { name: "already sorted", current: ["A", "B", "C"], target: ["A", "B", "C"] },
+    { name: "single swap", current: ["A", "B"], target: ["B", "A"] },
+    { name: "reverse order", current: ["A", "B", "C", "D"], target: ["D", "C", "B", "A"] },
+    { name: "[A,B,C] → [C,A,B]", current: ["A", "B", "C"], target: ["C", "A", "B"] },
+    {
+      name: "5-element shuffle",
+      current: ["%0", "%1", "%2", "%3", "%4"],
+      target: ["%3", "%0", "%4", "%2", "%1"],
+    },
+    { name: "empty", current: [], target: [] },
+  ];
+
+  for (const { name, current, target } of cases) {
+    it(`produces swaps that transform ${name} into the target`, () => {
+      const swaps = resolvePermutation(current, target);
+      expect(applySwaps(current, swaps)).toEqual(target);
+    });
+  }
+
+  it("returns [] when current already equals target", () => {
+    expect(resolvePermutation(["A", "B", "C"], ["A", "B", "C"])).toEqual([]);
+  });
+
+  it("resolves the [A,B,C] → [C,A,B] 3-cycle in the minimal 2 swaps", () => {
+    // A pure 3-cycle needs k−1 = 2 transpositions; selection sort is optimal here.
+    // (The architecture note's "1 swap" is the insert+swap scenario, not a relabel.)
+    const swaps = resolvePermutation(["A", "B", "C"], ["C", "A", "B"]);
+    expect(swaps).toEqual([
+      ["A", "C"],
+      ["B", "A"],
+    ]);
+    expect(applySwaps(["A", "B", "C"], swaps)).toEqual(["C", "A", "B"]);
+  });
+
+  it("does not mutate the input arrays", () => {
+    const current = ["A", "B", "C"];
+    const target = ["C", "B", "A"];
+    resolvePermutation(current, target);
+    expect(current).toEqual(["A", "B", "C"]);
+    expect(target).toEqual(["C", "B", "A"]);
+  });
+
+  it("throws when the arrays are not permutations of the same set", () => {
+    expect(() => resolvePermutation(["A", "B"], ["A", "C"])).toThrow(
+      /not permutations of the same set/,
+    );
+  });
+
+  it("throws when the arrays differ in length", () => {
+    expect(() => resolvePermutation(["A", "B", "C"], ["A", "B"])).toThrow(
+      /not permutations of the same set/,
+    );
+  });
+});
+
+describe("splitAnchor", () => {
+  it("flat columns, insert at middle: splits after the previous leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "after", predecessor: "@tui" });
+  });
+
+  it("flat columns, insert at end: splits after the last existing leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "web")).toEqual({ mode: "after", predecessor: "api" });
+  });
+
+  it("flat columns, insert at front: splits before the next leaf", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "api" }, { pane: "@tui" }, { pane: "web" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "@tui" });
+  });
+
+  it("nested layout: uses DFS leaf order across sub-splits (predecessor)", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [
+        { pane: "@tui" },
+        {
+          direction: "rows",
+          children: [{ pane: "api" }, { pane: "worker" }, { pane: "web" }],
+        },
+      ],
+    };
+
+    // DFS leaf order: @tui, api, worker, web. Inserting "worker" → after "api".
+    expect(splitAnchor(tree, "worker")).toEqual({ mode: "after", predecessor: "api" });
+  });
+
+  it("nested layout: first leaf inside a sub-split anchors before the next DFS leaf", () => {
+    const tree: LayoutNode = {
+      direction: "rows",
+      children: [
+        {
+          direction: "columns",
+          children: [{ pane: "api" }, { pane: "web" }],
+        },
+        { pane: "@tui" },
+      ],
+    };
+
+    // DFS leaf order: api, web, @tui. Inserting "api" (slot 0) → before "web".
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "web" });
+  });
+
+  it("single other pane: front insert anchors before that pane", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "api" }, { pane: "@tui" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "before", successor: "@tui" });
+  });
+
+  it("single other pane: end insert anchors after that pane", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(splitAnchor(tree, "api")).toEqual({ mode: "after", predecessor: "@tui" });
+  });
+
+  it("throws when the pane is not a leaf in the tree", () => {
+    const tree: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+
+    expect(() => splitAnchor(tree, "missing")).toThrow(/not a leaf in the target tree/);
+  });
+
+  it("throws when the pane is the only leaf (no neighbor)", () => {
+    expect(() => splitAnchor({ pane: "@tui" }, "@tui")).toThrow(/only leaf/);
   });
 });
 

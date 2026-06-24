@@ -571,6 +571,37 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
+    // Lazy-pane services start pane-less and acquire their pane on first
+    // Start (Flow B). MUST insert BEFORE `withServiceLock`:
+    //   1. `startServiceInternal` (manager.ts:577) throws `Unknown service`
+    //      If `paneMap[name]` is missing for a non-detached service, so the
+    //      Insert is REQUIRED before the lock-guarded body runs.
+    //   2. The reflow takes the SESSION op-lock; calling it INSIDE the per-
+    //      Service lock would invert the global lock order (`reload` already
+    //      Holds op-lock then takes service-lock via stopAll/startAll) and
+    //      Deadlock a concurrent manual start + reload (Round-4 trap).
+    // Already-paned (e.g. autostart after first start, or explicit
+    // `lazyPane: true` on an autostart service) and detached services bypass
+    // The reflow entirely — non-lazy behavior is byte-identical to before.
+    // CRITICAL: skip reflowInsert during shutdown (reload/destroy). Same deadlock
+    // Class as the reflowRemove guard in `stopService` — a `onStop` hook is
+    // Allowed to call `lib.startService`/`lib.restartService` (config/builder.ts:49-53),
+    // And `onStop` fires during reload's stopAll loop. Without this guard:
+    //   Reload holds withOpLock → manager.stopAll → stopService(svc1) →
+    //   StopServiceInternal → onStop hook → lib.startService(svc2) →
+    //   Deps.reflowInsert(svc2) → Session.reflowInsert → withOpLock (not
+    //   Re-entrant) → chains AFTER the outer reload fn → permanent hang.
+    // Safe to skip during shutdown: services aren't meaningfully starting
+    // During stopAll, and `_reload` rebuilds the layout fresh via `createLayout
+    // + computeBootSkip` afterwards — any service that ends up running post-
+    // Reload gets its pane via the rebuild, not via a hook-driven reflowInsert
+    // Mid-stopAll. `startServiceInternal` will throw `Unknown service` on the
+    // Missing paneMap entry (existing contract); the hook's promise rejects,
+    // Which is preferable to deadlocking the whole reload.
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+      await this.deps.reflowInsert(name);
+    }
     return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
   }
 
@@ -916,7 +947,29 @@ export class ServiceManager extends EventEmitter {
    * Stop a single service (serialized per service).
    */
   public async stopService(name: string): Promise<ServiceActionResult> {
-    return this.withServiceLock(name, async () => this.stopServiceInternal(name));
+    // Stop the process inside `withServiceLock` (state machine + side effects),
+    // Then drop the pane OUTSIDE the lock — same op-lock-outermost discipline
+    // As `startService`. This is the ONLY call site for `reflowRemove`; crash
+    // (`handleCrash`) and restart (`restartServiceInternal`) intentionally
+    // Skip it so the pane survives across a crash-restart loop.
+    const result = await this.withServiceLock(name, async () => this.stopServiceInternal(name));
+    // CRITICAL: skip reflowRemove during shutdown (reload/destroy). The session
+    // Op-lock holds `_reload`/`destroy`, which calls `manager.stopAll()`, which
+    // Sets `this.shuttingDown = true` BEFORE iterating `stopAllServices`
+    // (manager.ts:496). Without this guard, every stopService inside that loop
+    // Would await `deps.reflowRemove` → `Session.reflowRemove` → `withOpLock`,
+    // Which is a promise-chain mutex and not re-entrant — the inner reflow
+    // Would chain AFTER the outer reload's `fn`, which is itself awaiting
+    // `stopAll` → permanent hang. Skipping is correct in addition to safe:
+    // `_reload` step 4 (session.ts:434-440) already kill-panes every non-`@tui`
+    // Pane before rebuilding the layout, so a reflowRemove here would be both
+    // Redundant and deadlock-prone. The manual stop path (no reload/destroy
+    // In flight) still runs reflowRemove as intended.
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (!this.shuttingDown && isLazy && this.paneMap[name] !== undefined) {
+      await this.deps.reflowRemove(name);
+    }
+    return result;
   }
 
   private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
@@ -1068,6 +1121,22 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    // Same lazy-pane invariant as `startService`: if the service is pane-less +
+    // Lazy, ensure the pane exists BEFORE entering the lock-guarded body —
+    // `restartServiceInternal` eventually calls `startServiceInternal`, which
+    // Throws `Unknown service` on a missing pane. The OUTSIDE-the-lock
+    // Placement keeps op-lock-outermost: the Round-4 trap stays closed for
+    // Restart just as it is for start. A restart of an ALREADY-paned service
+    // (the common "restart the running worker") sees `paneMap[name]` already
+    // Set and skips this — preserving the existing pane id (P04-T04 Flow E).
+    // CRITICAL: same shuttingDown guard as `startService` — `onStop` hooks can
+    // Reach `lib.restartService` during reload's stopAll loop; without the
+    // Guard we'd re-enter withOpLock through reflowInsert and deadlock. See
+    // `startService` for the full chain.
+    const isLazy = this.config.lazyPaneByService.get(name) === true;
+    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+      await this.deps.reflowInsert(name);
+    }
     return this.withServiceLock(name, async () => this.restartServiceInternal(name));
   }
 
@@ -1514,6 +1583,16 @@ export interface ServiceManagerDeps {
   storeExecInfo: (service: string, info: ExecInfo) => void;
   sessionId: string;
   zapsCommand: string;
+  /**
+   * Lazy-pane reflow hooks (P04-T04). Both run under the SESSION op-lock so they
+   * Serialize against each other AND against `_reload` (no half-applied geometry
+   * Visible across a config edit). `startService` calls `reflowInsert` BEFORE
+   * Taking the per-service lock; `stopService` calls `reflowRemove` AFTER
+   * Releasing it. The op-lock-outermost discipline is what prevents the
+   * Round-4 deadlock (manual start + reload).
+   */
+  reflowInsert: (name: string) => Promise<void>;
+  reflowRemove: (name: string) => Promise<void>;
 }
 
 export { diffOutput };

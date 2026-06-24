@@ -106,6 +106,14 @@ zaps --help # see all functions
 - **Detached services** (`detached: true`) and detached sessions (`zaps up -d`) run
   pane-less — there is no terminal to scroll. Read their output with
   `zaps logs <svc>` (`-f` to stream). Lifecycle (`start`/`stop`/`restart`) works normally.
+- **Lazy panes (non-autostart services).** A service with `flags.start: false`
+  (or explicit `lazyPane: true`) now boots **pane-less** — its tmux pane only
+  appears when you `zaps start <svc>` (or restart from stopped), at its
+  declared layout position; a `zaps stop <svc>` drops the pane and re-expands
+  survivors. Crash + restart keep the pane. `zaps logs <svc>` returns `[]`
+  before the first start, streams live while the service is running, and
+  returns the retained history after stop. To keep the legacy
+  idle-empty-reserved-pane behavior, set `lazyPane: false` on the service.
 - **Config reload** is validate-then-swap: an invalid edit is reported and the running
   session keeps the old config (it is never torn down). In the TUI, a changed config
   shows a `config changed — press c to reload` header hint; press `c` (when idle) to apply.

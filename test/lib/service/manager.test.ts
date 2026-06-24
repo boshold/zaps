@@ -36,6 +36,8 @@ function createMockDeps(): ServiceManagerDeps {
     storeExecInfo: vi.fn(),
     sessionId: "test-session-id",
     zapsCommand: "zaps",
+    reflowInsert: vi.fn<ServiceManagerDeps["reflowInsert"]>().mockResolvedValue(),
+    reflowRemove: vi.fn<ServiceManagerDeps["reflowRemove"]>().mockResolvedValue(),
   };
 }
 
@@ -55,6 +57,7 @@ function makeConfig(
     projectDir: "/test",
     groups: new Map(),
     unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
   };
 }
 
@@ -3229,5 +3232,349 @@ describe("detached services (E4)", () => {
 
     expect(mgr.getStatus("worker").state).toBe("ready");
     expect(children.length).toBe(1);
+  });
+});
+
+// =============================================================================
+// Lazy-pane lifecycle wiring (P04-T04)
+// =============================================================================
+
+describe("lazy-pane lifecycle", () => {
+  function lazyConfig(services: Record<string, ServiceConfig>, lazy: string[]): ResolvedConfig {
+    const config = makeConfig(services);
+    for (const name of lazy) {
+      config.lazyPaneByService.set(name, true);
+    }
+    return config;
+  }
+
+  it("startService inserts the pane BEFORE the per-service lock body runs", async () => {
+    // The body of `startServiceInternal` would throw `Unknown service` if it
+    // Ran first (no `paneMap[name]`). The wrapper inserts the pane first,
+    // Populating paneMap; then the locked body succeeds.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" }; // No worker pane.
+    const deps = createMockDeps();
+    deps.reflowInsert = vi.fn(async (name: string) => {
+      paneMap[name] = "%worker";
+    });
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const startPromise = mgr.startService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(deps.reflowInsert).toHaveBeenCalledWith("worker");
+    expect(deps.reflowInsert).toHaveBeenCalledTimes(1);
+    // The service actually started — proves insert ran first (otherwise
+    // StartServiceInternal would have thrown `Unknown service`).
+    expect(mgr.getStatus("worker").state).toBe("ready");
+    expect(paneMap.worker).toBe("%worker");
+  });
+
+  it("startService is NOT a reflowInsert when service already has a pane", async () => {
+    // Lazy + autostart-paned (boot-skip would have left a pane in place).
+    const config = lazyConfig({ api: { start: "npm dev" } }, ["api"]);
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const startPromise = mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+    expect(mgr.getStatus("api").state).toBe("ready");
+  });
+
+  it("startService is NOT a reflowInsert for non-lazy services (regression)", async () => {
+    const config = makeConfig({ api: { start: "npm dev" } }); // No lazyPane entry.
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const startPromise = mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    await startPromise;
+
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+  });
+
+  it("startService PROPAGATES reflowInsert failure WITHOUT mutating service state", async () => {
+    // Lock-ordering invariant: the reflow runs OUTSIDE `withServiceLock`. If
+    // It throws, the lock-guarded body never ran — no state transition, no
+    // `starting` event, no pane mutation.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const deps = createMockDeps();
+    deps.reflowInsert = vi.fn().mockRejectedValue(new Error("forced split failure"));
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    const stateEvents: string[] = [];
+    mgr.on("stateChange", (_, status: ServiceStatus) => {
+      stateEvents.push(status.state);
+    });
+
+    await expect(mgr.startService("worker")).rejects.toThrow(/forced split failure/);
+    expect(paneMap.worker).toBeUndefined();
+    // The lock-guarded body would have transitioned to `starting` on entry.
+    // It didn't run, so no transitions fired.
+    expect(stateEvents).toEqual([]);
+    expect(mgr.getStatus("worker").state).toBe("stopped");
+  });
+
+  it("stopService calls reflowRemove AFTER the per-service lock releases (lazy + has pane)", async () => {
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap = makePaneMap(["worker"]);
+    const deps = createMockDeps();
+    // Resolve immediately; track call order against state-change events.
+    const events: string[] = [];
+    deps.reflowRemove = vi.fn(async (name: string) => {
+      events.push(`reflowRemove(${name})`);
+      // Simulate the session-side delete that LayoutReflow.removePane does.
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- mirroring the real removePane behavior
+      delete paneMap[name];
+    });
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    mgr.on("stateChange", (_, status: ServiceStatus) => {
+      events.push(`state:${status.state}`);
+    });
+
+    await mgr.startService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    events.length = 0;
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]); // Process exits.
+    await mgr.stopService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // The lock-guarded body fires the stop transitions; the reflowRemove
+    // Fires AFTER (the last entry in `events` is the reflow).
+    expect(events).toContain("state:stopping");
+    expect(events).toContain("state:stopped");
+    expect(events.at(-1)).toBe("reflowRemove(worker)");
+    expect(paneMap.worker).toBeUndefined();
+  });
+
+  it("stopService skips reflowRemove for a NON-lazy service (regression)", async () => {
+    const config = makeConfig({ api: { start: "npm dev" } });
+    const paneMap = makePaneMap(["api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    await mgr.stopService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+    // Non-lazy: pane survives stop.
+    expect(paneMap.api).toBe("%api");
+  });
+
+  it("stopService skips reflowRemove for a lazy service with no pane", async () => {
+    // Never-started lazy service: stopService is a no-op AND must not call
+    // ReflowRemove (no pane to remove).
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" }; // No worker pane.
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // StopService throws `Unknown service` when pane-less and non-detached —
+    // That's the existing contract; what matters is reflowRemove isn't called.
+    await expect(mgr.stopService("worker")).rejects.toThrow(/Unknown service/);
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+  });
+
+  it("crash does NOT call reflowRemove (pane kept across the restart loop)", async () => {
+    const config = lazyConfig(
+      {
+        worker: {
+          start: "node w.js",
+          restart: { maxRetries: 1, backoff: 1 },
+        },
+      },
+      ["worker"],
+    );
+    const paneMap = makePaneMap(["worker"]);
+    const deps = createMockDeps();
+    // Start: process spawns; then immediately exits → handleCrash triggers.
+    deps.getDescendantPids = vi.fn().mockResolvedValueOnce([1000, 2000]).mockResolvedValue([1000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await mgr.startService("worker");
+    // Let monitor tick + crash handler run.
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+    // Pane survives the crash for the restart loop.
+    expect(paneMap.worker).toBe("%worker");
+  });
+
+  it("stopAll skips reflowRemove for every lazy service (shuttingDown guard, deadlock fix)", async () => {
+    // The deadlock that would fire without the guard:
+    //   `Session.reload`/`destroy` hold `withOpLock` → `manager.stopAll()` →
+    //   `stopAllServices` → per-service `stopService` → `reflowRemove` →
+    //   `Session.reflowRemove` → `withOpLock` (NOT re-entrant) → chains AFTER
+    //   The outer reload `fn` that is awaiting `stopAll` → permanent hang.
+    // The guard short-circuits `reflowRemove` while `this.shuttingDown` is
+    // True — which `runStopAll` sets BEFORE iterating, so EVERY stopService
+    // Called from within stopAll sees it. _reload step 4 (session.ts:434-440)
+    // Kill-panes anyway, so this is also redundant in the reload path.
+    const config = lazyConfig(
+      {
+        worker: { start: "node w.js" },
+        api: { start: "npm dev" },
+      },
+      ["worker"], // Only `worker` is lazy.
+    );
+    const paneMap = makePaneMap(["worker", "api"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // Get both services to `ready` first.
+    await mgr.startService("worker");
+    await mgr.startService("api");
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(deps.reflowInsert).mockClear();
+    vi.mocked(deps.reflowRemove).mockClear();
+
+    // StopAll: the shuttingDown guard MUST suppress reflowRemove on `worker`.
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]); // Process exits.
+    await mgr.stopAll();
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+    // Sanity: non-shutdown stopService still fires reflowRemove for lazy.
+    // (We can't easily verify post-stopAll because shuttingDown reset to false
+    // After stopAllServices returned — fire a manual stopService now: the
+    // Service is already stopped so it'll be a noop, and reflowRemove won't
+    // Fire because paneMap mutations from stopAll left the world unchanged
+    // For non-lazy services either. The point of THIS test is the negative
+    // Assertion above.)
+  });
+
+  it("startService skips reflowInsert when shuttingDown (re-entrance guard, deadlock fix)", async () => {
+    // Symmetric to the stopService shuttingDown guard. The deadlock the guard
+    // Closes:
+    //   `reload` holds withOpLock → `manager.stopAll()` → `stopService(svc1)`
+    //   → `onStop` hook → `lib.startService(svc2)` → wrapper-level
+    //   `deps.reflowInsert(svc2)` → `Session.reflowInsert` → withOpLock
+    //   (not re-entrant) → chains AFTER outer reload fn → permanent hang.
+    // `lib.startService`/`restartService` are exposed to hooks
+    // (config/builder.ts:49-53), so this is a real reachable footgun. The
+    // Guard short-circuits reflowInsert when `shuttingDown` is true —
+    // RunStopAll sets it BEFORE iterating, so every hook-driven start during
+    // Reload sees it.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    // Simulate the shutdown phase (what runStopAll sets at line 496).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
+    (mgr as any).shuttingDown = true;
+
+    // StartService on a lazy pane-less service during shutdown: reflowInsert
+    // Is skipped. `startServiceInternal` will throw `Unknown service` since
+    // PaneMap[worker] is absent — the rejection is the existing contract,
+    // What matters is reflowInsert isn't called (no withOpLock re-entrance).
+    await expect(mgr.startService("worker")).rejects.toThrow(/Unknown service/);
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+  });
+
+  it("restartService skips reflowInsert when shuttingDown (re-entrance guard)", async () => {
+    // Companion to the startService guard test. lib.restartService is also
+    // Hook-reachable (config/builder.ts:49-53), so the wrapper carries the
+    // Same shuttingDown short-circuit.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const deps = createMockDeps();
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
+    (mgr as any).shuttingDown = true;
+
+    await expect(mgr.restartService("worker")).rejects.toBeDefined();
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+  });
+
+  it("manual stopService (no shutdown) still calls reflowRemove (positive control)", async () => {
+    // Companion to the shuttingDown guard test: confirms the guard ONLY fires
+    // During shutdown, not on the manual path.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap = makePaneMap(["worker"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await mgr.startService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(deps.reflowRemove).mockClear();
+
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    await mgr.stopService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(deps.reflowRemove).toHaveBeenCalledWith("worker");
+  });
+
+  it("restartService on a STOPPED pane-less lazy service CALLS reflowInsert (re-creates pane)", async () => {
+    // Symmetric to startService for the lazy pane-less case: a stopped lazy
+    // Service has no paneMap entry, so restartServiceInternal's internal
+    // `startServiceInternal` would throw `Unknown service`. The wrapper-level
+    // ReflowInsert (mirroring `startService`) populates paneMap before the
+    // Locked body runs. Op-lock-outermost is preserved (call OUTSIDE
+    // WithServiceLock). The running-restart case (next test) does NOT fire
+    // ReflowInsert because `paneMap[name]` already exists.
+    const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
+    const paneMap: Record<string, string> = { "@tui": "%tui" }; // Worker stopped + pane-less.
+    const deps = createMockDeps();
+    deps.reflowInsert = vi.fn(async (name: string) => {
+      paneMap[name] = "%worker";
+    });
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    // RestartService on a stopped pane-less lazy: would throw `Unknown service`
+    // Without the wrapper reflowInsert. Drive it forward and assert reflowInsert ran.
+    void mgr.restartService("worker");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(deps.reflowInsert).toHaveBeenCalledWith("worker");
+    expect(paneMap.worker).toBe("%worker");
+  });
+
+  it("restartService never calls the reflow hooks (pane kept by design)", async () => {
+    // RestartServiceInternal re-sends the start command to the existing pane;
+    // It never touches reflowInsert or reflowRemove. The public wrapper
+    // `restartService` (manager.ts:1070) only acquires `withServiceLock`,
+    // Bypassing the lazy-lifecycle wiring on the start/stop wrappers. This
+    // Test pins that bypass by attempting a restart and asserting the hooks
+    // Stayed dormant — we don't drive it to ready (that path is exercised
+    // Elsewhere), only that the hooks aren't called along the way.
+    const config = lazyConfig({ worker: { start: "node w.js", raw: true } }, ["worker"]);
+    const paneMap = makePaneMap(["worker"]);
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+
+    await mgr.startService("worker");
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.mocked(deps.reflowInsert).mockClear();
+    vi.mocked(deps.reflowRemove).mockClear();
+
+    // Don't await — the restart loop polls indefinitely under fake timers
+    // Without a fully-faked child process. We only assert the hooks stayed
+    // Dormant during the call dispatch.
+    void mgr.restartService("worker");
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(deps.reflowInsert).not.toHaveBeenCalled();
+    expect(deps.reflowRemove).not.toHaveBeenCalled();
+    expect(paneMap.worker).toBe("%worker");
   });
 });

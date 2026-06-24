@@ -28,5 +28,6 @@ export function makeConfig(
     projectDir: os.tmpdir(),
     groups: new Map(),
     unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
   };
 }
