@@ -195,9 +195,13 @@ export class Session {
       getWindowTarget: () => this.tmuxSession,
       onPaneInserted: (name, paneId) => {
         this.allocatePaneLog(name, paneId);
+        // Lazy panes are created/destroyed after the TUI captured its startup
+        // Snapshot, so push the live map or `z`/`E` target a missing/stale pane.
+        this.broadcastPaneMap();
       },
       onPaneRemoved: (name, paneId) => {
         this.freePaneLog(name, paneId);
+        this.broadcastPaneMap();
       },
       onPaneInsertFailed: (name, paneId) => {
         // Symmetric with `onPaneRemoved` — same freePaneLog cleanup. Closes the
@@ -206,6 +210,7 @@ export class Session {
         // Monitor key would otherwise orphan when a retry with a NEW pane id
         // Lands (idempotency only covers same-id retry).
         this.freePaneLog(name, paneId);
+        this.broadcastPaneMap();
       },
     });
 
@@ -650,6 +655,20 @@ export class Session {
     this.paneBuffers.delete(paneId);
     this.paneMembers.delete(paneId);
     // NOTE: `this.logBuffers[name]` is RETAINED on purpose — see method docstring.
+  }
+
+  /**
+   * Push the current pane map to subscribers. Fired whenever a lazy pane is
+   * inserted/removed so the TUI's `paneMap` (frozen at attach) stays live and
+   * `z`/`E` resolve the right pane. A shallow copy is sent so the broadcast
+   * can't be mutated by a later reflow before it serializes.
+   */
+  private broadcastPaneMap(): void {
+    this.broadcast({
+      session: this.id,
+      event: "session.paneMap",
+      data: { paneMap: { ...this.paneMap } },
+    });
   }
 
   /**

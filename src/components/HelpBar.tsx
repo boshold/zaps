@@ -15,14 +15,14 @@ export function HelpBar({ compact, status }: HelpBarProps) {
     // Compact: merge action hints + nav into one line
     return (
       <Box>
-        <Text dimColor>[r]estart [s]top [t]asks [q]uit/detach [d] down</Text>
+        <Text dimColor>[r]estart [s]top [t]asks [q]uit/detach [d]own</Text>
       </Box>
     );
   }
   if (compact && isUnavailable) {
     return (
       <Box>
-        <Text dimColor>[t]asks [q]uit/detach [d] down</Text>
+        <Text dimColor>[t]asks [q]uit/detach [d]own</Text>
       </Box>
     );
   }

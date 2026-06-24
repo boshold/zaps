@@ -1,7 +1,7 @@
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 /** Global (non-service-specific) hints, also used to budget the merged footer line. */
-export const GLOBAL_HINTS = "[t]asks [a]ll restart [q]uit/detach [d] down";
+export const GLOBAL_HINTS = "[t]asks [a]ll restart [q]uit/detach [d]own";
 
 /**
  * The service-specific (left-hand) hint string for the footer: the keymap for

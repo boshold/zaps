@@ -444,6 +444,20 @@ describe("DaemonClient", () => {
       expect(spy).toHaveBeenCalledTimes(1);
     });
 
+    it("routes session.paneMap", () => {
+      const spy = vi.fn();
+      client.on("session.paneMap", spy);
+      client.connect();
+
+      eventHandler({
+        session: "sess1",
+        event: "session.paneMap",
+        data: { paneMap: { "@tui": "%1", rainfrog: "%9" } },
+      });
+
+      expect(spy).toHaveBeenCalledWith({ "@tui": "%1", rainfrog: "%9" });
+    });
+
     it("ignores unknown events", () => {
       client.connect();
       // Should not throw

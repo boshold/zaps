@@ -122,7 +122,7 @@ describe("App", () => {
     const { lastFrame } = renderApp({ statuses });
 
     expect(lastFrame()).toContain("[t]asks");
-    expect(lastFrame()).toContain("[d] down");
+    expect(lastFrame()).toContain("[d]own");
     expect(lastFrame()).toContain("[q]uit/detach");
   });
 
