@@ -14,7 +14,10 @@ When this skill loads, immediately run `zaps prime-agent` to get the current pro
 
 ## Output
 
-All commands automatically output TOON when `CLAUDECODE` is set.
+Query/service commands print a human table by default. For machine-readable output pass
+`--json` (pretty JSON) or `--toon` ([TOON](https://github.com/toon-format/toon)), or set
+`ZAPS_FORMAT=json|toon` to make it the default for every command. Coding agents are
+auto-detected (`CLAUDECODE` / `CURSOR_TRACE_DIR`) and default to **TOON** with no flag.
 
 ## Usage
 
@@ -47,12 +50,21 @@ zaps events       # stream daemon events (--filter <type>)
 ### Session & Daemon
 
 ```
-zaps up           # attach if running, else create + start + attach TUI
-zaps up -d        # create + start services detached (no TUI); attach later with `zaps attach`
-zaps down         # stop all services and destroy the session
-zaps daemon stop  # full cleanup: stops every service in every session, then shuts the daemon down
-                  #   prints `Stopped <n> session(s), <m> service(s).`
+zaps up             # attach if running, else create + start + attach TUI
+zaps up -d          # create + start services detached (no TUI); attach later with `zaps attach`
+zaps attach         # attach the TUI to a running session (use `-s <id|name>` to pick one)
+zaps reload         # reload config for the running session (CLI form of the dashboard `c`)
+zaps down           # stop all services and destroy the session
+zaps daemon start   # start the background daemon (usually implicit via `zaps up`)
+zaps daemon status  # daemon PID + session list (--json / --toon)
+zaps daemon ping    # check the daemon is responsive
+zaps daemon stop    # full cleanup: stops every service in every session, then shuts the daemon down
+                    #   prints `Stopped <n> session(s), <m> service(s).`
 ```
+
+Target a specific session with the global `-s, --session <id|name>` flag (before the
+command): `zaps -s my-app down`, `zaps -s my-app restart api`. Without it, ZAPS resolves
+the session for the current directory.
 
 ### TUI
 
