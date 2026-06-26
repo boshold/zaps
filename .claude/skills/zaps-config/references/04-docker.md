@@ -200,7 +200,7 @@ infra: {
   docker: {
     service: ["caddy", "postgres", "bugsink"],
     expand: {
-      postgres: { onReady: () => runTask("prisma:deploy") },
+      postgres: { onReady: () => task.run("prisma:deploy") },
       bugsink: { ready: { http: "http://localhost:8000/health" } },
     },
   },

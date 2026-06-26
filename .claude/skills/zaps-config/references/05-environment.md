@@ -5,13 +5,18 @@
 `env` accepts a static record or a dynamic function:
 
 ```ts
-type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+type EnvValue = string | null | undefined;
+type EnvConfig = Record<string, EnvValue> | ((ctx: ServiceContext) => Record<string, EnvValue>);
 ```
 
-| Form                              | Description                                                                  |
-| --------------------------------- | ---------------------------------------------------------------------------- |
-| `Record<string, string>`          | Static key-value pairs, resolved immediately                                 |
-| `(ctx) => Record<string, string>` | Dynamic function, called at service start time with current `ServiceContext` |
+| Form                                | Description                                                                  |
+| ----------------------------------- | ---------------------------------------------------------------------------- |
+| `Record<string, EnvValue>`          | Static key-value pairs, resolved immediately                                 |
+| `(ctx) => Record<string, EnvValue>` | Dynamic function, called at service start time with current `ServiceContext` |
+
+A `null` or `undefined` value is **dropped** — the variable is omitted rather than set to
+`""`. This makes `ctx.url()` (which returns `string | null`) safe to use directly in env,
+with no `?? ""` fallback needed.
 
 ## ServiceContext Shape
 
@@ -26,6 +31,7 @@ interface ServiceContext {
     }
   >;
   projectDir: string; // Resolved project root
+  url(service: string, opts?: UrlOptions): string | null; // Build a URL from a service port
 }
 ```
 
@@ -33,6 +39,40 @@ interface ServiceContext {
 - `port` is `undefined` if the service hasn't reported a port yet
 - `cwd` is the service's configured `cwd` (resolved), or `projectDir` when the service sets none
 - `projectDir` is the resolved working directory for the project
+- `url()` builds `{protocol}://{auth@}{host}:{port}{path}` from a service's detected port
+
+## Building URLs with `ctx.url()`
+
+`ctx.url(service, opts?)` is the ergonomic way to derive a service URL instead of
+hand-interpolating ports. It returns `null` when the port isn't detected yet (and that
+`null` is dropped from env), and **throws `ConfigError`** for an unknown service.
+
+```ts
+interface UrlOptions {
+  protocol?: string; // default "http"
+  auth?: string; // e.g. "user:pass"
+  host?: string; // default "localhost"
+  port?: number; // override the detected port
+  path?: string; // e.g. "/mydb" (a leading "/" is added if missing)
+}
+```
+
+```ts
+services: {
+  db: { start: "docker compose up db", ready: { port: 5432 } },
+  api: {
+    start: "node server.js",
+    dependsOn: ["db"],
+    env: (ctx) => ({
+      // postgres://user:pass@localhost:5432/mydb
+      DATABASE_URL: ctx.url("db", { protocol: "postgres", auth: "user:pass", path: "/mydb" }),
+    }),
+  },
+}
+```
+
+In task `run` callbacks, the same helper is reachable as `ctx.services.url()` (and the
+mirrored `ctx.url()`).
 
 ## How Env Vars Are Applied
 

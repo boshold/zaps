@@ -65,22 +65,22 @@ services: {
 
 The `Library` object destructured in `config()` provides runtime actions usable inside hooks:
 
-| Method             | Signature                         | Description                   |
-| ------------------ | --------------------------------- | ----------------------------- |
-| `runTask`          | `(key: string) => Promise<void>`  | Run a defined task by key     |
-| `startService`     | `(name: string) => Promise<void>` | Start a service               |
-| `restartService`   | `(name: string) => Promise<void>` | Restart a service             |
-| `stopService`      | `(name: string) => Promise<void>` | Stop a service                |
-| `isServiceRunning` | `(name: string) => boolean`       | Check if a service is running |
-| `openInBrowser`    | `(url: string) => Promise<void>`  | Open URL in default browser   |
+| Namespace | Member            | Description                       |
+| --------- | ----------------- | --------------------------------- |
+| `task`    | `run(key)`        | Run a defined task by key         |
+| `service` | `start(name)`     | Start a service                   |
+| `service` | `restart(name)`   | Restart a service                 |
+| `service` | `stop(name)`      | Stop a service                    |
+| `service` | `isRunning(name)` | Check if a service is running     |
+| `browser` | `open(url)`       | Open a URL in the default browser |
 
 ```ts
-export function config({ defineProject, runTask, startService, openInBrowser }: Library) {
-  return defineProject({
+export function config({ define, task, browser }: Library) {
+  return define({
     services: {
       db: {
         docker: { service: "postgres" },
-        onReady: () => runTask("migrate"),
+        onReady: () => task.run("migrate"),
       },
       api: {
         start: "npm run dev:api",
@@ -92,7 +92,7 @@ export function config({ defineProject, runTask, startService, openInBrowser }: 
       migrate: { name: "Run migrations", commands: "prisma migrate deploy" },
     },
     hooks: {
-      onStart: () => openInBrowser("http://localhost:3000"),
+      onStart: () => browser.open("http://localhost:3000"),
     },
   });
 }
@@ -127,19 +127,13 @@ services: {
 ## Cross-Service Orchestration Example
 
 ```ts
-export function config({
-  defineProject,
-  runTask,
-  restartService,
-  isServiceRunning,
-  openInBrowser,
-}: Library) {
-  return defineProject({
+export function config({ define, task, service, browser }: Library) {
+  return define({
     services: {
       db: {
         docker: { service: "postgres" },
         ready: { port: 5432 },
-        onReady: () => runTask("migrate"),
+        onReady: () => task.run("migrate"),
       },
       api: {
         start: "npm run dev:api",
@@ -147,7 +141,7 @@ export function config({
         dependsOn: ["db"],
         onOutput: (line) => {
           if (line.includes("schema changed")) {
-            void restartService("web");
+            void service.restart("web");
           }
         },
       },
@@ -161,7 +155,7 @@ export function config({
       migrate: { name: "Run migrations", commands: "prisma migrate deploy" },
     },
     hooks: {
-      onStart: () => openInBrowser("http://localhost:3000"),
+      onStart: () => browser.open("http://localhost:3000"),
     },
   });
 }
@@ -169,7 +163,7 @@ export function config({
 
 ## Gotchas
 
-- **Library actions only work in hooks** — calling `runTask`, `startService`, etc. at config definition time throws `"not available outside of service hooks"`
+- **`task.*` and `service.*` only work in hooks** — calling them at config definition time throws `"not available outside of service hooks"`
 - **Hook errors don't fail lifecycle** — errors are logged but the service continues starting/stopping normally
 - **onOutput is not real-time** — it polls every 1s via tmux pane capture, not a direct stream
-- **`openInBrowser` works anytime** — unlike other library actions, it doesn't require runtime context
+- **`browser.open` works anytime** — unlike `task.*`/`service.*`, it doesn't require runtime context
