@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createZapsLib } from "../../src/config/builder.js";
+import { ConfigError } from "../../src/config/errors.js";
 
 describe("createZapsLib", () => {
   it("defineProject returns the parsed config (input fields preserved + ui defaults)", () => {
@@ -35,6 +36,23 @@ describe("createZapsLib", () => {
         },
       } as never),
     ).toThrow();
+  });
+
+  it("throws ConfigError(validation) with the offending field path", () => {
+    const { lib } = createZapsLib();
+    let caught: unknown;
+    try {
+      lib.defineProject({
+        name: "test",
+        services: {
+          app: { start: 42 },
+        },
+      } as never);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect(caught).toMatchObject({ kind: "validation", field: "services.app.start" });
   });
 
   it("throws when service has no start/run/docker", () => {

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { openInBrowser } from "#src/lib/open.js";
 
+import { ConfigError } from "./errors.js";
 import { nodeModules } from "./node.js";
 import { projectConfigSchema } from "./schema.js";
 import type { Library, LibraryActions, ProjectConfig } from "./types.js";
@@ -21,15 +22,15 @@ export function createZapsLib(): ZapsLib {
           return projectConfigSchema.parse(config);
         } catch (error) {
           if (error instanceof z.ZodError) {
-            throw new Error(
-              error.issues
-                .map((i) => {
-                  const path = i.path.length ? `${i.path.join(".")}: ` : "";
-                  return `${path}${i.message}`;
-                })
-                .join("\n"),
-              { cause: error },
-            );
+            const message = error.issues
+              .map((i) => {
+                const path = i.path.length ? `${i.path.join(".")}: ` : "";
+                return `${path}${i.message}`;
+              })
+              .join("\n");
+            const firstPath = error.issues[0]?.path;
+            const field = firstPath?.length ? firstPath.join(".") : undefined;
+            throw new ConfigError(message, { kind: "validation", field });
           }
           throw error;
         }
