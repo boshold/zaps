@@ -13,15 +13,17 @@
 | `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference)                                               |
 | `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)                                                      |
 | `dependsOn` | `string[]`                                | —           | Services that must be ready first                                                          |
+| `restartWith` | `string[]`                              | —           | Restart this service when a listed dependency restarts (must be a subset of `dependsOn`)    |
 | `env`       | `EnvConfig`                               | —           | Environment variables                                                                      |
 | `flags`     | `ServiceFlags`                            | —           | `{ start?: boolean, open?: boolean }`                                                      |
 | `url`       | `string \| false \| (ctx) => string`      | auto-detect | URL for the service                                                                        |
 | `raw`       | `boolean`                                 | `false`     | Bypass wrapper — show env vars inline in pane                                              |
 | `restart`   | `{ maxRetries?, backoff? }`               | —           | Restart policy with exponential backoff                                                    |
+| `onBeforeStart` | `() => void \| Promise<void>`         | —           | Hook: before the service command is sent                                                   |
 | `onReady`   | `() => void \| Promise<void>`             | —           | Hook: service reached ready state                                                          |
 | `onStop`    | `() => void \| Promise<void>`             | —           | Hook: service stopped                                                                      |
 | `onOutput`  | `(line: string) => void \| Promise<void>` | —           | Hook: new output line from tmux pane                                                       |
-| `optional`  | `boolean \| () => Promise<boolean>`       | —           | Mark service as optional (skip if unavailable)                                             |
+| `optional`  | `boolean \| (ctx) => boolean \| Promise<boolean>` | —   | Mark service as optional (skip if unavailable); the function form gets `ctx.hasBinary(name)` |
 
 **Required**: Every service must have at least one of `start`, `run`, or `docker`.
 
@@ -147,8 +149,9 @@ url: "http://localhost:3000";
 // Disabled
 url: false;
 
-// Dynamic
-url: (ctx) => `http://localhost:${ctx.port}/admin`;
+// Dynamic — read the port from the service's own entry on the context
+// (there is no top-level `ctx.port`; use `ctx.services.<name>` or `ctx.url()`)
+url: (ctx) => `http://localhost:${ctx.services.admin.port}/admin`;
 ```
 
 ## Restart Policy
@@ -216,7 +219,7 @@ services: {
 services: {
   "custom-tool": {
     optional: async () => {
-      const { execSync } = await import("child_process");
+      const { execSync } = await import("node:child_process");
       try { execSync("docker image inspect my-tool"); return true; }
       catch { return false; }
     },

@@ -164,6 +164,7 @@ services: {
 services: {
   "custom-tool": {
     optional: async () => {
+      const { execSync } = await import("node:child_process");
       try { execSync("docker image inspect my-tool"); return true; }
       catch { return false; }
     },

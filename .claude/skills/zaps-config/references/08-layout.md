@@ -56,14 +56,14 @@ Defaults to `@tui` if no pane has `focus: true`.
 ## Validation Rules
 
 1. Every pane name must reference an existing service or `@tui`
-2. **Detached services must NOT appear in layout** — throws: `"Detached service '<name>' must not appear in layout"`
+2. **Detached services must NOT appear in layout** — throws: `"Detached service '<name>' cannot appear in the layout — detached services run pane-less."`
 
 ## Default Layout
 
 When no `layout` is specified, ZAPS auto-generates:
 
-- `@tui` gets the initial pane
-- Each non-detached service gets a vertical split pane
+- `@tui` gets the main pane
+- Each non-detached service gets its own **background tmux window** (not a split in the `@tui` view)
 - Focus defaults to `@tui`
 
 ## Example — Nested Layout
