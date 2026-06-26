@@ -10,6 +10,7 @@ export type {
   ReadyOutput,
   ReadyPort,
   ServiceContext,
+  UrlOptions,
 } from "#src/config/types.js";
 export { isReadyDocker, isReadyHttp, isReadyOutput, isReadyPort } from "#src/config/types.js";
 

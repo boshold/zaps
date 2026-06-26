@@ -42,6 +42,7 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
       },
       services: ctx.serviceCtx,
       projectDir: ctx.projectDir,
+      url: ctx.serviceCtx.url,
     });
   } else if (t.commands) {
     const commands = Array.isArray(t.commands) ? t.commands : [t.commands];

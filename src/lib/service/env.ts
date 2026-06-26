@@ -1,4 +1,6 @@
-import type { EnvConfig, ServiceContext, ServiceStatus } from "./types.js";
+import { buildUrl } from "#src/config/helpers/context.js";
+
+import type { EnvConfig, ServiceContext, ServiceStatus, UrlOptions } from "./types.js";
 
 /**
  * Build a ServiceContext from current service statuses. Each service's `cwd`
@@ -18,7 +20,11 @@ export function buildServiceContext(
       cwd: servicesConfig[name]?.cwd ?? projectDir,
     };
   }
-  return { services, projectDir };
+  return {
+    services,
+    projectDir,
+    url: (name: string, opts?: UrlOptions) => buildUrl(services, name, opts),
+  };
 }
 
 /**

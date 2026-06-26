@@ -140,6 +140,7 @@ export interface TaskRunContext {
   stdout: { write(text: string): void };
   services: ServiceContext;
   projectDir: string;
+  url(this: void, service: string, opts?: UrlOptions): string | null;
 }
 
 // === Tasks ===
