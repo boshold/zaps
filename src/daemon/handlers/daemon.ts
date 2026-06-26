@@ -1,3 +1,4 @@
+import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import { runShutdownHook } from "#src/daemon/shutdown.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
@@ -73,6 +74,9 @@ export const daemonHandlers: Record<
         focusPane: session.focusPane,
       });
     } catch (error) {
+      // `buildSession` loads config first (server.ts) — a throw here leaves no
+      // Partial session registered. Log the full error before the IPC message.
+      logConfigError(error);
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },
