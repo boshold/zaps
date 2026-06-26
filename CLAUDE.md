@@ -35,8 +35,8 @@ pnpm build:native             # bun native binary → dist/zaps
 
 - Path alias: `#src/*` → `./src/*`
 - IPC: JSON over Unix sockets (ndjson for log streaming)
-- JSX runtime: `react-jsx` (React 19 + Ink 6)
-- Config discovery walks up from CWD for `.zaps.mts`/`.zaps.ts`/`local.zaps.ts` variants
+- JSX runtime: `react-jsx` (React 19 + Ink 7)
+- Config discovery walks up from CWD, first match wins: `.local.zaps.mts`, `local.zaps.mts`, `.local.zaps.ts`, `local.zaps.ts`, `.zaps.mts`, `.zaps.ts`
 
 ## Skills & README
 
@@ -48,9 +48,9 @@ pnpm build:native             # bun native binary → dist/zaps
 
 ## Tech
 
-- TypeScript (ES2023, strict, ESM)
-- React 19 + Ink 6 (TUI)
+- TypeScript 6 (ES2023, strict, ESM)
+- React 19 + Ink 7 (TUI)
 - Zod 4 (config validation)
-- Commander 14 (CLI)
+- Commander 15 (CLI)
 - Vitest 4 (testing), oxlint/oxfmt (lint/format)
 - esbuild (bundle), bun (native binary)
