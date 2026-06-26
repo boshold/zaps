@@ -420,25 +420,6 @@ something that never resolves), the load fails with a `ConfigError` instead of b
 a reload forever. The timeout only covers async waits — a synchronous infinite loop
 isn't interruptible.
 
-### Migrating from the flat API
-
-Earlier versions exposed flat methods on the `Library`. They are now grouped into
-namespaces (a breaking change, with no compatibility shim):
-
-| Old                      | New                       |
-| ------------------------ | ------------------------- |
-| `defineProject(config)`  | `define(config)`          |
-| `runTask(key)`           | `task.run(key)`           |
-| `startService(name)`     | `service.start(name)`     |
-| `stopService(name)`      | `service.stop(name)`      |
-| `restartService(name)`   | `service.restart(name)`   |
-| `isServiceRunning(name)` | `service.isRunning(name)` |
-| `openInBrowser(url)`     | `browser.open(url)`       |
-
-`node` is unchanged. To migrate, update the destructure in your `config` function and
-rename the calls — e.g. `({ defineProject }) => defineProject({…})` becomes
-`({ define }) => define({…})`.
-
 ## Services
 
 ### Options
@@ -574,11 +555,6 @@ on explicit stop).
   `docker.service: [...]` with `expand`) — group members share one pane, so
   per-member lazy is ambiguous; apply `lazyPane` at the group level once
   group-granularity lazy ships.
-
-**Migration note.** Before this version, every non-autostart service got an
-empty reserved tmux pane at boot. Non-autostart services now boot **pane-less**
-by default. To keep the old behavior (an idle empty pane reserved at boot),
-set `lazyPane: false` on the service.
 
 ### Ready Detection
 
@@ -1230,7 +1206,7 @@ Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectiv
 - Use the `zaps-config` skill when editing ZAPS config files
 ```
 
-## Troubleshooting & Migration
+## Troubleshooting
 
 ### `zaps daemon stop` tears down services
 
@@ -1255,25 +1231,6 @@ down (`Stopped <n> session(s), <m> service(s).`). It is no longer a bare process
   ```
   Dependency "db" not ready
   ```
-
-### Removed environment variables
-
-`ZAPS_PANE_MAP` and `ZAPS_IPC_SOCKET` have been **removed**. These legacy env paths
-never functioned and there is no migration — delete any references to them. Pane and
-socket resolution is handled internally by the daemon.
-
-### Compose project pinning (one-time)
-
-Upgrading pins every compose invocation to a deterministic `-p` project name (see
-[Compose project pinning](#compose-project-pinning)). Existing containers started under
-the old, unpinned project name keep running but are no longer tracked. Clean them up
-once per affected project directory:
-
-```bash
-docker compose -p <old-project-name> down
-```
-
-ZAPS prints a best-effort one-time warning when it detects such leftover containers.
 
 ## License
 
