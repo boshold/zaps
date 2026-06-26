@@ -1,6 +1,6 @@
 ---
 name: zaps-usage
-description: Use when running or inspecting local dev services through the ZAPS CLI — starting/stopping/restarting services, attaching the TUI (`zaps up`/`attach`), running tasks, streaming logs, checking service state/ports, reloading config, or managing the daemon. Trigger whenever the user wants to bring up, tear down, restart, or check the status of their local dev environment with zaps, even phrased casually (e.g. "start my services", "why is the api down", "tail the web logs"). Not for authoring config files — use the zaps-config skill for that.
+description: Use when running or inspecting local dev services through the ZAPS CLI — starting/stopping/restarting services, attaching the TUI (`zaps up`/`attach`), running tasks, streaming logs, checking which services are running and on what ports, reloading config, or managing the daemon. Trigger whenever the user wants to bring up, tear down, restart, or check the status of their local dev environment with zaps — including single-command asks like "restart the api", "what ports are my services on", "list running services", or "tail the web logs" — so the exact zaps command, flags, and session targeting are correct. Not for authoring config files — use the zaps-config skill for that.
 ---
 
 # ZAPS Usage Skill

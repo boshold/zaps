@@ -1,6 +1,6 @@
 ---
 name: zaps-config
-description: Use when creating or editing ZAPS config files (.zaps.mts/.zaps.ts and local./.local. variants) or the exported config() Library function. Covers service definitions (start/run/docker), ready detection, docker-compose integration, tasks, layout/panes, hooks, dependencies, environment, and the ui block. Trigger whenever the user adds or changes a service, task, ready check, dependency, or layout in a ZAPS project, scaffolds via `zaps init`, or asks how a ZAPS config option works — even if they don't name the file. For running or inspecting services use the zaps-usage skill instead.
+description: Use when creating or editing ZAPS config files (.zaps.mts/.zaps.ts and local./.local. variants) or the exported config() Library function. Covers service definitions (start/run/docker), making a service optional (binary/predicate checks), ready detection, docker-compose integration, tasks, layout/panes, hooks, dependencies, restart behavior (restartWith), environment, and the ui block. Trigger whenever the user adds, changes, or marks optional a service, task, ready check, dependency, or layout in a ZAPS project, scaffolds via `zaps init`, or asks how a ZAPS config option works — even if they don't name the file and even if the request sounds like an action ("make X optional", "add a redis service"). For running or inspecting services use the zaps-usage skill instead.
 ---
 
 # ZAPS Configuration Skill
