@@ -421,8 +421,12 @@ export class Session {
 
   private async _reload(): Promise<void> {
     // 1. Load + validate the new config FIRST. No teardown yet — on failure this
-    // Throws verbatim and the running session is left fully intact (A1).
-    const newConfig = await loadConfig(this.configPath, this.projectDir);
+    // Throws verbatim and the running session is left fully intact (A1). The old
+    // Session is alive throughout the load, so cli.warn/info/success notices
+    // Broadcast to the attached TUI as toasts.
+    const newConfig = await loadConfig(this.configPath, this.projectDir, (notice) => {
+      this.broadcast({ session: this.id, event: "config.notice", data: notice });
+    });
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.

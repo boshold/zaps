@@ -76,7 +76,12 @@ export function createZapsLib(opts?: { onNotice?: NoticeSink }): ZapsLib {
       },
       browser: {
         async open(url: string): Promise<void> {
-          await openInBrowser(url);
+          try {
+            await openInBrowser(url);
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            sink({ level: "warn", message: `Could not open browser for ${url}: ${reason}` });
+          }
         },
       },
       node: nodeModules,

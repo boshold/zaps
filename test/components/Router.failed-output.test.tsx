@@ -144,6 +144,30 @@ describe("Router failure → toast / notifier / failed-output overlay", () => {
     expect(notifyFailure).not.toHaveBeenCalled();
   });
 
+  it("surfaces a config.notice as a transient toast (success maps 1:1)", async () => {
+    const client = createMockClient();
+    renderRouter(client);
+    client.emit("config.notice", "success", "config reloaded");
+    await flush();
+    expect(
+      toasts?.toasts.some(
+        (t) => !t.sticky && t.level === "success" && t.message === "config reloaded",
+      ),
+    ).toBe(true);
+  });
+
+  it("maps a warn config.notice to a non-sticky info toast", async () => {
+    const client = createMockClient();
+    renderRouter(client);
+    client.emit("config.notice", "warn", "deprecated option");
+    await flush();
+    expect(
+      toasts?.toasts.some(
+        (t) => !t.sticky && t.level === "info" && t.message === "deprecated option",
+      ),
+    ).toBe(true);
+  });
+
   it("`f` opens the failed-output overlay for the latest sticky failure", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter(client);

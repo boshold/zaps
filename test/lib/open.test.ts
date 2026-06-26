@@ -17,31 +17,19 @@ afterEach(() => {
 });
 
 describe("openInBrowser", () => {
-  it("calls open when fetch succeeds", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+  it("opens the url directly, without a reachability preflight", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     mockOpen.mockResolvedValue(undefined as never);
 
     await openInBrowser("http://localhost:3000");
 
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "http://localhost:3000",
-      expect.objectContaining({ method: "HEAD" }),
-    );
+    expect(fetchSpy).not.toHaveBeenCalled();
     expect(mockOpen).toHaveBeenCalledWith("http://localhost:3000");
   });
 
-  it("silently ignores when fetch fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
-
-    await openInBrowser("http://localhost:3000");
-
-    expect(mockOpen).not.toHaveBeenCalled();
-  });
-
-  it("silently ignores when open throws", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response());
+  it("rejects when open fails so callers can surface it", async () => {
     mockOpen.mockRejectedValue(new Error("open failed"));
 
-    await expect(openInBrowser("http://localhost:3000")).resolves.toBeUndefined();
+    await expect(openInBrowser("http://localhost:3000")).rejects.toThrow("open failed");
   });
 });

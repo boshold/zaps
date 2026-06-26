@@ -20,7 +20,7 @@ import type { ServiceStatus } from "../../src/lib/service/types.js";
 // ── mocks ──────────────────────────────────────────────────────────────
 
 vi.mock("../../src/lib/open.js", () => ({
-  openInBrowser: vi.fn(),
+  openInBrowser: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../src/lib/tmux.js", () => ({

@@ -415,6 +415,20 @@ describe("DaemonClient", () => {
       expect(spy).toHaveBeenCalled();
     });
 
+    it("routes config.notice", () => {
+      const spy = vi.fn();
+      client.on("config.notice", spy);
+      client.connect();
+
+      eventHandler({
+        session: "sess1",
+        event: "config.notice",
+        data: { level: "warn", message: "deprecated option" },
+      });
+
+      expect(spy).toHaveBeenCalledWith("warn", "deprecated option");
+    });
+
     it("routes session.configReloaded", () => {
       const spy = vi.fn();
       client.on("session.configReloaded", spy);

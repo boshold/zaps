@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 
-import type { DockerConfig } from "#src/config/types.js";
+import type { DockerConfig, NoticeLevel } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
@@ -17,6 +17,7 @@ export interface DaemonClientEvents {
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
   "session.configStale": () => void;
   "session.paneMap": (paneMap: Record<string, string>) => void;
+  "config.notice": (level: NoticeLevel, message: string) => void;
   disconnect: () => void;
 }
 
@@ -39,7 +40,7 @@ export class DaemonClient extends EventEmitter {
     this.sub = ipcSubscribe(
       this.socketPath,
       this.sessionId,
-      ["service.*", "log.*", "task.*", "session.*"],
+      ["service.*", "log.*", "task.*", "session.*", "config.*"],
       (event: DaemonEvent) => {
         this.handleEvent(event);
       },
@@ -240,6 +241,10 @@ export class DaemonClient extends EventEmitter {
       }
       case "session.paneMap": {
         this.emit("session.paneMap", data.paneMap);
+        break;
+      }
+      case "config.notice": {
+        this.emit("config.notice", data.level, data.message);
         break;
       }
       default: {

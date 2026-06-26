@@ -215,7 +215,8 @@ async function tryAutoOpen(
 ): Promise<void> {
   if (serviceConfig.flags?.open && url && !autoOpened.has(name)) {
     autoOpened.add(name);
-    await openInBrowser(url);
+    // Best-effort auto-open; a launch failure must not break the ready flow.
+    await openInBrowser(url).catch(() => undefined);
   }
 }
 
