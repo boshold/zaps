@@ -77,13 +77,13 @@ zaps               # Launch
 
 ### Config & Setup
 
-| Command                                | Description                                                            |
-| -------------------------------------- | --------------------------------------------------------------------- |
-| `zaps config`                          | Validate and print resolved config. `--json`, `--toon`, `--path`      |
-| `zaps reload`                          | Reload config for the running session (CLI form of the dashboard `c`) |
-| `zaps init`                            | Scaffold a starter `.zaps.mts` config                                 |
-| `zaps attach`                          | Attach TUI to a running session (use `-s` to choose one)              |
-| `zaps daemon start\|stop\|status\|ping` | Daemon management (`ping` checks the daemon is responsive)             |
+| Command                                 | Description                                                           |
+| --------------------------------------- | --------------------------------------------------------------------- |
+| `zaps config`                           | Validate and print resolved config. `--json`, `--toon`, `--path`      |
+| `zaps reload`                           | Reload config for the running session (CLI form of the dashboard `c`) |
+| `zaps init`                             | Scaffold a starter `.zaps.mts` config                                 |
+| `zaps attach`                           | Attach TUI to a running session (use `-s` to choose one)              |
+| `zaps daemon start\|stop\|status\|ping` | Daemon management (`ping` checks the daemon is responsive)            |
 
 ### Selecting a session & output format
 
@@ -443,27 +443,27 @@ rename the calls — e.g. `({ defineProject }) => defineProject({…})` becomes
 
 ### Options
 
-| Option          | Type                                        | Default | Description                                                                                   |
-| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `start`         | `string \| () => string`                    | —       | Command to start the service (long-running process)                                           |
+| Option          | Type                                        | Default | Description                                                                                               |
+| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                    | —       | Command to start the service (long-running process)                                                       |
 | `run`           | `string \| () => string`                    | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
-| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                         |
-| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                 |
-| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                            |
-| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                             |
-| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                         |
-| `cwd`           | `string`                                    | —       | Working directory                                                                             |
-| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                |
-| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready              |
-| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                    |
-| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`) |
-| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                 |
-| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                         |
-| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                               |
-| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                           |
-| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                   |
-| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                               |
-| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                          |
+| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                                     |
+| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                             |
+| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                                        |
+| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                                         |
+| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                                     |
+| `cwd`           | `string`                                    | —       | Working directory                                                                                         |
+| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                            |
+| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
+| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                                |
+| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
+| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                             |
+| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                                     |
+| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                                           |
+| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                                       |
+| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                               |
+| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                                           |
+| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                                      |
 
 ### Optional Services
 

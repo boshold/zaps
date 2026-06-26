@@ -2,28 +2,28 @@
 
 ## Options
 
-| Field       | Type                                      | Default     | Description                                                                                |
-| ----------- | ----------------------------------------- | ----------- | ------------------------------------------------------------------------------------------ |
-| `start`     | `string \| () => string`                  | —           | Long-running process command (server)                                                      |
-| `run`       | `string \| () => string`                  | —           | One-shot command                                                                           |
-| `stop`      | `string \| () => string`                  | —           | Custom stop command                                                                        |
-| `cwd`       | `string`                                  | —           | Working directory for the service                                                          |
-| `detached`  | `boolean`                                 | `false`     | Run pane-less (outside the tmux layout)                                                    |
-| `lazyPane`  | `boolean`                                 | _auto_      | Pane created on start, dropped on explicit stop (default `true` when `flags.start: false`) |
-| `docker`    | `DockerConfig`                            | —           | Docker Compose config (see docker reference)                                               |
-| `ready`     | `ReadyConfig`                             | —           | Ready detection (see ready reference)                                                      |
-| `dependsOn` | `string[]`                                | —           | Services that must be ready first                                                          |
-| `restartWith` | `string[]`                              | —           | Restart this service when a listed dependency restarts (must be a subset of `dependsOn`)    |
-| `env`       | `EnvConfig`                               | —           | Environment variables                                                                      |
-| `flags`     | `ServiceFlags`                            | —           | `{ start?: boolean, open?: boolean }`                                                      |
-| `url`       | `string \| false \| (ctx) => string`      | auto-detect | URL for the service                                                                        |
-| `raw`       | `boolean`                                 | `false`     | Bypass wrapper — show env vars inline in pane                                              |
-| `restart`   | `{ maxRetries?, backoff? }`               | —           | Restart policy with exponential backoff                                                    |
-| `onBeforeStart` | `() => void \| Promise<void>`         | —           | Hook: before the service command is sent                                                   |
-| `onReady`   | `() => void \| Promise<void>`             | —           | Hook: service reached ready state                                                          |
-| `onStop`    | `() => void \| Promise<void>`             | —           | Hook: service stopped                                                                      |
-| `onOutput`  | `(line: string) => void \| Promise<void>` | —           | Hook: new output line from tmux pane                                                       |
-| `optional`  | `boolean \| (ctx) => boolean \| Promise<boolean>` | —   | Mark service as optional (skip if unavailable); the function form gets `ctx.hasBinary(name)` |
+| Field           | Type                                              | Default     | Description                                                                                  |
+| --------------- | ------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                          | —           | Long-running process command (server)                                                        |
+| `run`           | `string \| () => string`                          | —           | One-shot command                                                                             |
+| `stop`          | `string \| () => string`                          | —           | Custom stop command                                                                          |
+| `cwd`           | `string`                                          | —           | Working directory for the service                                                            |
+| `detached`      | `boolean`                                         | `false`     | Run pane-less (outside the tmux layout)                                                      |
+| `lazyPane`      | `boolean`                                         | _auto_      | Pane created on start, dropped on explicit stop (default `true` when `flags.start: false`)   |
+| `docker`        | `DockerConfig`                                    | —           | Docker Compose config (see docker reference)                                                 |
+| `ready`         | `ReadyConfig`                                     | —           | Ready detection (see ready reference)                                                        |
+| `dependsOn`     | `string[]`                                        | —           | Services that must be ready first                                                            |
+| `restartWith`   | `string[]`                                        | —           | Restart this service when a listed dependency restarts (must be a subset of `dependsOn`)     |
+| `env`           | `EnvConfig`                                       | —           | Environment variables                                                                        |
+| `flags`         | `ServiceFlags`                                    | —           | `{ start?: boolean, open?: boolean }`                                                        |
+| `url`           | `string \| false \| (ctx) => string`              | auto-detect | URL for the service                                                                          |
+| `raw`           | `boolean`                                         | `false`     | Bypass wrapper — show env vars inline in pane                                                |
+| `restart`       | `{ maxRetries?, backoff? }`                       | —           | Restart policy with exponential backoff                                                      |
+| `onBeforeStart` | `() => void \| Promise<void>`                     | —           | Hook: before the service command is sent                                                     |
+| `onReady`       | `() => void \| Promise<void>`                     | —           | Hook: service reached ready state                                                            |
+| `onStop`        | `() => void \| Promise<void>`                     | —           | Hook: service stopped                                                                        |
+| `onOutput`      | `(line: string) => void \| Promise<void>`         | —           | Hook: new output line from tmux pane                                                         |
+| `optional`      | `boolean \| (ctx) => boolean \| Promise<boolean>` | —           | Mark service as optional (skip if unavailable); the function form gets `ctx.hasBinary(name)` |
 
 **Required**: Every service must have at least one of `start`, `run`, or `docker`.
 
