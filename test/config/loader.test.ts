@@ -146,6 +146,44 @@ describe("loadConfig", () => {
     expect(result.projectDir).toBe(invokeDir);
   });
 
+  it("loads an async config function", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export async function config(z) {
+        await Promise.resolve();
+        return z.defineProject({
+          name: "async-project",
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.name).toBe("async-project");
+  });
+
+  it("throws ConfigError when cwd function returns a non-string", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.defineProject({
+          cwd: () => undefined,
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath, tmpDir)).rejects.toMatchObject({
+      name: "ConfigError",
+      kind: "validation",
+      field: "cwd",
+    });
+  });
+
   it("resolves relative cwd function result relative to configDir", async () => {
     const subDir = path.join(tmpDir, "rel");
     fs.mkdirSync(subDir, { recursive: true });

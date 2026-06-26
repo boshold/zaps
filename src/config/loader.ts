@@ -340,6 +340,12 @@ function resolveProjectDir(
   }
   if (typeof cwd === "function") {
     const result = cwd({ configDir, invokeDir });
+    if (typeof result !== "string" || result.trim() === "") {
+      throw new ConfigError(`cwd function returned a non-string value (${typeof result})`, {
+        kind: "validation",
+        field: "cwd",
+      });
+    }
     return path.isAbsolute(result) ? result : path.resolve(configDir, result);
   }
   return invokeDir;
