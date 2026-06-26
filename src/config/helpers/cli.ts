@@ -23,7 +23,8 @@ export function createStderrSink(): NoticeSink {
 
 /**
  * The `cli` namespace. `fatal` throws a `ConfigError` (`kind: "fatal"`) — it
- * never writes or exits, so it composes as `never` in `cwd: find.up(...) ?? cli.fatal(...)`.
+ * never writes or exits. Its `never` return type lets it stand in any value
+ * position, e.g. `name: pkg.name ?? cli.fatal("name required")`.
  * `warn/info/success` emit a `ConfigNotice` through the injected sink, which
  * decides the destination (CLI default → stderr; daemon → broadcast).
  */

@@ -1,7 +1,7 @@
 import type { Library } from ".";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     name: "zaps",
     services: {
       app: {

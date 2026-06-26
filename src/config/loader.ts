@@ -14,6 +14,7 @@ import { expandOverrideSchema } from "./schema.js";
 import type {
   CombinedServiceMeta,
   LayoutNode,
+  NoticeSink,
   OptionalContext,
   ProjectConfig,
   ResolvedConfig,
@@ -565,7 +566,11 @@ function normalizeReadyOutputFlags(project: ProjectConfig): void {
 /**
  * Dynamically import and validate a zaps config file.
  */
-export async function loadConfig(configPath: string, invokeDir?: string): Promise<ResolvedConfig> {
+export async function loadConfig(
+  configPath: string,
+  invokeDir?: string,
+  onNotice?: NoticeSink,
+): Promise<ResolvedConfig> {
   const absolutePath = path.resolve(process.cwd(), configPath);
   const transform = await nativeTransform();
   const jiti = createJiti(import.meta.url, {
@@ -584,7 +589,7 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
 
   const configDir = path.dirname(configPath);
   const resolvedInvokeDir = invokeDir ?? process.cwd();
-  const { lib, bindActions } = createZapsLib();
+  const { lib, bindActions } = createZapsLib({ onNotice });
 
   // The config function may be sync or async. Await it and bound the eval with a
   // Timeout so a hanging async config cannot block daemon reload forever. The
