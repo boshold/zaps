@@ -77,12 +77,18 @@ zaps               # Launch
 
 ### Config & Setup
 
-| Command                           | Description                                            |
-| --------------------------------- | ------------------------------------------------------ |
-| `zaps config`                     | Validate and print resolved config. `--json`, `--path` |
-| `zaps init`                       | Scaffold a starter `.zaps.mts` config                  |
-| `zaps attach [session]`           | Attach TUI to a running session                        |
-| `zaps daemon start\|stop\|status` | Daemon management                                      |
+| Command                                 | Description                                                           |
+| --------------------------------------- | --------------------------------------------------------------------- |
+| `zaps config`                           | Validate and print resolved config. `--json`, `--toon`, `--path`      |
+| `zaps reload`                           | Reload config for the running session (CLI form of the dashboard `c`) |
+| `zaps init`                             | Scaffold a starter `.zaps.mts` config                                 |
+| `zaps attach`                           | Attach TUI to a running session (use `-s` to choose one)              |
+| `zaps daemon start\|stop\|status\|ping` | Daemon management (`ping` checks the daemon is responsive)            |
+
+### Selecting a session & output format
+
+- **`-s, --session <id\|name>`** is a global flag (place it before the command): `zaps -s my-app attach`, `zaps -s my-app down`. It matches by exact id, exact name, then id/name prefix. When omitted, ZAPS resolves the session for the current directory; if several match it lists them and asks you to disambiguate.
+- **Output format** — query/service commands print a human table by default. Pass `--json` (pretty JSON) or `--toon` ([TOON](https://github.com/toon-format/toon)) for machine output, or set `ZAPS_FORMAT=json|toon` to make it the default. Coding agents (detected via `CLAUDECODE` / `CURSOR_TRACE_DIR`) default to TOON automatically.
 
 ## Configuration
 
@@ -414,50 +420,31 @@ something that never resolves), the load fails with a `ConfigError` instead of b
 a reload forever. The timeout only covers async waits — a synchronous infinite loop
 isn't interruptible.
 
-### Migrating from the flat API
-
-Earlier versions exposed flat methods on the `Library`. They are now grouped into
-namespaces (a breaking change, with no compatibility shim):
-
-| Old                      | New                       |
-| ------------------------ | ------------------------- |
-| `defineProject(config)`  | `define(config)`          |
-| `runTask(key)`           | `task.run(key)`           |
-| `startService(name)`     | `service.start(name)`     |
-| `stopService(name)`      | `service.stop(name)`      |
-| `restartService(name)`   | `service.restart(name)`   |
-| `isServiceRunning(name)` | `service.isRunning(name)` |
-| `openInBrowser(url)`     | `browser.open(url)`       |
-
-`node` is unchanged. To migrate, update the destructure in your `config` function and
-rename the calls — e.g. `({ defineProject }) => defineProject({…})` becomes
-`({ define }) => define({…})`.
-
 ## Services
 
 ### Options
 
-| Option          | Type                                        | Default | Description                                                                                   |
-| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `start`         | `string \| () => string`                    | —       | Command to start the service                                                                  |
-| `run`           | `string \| () => string`                    | —       | Alias for `start`                                                                             |
-| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                         |
-| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                 |
-| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                            |
-| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                             |
-| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                         |
-| `cwd`           | `string`                                    | —       | Working directory                                                                             |
-| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                |
-| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready              |
-| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                    |
-| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`) |
-| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                 |
-| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                         |
-| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                               |
-| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                           |
-| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                   |
-| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                               |
-| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                          |
+| Option          | Type                                        | Default | Description                                                                                               |
+| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                    | —       | Command to start the service (long-running process)                                                       |
+| `run`           | `string \| () => string`                    | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
+| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                                     |
+| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                             |
+| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                                        |
+| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                                         |
+| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                                     |
+| `cwd`           | `string`                                    | —       | Working directory                                                                                         |
+| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                            |
+| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
+| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                                |
+| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
+| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                             |
+| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                                     |
+| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                                           |
+| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                                       |
+| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                               |
+| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                                           |
+| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                                      |
 
 ### Optional Services
 
@@ -569,11 +556,6 @@ on explicit stop).
   per-member lazy is ambiguous; apply `lazyPane` at the group level once
   group-granularity lazy ships.
 
-**Migration note.** Before this version, every non-autostart service got an
-empty reserved tmux pane at boot. Non-autostart services now boot **pane-less**
-by default. To keep the old behavior (an idle empty pane reserved at boot),
-set `lazyPane: false` on the service.
-
 ### Ready Detection
 
 Five strategies for detecting when a service is ready:
@@ -673,6 +655,13 @@ can't be mistaken for each other. The project name is resolved by precedence:
 > containers once. If containers already exist under the old (unpinned) name,
 > ZAPS prints a one-time warning suggesting `docker compose -p <old> down`.
 
+> **Tasks don't inherit the pin.** Pinning is applied only to the compose commands
+> ZAPS runs for `docker` **services**. A task that shells out to bare `docker compose …`
+> runs under Compose's own default project name, so it won't see the containers ZAPS
+> started. Pass the project explicitly — `docker compose -p "$ZAPS_COMPOSE_PROJECT" …`
+> (set `ZAPS_COMPOSE_PROJECT` where the daemon spawns) — or operate logically (e.g.
+> `prisma migrate reset` instead of `docker compose down -v`).
+
 ### Expanded Docker Services
 
 When you have multiple Docker Compose services that can share a single tmux pane, use `expand: true` to split them into individually addressable services:
@@ -759,7 +748,9 @@ restart: {
 }
 ```
 
-Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls every 2s.
+Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls the
+pane every 2s for `raw`-mode services and every 10s for wrapper-mode ones (where the
+wrapper's exit notification is the primary signal, so the poll is just a backstop).
 
 ### Dynamic Environment
 
@@ -949,10 +940,10 @@ layout: {
 - `direction`: `"rows"` (vertical split) or `"columns"` (horizontal split)
 - `size`: percentage of parent (defaults to equal split)
 - `focus`: set to `true` on one leaf pane to auto-focus it after layout creation (at most one)
-- Services not in the layout get their own background tmux window
+- Services not in the layout get their own vertical split pane in the `@tui` window
 - Detached services must **not** appear in the layout
 
-If no layout is specified, `@tui` gets the main pane and each service gets a background window.
+If no layout is specified, `@tui` gets the main pane and each non-detached service gets a vertical split pane in the same window.
 
 ## TUI
 
@@ -1073,14 +1064,16 @@ ui: {
 
 ## Service States
 
+Valid transitions (the manager rejects any other move):
+
 ```
-stopped ──> starting ──> ready ──> stopping ──> stopped
-               │            │
-               v            v
-             error      restarting ──> starting
-               │
-               v
-            starting (retry)
+stopped     → starting
+starting    → ready | error | stopping
+ready       → stopping | restarting | error
+stopping    → stopped
+restarting  → starting | stopping | error
+error       → starting           (retry / manual start)
+unavailable → —                  (terminal: optional service whose binary/check failed)
 ```
 
 | State                                  | Indicator      |
@@ -1213,7 +1206,7 @@ Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectiv
 - Use the `zaps-config` skill when editing ZAPS config files
 ```
 
-## Troubleshooting & Migration
+## Troubleshooting
 
 ### `zaps daemon stop` tears down services
 
@@ -1238,25 +1231,6 @@ down (`Stopped <n> session(s), <m> service(s).`). It is no longer a bare process
   ```
   Dependency "db" not ready
   ```
-
-### Removed environment variables
-
-`ZAPS_PANE_MAP` and `ZAPS_IPC_SOCKET` have been **removed**. These legacy env paths
-never functioned and there is no migration — delete any references to them. Pane and
-socket resolution is handled internally by the daemon.
-
-### Compose project pinning (one-time)
-
-Upgrading pins every compose invocation to a deterministic `-p` project name (see
-[Compose project pinning](#compose-project-pinning)). Existing containers started under
-the old, unpinned project name keep running but are no longer tracked. Clean them up
-once per affected project directory:
-
-```bash
-docker compose -p <old-project-name> down
-```
-
-ZAPS prints a best-effort one-time warning when it detects such leftover containers.
 
 ## License
 

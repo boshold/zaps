@@ -1,5 +1,6 @@
 ---
-description: Use when interacting with local dev sessions/services - start/stop/inspect services, run tasks, view logs via CLI
+name: zaps-usage
+description: Use when running or inspecting local dev services through the ZAPS CLI — starting/stopping/restarting services, attaching the TUI (`zaps up`/`attach`), running tasks, streaming logs, checking which services are running and on what ports, reloading config, or managing the daemon. Trigger whenever the user wants to bring up, tear down, restart, or check the status of their local dev environment with zaps — including single-command asks like "restart the api", "what ports are my services on", "list running services", or "tail the web logs" — so the exact zaps command, flags, and session targeting are correct. Not for authoring config files — use the zaps-config skill for that.
 ---
 
 # ZAPS Usage Skill
@@ -14,7 +15,10 @@ When this skill loads, immediately run `zaps prime-agent` to get the current pro
 
 ## Output
 
-All commands automatically output TOON when `CLAUDECODE` is set.
+Query/service commands print a human table by default. For machine-readable output pass
+`--json` (pretty JSON) or `--toon` ([TOON](https://github.com/toon-format/toon)), or set
+`ZAPS_FORMAT=json|toon` to make it the default for every command. Coding agents are
+auto-detected (`CLAUDECODE` / `CURSOR_TRACE_DIR`) and default to **TOON** with no flag.
 
 ## Usage
 
@@ -47,12 +51,21 @@ zaps events       # stream daemon events (--filter <type>)
 ### Session & Daemon
 
 ```
-zaps up           # attach if running, else create + start + attach TUI
-zaps up -d        # create + start services detached (no TUI); attach later with `zaps attach`
-zaps down         # stop all services and destroy the session
-zaps daemon stop  # full cleanup: stops every service in every session, then shuts the daemon down
-                  #   prints `Stopped <n> session(s), <m> service(s).`
+zaps up             # attach if running, else create + start + attach TUI
+zaps up -d          # create + start services detached (no TUI); attach later with `zaps attach`
+zaps attach         # attach the TUI to a running session (use `-s <id|name>` to pick one)
+zaps reload         # reload config for the running session (CLI form of the dashboard `c`)
+zaps down           # stop all services and destroy the session
+zaps daemon start   # start the background daemon (usually implicit via `zaps up`)
+zaps daemon status  # daemon PID + session list (--json / --toon)
+zaps daemon ping    # check the daemon is responsive
+zaps daemon stop    # full cleanup: stops every service in every session, then shuts the daemon down
+                    #   prints `Stopped <n> session(s), <m> service(s).`
 ```
+
+Target a specific session with the global `-s, --session <id|name>` flag (before the
+command): `zaps -s my-app down`, `zaps -s my-app restart api`. Without it, ZAPS resolves
+the session for the current directory.
 
 ### TUI
 
@@ -112,8 +125,8 @@ zaps --help # see all functions
   declared layout position; a `zaps stop <svc>` drops the pane and re-expands
   survivors. Crash + restart keep the pane. `zaps logs <svc>` returns `[]`
   before the first start, streams live while the service is running, and
-  returns the retained history after stop. To keep the legacy
-  idle-empty-reserved-pane behavior, set `lazyPane: false` on the service.
+  returns the retained history after stop. To reserve an empty pane at boot
+  instead, set `lazyPane: false` on the service.
 - **Config reload** is validate-then-swap: an invalid edit is reported and the running
   session keeps the old config (it is never torn down). In the TUI, a changed config
   shows a `config changed — press c to reload` header hint; press `c` (when idle) to apply.

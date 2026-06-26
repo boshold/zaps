@@ -38,6 +38,8 @@ Every compose invocation (`up`/`ps`/`start`/`stop`/`restart`/`config`) is pinned
 
 Switching to a pinned project recreates the containers once; if containers exist under the old unpinned name, ZAPS prints a one-time cleanup warning.
 
+**Tasks don't inherit the pin.** The `-p` project is applied only to the compose commands ZAPS runs for `docker` **services**. A task that shells out to bare `docker compose …` (in `commands` or `run`) uses Compose's own default project, so it won't act on the containers ZAPS started. Pass it explicitly — `docker compose -p "$ZAPS_COMPOSE_PROJECT" …` (set `ZAPS_COMPOSE_PROJECT` where the daemon spawns) — or prefer a logical operation (e.g. `prisma migrate reset`) over `docker compose down -v` in tasks.
+
 ## Auto-Command
 
 If a service has `docker` config but **no `start` or `run`**, ZAPS auto-generates the command from `buildDockerCommand()`. No manual command needed:

@@ -59,14 +59,15 @@ export async function config({ define, node }: Library) {
 
 ## ProjectConfig Top-Level Fields
 
-| Field      | Type                                    | Required | Description                                                              |
-| ---------- | --------------------------------------- | -------- | ------------------------------------------------------------------------ |
-| `name`     | `string`                                | No       | Project name. Defaults to `basename(projectDir)`                         |
-| `cwd`      | `string \| (ctx: CwdContext) => string` | No       | Override working directory for services                                  |
-| `services` | `Record<string, ServiceConfig>`         | **Yes**  | Service definitions (at least one required)                              |
-| `tasks`    | `Record<string, TaskConfig>`            | No       | Runnable tasks                                                           |
-| `layout`   | `LayoutNode`                            | No       | Custom tmux pane layout                                                  |
-| `hooks`    | `HooksConfig`                           | No       | Lifecycle hooks (`onStart`, `onStop`, `onServiceStart`, `onServiceStop`) |
+| Field      | Type                                    | Required | Description                                                            |
+| ---------- | --------------------------------------- | -------- | ---------------------------------------------------------------------- |
+| `name`     | `string`                                | No       | Project name. Defaults to `basename(projectDir)`                       |
+| `cwd`      | `string \| (ctx: CwdContext) => string` | No       | Override working directory for services                                |
+| `services` | `Record<string, ServiceConfig>`         | **Yes**  | Service definitions (at least one required)                            |
+| `tasks`    | `Record<string, TaskConfig>`            | No       | Runnable tasks                                                         |
+| `layout`   | `LayoutNode`                            | No       | Custom tmux pane layout                                                |
+| `hooks`    | `HooksConfig`                           | No       | Project lifecycle hooks: `onBeforeStart`, `onStart`, `onStop`          |
+| `ui`       | `UiConfig`                              | No       | TUI presentation (icons, notifications, task mode, …) — see `10-ui.md` |
 
 ## CwdContext and Project Directory Resolution
 
