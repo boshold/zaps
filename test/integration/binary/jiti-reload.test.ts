@@ -57,8 +57,8 @@ describe.skipIf(!hasBinary())("binary jiti reload", () => {
     await writeFile(
       path.join(tmpDir, ".zaps.mts"),
       `import { projectName } from "./helper.mts";
-export function config({ defineProject }) {
-  return defineProject({
+export function config({ define }) {
+  return define({
     name: projectName,
     services: { api: { start: "npm run dev" } },
   });

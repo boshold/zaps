@@ -224,8 +224,8 @@ export interface ProjectConfig {
 
 // === Library Namespaces ===
 export interface FindUpOptions {
-  /** Static absolute path to stop at, or `"config"` for the configDir boundary. */
-  stopAt?: string | "config";
+  /** Static absolute path to stop at, or the literal `"config"` for the configDir boundary. */
+  stopAt?: string;
   /** Message for the thrown `ConfigError` when the file is not found. */
   orFatal?: string;
 }
@@ -287,7 +287,6 @@ export interface LibraryActions {
   restartService: (name: string) => Promise<void>;
   stopService: (name: string) => Promise<void>;
   isServiceRunning: (name: string) => boolean;
-  openInBrowser: (url: string) => Promise<void>;
 }
 
 // === Resolved ===

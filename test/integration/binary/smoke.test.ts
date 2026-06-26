@@ -75,8 +75,8 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 9
     const { port, release } = await reservePort();
 
     // Write a .zaps.mts config (discovery supports .mts/.ts only)
-    const configContent = `export function config({ defineProject }) {
-  return defineProject({
+    const configContent = `export function config({ define }) {
+  return define({
     name: "smoke-test",
     services: {
       web: {

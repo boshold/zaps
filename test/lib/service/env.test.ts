@@ -101,7 +101,7 @@ describe("buildServiceContext", () => {
 describe("resolveEnv", () => {
   it("returns static object as-is", () => {
     const env = { FOO: "bar", BAZ: "qux" };
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv(env, ctx)).toEqual({ FOO: "bar", BAZ: "qux" });
   });
 
@@ -111,6 +111,7 @@ describe("resolveEnv", () => {
         db: { port: 5432, ports: [5432], cwd: undefined },
       },
       projectDir: "/dir",
+      url: () => null,
     };
     const result = resolveEnv(
       (c: ServiceContext) => ({ DB_PORT: String(c.services.db?.port ?? "") }),
@@ -120,17 +121,17 @@ describe("resolveEnv", () => {
   });
 
   it("returns empty object when envConfig is undefined", () => {
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv(undefined, ctx)).toEqual({});
   });
 
   it("drops null/undefined values from a static object", () => {
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv({ A: "x", B: null, C: undefined }, ctx)).toEqual({ A: "x" });
   });
 
   it("drops null values returned by a function", () => {
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv(() => ({ A: "x", B: null }), ctx)).toEqual({ A: "x" });
   });
 });

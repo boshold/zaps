@@ -29,7 +29,7 @@ function writeConfig(
     configPath,
     [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       `    name: ${JSON.stringify(name)},`,
       "    services: {",
       ...svcEntries.map((e) => `${e},`),
@@ -185,8 +185,8 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
 
-    // Break the config: unterminated defineProject call.
-    fs.writeFileSync(configPath, "export function config(lib) { return lib.defineProject({ \n");
+    // Break the config: unterminated define call.
+    fs.writeFileSync(configPath, "export function config(lib) { return lib.define({ \n");
 
     const reloadRes = await ipcRequest(daemon.socketPath, "session.reload", undefined, 30_000, sid);
     expect(reloadRes.error).toBeDefined();
@@ -207,7 +207,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     // Layout's FIRST leaf is a service, @tui second — the A2 trigger.
     const configText = [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       '    name: "layout-reload",',
       "    services: {",
       `      web: { start: ${JSON.stringify(cmd)}, ready: { port: ${port1} }, raw: true },`,

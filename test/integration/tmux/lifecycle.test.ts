@@ -622,7 +622,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
         tmpDir,
         `
           export function config(lib) {
-            return lib.defineProject({
+            return lib.define({
               services: {
                 workerA: { start: ${JSON.stringify(idleCmd)}, raw: true, flags: { start: false } },
                 workerB: { start: ${JSON.stringify(idleCmd)}, raw: true, flags: { start: false } },
@@ -682,7 +682,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
         tmpDir,
         `
           export function config(lib) {
-            return lib.defineProject({
+            return lib.define({
               services: {
                 worker: { start: ${JSON.stringify(idleCmd)}, raw: true, flags: { start: false } },
               },
@@ -714,19 +714,19 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
   });
 
   // ===========================================================================
-  // Hook-during-reload SEAL: onStop → lib.restartService re-entrance fix
+  // Hook-during-reload SEAL: onStop → lib.service.restart re-entrance fix
   // ===========================================================================
 
-  it("SEAL (hook deadlock): reload with onStop→lib.restartService(other lazy) completes under bounded timeout", async () => {
+  it("SEAL (hook deadlock): reload with onStop→lib.service.restart(other lazy) completes under bounded timeout", async () => {
     // The DEEPER deadlock class the shuttingDown guard on reflowInsert closes:
     //   `reload` holds withOpLock → `manager.stopAll()` → `stopService(svc1)`
     //   → `stopServiceInternal` → `onStop` hook (config/builder.ts:49-53
-    //   Exposes `lib.startService`/`lib.restartService` to hooks) →
+    //   Exposes `lib.service.start`/`lib.service.restart` to hooks) →
     //   `manager.restartService(svc2)` → wrapper `await deps.reflowInsert(svc2)`
     //   → `Session.reflowInsert` → `withOpLock` (not re-entrant) → chains
     //   AFTER the outer reload fn → permanent hang.
     // With the guard: reflowInsert is skipped during shutdown, the hook's
-    // `restartService` call's internal `startServiceInternal` throws
+    // `service.restart` call's internal `startServiceInternal` throws
     // `Unknown service` (pane-less + non-detached). `onStop` catches that
     // Into `lastError` (manager.ts:1029-1034) and the stop continues.
     // Reload converges; post-reload `createLayout` rebuilds the layout
@@ -739,7 +739,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
         tmpDir,
         `
           export function config(lib) {
-            return lib.defineProject({
+            return lib.define({
               services: {
                 svc1: {
                   start: ${JSON.stringify(idleCmd)},
@@ -748,7 +748,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
                     // Hook calls back into the library mid-stop. This is the
                     // Path that would have deadlocked the reload before the
                     // ShuttingDown guard on reflowInsert.
-                    return lib.restartService("svc2").catch(() => {
+                    return lib.service.restart("svc2").catch(() => {
                       // Throws \`Unknown service\` because svc2 is pane-less +
                       // The guard skips reflowInsert during shutdown. We
                       // Catch so the hook doesn't propagate a noisy error.
@@ -781,7 +781,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
       expect(live.session.paneMap.svc2).toBeUndefined();
 
       // The seal: reload must complete (its stopAll fires svc1's onStop which
-      // Calls lib.restartService("svc2") which would re-enter withOpLock).
+      // Calls lib.service.restart("svc2") which would re-enter withOpLock).
       // Without the guard, hangs forever. With it, completes sub-second.
       await raceTimeout(live.session.reload(), 10_000, "Session.reload (hook-driven re-entrance)");
     } finally {
@@ -1009,7 +1009,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
         tmpDir,
         `
           export function config(lib) {
-            return lib.defineProject({
+            return lib.define({
               services: {
                 worker: { start: ${JSON.stringify(idleCmd)}, raw: true, flags: { start: false } },
               },

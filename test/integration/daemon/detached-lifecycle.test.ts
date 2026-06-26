@@ -26,7 +26,7 @@ function writeDetachedConfig(dir: string, port: number): string {
     configPath,
     [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       '    name: "test-detached",',
       "    services: {",
       "      worker: {",

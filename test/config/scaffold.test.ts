@@ -17,9 +17,9 @@ afterEach(() => {
 });
 
 describe("generateTemplate", () => {
-  it("returns valid TS string with defineProject", async () => {
+  it("returns valid TS string with define", async () => {
     const result = await generateTemplate();
-    expect(result).toContain("defineProject");
+    expect(result).toContain("define");
     expect(result).toContain("import type");
   });
 
@@ -43,7 +43,7 @@ describe("scaffoldConfig", () => {
     expect(fs.existsSync(expected)).toBe(true);
 
     const content = fs.readFileSync(expected, "utf8");
-    expect(content).toContain("defineProject");
+    expect(content).toContain("define");
   });
 
   it("throws if .zaps.mts already exists", async () => {

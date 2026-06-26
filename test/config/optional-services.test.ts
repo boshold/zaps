@@ -547,7 +547,7 @@ describe("loadConfig with optional services", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             api: { start: "node server.js" },
@@ -574,7 +574,7 @@ describe("loadConfig with optional services", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             api: { start: "node server.js" },
@@ -603,7 +603,7 @@ describe("loadConfig with optional services", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             api: { start: "node server.js", dependsOn: ["db"] },
