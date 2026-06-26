@@ -63,7 +63,7 @@ Defaults to `@tui` if no pane has `focus: true`.
 When no `layout` is specified, ZAPS auto-generates:
 
 - `@tui` gets the main pane
-- Each non-detached service gets its own **background tmux window** (not a split in the `@tui` view)
+- Each non-detached service gets its own **vertical split pane in the `@tui` window** (split off the `@tui` pane via `split-window -v`)
 - Focus defaults to `@tui`
 
 ## Example — Nested Layout

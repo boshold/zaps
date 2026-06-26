@@ -964,10 +964,10 @@ layout: {
 - `direction`: `"rows"` (vertical split) or `"columns"` (horizontal split)
 - `size`: percentage of parent (defaults to equal split)
 - `focus`: set to `true` on one leaf pane to auto-focus it after layout creation (at most one)
-- Services not in the layout get their own background tmux window
+- Services not in the layout get their own vertical split pane in the `@tui` window
 - Detached services must **not** appear in the layout
 
-If no layout is specified, `@tui` gets the main pane and each service gets a background window.
+If no layout is specified, `@tui` gets the main pane and each non-detached service gets a vertical split pane in the same window.
 
 ## TUI
 
