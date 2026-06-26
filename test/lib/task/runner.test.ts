@@ -289,6 +289,9 @@ describe("runTaskWithDeps", () => {
       ctx.stdout.write("output line\n");
       expect(ctx.projectDir).toBe("/test");
       expect(ctx.services).toBeDefined();
+      // Mirrored onto TaskRunContext from the service context (P02-T06).
+      expect(typeof ctx.url).toBe("function");
+      expect(ctx.url).toBe(ctx.services.url);
     });
 
     const onLine = vi.fn();

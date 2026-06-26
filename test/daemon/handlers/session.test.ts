@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
@@ -90,6 +91,34 @@ describe("session handlers", () => {
       const req: IpcRequest = { id: "r-reload3", method: "session.reload", session: session.id };
       const res = await sessionHandlers["session.reload"](req, store, socket as never);
       expect(res.error).toBe("Config invalid");
+    });
+
+    it("logs the full ConfigError and keeps the session, surfacing only the message", async () => {
+      const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+      const session = createMockSession();
+      const managerBefore = session.manager;
+      const paneMapBefore = session.paneMap;
+      session.reload = vi.fn().mockRejectedValue(
+        new ConfigError("cwd function returned a non-string value (undefined)", {
+          kind: "validation",
+          field: "cwd",
+          file: "/proj/.zaps.ts",
+        }),
+      );
+      const store = createMockStore([session]);
+      const socket = createMockSocket();
+      const req: IpcRequest = { id: "r-reload4", method: "session.reload", session: session.id };
+      const res = await sessionHandlers["session.reload"](req, store, socket as never);
+
+      expect(res.error).toBe("cwd function returned a non-string value (undefined)");
+      const logged = stderr.mock.calls.map((c) => String(c[0])).join("");
+      expect(logged).toContain("kind=validation");
+      expect(logged).toContain("field=cwd");
+      expect(logged).toContain("file=/proj/.zaps.ts");
+      // The running session is left fully intact (A1).
+      expect(session.manager).toBe(managerBefore);
+      expect(session.paneMap).toBe(paneMapBefore);
+      stderr.mockRestore();
     });
   });
 

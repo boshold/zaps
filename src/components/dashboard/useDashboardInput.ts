@@ -63,7 +63,7 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
   }
   const selectedUrl = selected?.url;
   if (input === "o" && selectedUrl) {
-    void openInBrowser(selectedUrl);
+    void openInBrowser(selectedUrl).catch(() => undefined);
   }
   if (input === "R" && selected?.isDocker && !isUnavailable) {
     ctx.goToDockerRebuild(selectedName);

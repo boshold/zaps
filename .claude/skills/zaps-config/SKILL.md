@@ -36,8 +36,8 @@ Activate this skill when the user:
 ```ts
 import type { Library } from "zaps";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     name: "my-project",
     services: {
       app: {
@@ -49,10 +49,13 @@ export function config({ defineProject }: Library) {
 }
 ```
 
+The `Library` object groups everything into namespaces — destructure what you need:
+`define`, `find`, `cli`, `task`, `service`, `browser`, `node`.
+
 ## Key Rules
 
 - Config file must export a `config` function (named export or default export)
-- The function receives a `Library` object and must call `defineProject()`
+- The function receives a `Library` object and must call `define()`
 - At least one service is required in the `services` record
 - Each service needs exactly one of: `start`, `run`, or `docker`
 - Import the `Library` type from the `"zaps"` package
@@ -172,13 +175,13 @@ services: {
 ### Hook that triggers a task
 
 ```ts
-export function config({ defineProject, runTask }: Library) {
-  return defineProject({
+export function config({ define, task }: Library) {
+  return define({
     services: {
       /* ... */
     },
     hooks: {
-      onStart: () => runTask("setup"),
+      onStart: () => task.run("setup"),
     },
     tasks: {
       setup: {

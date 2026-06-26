@@ -44,7 +44,7 @@ services: {
 // Level 1: [api]        — waits for both to be ready
 ```
 
-Each level awaits `Promise.all()` of its services before proceeding to the next level. A dependency must reach `"ready"` state before its dependent can start — otherwise `startService()` throws.
+Each level awaits `Promise.all()` of its services before proceeding to the next level. A dependency must reach `"ready"` state before its dependent can start — otherwise `service.start()` throws.
 
 ## Shutdown Order
 

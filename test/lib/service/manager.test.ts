@@ -3464,10 +3464,10 @@ describe("lazy-pane lifecycle", () => {
     // Symmetric to the stopService shuttingDown guard. The deadlock the guard
     // Closes:
     //   `reload` holds withOpLock → `manager.stopAll()` → `stopService(svc1)`
-    //   → `onStop` hook → `lib.startService(svc2)` → wrapper-level
+    //   → `onStop` hook → `lib.service.start(svc2)` → wrapper-level
     //   `deps.reflowInsert(svc2)` → `Session.reflowInsert` → withOpLock
     //   (not re-entrant) → chains AFTER outer reload fn → permanent hang.
-    // `lib.startService`/`restartService` are exposed to hooks
+    // `lib.service.start`/`service.restart` are exposed to hooks
     // (config/builder.ts:49-53), so this is a real reachable footgun. The
     // Guard short-circuits reflowInsert when `shuttingDown` is true —
     // RunStopAll sets it BEFORE iterating, so every hook-driven start during
@@ -3489,7 +3489,7 @@ describe("lazy-pane lifecycle", () => {
   });
 
   it("restartService skips reflowInsert when shuttingDown (re-entrance guard)", async () => {
-    // Companion to the startService guard test. lib.restartService is also
+    // Companion to the startService guard test. lib.service.restart is also
     // Hook-reachable (config/builder.ts:49-53), so the wrapper carries the
     // Same shuttingDown short-circuit.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
@@ -3551,7 +3551,7 @@ describe("lazy-pane lifecycle", () => {
   it("restartService never calls the reflow hooks (pane kept by design)", async () => {
     // RestartServiceInternal re-sends the start command to the existing pane;
     // It never touches reflowInsert or reflowRemove. The public wrapper
-    // `restartService` (manager.ts:1070) only acquires `withServiceLock`,
+    // `service.restart` (manager.ts:1070) only acquires `withServiceLock`,
     // Bypassing the lazy-lifecycle wiring on the start/stop wrappers. This
     // Test pins that bypass by attempting a restart and asserting the hooks
     // Stayed dormant — we don't drive it to ready (that path is exercised

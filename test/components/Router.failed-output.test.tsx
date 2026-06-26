@@ -116,6 +116,24 @@ async function pressKey(stdin: { write: (data: string) => void }, data: string) 
   });
 }
 
+/**
+ * Poll a predicate inside `act()` until it holds. The failed-output overlay
+ * Mounts only after an async `getTaskOutput` fetch resolves, so a fixed sleep
+ * Races under full-suite load — wait on the actual condition instead.
+ */
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000, pollMs = 10) {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start >= timeoutMs) {
+      throw new Error("waitFor: condition not met within timeout");
+    }
+    // eslint-disable-next-line no-await-in-loop -- sequential poll
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    });
+  }
+}
+
 describe("Router failure → toast / notifier / failed-output overlay", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -144,16 +162,40 @@ describe("Router failure → toast / notifier / failed-output overlay", () => {
     expect(notifyFailure).not.toHaveBeenCalled();
   });
 
+  it("surfaces a config.notice as a transient toast (success maps 1:1)", async () => {
+    const client = createMockClient();
+    renderRouter(client);
+    client.emit("config.notice", "success", "config reloaded");
+    await flush();
+    expect(
+      toasts?.toasts.some(
+        (t) => !t.sticky && t.level === "success" && t.message === "config reloaded",
+      ),
+    ).toBe(true);
+  });
+
+  it("maps a warn config.notice to a non-sticky info toast", async () => {
+    const client = createMockClient();
+    renderRouter(client);
+    client.emit("config.notice", "warn", "deprecated option");
+    await flush();
+    expect(
+      toasts?.toasts.some(
+        (t) => !t.sticky && t.level === "info" && t.message === "deprecated option",
+      ),
+    ).toBe(true);
+  });
+
   it("`f` opens the failed-output overlay for the latest sticky failure", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter(client);
     client.emit("task.complete", "build", "Build", "error", "run_1");
     await flush();
     await pressKey(stdin, "f");
-    await flush();
+    await waitFor(() => overlay?.top?.id === FAILED_OUTPUT_ID);
     expect(overlay?.top?.id).toBe(FAILED_OUTPUT_ID);
     expect(client.getTaskOutput).toHaveBeenCalledWith("run_1");
-  });
+  }, 20_000);
 
   it("`f` is a no-op when there is no sticky failure", async () => {
     const client = createMockClient();
@@ -179,11 +221,13 @@ describe("Router failure → toast / notifier / failed-output overlay", () => {
     client.emit("task.complete", "build", "Build", "error", "run_1");
     await flush();
     await pressKey(stdin, "f");
-    await flush();
+    await waitFor(() => overlay?.top?.id === FAILED_OUTPUT_ID);
     expect(overlay?.top?.id).toBe(FAILED_OUTPUT_ID);
     // Esc → OverlayHost pops → overlay unmounts → onClose acks run_1.
     await pressKey(stdin, "\x1B");
+    await waitFor(() => overlay?.isOpen === false);
     expect(overlay?.isOpen).toBe(false);
+    await waitFor(() => toasts?.toasts.filter((t) => t.sticky && t.runId === "run_1").length === 0);
     expect(toasts?.toasts.filter((t) => t.sticky && t.runId === "run_1").length).toBe(0);
-  });
+  }, 20_000);
 });

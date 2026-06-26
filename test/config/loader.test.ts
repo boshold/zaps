@@ -29,7 +29,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test-project",
           services: {
             api: { start: "npm run dev" },
@@ -50,7 +50,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export default function(z) {
-        return z.defineProject({
+        return z.define({
           name: "default-export",
           services: { app: { start: "node index.js" } },
         });
@@ -70,7 +70,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           services: {
             api: { start: "npm run dev" },
           },
@@ -91,7 +91,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           cwd: "./sub",
           services: {
             api: { start: "npm run dev" },
@@ -110,7 +110,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           cwd: "/absolute/path",
           services: {
             api: { start: "npm run dev" },
@@ -129,7 +129,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           cwd: ({ invokeDir }) => invokeDir,
           services: {
             api: { start: "npm run dev" },
@@ -146,6 +146,71 @@ describe("loadConfig", () => {
     expect(result.projectDir).toBe(invokeDir);
   });
 
+  it("loads an async config function", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export async function config(z) {
+        await Promise.resolve();
+        return z.define({
+          name: "async-project",
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.name).toBe("async-project");
+  });
+
+  it("rejects with ConfigError when async config eval exceeds the timeout", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config() {
+        // Never resolves → exercises the 30s eval-timeout backstop.
+        return new Promise(() => {});
+      }
+    `,
+    );
+
+    vi.useFakeTimers();
+    try {
+      const project = loadConfig(configPath, tmpDir);
+      const assertion = expect(project).rejects.toMatchObject({
+        name: "ConfigError",
+        kind: "validation",
+        file: path.resolve(process.cwd(), configPath),
+      });
+      // Flush the jiti-import microtasks and fire the 30s backstop.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("throws ConfigError when cwd function returns a non-string", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.define({
+          cwd: () => undefined,
+          services: { api: { start: "npm run dev" } },
+        });
+      }
+    `,
+    );
+
+    await expect(loadConfig(configPath, tmpDir)).rejects.toMatchObject({
+      name: "ConfigError",
+      kind: "validation",
+      field: "cwd",
+    });
+  });
+
   it("resolves relative cwd function result relative to configDir", async () => {
     const subDir = path.join(tmpDir, "rel");
     fs.mkdirSync(subDir, { recursive: true });
@@ -154,7 +219,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           cwd: () => "./rel",
           services: {
             api: { start: "npm run dev" },
@@ -173,7 +238,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           services: {
             api: { start: "npm run dev" },
           },
@@ -192,7 +257,7 @@ describe("loadConfig", () => {
       `
       export function config(z) {
         const dir = z.node.path.join("/foo", "bar");
-        return z.defineProject({
+        return z.define({
           name: "node-test",
           cwd: dir,
           services: {
@@ -215,7 +280,7 @@ describe("loadConfig", () => {
       `
       import { projectName } from "./helper.mts";
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: projectName,
           services: { api: { start: "npm run dev" } },
         });
@@ -240,7 +305,7 @@ describe("loadConfig", () => {
       configPath,
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "hash-path",
           services: { api: { start: "npm run dev" } },
         });
@@ -258,7 +323,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             db: { start: "start-db", flags: { start: false } },
@@ -282,7 +347,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: { api: { start: "npm start" } },
           tasks: {
@@ -310,7 +375,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             api: { start: "npm run dev", ready: { output: /listening/gy } },
@@ -345,7 +410,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: { api: {} },
         });
@@ -363,7 +428,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             api: { start: "npm start", dependsOn: ["redis"] },
@@ -383,7 +448,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             a: { start: "a", dependsOn: ["b"] },
@@ -402,7 +467,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: { api: { start: "npm start" } },
           layout: {
@@ -425,7 +490,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             db: { start: "docker compose up", detached: true },
@@ -453,7 +518,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             db: { start: "start-db" },
@@ -474,7 +539,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: {
             db: { start: "start-db" },
@@ -495,7 +560,7 @@ describe("loadConfig", () => {
       ".zaps.ts",
       `
       export function config(z) {
-        return z.defineProject({
+        return z.define({
           name: "test",
           services: { api: { start: "npm start" } },
           tasks: {
@@ -518,7 +583,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: { service: ["postgres", "redis"], expand: true },
@@ -555,7 +620,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: { service: ["postgres", "redis"], expand: true },
@@ -580,7 +645,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: { service: ["api"], expand: true },
@@ -602,7 +667,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: { service: ["postgres", "redis"], expand: true },
@@ -630,7 +695,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: {
@@ -672,7 +737,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: {
@@ -696,7 +761,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             api: { start: "node server.js" },
           },
@@ -714,7 +779,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             db: {
               docker: { expand: true, service: "postgres" },
@@ -738,7 +803,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             cache: {
               docker: {
@@ -762,7 +827,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             cache: {
               docker: {
@@ -786,7 +851,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             cache: {
               docker: {
@@ -810,7 +875,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             cache: {
               docker: {
@@ -833,7 +898,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             infra: {
               docker: {
@@ -861,7 +926,7 @@ describe("docker expand", () => {
       ".zaps.ts",
       `
       export function config(lib) {
-        return lib.defineProject({
+        return lib.define({
           services: {
             stripe: { start: "stripe listen", optional: () => false },
             infra: {
@@ -890,7 +955,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: {
               cache: {
                 docker: {
@@ -916,7 +981,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: { api: { start: "npm dev" } },
           });
         }
@@ -931,7 +996,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: { worker: { start: "node w.js", flags: { start: false } } },
           });
         }
@@ -946,7 +1011,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: { api: { start: "npm dev", lazyPane: true } },
           });
         }
@@ -961,7 +1026,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: { worker: { start: "node w.js", flags: { start: false }, lazyPane: false } },
           });
         }
@@ -976,7 +1041,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: {
               worker: { start: "node w.js", detached: true, flags: { start: false } },
             },
@@ -993,7 +1058,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: {
               cache: {
                 docker: {
@@ -1019,7 +1084,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: {
               api: { start: "npm dev" },
               worker: { start: "node w.js", flags: { start: false } },
@@ -1042,7 +1107,7 @@ describe("docker expand", () => {
         ".zaps.ts",
         `
         export function config(lib) {
-          return lib.defineProject({
+          return lib.define({
             services: {
               cache: {
                 docker: {

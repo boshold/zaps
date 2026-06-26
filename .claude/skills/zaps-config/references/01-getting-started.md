@@ -23,13 +23,13 @@ ZAPS walks up from cwd to filesystem root, checking each directory for config fi
 
 ## File Structure
 
-Config files must export a `config` function (named or default export). The function receives a `Library` object and must return a `ProjectConfig` via `defineProject()`.
+Config files must export a `config` function (named or default export). The function receives a `Library` object and must return a `ProjectConfig` via `define()`.
 
 ```ts
 import type { Library } from "zaps";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     name: "my-project",
     services: {
       app: {
@@ -41,11 +41,21 @@ export function config({ defineProject }: Library) {
 }
 ```
 
+The config function may also be `async` — return a `Promise<ProjectConfig>` when you
+need to `await` before building the config:
+
+```ts
+export async function config({ define, node }: Library) {
+  const pkg = JSON.parse(await node.fs.promises.readFile("package.json", "utf8"));
+  return define({ name: pkg.name, services: { app: { start: "npm run dev" } } });
+}
+```
+
 **Gotchas:**
 
 - The loader checks `mod.config` first, then `mod.default` — a named `config` export is preferred
 - The export must be a function, not a plain object
-- `defineProject()` validates the config via Zod and returns it unchanged
+- `define()` validates the config via Zod and **throws a `ConfigError`** on invalid config (it never calls `process.exit` — the CLI boundary renders the error, the daemon keeps the previous config live)
 
 ## ProjectConfig Top-Level Fields
 
@@ -77,8 +87,8 @@ export interface CwdContext {
 
 ```ts
 // Monorepo example: config at repo root, services run from packages/app
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     cwd: "./packages/app",
     services: {
       /* ... */
@@ -87,9 +97,19 @@ export function config({ defineProject }: Library) {
 }
 
 // Dynamic resolution
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     cwd: ({ configDir }) => `${configDir}/packages/app`,
+    services: {
+      /* ... */
+    },
+  });
+}
+
+// Walk upward for a marker file (throws ConfigError if not found)
+export function config({ define, find }: Library) {
+  return define({
+    cwd: find.up("package.json"),
     services: {
       /* ... */
     },
@@ -99,26 +119,48 @@ export function config({ defineProject }: Library) {
 
 ## Library API
 
-The `Library` object passed to `config()` provides `defineProject` for config creation and runtime action methods usable inside hooks:
+The `Library` object groups everything into namespaces. Destructure what you need:
 
-| Method             | Signature                                  | Description                                                           |
-| ------------------ | ------------------------------------------ | --------------------------------------------------------------------- |
-| `defineProject`    | `(config: ProjectConfig) => ProjectConfig` | Validates and returns the config. Call exactly once.                  |
-| `runTask`          | `(key: string) => Promise<void>`           | Run a defined task by key                                             |
-| `startService`     | `(name: string) => Promise<void>`          | Start a service                                                       |
-| `restartService`   | `(name: string) => Promise<void>`          | Restart a service                                                     |
-| `stopService`      | `(name: string) => Promise<void>`          | Stop a service                                                        |
-| `isServiceRunning` | `(name: string) => boolean`                | Check if a service is running                                         |
-| `openInBrowser`    | `(url: string) => Promise<void>`           | Open a URL in the default browser                                     |
-| `node`             | `NodeModules`                              | Node built-ins: `path`, `fs`, `process`, `url`, `os`, `child_process` |
+| Namespace | Member                           | Description                                                            |
+| --------- | -------------------------------- | ---------------------------------------------------------------------- |
+| `define`  | `(config) => config`             | Validate and return the config. Throws `ConfigError` on bad config.    |
+| `find`    | `up(filename, opts?)`            | Build a `cwd` resolver that walks upward for `filename`.               |
+| `cli`     | `fatal(message, opts?)`          | Abort config eval by throwing a `ConfigError`. Never returns.          |
+| `cli`     | `warn / info / success(message)` | Emit a notice (stderr in the CLI; a TUI toast during a daemon reload). |
+| `task`    | `run(key)`                       | Run a defined task by key. Hooks only.                                 |
+| `service` | `start / stop / restart(name)`   | Control a service. Hooks only.                                         |
+| `service` | `isRunning(name)`                | Whether a service is currently ready. Hooks only.                      |
+| `browser` | `open(url)`                      | Open a URL in the default browser.                                     |
+| `node`    | `path / fs / process / …`        | Node built-ins: `path`, `fs`, `process`, `url`, `os`, `child_process`  |
 
-Runtime methods (`runTask`, `startService`, etc.) are bound after config loading. Use them in service/project hooks, not during config definition.
+`task.*` and `service.*` are bound only while a session is running. Use them inside
+service/project hooks (e.g. `onReady`), not during config definition — calling them too
+early throws a clear error.
+
+`cli.fatal(message, opts?)` is the explicit escape hatch: it throws a `ConfigError` and
+returns `never`, so it composes in any value position:
+
+```ts
+export function config({ define, cli }: Library) {
+  return define({
+    services: {
+      api: {
+        start: "npm run dev",
+        env: { API_KEY: process.env.API_KEY ?? cli.fatal("API_KEY is required") },
+      },
+    },
+  });
+}
+```
+
+`cli.warn` / `cli.info` / `cli.success` surface a short message without aborting (a styled
+stderr line in a one-shot CLI run; a transient toast during a daemon reload).
 
 `node` is available immediately (not just in hooks) — use it in config expressions like `cwd`:
 
 ```ts
-export function config({ defineProject, node }: Library) {
-  return defineProject({
+export function config({ define, node }: Library) {
+  return define({
     cwd: ({ configDir }) => node.path.join(configDir, "backend"),
     services: {
       api: {
@@ -131,8 +173,8 @@ export function config({ defineProject, node }: Library) {
 ```
 
 ```ts
-export function config({ defineProject, restartService }: Library) {
-  return defineProject({
+export function config({ define, service }: Library) {
+  return define({
     services: {
       db: { start: "docker compose up db", ready: { port: 5432 } },
       app: {
@@ -144,7 +186,7 @@ export function config({ defineProject, restartService }: Library) {
     hooks: {
       onStart: async () => {
         // Runtime actions available in hooks
-        await restartService("db");
+        await service.restart("db");
       },
     },
   });
@@ -174,8 +216,8 @@ Generated file:
 ```ts
 import type { Library } from "zaps";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     services: {
       app: {
         start: "echo 'Replace with your start command'",

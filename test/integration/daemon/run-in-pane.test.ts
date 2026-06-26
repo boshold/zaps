@@ -27,7 +27,7 @@ function writeRunInPaneConfig(dir: string, port: number): string {
     configPath,
     [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       '    name: "test-runinpane",',
       "    services: {",
       "      web: {",

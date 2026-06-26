@@ -1,6 +1,7 @@
 import type { Socket } from "node:net";
 
 import type { Command, DockerConfig } from "#src/config/types.js";
+import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
@@ -131,6 +132,9 @@ export const sessionHandlers: Record<
       await session.reload();
       return ipcOk(req.id, { reloaded: true });
     } catch (error) {
+      // Log the full error (with ConfigError attribution) locally before sending
+      // The message-only IPC response — the running session is left intact (A1).
+      logConfigError(error);
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },

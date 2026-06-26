@@ -1,9 +1,14 @@
+import type { ConfigNotice } from "#src/config/types.js";
+
 export interface IpcRequest {
   id: string;
   method: string;
   session?: string;
   params?: unknown;
 }
+
+/** Payload of the `config.notice` daemon event (cli.warn/info/success). */
+export type ConfigNoticeData = ConfigNotice;
 
 export interface IpcResponse {
   id: string;

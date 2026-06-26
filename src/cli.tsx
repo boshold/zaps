@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { program } from "commander";
 
+import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
   CliError,
@@ -294,8 +295,7 @@ async function upFlow(detach?: boolean): Promise<void> {
       await runDetachedStartAll(sock, session.id, session.name);
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -347,8 +347,7 @@ program
           }
         } catch (error) {
           if (error instanceof CliError) {
-            process.stderr.write(`${error.message}\n`);
-            process.exit(1);
+            renderCliError(error);
           }
           throw error;
         }
@@ -434,8 +433,7 @@ for (const action of ["start", "stop", "restart"] as const) {
         }, globalSession());
       } catch (error) {
         if (error instanceof CliError) {
-          process.stderr.write(`${error.message}\n`);
-          process.exit(1);
+          renderCliError(error);
         }
         throw error;
       }
@@ -480,8 +478,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -560,8 +557,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -674,8 +670,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -711,8 +706,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -743,8 +737,7 @@ program
         return resolveListedSessionId(sessions, globalSession());
       } catch (error) {
         if (error instanceof CliError) {
-          process.stderr.write(`${error.message}\n`);
-          process.exit(1);
+          renderCliError(error);
         }
         throw error;
       }
@@ -804,7 +797,7 @@ program
       return;
     }
 
-    const config = await loadConfig(configPath);
+    const config = await loadConfig(configPath).catch((error: unknown) => renderCliError(error));
 
     const format = resolveFormat(opts);
     if (format !== "text") {
@@ -907,8 +900,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -929,8 +921,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -984,8 +975,7 @@ program
       await runTui({ sessionId: targetSession.id, socketPath: sock });
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }
@@ -1022,8 +1012,7 @@ program
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
-        process.stderr.write(`${error.message}\n`);
-        process.exit(1);
+        renderCliError(error);
       }
       throw error;
     }

@@ -1,7 +1,7 @@
 import { useApp as useInkApp, useInput } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { DockerConfig, UiTaskMode } from "#src/config/types.js";
+import type { DockerConfig, NoticeLevel, UiTaskMode } from "#src/config/types.js";
 import { useConnection } from "#src/hooks/useConnection.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
@@ -154,6 +154,23 @@ export function Router({
       client.off("task.complete", handleTaskComplete);
     };
   }, [client, notify, ui.notifications]);
+
+  // Surface config-eval notices (cli.warn/info/success during a daemon reload)
+  // As transient toasts. `warn` has no ToastLevel, so it maps to `info`.
+  useEffect(() => {
+    function handleConfigNotice(level: NoticeLevel, message: string) {
+      notify({
+        level: level === "warn" ? "info" : level,
+        message,
+        runId: null,
+        sticky: false,
+      });
+    }
+    client.on("config.notice", handleConfigNotice);
+    return () => {
+      client.off("config.notice", handleConfigNotice);
+    };
+  }, [client, notify]);
 
   // Ready gate: delay rendering for minimum splash time only
   const [ready, setReady] = useState(!autoStart);
@@ -436,7 +453,7 @@ export function Router({
           }),
         openLogs: goToLogs,
         openUrl: (url) => {
-          void openInBrowser(url);
+          void openInBrowser(url).catch(() => undefined);
         },
         rebuildDocker: openDockerRebuild,
         zoom: zoomService,

@@ -2,6 +2,8 @@ import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConfigError } from "../../src/config/errors.js";
+
 // eslint-disable-next-line no-unsafe-type-assertion -- Test boundary
 vi.mock("node:net", () => {
   // eslint-disable-next-line no-require-imports, global-require, no-var-requires -- vi.mock factory requires synchronous require
@@ -218,6 +220,21 @@ describe("DaemonServer", () => {
     // Exactly one config load + one layout build for the shared promise.
     expect(mockLoadConfig).toHaveBeenCalledTimes(1);
     expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves no session registered when the config throws a ConfigError", async () => {
+    mockLoadConfig.mockRejectedValueOnce(
+      new ConfigError("invalid config", { kind: "validation", field: "services" }),
+    );
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+
+    await expect(server.create(params)).rejects.toBeInstanceOf(ConfigError);
+    expect(server.sessionCount).toBe(0);
   });
 
   it("clears the in-flight entry on failure so a retry rebuilds (D3)", async () => {

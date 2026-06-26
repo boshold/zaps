@@ -42,12 +42,13 @@ commands: ["node -e \"console.log('migrating...')\"", "node -e \"console.log('do
 
 Tasks with `run` receive a context object:
 
-| Property     | Type                                  | Description                   |
-| ------------ | ------------------------------------- | ----------------------------- |
-| `exec`       | `(cmd, opts?) => Promise<ExecResult>` | Execute a shell command       |
-| `stdout`     | `{ write(text: string): void }`       | Write directly to task output |
-| `services`   | `ServiceContext`                      | Access running services       |
-| `projectDir` | `string`                              | Resolved project directory    |
+| Property     | Type                                  | Description                                                 |
+| ------------ | ------------------------------------- | ----------------------------------------------------------- |
+| `exec`       | `(cmd, opts?) => Promise<ExecResult>` | Execute a shell command                                     |
+| `stdout`     | `{ write(text: string): void }`       | Write directly to task output                               |
+| `services`   | `ServiceContext`                      | Access running services                                     |
+| `projectDir` | `string`                              | Resolved project directory                                  |
+| `url`        | `(service, opts?) => string \| null`  | Build a URL from a service port (also `ctx.services.url()`) |
 
 `exec` options: `{ cwd?: string; env?: Record<string, string> }`
 
@@ -161,16 +162,16 @@ tasks: {
 
 ## Triggering from Hooks
 
-Use `lib.runTask()` to trigger tasks from service or project hooks:
+Use `task.run()` to trigger tasks from service or project hooks:
 
 ```ts
-export function config({ defineProject, runTask }: Library) {
-  return defineProject({
+export function config({ define, task }: Library) {
+  return define({
     services: {
       db: {
         start: "docker compose up db",
         ready: { port: 5432 },
-        onReady: () => runTask("seed"),
+        onReady: () => task.run("seed"),
       },
     },
     tasks: {

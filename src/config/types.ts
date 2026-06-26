@@ -50,6 +50,15 @@ export interface CombinedServiceMeta {
   isOwner: boolean;
 }
 
+// === URL Options ===
+export interface UrlOptions {
+  protocol?: string;
+  auth?: string;
+  host?: string;
+  port?: number;
+  path?: string;
+}
+
 // === Service Context ===
 export interface ServiceContext {
   services: Record<
@@ -61,6 +70,7 @@ export interface ServiceContext {
     }
   >;
   projectDir: string;
+  url(this: void, service: string, opts?: UrlOptions): string | null;
 }
 
 // === Optional Context ===
@@ -69,7 +79,10 @@ export interface OptionalContext {
 }
 
 // === Env Config ===
-export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+export type EnvValue = string | null | undefined;
+export type EnvConfig =
+  | Record<string, EnvValue>
+  | ((ctx: ServiceContext) => Record<string, EnvValue>);
 
 // === Service Flags ===
 export interface ServiceFlags {
@@ -127,6 +140,7 @@ export interface TaskRunContext {
   stdout: { write(text: string): void };
   services: ServiceContext;
   projectDir: string;
+  url(this: void, service: string, opts?: UrlOptions): string | null;
 }
 
 // === Tasks ===
@@ -168,6 +182,9 @@ export interface CwdContext {
   invokeDir: string;
 }
 
+/** Resolver for the `cwd` field. Never returns null — throws `ConfigError` on not-found. */
+export type CwdResolver = (ctx: CwdContext) => string;
+
 // === UI Config ===
 /** Icon theme tier; resolved at startup (Phase 2 `IconTheme`). */
 export type UiIconTheme = "nerd" | "unicode" | "ascii";
@@ -205,17 +222,63 @@ export interface ProjectConfig {
   ui?: UiConfig;
 }
 
+// === Library Namespaces ===
+export interface FindUpOptions {
+  /** Static absolute path to stop at, or the literal `"config"` for the configDir boundary. */
+  stopAt?: string;
+  /** Message for the thrown `ConfigError` when the file is not found. */
+  orFatal?: string;
+}
+
+export interface FindHelpers {
+  up(this: void, filename: string, opts?: FindUpOptions): CwdResolver;
+}
+
+export interface CliHelpers {
+  /** Throws `ConfigError` (`kind: "fatal"`). Does NOT call `process.exit`. */
+  fatal(this: void, message: string, opts?: { field?: string }): never;
+  warn(this: void, message: string): void;
+  info(this: void, message: string): void;
+  success(this: void, message: string): void;
+}
+
+export interface TaskHelpers {
+  run(this: void, key: string): Promise<void>;
+}
+
+export interface ServiceHelpers {
+  start(this: void, name: string): Promise<void>;
+  stop(this: void, name: string): Promise<void>;
+  restart(this: void, name: string): Promise<void>;
+  isRunning(this: void, name: string): boolean;
+}
+
+export interface BrowserHelpers {
+  open(this: void, url: string): Promise<void>;
+}
+
+// === Config Notices ===
+/** `fatal` is a throw, not a notice. */
+export type NoticeLevel = "info" | "success" | "warn";
+export interface ConfigNotice {
+  level: NoticeLevel;
+  message: string;
+}
+export type NoticeSink = (notice: ConfigNotice) => void;
+
 // === Library ===
 export interface Library {
-  defineProject(this: void, config: ProjectConfig): ProjectConfig;
-  runTask(this: void, key: string): Promise<void>;
-  startService(this: void, name: string): Promise<void>;
-  restartService(this: void, name: string): Promise<void>;
-  stopService(this: void, name: string): Promise<void>;
-  isServiceRunning(this: void, name: string): boolean;
-  openInBrowser(this: void, url: string): Promise<void>;
+  define(this: void, config: ProjectConfig): ProjectConfig;
+  find: FindHelpers;
+  cli: CliHelpers;
+  task: TaskHelpers;
+  service: ServiceHelpers;
+  browser: BrowserHelpers;
   node: NodeModules;
 }
+
+// === Config Function ===
+export type ConfigFn = (lib: Library) => ProjectConfig | Promise<ProjectConfig>;
 
 // === Library Actions ===
 export interface LibraryActions {
@@ -224,7 +287,6 @@ export interface LibraryActions {
   restartService: (name: string) => Promise<void>;
   stopService: (name: string) => Promise<void>;
   isServiceRunning: (name: string) => boolean;
-  openInBrowser: (url: string) => Promise<void>;
 }
 
 // === Resolved ===

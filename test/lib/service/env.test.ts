@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ConfigError } from "../../../src/config/errors.js";
 import {
   buildServiceContext,
   formatEnvForShell,
@@ -96,12 +97,43 @@ describe("buildServiceContext", () => {
     const ctx = buildServiceContext(statuses, "/dir", { svc: { cwd: "/dir/backend" } });
     expect(ctx.services.svc.cwd).toBe("/dir/backend");
   });
+
+  it("exposes ctx.url() that builds a URL from the detected port", () => {
+    const statuses = new Map<string, ServiceStatus>([
+      ["api", { name: "api", state: "ready", ports: [3000], retryCount: 0 }],
+      ["db", { name: "db", state: "ready", ports: [5432], retryCount: 0 }],
+    ]);
+
+    const ctx = buildServiceContext(statuses, "/dir");
+
+    expect(typeof ctx.url).toBe("function");
+    expect(ctx.url("api")).toBe("http://localhost:3000");
+    expect(ctx.url("db", { protocol: "postgres", auth: "u:p", path: "/mydb" })).toBe(
+      "postgres://u:p@localhost:5432/mydb",
+    );
+  });
+
+  it("returns null from ctx.url() when no port is detected, dropping it from env", () => {
+    const statuses = new Map<string, ServiceStatus>([
+      ["worker", { name: "worker", state: "ready", ports: [], retryCount: 0 }],
+    ]);
+
+    const ctx = buildServiceContext(statuses, "/dir");
+    expect(ctx.url("worker")).toBeNull();
+    // A ctx.url() in an env callback → null is dropped (P01-T04 null-drop).
+    expect(resolveEnv(() => ({ WORKER_URL: ctx.url("worker") }), ctx)).toEqual({});
+  });
+
+  it("throws ConfigError from ctx.url() for an unknown service", () => {
+    const ctx = buildServiceContext(new Map(), "/dir");
+    expect(() => ctx.url("ghost")).toThrow(ConfigError);
+  });
 });
 
 describe("resolveEnv", () => {
   it("returns static object as-is", () => {
     const env = { FOO: "bar", BAZ: "qux" };
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv(env, ctx)).toEqual({ FOO: "bar", BAZ: "qux" });
   });
 
@@ -111,6 +143,7 @@ describe("resolveEnv", () => {
         db: { port: 5432, ports: [5432], cwd: undefined },
       },
       projectDir: "/dir",
+      url: () => null,
     };
     const result = resolveEnv(
       (c: ServiceContext) => ({ DB_PORT: String(c.services.db?.port ?? "") }),
@@ -120,8 +153,18 @@ describe("resolveEnv", () => {
   });
 
   it("returns empty object when envConfig is undefined", () => {
-    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
     expect(resolveEnv(undefined, ctx)).toEqual({});
+  });
+
+  it("drops null/undefined values from a static object", () => {
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
+    expect(resolveEnv({ A: "x", B: null, C: undefined }, ctx)).toEqual({ A: "x" });
+  });
+
+  it("drops null values returned by a function", () => {
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir", url: () => null };
+    expect(resolveEnv(() => ({ A: "x", B: null }), ctx)).toEqual({ A: "x" });
   });
 });
 

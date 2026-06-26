@@ -102,8 +102,8 @@ ZAPS walks up from the current directory looking for these filenames (first matc
 ```typescript
 import type { Library } from "zaps";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     services: {
       api: {
         start: "npm run dev",
@@ -114,13 +114,19 @@ export function config({ defineProject }: Library) {
 }
 ```
 
+The config function receives the `Library` object, which groups everything into
+namespaces: `define`, `find`, `cli`, `task`, `service`, `browser`, and `node`.
+Destructure just the pieces you use. See [Library API](#library-api) for the full
+reference. The function may be **async** — declare it
+`export async function config(lib) { … }` (the result is awaited).
+
 ### Full Config Reference
 
 ```typescript
 import type { Library } from "zaps";
 
-export function config({ defineProject }: Library) {
-  return defineProject({
+export function config({ define }: Library) {
+  return define({
     name: "my-app",
     cwd: "./packages/app",
 
@@ -245,13 +251,39 @@ cwd: "./customer-1";
 cwd: ({ invokeDir }) => invokeDir; // already the default
 ```
 
+**`find.up(filename, opts?)`** — walk upward from the invoke directory to the first
+directory containing `filename`, and use that as `cwd`. Handy for monorepos where you
+run `zaps` from a nested package but want the project root:
+
+```typescript
+export function config({ define, find }) {
+  return define({
+    cwd: find.up("package.json"),
+    services: {
+      /* … */
+    },
+  });
+}
+```
+
+Options:
+
+- `stopAt` — stop the walk at a boundary: an absolute path, or the literal `"config"`
+  to stop at the config file's directory. `cwd: find.up("package.json", { stopAt: "config" })`.
+- `orFatal` — the message used if `filename` is never found:
+  `cwd: find.up("Cargo.toml", { orFatal: "Run zaps inside a Rust crate" })`.
+
+`find.up` always returns a resolver (never `null`). If the file isn't found, it throws a
+`ConfigError` when the config loads — there's no `?? cli.fatal()` to write. See
+[Error Model](#error-model).
+
 ### Node Built-ins
 
 The `Library` object includes a `node` namespace with common Node.js modules (`path`, `fs`, `process`, `url`, `os`, `child_process`) so configs don't need raw `import` statements:
 
 ```typescript
-export function config({ defineProject, node }: Library) {
-  return defineProject({
+export function config({ define, node }: Library) {
+  return define({
     cwd: ({ configDir }) => node.path.join(configDir, "backend"),
     services: {
       api: {
@@ -295,6 +327,111 @@ down the running session — the old config stays live and the load error is rep
 When ZAPS detects the config file changed on disk, the TUI header shows a
 `config changed — press c to reload` hint; press **`c`** on the dashboard (while no
 service is mid-operation) to apply it.
+
+## Library API
+
+The `Library` object passed to your `config` function groups everything into
+namespaces. Destructure what you need: `config(({ define, find, cli, service }) => …)`.
+
+| Namespace | Member                           | Description                                                                 |
+| --------- | -------------------------------- | --------------------------------------------------------------------------- |
+| `define`  | `(config) => config`             | Validate and return the project config. Throws `ConfigError` on bad config. |
+| `find`    | `up(filename, opts?)`            | Build a `cwd` resolver that walks upward (see [`cwd`](#cwd)).               |
+| `cli`     | `fatal(message, opts?)`          | Abort config eval by throwing a `ConfigError`. Never returns.               |
+| `cli`     | `warn / info / success(message)` | Emit a notice (stderr in the CLI; a TUI toast during a daemon reload).      |
+| `task`    | `run(key)`                       | Run a named task. Only available inside service hooks.                      |
+| `service` | `start / stop / restart(name)`   | Control a service. Only available inside service hooks.                     |
+| `service` | `isRunning(name)`                | Whether a service is currently ready. Hooks only.                           |
+| `browser` | `open(url)`                      | Open a URL in the default browser.                                          |
+| `node`    | `path / fs / process / …`        | Common Node.js modules, no `import` needed.                                 |
+
+`task.*` and `service.*` are only wired up while a session is running, so call them
+from hooks (e.g. `onReady`), not at the top level of `config`. Calling them too early
+throws a clear error.
+
+```typescript
+export function config({ define, cli, service }) {
+  return define({
+    services: {
+      api: {
+        start: "npm run dev",
+        ready: { port: 3000 },
+        env: { API_KEY: process.env.API_KEY ?? cli.fatal("API_KEY is required") },
+      },
+      worker: {
+        run: "npm run worker",
+        onReady: () => service.restart("api"),
+      },
+    },
+  });
+}
+```
+
+### Error Model
+
+Config-eval failures **throw** a `ConfigError` rather than calling `process.exit`.
+This keeps the daemon safe:
+
+- **In-process loads** (`zaps config`) render a styled `✖ <message>` line and exit
+  non-zero.
+- **Daemon-path commands** (`zaps up`, `start`, …) report the same message **unstyled**
+  and exit non-zero.
+- **During a daemon reload**, a thrown `ConfigError` is caught: the running session is
+  left fully intact (validate-then-swap), the old config stays live, and the error is
+  reported — it never tears down your services.
+
+`cli.fatal(message, opts?)` is the explicit escape hatch — it throws a `ConfigError`
+with your message (and optional `field`). Because it returns `never`, it composes in any
+value position: `name: pkg.name ?? cli.fatal("name required")`.
+
+### Config Notices
+
+`cli.warn`, `cli.info`, and `cli.success` surface a short message without aborting:
+
+- In a one-shot CLI run they print a styled line to stderr.
+- During a daemon reload (with the TUI attached) they appear as transient toasts.
+
+```typescript
+export function config({ define, cli }) {
+  if (!process.env.STRIPE_KEY) cli.warn("STRIPE_KEY unset — payments disabled");
+  return define({ services: { app: { start: "npm run dev" } } });
+}
+```
+
+### Async Config
+
+The config function may be `async`:
+
+```typescript
+export async function config({ define, node }) {
+  const pkg = JSON.parse(await node.fs.promises.readFile("package.json", "utf8"));
+  return define({ name: pkg.name, services: { app: { start: "npm run dev" } } });
+}
+```
+
+Async evaluation is bounded by a 30-second timeout: if an async config hangs (awaiting
+something that never resolves), the load fails with a `ConfigError` instead of blocking
+a reload forever. The timeout only covers async waits — a synchronous infinite loop
+isn't interruptible.
+
+### Migrating from the flat API
+
+Earlier versions exposed flat methods on the `Library`. They are now grouped into
+namespaces (a breaking change, with no compatibility shim):
+
+| Old                      | New                       |
+| ------------------------ | ------------------------- |
+| `defineProject(config)`  | `define(config)`          |
+| `runTask(key)`           | `task.run(key)`           |
+| `startService(name)`     | `service.start(name)`     |
+| `stopService(name)`      | `service.stop(name)`      |
+| `restartService(name)`   | `service.restart(name)`   |
+| `isServiceRunning(name)` | `service.isRunning(name)` |
+| `openInBrowser(url)`     | `browser.open(url)`       |
+
+`node` is unchanged. To migrate, update the destructure in your `config` function and
+rename the calls — e.g. `({ defineProject }) => defineProject({…})` becomes
+`({ define }) => define({…})`.
 
 ## Services
 
@@ -575,7 +712,7 @@ services: {
       service: ["caddy", "postgres", "mailpit", "bugsink"],
       expand: {
         postgres: {
-          onReady: () => runTask("prisma:deploy"),
+          onReady: () => task.run("prisma:deploy"),
         },
         bugsink: {
           ready: { http: "http://localhost:8000/health/ready" },
@@ -649,8 +786,37 @@ env: (ctx) => ({
     }
   >;
   projectDir: string;
+  url(service: string, opts?: UrlOptions): string | null;
 }
 ```
+
+### `ctx.url()`
+
+`ctx.url(service, opts?)` builds a URL from a service's detected port, so you don't
+have to hand-assemble strings:
+
+```typescript
+env: (ctx) => ({
+  API_URL: ctx.url("api"), // "http://localhost:3000"
+  DATABASE_URL: ctx.url("db", { protocol: "postgres", auth: "user:pass", path: "/mydb" }),
+  // → "postgres://user:pass@localhost:5432/mydb"
+});
+```
+
+`UrlOptions`: `protocol` (default `"http"`), `auth` (e.g. `"user:pass"`), `host`
+(default `"localhost"`), `port` (override the detected port), `path` (a leading `/` is
+added if missing). IPv6 hosts are bracketed automatically (`http://[::1]:3000`).
+
+Behavior:
+
+- **Unknown service** → throws a `ConfigError`.
+- **No port detected yet** (and no `port` override) → returns `null`.
+- A `null` result is **dropped** from an env object — the variable is simply omitted
+  rather than set to an empty string, so `API_URL: ctx.url("api")` is safe even before
+  the port is up.
+
+`ctx.url()` is available wherever a `ServiceContext` is — dynamic `env`, command
+functions, the `url:` field, and task `run` callbacks (also as `ctx.services.url()`).
 
 ## Tasks
 
@@ -725,6 +891,7 @@ tasks: {
   stdout: { write(text: string): void };
   services: ServiceContext;  // same as dynamic env context
   projectDir: string;
+  url(service: string, opts?: UrlOptions): string | null;  // mirrors services.url()
 }
 ```
 

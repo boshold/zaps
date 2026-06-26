@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createZapsLib } from "../../src/config/builder.js";
+import { ConfigError } from "../../src/config/errors.js";
 
 describe("createZapsLib", () => {
-  it("defineProject returns the parsed config (input fields preserved + ui defaults)", () => {
+  it("define returns the parsed config (input fields preserved + ui defaults)", () => {
     const { lib } = createZapsLib();
     const cfg = {
       name: "test",
@@ -12,7 +13,7 @@ describe("createZapsLib", () => {
       },
     };
 
-    expect(lib.defineProject(cfg)).toEqual({
+    expect(lib.define(cfg)).toEqual({
       ...cfg,
       // The schema resolves the optional `ui` block to its defaults.
       ui: {
@@ -28,7 +29,7 @@ describe("createZapsLib", () => {
   it("throws readable error for invalid config", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: {
           app: { start: 42 },
@@ -37,10 +38,27 @@ describe("createZapsLib", () => {
     ).toThrow();
   });
 
+  it("throws ConfigError(validation) with the offending field path", () => {
+    const { lib } = createZapsLib();
+    let caught: unknown;
+    try {
+      lib.define({
+        name: "test",
+        services: {
+          app: { start: 42 },
+        },
+      } as never);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect(caught).toMatchObject({ kind: "validation", field: "services.app.start" });
+  });
+
   it("throws when service has no start/run/docker", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: { api: {} },
       }),
@@ -50,21 +68,21 @@ describe("createZapsLib", () => {
   it("throws when services is empty", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: {},
       }),
     ).toThrow("Project must have at least one service");
   });
 
-  it("runTask throws before binding", async () => {
+  it("task.run throws before binding", async () => {
     const { lib } = createZapsLib();
-    await expect(lib.runTask("test")).rejects.toThrow(
-      "runTask is not available outside of service hooks",
+    await expect(lib.task.run("test")).rejects.toThrow(
+      "task.run is not available outside of service hooks",
     );
   });
 
-  it("runTask delegates to bound actions after binding", async () => {
+  it("task.run delegates to bound actions after binding", async () => {
     const { lib, bindActions } = createZapsLib();
     const runTask = vi.fn().mockResolvedValue(undefined);
     bindActions({
@@ -73,22 +91,21 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
-      openInBrowser: vi.fn(),
     });
 
-    await lib.runTask("my-task");
+    await lib.task.run("my-task");
 
     expect(runTask).toHaveBeenCalledWith("my-task");
   });
 
-  it("startService throws before binding", async () => {
+  it("service.start throws before binding", async () => {
     const { lib } = createZapsLib();
-    await expect(lib.startService("svc")).rejects.toThrow(
-      "startService is not available outside of service hooks",
+    await expect(lib.service.start("svc")).rejects.toThrow(
+      "service.start is not available outside of service hooks",
     );
   });
 
-  it("startService delegates after binding", async () => {
+  it("service.start delegates after binding", async () => {
     const { lib, bindActions } = createZapsLib();
     const startService = vi.fn().mockResolvedValue(undefined);
     bindActions({
@@ -97,22 +114,21 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
-      openInBrowser: vi.fn(),
     });
 
-    await lib.startService("db");
+    await lib.service.start("db");
 
     expect(startService).toHaveBeenCalledWith("db");
   });
 
-  it("restartService throws before binding", async () => {
+  it("service.restart throws before binding", async () => {
     const { lib } = createZapsLib();
-    await expect(lib.restartService("svc")).rejects.toThrow(
-      "restartService is not available outside of service hooks",
+    await expect(lib.service.restart("svc")).rejects.toThrow(
+      "service.restart is not available outside of service hooks",
     );
   });
 
-  it("restartService delegates after binding", async () => {
+  it("service.restart delegates after binding", async () => {
     const { lib, bindActions } = createZapsLib();
     const restartService = vi.fn().mockResolvedValue(undefined);
     bindActions({
@@ -121,22 +137,21 @@ describe("createZapsLib", () => {
       restartService,
       stopService: vi.fn(),
       isServiceRunning: vi.fn(),
-      openInBrowser: vi.fn(),
     });
 
-    await lib.restartService("api");
+    await lib.service.restart("api");
 
     expect(restartService).toHaveBeenCalledWith("api");
   });
 
-  it("stopService throws before binding", async () => {
+  it("service.stop throws before binding", async () => {
     const { lib } = createZapsLib();
-    await expect(lib.stopService("svc")).rejects.toThrow(
-      "stopService is not available outside of service hooks",
+    await expect(lib.service.stop("svc")).rejects.toThrow(
+      "service.stop is not available outside of service hooks",
     );
   });
 
-  it("stopService delegates after binding", async () => {
+  it("service.stop delegates after binding", async () => {
     const { lib, bindActions } = createZapsLib();
     const stopService = vi.fn().mockResolvedValue(undefined);
     bindActions({
@@ -145,18 +160,17 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService,
       isServiceRunning: vi.fn(),
-      openInBrowser: vi.fn(),
     });
 
-    await lib.stopService("worker");
+    await lib.service.stop("worker");
 
     expect(stopService).toHaveBeenCalledWith("worker");
   });
 
-  it("isServiceRunning throws before binding", () => {
+  it("service.isRunning throws before binding", () => {
     const { lib } = createZapsLib();
-    expect(() => lib.isServiceRunning("svc")).toThrow(
-      "isServiceRunning is not available outside of service hooks",
+    expect(() => lib.service.isRunning("svc")).toThrow(
+      "service.isRunning is not available outside of service hooks",
     );
   });
 
@@ -170,7 +184,7 @@ describe("createZapsLib", () => {
     expect(typeof lib.node.child_process.exec).toBe("function");
   });
 
-  it("isServiceRunning delegates after binding", () => {
+  it("service.isRunning delegates after binding", () => {
     const { lib, bindActions } = createZapsLib();
     const isServiceRunning = vi.fn().mockReturnValue(true);
     bindActions({
@@ -179,26 +193,26 @@ describe("createZapsLib", () => {
       restartService: vi.fn(),
       stopService: vi.fn(),
       isServiceRunning,
-      openInBrowser: vi.fn(),
     });
 
-    const result = lib.isServiceRunning("db");
+    const result = lib.service.isRunning("db");
 
     expect(isServiceRunning).toHaveBeenCalledWith("db");
     expect(result).toBe(true);
   });
 
-  it("openInBrowser works without binding (calls lib/open directly)", async () => {
+  it("exposes find and cli namespaces", () => {
     const { lib } = createZapsLib();
-    // OpenInBrowser should not throw even without bindActions
-    // It calls the lib/open module directly, not through actions
-    await expect(lib.openInBrowser("http://localhost:3000")).resolves.toBeUndefined();
+    expect(typeof lib.find.up).toBe("function");
+    expect(typeof lib.cli.fatal).toBe("function");
+    expect(typeof lib.cli.warn).toBe("function");
+    expect(typeof lib.browser.open).toBe("function");
   });
 
   it("throws when task has both commands and run", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: { app: { start: "npm start" } },
         tasks: {
@@ -217,7 +231,7 @@ describe("createZapsLib", () => {
   it("throws when task has neither commands nor run", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: { app: { start: "npm start" } },
         tasks: {
@@ -232,7 +246,7 @@ describe("createZapsLib", () => {
   it("throws when task has popup with run", () => {
     const { lib } = createZapsLib();
     expect(() =>
-      lib.defineProject({
+      lib.define({
         name: "test",
         services: { app: { start: "npm start" } },
         tasks: {

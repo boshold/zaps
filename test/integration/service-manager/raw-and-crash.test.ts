@@ -55,7 +55,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       configPath,
       [
         "export function config(lib) {",
-        "  return lib.defineProject({",
+        "  return lib.define({",
         '    name: "test-raw",',
         "    services: {",
         "      svc: {",
@@ -99,7 +99,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       configPath,
       [
         "export function config(lib) {",
-        "  return lib.defineProject({",
+        "  return lib.define({",
         '    name: "test-crash",',
         "    services: {",
         "      svc: {",
@@ -148,7 +148,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       configPath,
       [
         "export function config(lib) {",
-        "  return lib.defineProject({",
+        "  return lib.define({",
         '    name: "test-crash-no-restart",',
         "    services: {",
         "      svc: {",

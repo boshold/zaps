@@ -1,4 +1,6 @@
-import type { EnvConfig, ServiceContext, ServiceStatus } from "./types.js";
+import { buildUrl } from "#src/config/helpers/context.js";
+
+import type { EnvConfig, ServiceContext, ServiceStatus, UrlOptions } from "./types.js";
 
 /**
  * Build a ServiceContext from current service statuses. Each service's `cwd`
@@ -18,7 +20,11 @@ export function buildServiceContext(
       cwd: servicesConfig[name]?.cwd ?? projectDir,
     };
   }
-  return { services, projectDir };
+  return {
+    services,
+    projectDir,
+    url: (name: string, opts?: UrlOptions) => buildUrl(services, name, opts),
+  };
 }
 
 /**
@@ -31,10 +37,16 @@ export function resolveEnv(
   if (!envConfig) {
     return {};
   }
-  if (typeof envConfig === "function") {
-    return envConfig(ctx);
+  const record = typeof envConfig === "function" ? envConfig(ctx) : envConfig;
+  // Drop null/undefined values (e.g. an unresolved `ctx.url()`) so the variable
+  // Is omitted rather than spawned as an empty string.
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== null && value !== undefined) {
+      resolved[key] = value;
+    }
   }
-  return envConfig;
+  return resolved;
 }
 
 /**

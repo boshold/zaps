@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type {
   CwdContext,
+  EnvValue,
   LayoutSplit,
   OptionalContext,
   ServiceContext,
@@ -71,8 +72,8 @@ const dockerConfigSchema = z.object({
 
 // === Env Config ===
 const envConfigSchema = z.union([
-  z.record(z.string(), z.string()),
-  z.custom<(ctx: ServiceContext) => Record<string, string>>((v) => typeof v === "function"),
+  z.record(z.string(), z.union([z.string(), z.null()])),
+  z.custom<(ctx: ServiceContext) => Record<string, EnvValue>>((v) => typeof v === "function"),
 ]);
 
 // === URL Config ===

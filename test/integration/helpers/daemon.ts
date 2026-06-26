@@ -42,7 +42,7 @@ export function writeTestConfig(dir: string, port: number): string {
     configPath,
     [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       '    name: "test-daemon",',
       "    services: {",
       "      web: {",
@@ -70,7 +70,7 @@ export function writeMultiServiceConfig(dir: string, port1: number, port2: numbe
     configPath,
     [
       "export function config(lib) {",
-      "  return lib.defineProject({",
+      "  return lib.define({",
       '    name: "test-multi",',
       "    services: {",
       "      api: {",
