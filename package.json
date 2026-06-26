@@ -1,13 +1,47 @@
 {
-  "name": "zaps",
-  "version": "0.1.0",
+  "name": "@bosdev/zaps",
+  "version": "0.8.0",
+  "description": "Zero Ass Pain Setup — a tmux-based dev environment orchestrator: define services, dependencies, tasks, and layout in one config file, with ready detection, crash recovery, and a keyboard-driven TUI.",
+  "keywords": [
+    "cli",
+    "dev-environment",
+    "developer-tools",
+    "ink",
+    "process-manager",
+    "react",
+    "service-orchestrator",
+    "tmux",
+    "tui"
+  ],
+  "homepage": "https://github.com/boshold/zaps#readme",
+  "bugs": {
+    "url": "https://github.com/boshold/zaps/issues"
+  },
+  "license": "MIT",
+  "author": "Kevin Boshold",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/boshold/zaps.git"
+  },
   "bin": {
     "zaps": "./bin/zaps"
   },
+  "files": [
+    "dist/**/*.mjs",
+    "dist/**/*.cjs",
+    "dist/**/*.d.ts",
+    "bin",
+    ".claude/skills",
+    "README.md",
+    "LICENSE"
+  ],
   "type": "module",
   "types": "./dist/config/index.d.ts",
   "imports": {
     "#src/*": "./src/*"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
@@ -48,6 +82,9 @@
     "testcontainers": "^12.0.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "packageManager": "pnpm@10.34.3+sha512.f2c531b08829d7be7f03c90addc266615f9c5477463e4bf1d275cb263ce9ea57cf0d5599110d94649a9bb3fed9f0b5efcea74a7016b61532a24cb9ad87860c1d"
 }

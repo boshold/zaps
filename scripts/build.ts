@@ -17,6 +17,24 @@ const externalNativeBabel: Plugin = {
   },
 };
 
+/** Version for `zaps --version`: CI tag (ZAPS_VERSION) → package.json → "dev". */
+function resolveVersion(): string {
+  const envVersion = process.env.ZAPS_VERSION;
+  if (envVersion) {
+    return envVersion;
+  }
+  const parsed: unknown = JSON.parse(readFileSync("./package.json", "utf8"));
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "version" in parsed &&
+    typeof parsed.version === "string"
+  ) {
+    return parsed.version;
+  }
+  return "dev";
+}
+
 await build({
   entryPoints: ["./src/cli.tsx"],
   bundle: true,
@@ -26,6 +44,7 @@ await build({
   packages: "external",
   plugins: [externalNativeBabel],
   define: {
+    __VERSION__: JSON.stringify(resolveVersion()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __BUILD_BRANCH__: JSON.stringify(
       execSync("git rev-parse --abbrev-ref HEAD", { encoding: "utf8" }).trim(),

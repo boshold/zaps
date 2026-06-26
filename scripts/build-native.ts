@@ -85,9 +85,28 @@ export * from "./generated/YGEnums.js";
   },
 };
 
+/** Version for `zaps --version`: CI tag (ZAPS_VERSION) → package.json → "dev". */
+function resolveVersion(envVersion: string | undefined, parsed: unknown): string {
+  if (envVersion) {
+    return envVersion;
+  }
+  if (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "version" in parsed &&
+    typeof parsed.version === "string"
+  ) {
+    return parsed.version;
+  }
+  return "dev";
+}
+
 // Step 1 – bundle to single ESM file (TLA-free thanks to plugins)
 const branchOutput = await $`git rev-parse --abbrev-ref HEAD`.text();
 const branchName = branchOutput.trim();
+// Version for `zaps --version`: CI tag (ZAPS_VERSION) → package.json → "dev".
+const pkgJson: unknown = await Bun.file("package.json").json();
+const version = resolveVersion(process.env.ZAPS_VERSION, pkgJson);
 const result = await Bun.build({
   entrypoints: ["./src/cli.tsx"],
   target: "bun",
@@ -95,6 +114,7 @@ const result = await Bun.build({
   naming: "cli.js",
   plugins: [tlaFixPlugin, babelAssetPlugin],
   define: {
+    __VERSION__: JSON.stringify(version),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __BUILD_BRANCH__: JSON.stringify(branchName),
   },
