@@ -107,8 +107,8 @@ services: {
     lazyPane: true,
   },
 
-  // Explicit opt-out: keep the legacy empty-reserved-pane-at-boot behavior.
-  legacyConsole: {
+  // Opt out of lazy panes: reserve an empty pane at boot even when not autostarted.
+  console: {
     start: "tail -f /var/log/app.log",
     flags: { start: false },
     lazyPane: false,

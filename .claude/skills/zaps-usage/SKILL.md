@@ -125,8 +125,8 @@ zaps --help # see all functions
   declared layout position; a `zaps stop <svc>` drops the pane and re-expands
   survivors. Crash + restart keep the pane. `zaps logs <svc>` returns `[]`
   before the first start, streams live while the service is running, and
-  returns the retained history after stop. To keep the legacy
-  idle-empty-reserved-pane behavior, set `lazyPane: false` on the service.
+  returns the retained history after stop. To reserve an empty pane at boot
+  instead, set `lazyPane: false` on the service.
 - **Config reload** is validate-then-swap: an invalid edit is reported and the running
   session keeps the old config (it is never torn down). In the TUI, a changed config
   shows a `config changed — press c to reload` header hint; press `c` (when idle) to apply.
