@@ -77,12 +77,18 @@ zaps               # Launch
 
 ### Config & Setup
 
-| Command                           | Description                                            |
-| --------------------------------- | ------------------------------------------------------ |
-| `zaps config`                     | Validate and print resolved config. `--json`, `--path` |
-| `zaps init`                       | Scaffold a starter `.zaps.mts` config                  |
-| `zaps attach [session]`           | Attach TUI to a running session                        |
-| `zaps daemon start\|stop\|status` | Daemon management                                      |
+| Command                                | Description                                                            |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| `zaps config`                          | Validate and print resolved config. `--json`, `--toon`, `--path`      |
+| `zaps reload`                          | Reload config for the running session (CLI form of the dashboard `c`) |
+| `zaps init`                            | Scaffold a starter `.zaps.mts` config                                 |
+| `zaps attach`                          | Attach TUI to a running session (use `-s` to choose one)              |
+| `zaps daemon start\|stop\|status\|ping` | Daemon management (`ping` checks the daemon is responsive)             |
+
+### Selecting a session & output format
+
+- **`-s, --session <id\|name>`** is a global flag (place it before the command): `zaps -s my-app attach`, `zaps -s my-app down`. It matches by exact id, exact name, then id/name prefix. When omitted, ZAPS resolves the session for the current directory; if several match it lists them and asks you to disambiguate.
+- **Output format** — query/service commands print a human table by default. Pass `--json` (pretty JSON) or `--toon` ([TOON](https://github.com/toon-format/toon)) for machine output, or set `ZAPS_FORMAT=json|toon` to make it the default. Coding agents (detected via `CLAUDECODE` / `CURSOR_TRACE_DIR`) default to TOON automatically.
 
 ## Configuration
 
@@ -439,8 +445,8 @@ rename the calls — e.g. `({ defineProject }) => defineProject({…})` becomes
 
 | Option          | Type                                        | Default | Description                                                                                   |
 | --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------- |
-| `start`         | `string \| () => string`                    | —       | Command to start the service                                                                  |
-| `run`           | `string \| () => string`                    | —       | Alias for `start`                                                                             |
+| `start`         | `string \| () => string`                    | —       | Command to start the service (long-running process)                                           |
+| `run`           | `string \| () => string`                    | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
 | `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                         |
 | `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                 |
 | `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                            |
@@ -673,6 +679,13 @@ can't be mistaken for each other. The project name is resolved by precedence:
 > containers once. If containers already exist under the old (unpinned) name,
 > ZAPS prints a one-time warning suggesting `docker compose -p <old> down`.
 
+> **Tasks don't inherit the pin.** Pinning is applied only to the compose commands
+> ZAPS runs for `docker` **services**. A task that shells out to bare `docker compose …`
+> runs under Compose's own default project name, so it won't see the containers ZAPS
+> started. Pass the project explicitly — `docker compose -p "$ZAPS_COMPOSE_PROJECT" …`
+> (set `ZAPS_COMPOSE_PROJECT` where the daemon spawns) — or operate logically (e.g.
+> `prisma migrate reset` instead of `docker compose down -v`).
+
 ### Expanded Docker Services
 
 When you have multiple Docker Compose services that can share a single tmux pane, use `expand: true` to split them into individually addressable services:
@@ -759,7 +772,9 @@ restart: {
 }
 ```
 
-Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls every 2s.
+Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls the
+pane every 2s for `raw`-mode services and every 10s for wrapper-mode ones (where the
+wrapper's exit notification is the primary signal, so the poll is just a backstop).
 
 ### Dynamic Environment
 
@@ -1073,14 +1088,16 @@ ui: {
 
 ## Service States
 
+Valid transitions (the manager rejects any other move):
+
 ```
-stopped ──> starting ──> ready ──> stopping ──> stopped
-               │            │
-               v            v
-             error      restarting ──> starting
-               │
-               v
-            starting (retry)
+stopped     → starting
+starting    → ready | error | stopping
+ready       → stopping | restarting | error
+stopping    → stopped
+restarting  → starting | stopping | error
+error       → starting           (retry / manual start)
+unavailable → —                  (terminal: optional service whose binary/check failed)
 ```
 
 | State                                  | Indicator      |
