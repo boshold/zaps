@@ -31,10 +31,16 @@ export function resolveEnv(
   if (!envConfig) {
     return {};
   }
-  if (typeof envConfig === "function") {
-    return envConfig(ctx);
+  const record = typeof envConfig === "function" ? envConfig(ctx) : envConfig;
+  // Drop null/undefined values (e.g. an unresolved `ctx.url()`) so the variable
+  // Is omitted rather than spawned as an empty string.
+  const resolved: Record<string, string> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== null && value !== undefined) {
+      resolved[key] = value;
+    }
   }
-  return envConfig;
+  return resolved;
 }
 
 /**

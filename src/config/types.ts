@@ -69,7 +69,10 @@ export interface OptionalContext {
 }
 
 // === Env Config ===
-export type EnvConfig = Record<string, string> | ((ctx: ServiceContext) => Record<string, string>);
+export type EnvValue = string | null | undefined;
+export type EnvConfig =
+  | Record<string, EnvValue>
+  | ((ctx: ServiceContext) => Record<string, EnvValue>);
 
 // === Service Flags ===
 export interface ServiceFlags {

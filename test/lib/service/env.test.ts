@@ -123,6 +123,16 @@ describe("resolveEnv", () => {
     const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
     expect(resolveEnv(undefined, ctx)).toEqual({});
   });
+
+  it("drops null/undefined values from a static object", () => {
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    expect(resolveEnv({ A: "x", B: null, C: undefined }, ctx)).toEqual({ A: "x" });
+  });
+
+  it("drops null values returned by a function", () => {
+    const ctx: ServiceContext = { services: {}, projectDir: "/dir" };
+    expect(resolveEnv(() => ({ A: "x", B: null }), ctx)).toEqual({ A: "x" });
+  });
 });
 
 describe("shellEscape", () => {
