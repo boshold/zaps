@@ -9,6 +9,7 @@ import { RESERVED_TASK_SHORTCUT_KEYS } from "#src/lib/taskShortcuts.js";
 import { validateLayoutSizes } from "#src/lib/tmux-layout.js";
 
 import { createZapsLib } from "./builder.js";
+import { ConfigError } from "./errors.js";
 import { expandOverrideSchema } from "./schema.js";
 import type {
   CombinedServiceMeta,
@@ -578,7 +579,31 @@ export async function loadConfig(configPath: string, invokeDir?: string): Promis
   const configDir = path.dirname(configPath);
   const resolvedInvokeDir = invokeDir ?? process.cwd();
   const { lib, bindActions } = createZapsLib();
-  const project: ProjectConfig = configFn(lib);
+
+  // The config function may be sync or async. Await it and bound the eval with a
+  // Timeout so a hanging async config cannot block daemon reload forever. The
+  // Timeout only covers async hangs (pending I/O/microtasks); a synchronous CPU
+  // Hang is not interruptible and cannot be caught here.
+  const project: ProjectConfig = await (async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+    try {
+      return await Promise.race([
+        Promise.resolve<ProjectConfig>(configFn(lib)),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new ConfigError(`config evaluation timed out after 30s: ${absolutePath}`, {
+                kind: "validation",
+                file: absolutePath,
+              }),
+            );
+          }, 30_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
 
   normalizeReadyOutputFlags(project);
 
