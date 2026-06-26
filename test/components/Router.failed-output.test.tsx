@@ -121,7 +121,7 @@ async function pressKey(stdin: { write: (data: string) => void }, data: string) 
  * Mounts only after an async `getTaskOutput` fetch resolves, so a fixed sleep
  * Races under full-suite load — wait on the actual condition instead.
  */
-async function waitFor(predicate: () => boolean, timeoutMs = 2000, pollMs = 10) {
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000, pollMs = 10) {
   const start = Date.now();
   while (!predicate()) {
     if (Date.now() - start >= timeoutMs) {
@@ -195,7 +195,7 @@ describe("Router failure → toast / notifier / failed-output overlay", () => {
     await waitFor(() => overlay?.top?.id === FAILED_OUTPUT_ID);
     expect(overlay?.top?.id).toBe(FAILED_OUTPUT_ID);
     expect(client.getTaskOutput).toHaveBeenCalledWith("run_1");
-  });
+  }, 20_000);
 
   it("`f` is a no-op when there is no sticky failure", async () => {
     const client = createMockClient();
@@ -229,5 +229,5 @@ describe("Router failure → toast / notifier / failed-output overlay", () => {
     expect(overlay?.isOpen).toBe(false);
     await waitFor(() => toasts?.toasts.filter((t) => t.sticky && t.runId === "run_1").length === 0);
     expect(toasts?.toasts.filter((t) => t.sticky && t.runId === "run_1").length).toBe(0);
-  });
+  }, 20_000);
 });

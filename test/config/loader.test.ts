@@ -164,6 +164,33 @@ describe("loadConfig", () => {
     expect(result.project.name).toBe("async-project");
   });
 
+  it("rejects with ConfigError when async config eval exceeds the timeout", async () => {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config() {
+        // Never resolves → exercises the 30s eval-timeout backstop.
+        return new Promise(() => {});
+      }
+    `,
+    );
+
+    vi.useFakeTimers();
+    try {
+      const project = loadConfig(configPath, tmpDir);
+      const assertion = expect(project).rejects.toMatchObject({
+        name: "ConfigError",
+        kind: "validation",
+        file: path.resolve(process.cwd(), configPath),
+      });
+      // Flush the jiti-import microtasks and fire the 30s backstop.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("throws ConfigError when cwd function returns a non-string", async () => {
     const configPath = writeConfig(
       ".zaps.ts",
