@@ -351,10 +351,13 @@ throws a clear error.
 
 ```typescript
 export function config({ define, cli, service }) {
-  const apiKey = process.env.API_KEY ?? cli.fatal("API_KEY is required");
   return define({
     services: {
-      api: { start: "npm run dev", ready: { port: 3000 } },
+      api: {
+        start: "npm run dev",
+        ready: { port: 3000 },
+        env: { API_KEY: process.env.API_KEY ?? cli.fatal("API_KEY is required") },
+      },
       worker: {
         run: "npm run worker",
         onReady: () => service.restart("api"),
@@ -369,8 +372,10 @@ export function config({ define, cli, service }) {
 Config-eval failures **throw** a `ConfigError` rather than calling `process.exit`.
 This keeps the daemon safe:
 
-- **From the CLI** (e.g. `zaps config`, `zaps up`), a `ConfigError` is rendered as a
-  styled `✖ <message>` line and the process exits non-zero.
+- **In-process loads** (`zaps config`) render a styled `✖ <message>` line and exit
+  non-zero.
+- **Daemon-path commands** (`zaps up`, `start`, …) report the same message **unstyled**
+  and exit non-zero.
 - **During a daemon reload**, a thrown `ConfigError` is caught: the running session is
   left fully intact (validate-then-swap), the old config stays live, and the error is
   reported — it never tears down your services.
