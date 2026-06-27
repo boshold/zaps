@@ -38,7 +38,10 @@ npm install -g @bosdev/zaps
 # or: pnpm add -g @bosdev/zaps
 ```
 
-The package name is `@bosdev/zaps`; the installed command is `zaps`.
+The package name is `@bosdev/zaps`; the installed command is `zaps`. The native
+binary for your platform (`linux`/`darwin`, `x64`/`arm64`) is installed
+automatically as an optional dependency and used when present; otherwise the
+bundled Node build runs.
 
 ### Prebuilt binary (no Node required)
 

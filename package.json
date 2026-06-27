@@ -83,6 +83,12 @@
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
+  "optionalDependencies": {
+    "@bosdev/zaps-darwin-arm64": "0.8.0",
+    "@bosdev/zaps-darwin-x64": "0.8.0",
+    "@bosdev/zaps-linux-arm64": "0.8.0",
+    "@bosdev/zaps-linux-x64": "0.8.0"
+  },
   "engines": {
     "node": ">=22"
   },
