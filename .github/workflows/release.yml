@@ -70,10 +70,15 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
       - run: pnpm install --frozen-lockfile
+      # Build while package.json still matches the lockfile. The prepare step
+      # below injects optionalDependencies into package.json, after which any
+      # pnpm command would abort under verifyDepsBeforeRun (lockfile mismatch),
+      # so the post-mutation scripts run via the tsx binary directly.
+      - run: pnpm build
       - name: Set package version to tag
         run: npm version "$ZAPS_VERSION" --no-git-tag-version --allow-same-version
       - name: Prepare platform packages
-        run: pnpm exec tsx scripts/prepare-npm-platform-packages.ts
+        run: node_modules/.bin/tsx scripts/prepare-npm-platform-packages.ts
       - name: Publish platform packages
         run: |
           for dir in npm-platforms/*/; do
@@ -81,7 +86,6 @@ jobs:
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: pnpm build
       - name: Publish main package
         run: npm publish --access public --provenance
         env:
