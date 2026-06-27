@@ -1,7 +1,8 @@
 <div align='center'>
    <p>
      
-![ZAPS](https://github.com/user-attachments/assets/a20356a5-8dd4-4ab8-a6ba-ef5daaa98108)
+<img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/banner.png" alt="ZAPS" width="600">
+
 
    <p>
       <a href="https://github.com/boshold/zaps/blob/main/LICENSE">
