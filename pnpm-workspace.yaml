@@ -5,8 +5,8 @@
 # detected and yanked within hours.
 # On upgrade to pnpm 11: add minimumReleaseAgeStrict: true (v11-only setting).
 minimumReleaseAge: 10080 # minutes (7 days)
-# minimumReleaseAgeExclude: # escape hatch for emergency CVE fixes — keep narrow, with owner + removal date
-#   - "pkg@1.2.3"
+minimumReleaseAgeExclude: # escape hatch for emergency CVE fixes — keep narrow, with owner + removal date
+  - "vite@7.3.5" # CVE fix (GHSA high+medium); owner kboshold; remove after 2026-07-02 (then it ages past minimumReleaseAge)
 
 # Fail install if a package's provenance/trusted-publisher evidence weakens
 # vs an earlier release (stolen-token republish pattern).
@@ -33,3 +33,5 @@ overrides:
   express-rate-limit: ^8.2.2
   "minimatch@<5.1.8": ^5.1.8
   rollup: ^4.59.0
+  "undici@>=7.0.0 <7.28.0": ^7.28.0 # CVE fix (Dependabot high/medium/low)
+  "vite@>=7.0.0 <7.3.5": 7.3.5 # CVE fix (Dependabot high/medium)
