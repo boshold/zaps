@@ -3,7 +3,6 @@
      
 <img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/banner.png" alt="ZAPS" width="600">
 
-
    <p>
       <a href="https://github.com/boshold/zaps/blob/main/LICENSE">
          <picture>
@@ -142,7 +141,7 @@ ZAPS walks up from the current directory looking for these filenames (first matc
 ### Minimal Config
 
 ```typescript
-import type { Library } from "zaps";
+import type { Library } from "@bosdev/zaps";
 
 export function config({ define }: Library) {
   return define({
@@ -165,7 +164,7 @@ reference. The function may be **async** — declare it
 ### Full Config Reference
 
 ```typescript
-import type { Library } from "zaps";
+import type { Library } from "@bosdev/zaps";
 
 export function config({ define }: Library) {
   return define({

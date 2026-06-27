@@ -26,7 +26,7 @@ ZAPS walks up from cwd to filesystem root, checking each directory for config fi
 Config files must export a `config` function (named or default export). The function receives a `Library` object and must return a `ProjectConfig` via `define()`.
 
 ```ts
-import type { Library } from "zaps";
+import type { Library } from "@bosdev/zaps";
 
 export function config({ define }: Library) {
   return define({
@@ -210,12 +210,12 @@ Run `zaps init` to create a starter `.zaps.mts` in the current directory.
 
 - Writes a `.zaps.mts` with a single placeholder service
 - Fails if any config variant already exists in the directory
-- Replaces `{{ZAPS_PATH}}` in the template with the resolved import path (defaults to `"zaps"`)
+- Replaces `{{ZAPS_PATH}}` in the template with the resolved import path (defaults to `"@bosdev/zaps"`)
 
 Generated file:
 
 ```ts
-import type { Library } from "zaps";
+import type { Library } from "@bosdev/zaps";
 
 export function config({ define }: Library) {
   return define({

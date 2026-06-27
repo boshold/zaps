@@ -15,25 +15,25 @@ const CONFIG_FILENAMES = [
 ];
 
 /**
- * Resolve the directory of the installed `zaps` package so a scaffolded config's
- * `import type { Library } from "..."` resolves for global/native installs where
- * a bare `"zaps"` specifier is not in the project's `node_modules` (G8). Resolves
- * `zaps/package.json` (an explicit subpath that works without an `exports`/`main`
- * field) via `createRequire().resolve` (a node builtin available in all three
- * runtimes — tsx dev, node bundle, bun native binary) and returns its directory;
- * the package's `types` field then points the editor/typechecker at the
- * declarations. Falls back to the bare `"zaps"` specifier on any failure (e.g.
- * `zaps` is a normal local dependency, or resolution is unavailable) so it never
- * crashes.
+ * Resolve the directory of the installed `@bosdev/zaps` package so a scaffolded
+ * config's `import type { Library } from "..."` resolves for global/native
+ * installs where a bare `"@bosdev/zaps"` specifier is not in the project's
+ * `node_modules` (G8). Resolves `@bosdev/zaps/package.json` (an explicit subpath
+ * that works without an `exports`/`main` field) via `createRequire().resolve` (a
+ * node builtin available in all three runtimes — tsx dev, node bundle, bun
+ * native binary) and returns its directory; the package's `types` field then
+ * points the editor/typechecker at the declarations. Falls back to the bare
+ * `"@bosdev/zaps"` specifier on any failure (e.g. `@bosdev/zaps` is a normal
+ * local dependency, or resolution is unavailable) so it never crashes.
  *
  * @internal Exported for testing.
  */
 export function getZapsPath(): string {
   try {
     const require = createRequire(import.meta.url);
-    return path.dirname(require.resolve("zaps/package.json"));
+    return path.dirname(require.resolve("@bosdev/zaps/package.json"));
   } catch {
-    return "zaps";
+    return "@bosdev/zaps";
   }
 }
 

@@ -35,7 +35,7 @@ Activate this skill when the user:
 ## Config Skeleton
 
 ```ts
-import type { Library } from "zaps";
+import type { Library } from "@bosdev/zaps";
 
 export function config({ define }: Library) {
   return define({
@@ -59,7 +59,7 @@ The `Library` object groups everything into namespaces — destructure what you 
 - The function receives a `Library` object and must call `define()`
 - At least one service is required in the `services` record
 - Each service needs exactly one of: `start`, `run`, or `docker`
-- Import the `Library` type from the `"zaps"` package
+- Import the `Library` type from the `"@bosdev/zaps"` package
 - The file must be `.zaps.mts` or `.zaps.ts` (TypeScript, ESM)
 
 ## Quick Reference

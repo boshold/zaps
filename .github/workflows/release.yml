@@ -79,15 +79,29 @@ jobs:
         run: npm version "$ZAPS_VERSION" --no-git-tag-version --allow-same-version
       - name: Prepare platform packages
         run: node_modules/.bin/tsx scripts/prepare-npm-platform-packages.ts
+      # Idempotent: skip versions already on the registry so a re-run after a
+      # partial failure can complete (npm versions are immutable).
       - name: Publish platform packages
         run: |
           for dir in npm-platforms/*/; do
-            npm publish "$dir" --access public --provenance
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version already published — skipping"
+            else
+              npm publish "$dir" --access public --provenance
+            fi
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish main package
-        run: npm publish --access public --provenance
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "@bosdev/zaps@$version" version >/dev/null 2>&1; then
+            echo "@bosdev/zaps@$version already published — skipping"
+          else
+            npm publish --access public --provenance
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

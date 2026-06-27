@@ -17,17 +17,17 @@ describe("getZapsPath (G8)", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the package directory when zaps/package.json resolves", () => {
-    const pkgJson = path.join("/opt", "global", "node_modules", "zaps", "package.json");
+  it("returns the package directory when @bosdev/zaps/package.json resolves", () => {
+    const pkgJson = path.join("/opt", "global", "node_modules", "@bosdev", "zaps", "package.json");
     resolveMock.mockReturnValue(pkgJson);
     expect(getZapsPath()).toBe(path.dirname(pkgJson));
-    expect(resolveMock).toHaveBeenCalledWith("zaps/package.json");
+    expect(resolveMock).toHaveBeenCalledWith("@bosdev/zaps/package.json");
   });
 
-  it("falls back to the bare 'zaps' specifier when resolution throws", () => {
+  it("falls back to the bare '@bosdev/zaps' specifier when resolution throws", () => {
     resolveMock.mockImplementation(() => {
-      throw new Error("Cannot find module 'zaps/package.json'");
+      throw new Error("Cannot find module '@bosdev/zaps/package.json'");
     });
-    expect(getZapsPath()).toBe("zaps");
+    expect(getZapsPath()).toBe("@bosdev/zaps");
   });
 });

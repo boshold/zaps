@@ -25,7 +25,7 @@ describe("generateTemplate", () => {
 
   it("replaces zaps import path", async () => {
     const result = await generateTemplate();
-    expect(result).toContain('from "zaps"');
+    expect(result).toContain('from "@bosdev/zaps"');
     expect(result).not.toContain("{{ZAPS_PATH}}");
   });
 
