@@ -154,3 +154,7 @@ vite.config.ts.timestamp-*
 !.claude/skills/
 !.claude/skills/**
 
+
+# CI: generated per-platform npm packages
+npm-platforms/
+artifacts/

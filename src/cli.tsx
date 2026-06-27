@@ -33,13 +33,14 @@ import { installResizeReset } from "./lib/screen-reset.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
+declare const __VERSION__: string;
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
 
 program
   .name("zaps")
   .version(
-    `0.1.0 (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`,
+    `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`,
   )
   .description("Terminal session manager")
   .option("-s, --session <session>", "Target session by id/name prefix");

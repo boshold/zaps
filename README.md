@@ -1,13 +1,14 @@
 <div align='center'>
    <p>
      
-![ZAPS](https://github.com/user-attachments/assets/a20356a5-8dd4-4ab8-a6ba-ef5daaa98108)
+<img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/banner.png" alt="ZAPS" width="600">
+
 
    <p>
-      <a href="https://github.com/kboshold/zaps/blob/master/LICENSE">
+      <a href="https://github.com/boshold/zaps/blob/main/LICENSE">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=cba6f7&labelColor=b4befe">
-            <img src="https://img.shields.io/github/license/kpalatzky/nvim.dotfiles.svg?color=8839ef" alt="MIT License"/>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/boshold/zaps.svg?color=cba6f7&labelColor=b4befe">
+            <img src="https://img.shields.io/github/license/boshold/zaps.svg?color=8839ef" alt="MIT License"/>
          </picture>
       </a>
       <a href="https://github.com/tmux/tmux/wiki#-is-awesome">
@@ -27,7 +28,42 @@
 
 ## Prerequisites
 
-- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome)
+- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5a)
+
+## Install
+
+### npm (Node >= 22)
+
+```bash
+npm install -g @bosdev/zaps
+# or: pnpm add -g @bosdev/zaps
+```
+
+The package name is `@bosdev/zaps`; the installed command is `zaps`. The native
+binary for your platform (`linux`/`darwin`, `x64`/`arm64`) is installed
+automatically as an optional dependency and used when present; otherwise the
+bundled Node build runs.
+
+### Prebuilt binary (no Node required)
+
+Download the asset for your platform from the
+[latest release](https://github.com/boshold/zaps/releases/latest)
+(`zaps-linux-x64`, `zaps-linux-arm64`, `zaps-darwin-x64`, `zaps-darwin-arm64`),
+then make it executable and put it on your `PATH`:
+
+```bash
+# Example: Linux x64
+curl -fsSL -o zaps https://github.com/boshold/zaps/releases/latest/download/zaps-linux-x64
+chmod +x zaps
+sudo mv zaps /usr/local/bin/zaps
+```
+
+Optionally verify the download against `SHA256SUMS` from the same release:
+
+```bash
+curl -fsSL -O https://github.com/boshold/zaps/releases/latest/download/SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
 
 ## Quick Start
 
@@ -1140,7 +1176,7 @@ Skills are **recommended over MCP** because they load reference docs on-demand r
 Copy the `.claude/skills/` directory into your project:
 
 ```bash
-cp -r node_modules/zaps/.claude/skills/ .claude/skills/
+cp -r node_modules/@bosdev/zaps/.claude/skills/ .claude/skills/
 ```
 
 Claude Code will automatically discover and use the skills when relevant.

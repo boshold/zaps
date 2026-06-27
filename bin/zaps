@@ -1,18 +1,61 @@
-#!/usr/bin/env bash
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-PKG_DIR="$SCRIPT_DIR/.."
-NATIVE="$PKG_DIR/dist/zaps"
-BUNDLE="$PKG_DIR/dist/cli.mjs"
+#!/usr/bin/env node
+// Resolver shim for the npm package. Prefers the native binary shipped by the
+// matching @bosdev/zaps-<platform> optional dependency; falls back to the bundled
+// node build (dist/cli.mjs), then to running from source via tsx (cloned repo).
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-export ZAPS_COMMAND="zaps"
+const require = createRequire(import.meta.url);
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
 
-if [ -x "$NATIVE" ]; then
-  export ZAPS_RUNTIME="native"
-  exec "$NATIVE" "$@"
-elif [ -f "$BUNDLE" ]; then
-  export ZAPS_RUNTIME="bundle"
-  exec node "$BUNDLE" "$@"
-else
-  export ZAPS_RUNTIME="tsx"
-  exec node --import "$PKG_DIR/node_modules/tsx/dist/esm/index.mjs" "$PKG_DIR/src/cli.tsx" "$@"
-fi
+const platformPackages = {
+  "linux-x64": "@bosdev/zaps-linux-x64",
+  "linux-arm64": "@bosdev/zaps-linux-arm64",
+  "darwin-x64": "@bosdev/zaps-darwin-x64",
+  "darwin-arm64": "@bosdev/zaps-darwin-arm64",
+};
+
+const args = process.argv.slice(2);
+const baseEnv = { ...process.env, ZAPS_COMMAND: "zaps" };
+
+function run(command, commandArgs, runtime) {
+  const result = spawnSync(command, commandArgs, {
+    stdio: "inherit",
+    env: { ...baseEnv, ZAPS_RUNTIME: runtime },
+  });
+  if (result.error) {
+    console.error(result.error.message); // eslint-disable-line no-console -- launcher error output
+    process.exit(1);
+  }
+  process.exit(result.status ?? 0);
+}
+
+// 1. Native binary from the platform-specific optional dependency.
+const pkg = platformPackages[`${process.platform}-${process.arch}`];
+if (pkg) {
+  try {
+    run(require.resolve(`${pkg}/zaps`), args, "native");
+  } catch {
+    // optional dependency not installed for this platform — fall through
+  }
+}
+
+// 2. Bundled node build shipped in this package.
+const bundle = join(root, "dist", "cli.mjs");
+if (existsSync(bundle)) {
+  run(process.execPath, [bundle, ...args], "bundle");
+}
+
+// 3. Source (cloned repo, not yet built).
+const srcEntry = join(root, "src", "cli.tsx");
+const tsxLoader = join(root, "node_modules", "tsx", "dist", "esm", "index.mjs");
+if (existsSync(srcEntry) && existsSync(tsxLoader)) {
+  run(process.execPath, ["--import", tsxLoader, srcEntry, ...args], "tsx");
+}
+
+console.error("zaps: no runnable native binary or bundle found"); // eslint-disable-line no-console -- launcher error output
+process.exit(1);
