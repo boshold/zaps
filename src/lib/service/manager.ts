@@ -401,6 +401,15 @@ export class ServiceManager extends EventEmitter {
 
   private async runStartAll(): Promise<void> {
     this.startAllAborted = false;
+    // Capture-before-mutate: the constructor issues the original window title /
+    // Automatic-rename reads asynchronously, but `startAllServices` emits state
+    // Changes that drive `updateWindowTitle` → `renameWindow`, which flips
+    // Automatic-rename off and overwrites the name. Awaiting the captures here
+    // Guarantees they observe the pre-rename state so `stopAll` restores it
+    // Correctly (otherwise they race and record our own rename under load).
+    await Promise.all([this.originalWindowTitle, this.originalAutoRename]).catch(() => {
+      // Reads are best-effort; stopAll handles null/unknown originals.
+    });
     try {
       await this.startAllServices();
     } finally {

@@ -19,6 +19,7 @@ import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
+import { waitFor } from "../helpers/wait.js";
 
 const deps = {
   sendKeys,
@@ -75,10 +76,11 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startAll();
 
-    // Wait for async window rename to complete
-    await new Promise((resolve) => setTimeout(resolve, 500));
-
-    const title = await getWindowName(paneMap["@tui"]);
+    // Poll for the async window rename to settle (both services ready).
+    const title = await waitFor(
+      async () => getWindowName(paneMap["@tui"]),
+      (t) => t.includes("zaps") && t.includes("●2"),
+    );
     expect(title).toContain("zaps");
     expect(title).toContain("●2");
   });
@@ -99,15 +101,19 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startAll();
 
-    // Title should have changed
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const runningTitle = await getWindowName(paneMap["@tui"]);
+    // Title should have changed — poll until the rename lands.
+    const runningTitle = await waitFor(
+      async () => getWindowName(paneMap["@tui"]),
+      (t) => t.includes("zaps"),
+    );
     expect(runningTitle).toContain("zaps");
 
     await mgr.stopAll();
-    await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const restoredTitle = await getWindowName(paneMap["@tui"]);
+    const restoredTitle = await waitFor(
+      async () => getWindowName(paneMap["@tui"]),
+      (t) => t === "my-custom-title",
+    );
     expect(restoredTitle).toBe("my-custom-title");
   });
 
@@ -126,9 +132,11 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     mgr = new ServiceManager(config, paneMap, deps, session.name);
     await mgr.startAll();
     await mgr.stopAll();
-    await new Promise((resolve) => setTimeout(resolve, 500));
 
-    const autoRename = await getWindowOption(paneMap["@tui"], "automatic-rename");
+    const autoRename = await waitFor(
+      async () => getWindowOption(paneMap["@tui"], "automatic-rename"),
+      (v) => v === "on",
+    );
     expect(autoRename).toBe("on");
   });
 });

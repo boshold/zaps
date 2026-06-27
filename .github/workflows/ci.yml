@@ -96,6 +96,9 @@ jobs:
           path: dist/
       - run: tmux -V
       - run: docker info
+      # Pre-pull compose images so the cold-runner pull doesn't count against the
+      # per-test 60s timeout (the docker-expand/docker-ready flake).
+      - run: docker pull redis:7-alpine && docker pull memcached:1-alpine
       - run: pnpm test:integration --coverage
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
