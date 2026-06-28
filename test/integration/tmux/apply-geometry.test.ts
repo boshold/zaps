@@ -21,6 +21,7 @@ import {
 import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
 import { attachClient, createTestSession } from "../helpers/tmux.js";
+import { waitFor } from "../helpers/wait.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -66,24 +67,6 @@ async function listPaneGeoms(target: string): Promise<PaneGeom[]> {
     .map(({ id, pid, rect }) => ({ id, pid, rect }));
 }
 
-/** Poll until `predicate(geoms)` is true or `timeoutMs` elapses. */
-async function waitFor<T>(
-  read: () => Promise<T>,
-  predicate: (value: T) => boolean,
-  timeoutMs = 3000,
-  pollMs = 50,
-): Promise<T> {
-  const start = Date.now();
-  /* eslint-disable no-await-in-loop -- polling */
-  let value = await read();
-  while (!predicate(value) && Date.now() - start < timeoutMs) {
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
-    value = await read();
-  }
-  /* eslint-enable no-await-in-loop */
-  return value;
-}
-
 /** Build a column-split 3-pane window: left=initial, middle, right. */
 async function buildThreeColumnWindow(session: TestSession): Promise<{
   paneMap: PaneMap;
@@ -102,19 +85,52 @@ async function buildThreeColumnWindow(session: TestSession): Promise<{
   };
 }
 
-/** Run `stty size` in `paneId` and parse the captured `rows cols` line. */
-async function probeStty(paneId: string): Promise<{ rows: number; cols: number }> {
+/**
+ * Run `stty size` once in `paneId` and return the LAST `rows cols` line in the
+ * buffer (earlier runs may have left other matches). Returns `{ rows: NaN }` if
+ * the shell hasn't rendered any size line yet — callers poll {@link probeSttyUntil}.
+ */
+async function probeSttyOnce(paneId: string): Promise<{ rows: number; cols: number }> {
   await sendKeys(paneId, "stty size");
-  // Wait for shell to render the output (poll capture-pane).
+  // Give the shell a beat to echo the result before we read the buffer.
   const found = await waitFor(
     async () => capturePane(paneId, 20),
     (out) => /^\d+\s+\d+$/m.test(out),
+    1000,
   );
-  // Take the LAST match — earlier runs may have left other matches in the buffer.
   const matches = found.match(/^\d+\s+\d+$/gm) ?? [];
   const last = matches.at(-1) ?? "";
   const [rows, cols] = last.split(/\s+/).map((n) => Number.parseInt(n, 10));
   return { rows, cols };
+}
+
+/**
+ * Probe the in-pane shell's perceived winsize, RE-running `stty size` each poll
+ * until it reports `expected` or `timeoutMs` elapses. Re-sending (not just
+ * re-capturing) is essential: the kernel pty winsize that `select-layout` pushes
+ * is delivered to the shell asynchronously via SIGWINCH, so the shell's first
+ * `stty size` can echo a stale intermediate size — only a fresh probe after the
+ * signal lands reflects the new geometry. Returns the final observed value so a
+ * genuine staleness bug still fails the assertion with the real number.
+ */
+async function probeSttyUntil(
+  paneId: string,
+  expected: { rows: number; cols: number },
+  timeoutMs = 10_000,
+  pollMs = 100,
+): Promise<{ rows: number; cols: number }> {
+  const start = Date.now();
+  /* eslint-disable no-await-in-loop -- polling until winsize settles */
+  let probed = await probeSttyOnce(paneId);
+  while (
+    (probed.rows !== expected.rows || probed.cols !== expected.cols) &&
+    Date.now() - start < timeoutMs
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+    probed = await probeSttyOnce(paneId);
+  }
+  /* eslint-enable no-await-in-loop */
+  return probed;
 }
 
 function makeReflow(layout: LayoutNode, paneMap: PaneMap, sessionName: string): LayoutReflow {
@@ -241,9 +257,10 @@ describe.skipIf(!hasTmux())("LayoutReflow.applyGeometry — real tmux", () => {
     if (!apiRect) {
       return;
     }
-    const probed = await probeStty(paneMap.api);
+    const expectedSize = { rows: apiRect.height, cols: apiRect.width };
+    const probed = await probeSttyUntil(paneMap.api, expectedSize);
     // (4) shell `stty size` reports the new geometry (no SIGWINCH staleness).
-    expect(probed).toEqual({ rows: apiRect.height, cols: apiRect.width });
+    expect(probed).toEqual(expectedSize);
   });
 
   it("round-trips through windowLayout — the emitted layout string is what tmux now reports", async () => {
@@ -336,10 +353,11 @@ describe.skipIf(!canRunAttached)("LayoutReflow.applyGeometry — attached client
     if (!apiRect) {
       return;
     }
-    const probed = await probeStty(paneMap.api);
+    const expectedSize = { rows: apiRect.height, cols: apiRect.width };
+    const probed = await probeSttyUntil(paneMap.api, expectedSize);
     // If this assertion ever fails on a real attached terminal, that's the
     // Round-3 staleness edge — re-run with `{ resyncFallback: true }` and the
     // P02-T02 hook will resync the pty winsize.
-    expect(probed).toEqual({ rows: apiRect.height, cols: apiRect.width });
+    expect(probed).toEqual(expectedSize);
   });
 });
