@@ -56,11 +56,15 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      # No `registry-url`: it makes setup-node write an .npmrc with
+      # `_authToken=${NODE_AUTH_TOKEN}` (a dummy placeholder when no token is
+      # set), and npm then uses that bogus token instead of falling back to OIDC
+      # — publishing 404s. Omitting it leaves no credential configured, so npm
+      # uses OIDC trusted publishing against the default registry.
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
-          registry-url: "https://registry.npmjs.org"
       # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest
