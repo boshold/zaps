@@ -61,6 +61,9 @@ jobs:
           node-version: 22
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
+      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
@@ -79,6 +82,13 @@ jobs:
         run: npm version "$ZAPS_VERSION" --no-git-tag-version --allow-same-version
       - name: Prepare platform packages
         run: node_modules/.bin/tsx scripts/prepare-npm-platform-packages.ts
+      # Auth comes from GitHub OIDC via npm Trusted Publishing — no NPM_TOKEN.
+      # Each package must have a Trusted Publisher configured on npmjs.com
+      # pointing at this repo + release.yml. `--provenance` is kept explicitly:
+      # under trusted publishing provenance is meant to be automatic, but real-
+      # world reports show it sometimes needs the flag, and it is harmless when
+      # automatic (id-token: write is granted; repository.url is set on every
+      # package so the attestation validates).
       # Idempotent: skip versions already on the registry so a re-run after a
       # partial failure can complete (npm versions are immutable).
       - name: Publish platform packages
@@ -92,8 +102,6 @@ jobs:
               npm publish "$dir" --access public --provenance
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Publish main package
         run: |
           version=$(node -p "require('./package.json').version")
@@ -102,8 +110,6 @@ jobs:
           else
             npm publish --access public --provenance
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   release:
     name: Release
