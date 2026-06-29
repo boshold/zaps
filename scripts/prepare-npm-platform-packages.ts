@@ -66,10 +66,23 @@ for (const platform of platforms) {
     repository: { type: "git", url: "git+https://github.com/boshold/zaps.git" },
     os: [platform.os],
     cpu: [platform.cpu],
-    files: ["zaps"],
+    files: ["zaps", "README.md"],
     publishConfig: { access: "public" },
   };
   writeFileSync(path.join(dir, "package.json"), `${JSON.stringify(pkg, null, 2)}\n`);
+
+  const readme = `# ${platform.name}
+
+Prebuilt native \`zaps\` binary for **${platform.os}/${platform.cpu}**.
+
+You don't install this package directly — it's an \`optionalDependencies\` target of
+the main package, selected automatically for your platform.
+
+**Install [\`@bosdev/zaps\`](https://www.npmjs.com/package/@bosdev/zaps) instead.**
+
+Source & docs: https://github.com/boshold/zaps
+`;
+  writeFileSync(path.join(dir, "README.md"), readme);
   console.log(`prepared ${platform.name}@${version}`); // eslint-disable-line no-console -- build script output
 }
 
