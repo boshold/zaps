@@ -4,6 +4,24 @@
 <img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/banner.png" alt="ZAPS" width="600">
 
    <p>
+      <a href="https://www.npmjs.com/package/@bosdev/zaps">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/npm/v/@bosdev/zaps?logo=npm&label=npm&color=f38ba8&labelColor=313244&logoColor=f38ba8">
+            <img alt="npm version" src="https://img.shields.io/npm/v/@bosdev/zaps?logo=npm&label=npm&color=d20f39&labelColor=ccd0da&logoColor=d20f39"/>
+         </picture>
+      </a>
+      <a href="https://nodejs.org">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/node/v/@bosdev/zaps?logo=nodedotjs&label=node&color=a6e3a1&labelColor=313244&logoColor=a6e3a1">
+            <img alt="Node engine" src="https://img.shields.io/node/v/@bosdev/zaps?logo=nodedotjs&label=node&color=40a02b&labelColor=ccd0da&logoColor=40a02b"/>
+         </picture>
+      </a>
+      <a href="https://github.com/boshold/zaps/actions/workflows/ci.yml">
+         <picture>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=a6e3a1&labelColor=313244&logoColor=cdd6f4">
+            <img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=40a02b&labelColor=ccd0da&logoColor=4c4f69"/>
+         </picture>
+      </a>
       <a href="https://github.com/boshold/zaps/blob/main/LICENSE">
          <picture>
             <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/boshold/zaps.svg?color=cba6f7&labelColor=b4befe">
