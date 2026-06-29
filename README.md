@@ -18,20 +18,20 @@
       </a>
       <a href="https://github.com/boshold/zaps/actions/workflows/ci.yml">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=a6e3a1&labelColor=313244&logoColor=cdd6f4">
-            <img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=40a02b&labelColor=ccd0da&logoColor=4c4f69"/>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=89b4fa&labelColor=313244&logoColor=89b4fa">
+            <img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/boshold/zaps/ci.yml?branch=main&logo=githubactions&label=ci&color=1e66f5&labelColor=ccd0da&logoColor=1e66f5"/>
          </picture>
       </a>
       <a href="https://github.com/boshold/zaps/blob/main/LICENSE">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/boshold/zaps.svg?color=cba6f7&labelColor=b4befe">
-            <img src="https://img.shields.io/github/license/boshold/zaps.svg?color=8839ef" alt="MIT License"/>
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/github/license/boshold/zaps.svg?color=cba6f7&labelColor=313244">
+            <img src="https://img.shields.io/github/license/boshold/zaps.svg?color=8839ef&labelColor=ccd0da" alt="MIT License"/>
          </picture>
       </a>
       <a href="https://github.com/tmux/tmux/wiki#-is-awesome">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5a-a6e3a1?logo=tmux&label=tmux&labelColor=313244&logoColor=a6e3a1">
-            <img alt="Tmux >= 3.5a" src="https://img.shields.io/badge/%3E%3D3.5a-40a02b?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=40a02b">
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5a-94e2d5?logo=tmux&label=tmux&labelColor=313244&logoColor=94e2d5">
+            <img alt="Tmux >= 3.5a" src="https://img.shields.io/badge/%3E%3D3.5a-179299?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=179299">
          </picture>
        </a>
    </p>
