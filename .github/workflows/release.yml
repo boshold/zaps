@@ -68,6 +68,13 @@ jobs:
       # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
       - name: Upgrade npm for trusted publishing
         run: npm install -g npm@latest
+      - name: OIDC publish diagnostics
+        run: |
+          node -v
+          npm -v
+          echo "registry=$(npm config get registry)"
+          echo "OIDC request url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC request token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
@@ -96,6 +103,11 @@ jobs:
       # Idempotent: skip versions already on the registry so a re-run after a
       # partial failure can complete (npm versions are immutable).
       - name: Publish platform packages
+        # NODE_AUTH_TOKEN="" clears the default token setup-node/the environment
+        # injects; a configured token (even a dummy) makes npm use token auth and
+        # skip OIDC, so publish 404s/ENEEDAUTHs. Empty → npm uses OIDC.
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           for dir in npm-platforms/*/; do
             name=$(node -p "require('./$dir/package.json').name")
@@ -107,6 +119,8 @@ jobs:
             fi
           done
       - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ""
         run: |
           version=$(node -p "require('./package.json').version")
           if npm view "@bosdev/zaps@$version" version >/dev/null 2>&1; then
