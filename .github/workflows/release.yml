@@ -115,25 +115,37 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO_NAME: ${{ github.event.repository.name }}
         run: |
           version=$(node -p "require('./package.json').version")
           names=$(node -p "['@bosdev/zaps', ...Object.keys(require('./package.json').optionalDependencies || {})].join('\n')")
           echo "$names" | while IFS= read -r name; do
             [ -n "$name" ] || continue
-            integrity=$(npm view "$name@$version" dist.integrity 2>/dev/null || true)
-            if [ -z "$integrity" ]; then
-              echo "$name@$version: no integrity on registry — skipping"
+            # Resolve the published tarball, retrying for registry propagation lag.
+            tarball=""
+            for i in 1 2 3 4 5; do
+              tarball=$(npm view "$name@$version" dist.tarball 2>/dev/null || true)
+              [ -n "$tarball" ] && break
+              echo "$name@$version: tarball not on registry yet (try $i) — waiting"
+              sleep 5
+            done
+            if [ -z "$tarball" ]; then
+              echo "$name@$version: tarball unavailable — skipping"
               continue
             fi
-            digest=$(node -e 'process.stdout.write("sha512:"+Buffer.from(process.argv[1].replace(/^sha512-/,""),"base64").toString("hex"))' "$integrity")
+            # Artifact Metadata API accepts only sha256 digests (algorithm:64-hex),
+            # and github_repository must be the bare repo name (no owner/slash).
+            digest="sha256:$(curl -fsSL "$tarball" | sha256sum | cut -d' ' -f1)"
             echo "registering storage record for $name@$version ($digest)"
-            curl -fsSL -X POST \
+            http=$(curl -sS -o /tmp/sr-resp.json -w "%{http_code}" -X POST \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
               -H "X-GitHub-Api-Version: 2026-03-10" \
               https://api.github.com/orgs/boshold/artifacts/metadata/storage-record \
-              -d "{\"name\":\"$name\",\"version\":\"$version\",\"digest\":\"$digest\",\"registry_url\":\"https://registry.npmjs.org\",\"artifact_url\":\"https://www.npmjs.com/package/$name/v/$version\",\"status\":\"active\"}" \
-              || echo "storage-record POST failed for $name@$version (non-fatal)"
+              -d "{\"name\":\"$name\",\"version\":\"$version\",\"digest\":\"$digest\",\"registry_url\":\"https://registry.npmjs.org\",\"artifact_url\":\"https://www.npmjs.com/package/$name/v/$version\",\"github_repository\":\"$REPO_NAME\",\"status\":\"active\"}" \
+              || true)
+            echo "  HTTP $http"
+            [ "$http" = "200" ] || { echo "  response:"; cat /tmp/sr-resp.json 2>/dev/null; echo " (non-fatal)"; }
           done
 
   release:
