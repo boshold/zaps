@@ -56,25 +56,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-      # No `registry-url`: it makes setup-node write an .npmrc with
-      # `_authToken=${NODE_AUTH_TOKEN}` (a dummy placeholder when no token is
-      # set), and npm then uses that bogus token instead of falling back to OIDC
-      # — publishing 404s. Omitting it leaves no credential configured, so npm
-      # uses OIDC trusted publishing against the default registry.
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
-      # Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships npm 10.x.
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
-      - name: OIDC publish diagnostics
-        run: |
-          node -v
-          npm -v
-          echo "registry=$(npm config get registry)"
-          echo "OIDC request url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          echo "OIDC request token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
+      # OIDC trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - run: npm install -g npm@latest
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
@@ -84,28 +71,18 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
       - run: pnpm install --frozen-lockfile
-      # Build while package.json still matches the lockfile. The prepare step
-      # below injects optionalDependencies into package.json, after which any
-      # pnpm command would abort under verifyDepsBeforeRun (lockfile mismatch),
-      # so the post-mutation scripts run via the tsx binary directly.
+      # Build before prepare-npm-platform-packages mutates package.json (which
+      # would otherwise trip pnpm's lockfile check).
       - run: pnpm build
       - name: Set package version to tag
         run: npm version "$ZAPS_VERSION" --no-git-tag-version --allow-same-version
       - name: Prepare platform packages
         run: node_modules/.bin/tsx scripts/prepare-npm-platform-packages.ts
-      # Auth comes from GitHub OIDC via npm Trusted Publishing — no NPM_TOKEN.
-      # Each package must have a Trusted Publisher configured on npmjs.com
-      # pointing at this repo + release.yml. `--provenance` is kept explicitly:
-      # under trusted publishing provenance is meant to be automatic, but real-
-      # world reports show it sometimes needs the flag, and it is harmless when
-      # automatic (id-token: write is granted; repository.url is set on every
-      # package so the attestation validates).
-      # Idempotent: skip versions already on the registry so a re-run after a
-      # partial failure can complete (npm versions are immutable).
+      # Auth via GitHub OIDC trusted publishing — NODE_AUTH_TOKEN="" so npm uses
+      # OIDC instead of a token. Each package needs a Trusted Publisher on npm
+      # (repo boshold/zaps, workflow release.yml). Idempotent: skip versions
+      # already on the registry so a partial-failure re-run can complete.
       - name: Publish platform packages
-        # NODE_AUTH_TOKEN="" clears the default token setup-node/the environment
-        # injects; a configured token (even a dummy) makes npm use token auth and
-        # skip OIDC, so publish 404s/ENEEDAUTHs. Empty → npm uses OIDC.
         env:
           NODE_AUTH_TOKEN: ""
         run: |
@@ -115,7 +92,7 @@ jobs:
             if npm view "$name@$version" version >/dev/null 2>&1; then
               echo "$name@$version already published — skipping"
             else
-              npm publish "$dir" --access public --provenance
+              (cd "$dir" && npm publish --access public --provenance)
             fi
           done
       - name: Publish main package
