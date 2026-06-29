@@ -20,9 +20,12 @@ import type { BunPlugin } from "bun";
 const require = createRequire(import.meta.url);
 
 // Jiti's exports map blocks the deep `jiti/dist/babel.cjs` import the loader
-// Embeds as a Bun file asset. Resolve it to the real path and force the `file`
-// Loader so it is embedded as an opaque asset (default export = runtime path)
-// Rather than bundled as a CJS module — embedding keeps `--bytecode` working.
+// Reads. Resolve it to the real path and force the `text` loader so its source
+// Is inlined into the bundle as a string literal (default export = source text).
+// A string literal survives the later `--compile --bytecode` step; a `file`
+// Asset does not (the compile re-parses the bundle and never re-discovers it,
+// Leaving a dangling build-time path) — so inlining is what keeps the babel
+// Transform reachable inside `dist/zaps`.
 const babelPath = path.join(
   path.dirname(require.resolve("jiti/package.json")),
   "dist",
@@ -36,8 +39,8 @@ const babelAssetPlugin: BunPlugin = {
       namespace: "babel-asset",
     }));
     build.onLoad({ filter: /.*/, namespace: "babel-asset" }, async () => ({
-      contents: await Bun.file(babelPath).bytes(),
-      loader: "file",
+      contents: await Bun.file(babelPath).text(),
+      loader: "text",
     }));
   },
 };
