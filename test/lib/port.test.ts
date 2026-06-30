@@ -88,6 +88,27 @@ describe("getDescendantPids", () => {
     const result = await getDescendantPids(1000);
     expect(result).toEqual([1000]);
   });
+
+  describe("ps session-id keyword is platform-specific", () => {
+    const originalPlatform = process.platform;
+    afterEach(() => {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    });
+
+    it("uses the `sid` keyword on Linux", async () => {
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      mockExecFileOutput("  PID  PPID   SID\n 1000     1  1000");
+      await getDescendantPids(1000);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"]);
+    });
+
+    it("uses the `sess` keyword on macOS (BSD ps rejects `sid`)", async () => {
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      mockExecFileOutput("  PID  PPID  SESS\n 1000     1  1000");
+      await getDescendantPids(1000);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sess"]);
+    });
+  });
 });
 
 describe("getListeningPorts — Linux", () => {

@@ -1,13 +1,15 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 import { daemonDir } from "./lifecycle.js";
 
-/** A `/proc`-derived identity used to detect PID reuse before reaping (R10). */
+/** A process identity used to detect PID reuse before reaping (R10). */
 interface ProcInfo {
-  /** `/proc/<pid>/stat` field 22 (starttime) — stable for a process's lifetime. */
+  /** Start-time (stable for a process's lifetime): Linux `/proc` field 22, or
+   * macOS `ps -o lstart`. Compared as an opaque string, never interpreted. */
   startTime: string;
-  /** `/proc/<pid>/cmdline`, NUL-separated args joined with spaces. */
+  /** Full command line (Linux `/proc/<pid>/cmdline`, macOS `ps -o command`). */
   cmdline: string;
 }
 
@@ -18,11 +20,10 @@ interface DetachedEntry {
 }
 
 /**
- * Parse `/proc/<pid>/stat` + `/proc/<pid>/cmdline` for the reuse-safe identity.
- * Returns null on any platform without `/proc` or when the pid is gone, so the
- * registry degrades to "don't reap" rather than risk killing an unrelated pid.
+ * Parse `/proc/<pid>/stat` + `/proc/<pid>/cmdline` for the reuse-safe identity
+ * (Linux). Returns null when `/proc` is absent or the pid is gone.
  */
-function defaultReadProcInfo(pid: number): ProcInfo | null {
+function readProcInfoFromProc(pid: number): ProcInfo | null {
   try {
     const stat = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf8");
     // `comm` (field 2) may contain spaces and parens — parse after the final ')'.
@@ -43,6 +44,42 @@ function defaultReadProcInfo(pid: number): ProcInfo | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Derive the same reuse-safe identity from `ps` on macOS, which has no `/proc`.
+ * `lstart` is a fixed wall-clock start time (stable for the process's lifetime)
+ * and `command` is the full argv — together they detect PID reuse just like the
+ * Linux path. Queried separately so the space-containing `lstart` never has to
+ * be split out of a shared line. Returns null when the pid is gone.
+ */
+function psField(pid: number, field: string): string {
+  return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+}
+
+function readProcInfoFromPs(pid: number): ProcInfo | null {
+  try {
+    const startTime = psField(pid, "lstart");
+    if (!startTime) {
+      return null;
+    }
+    const cmdline = psField(pid, "command");
+    return { startTime, cmdline };
+  } catch {
+    // Process gone (ps exits non-zero) or ps unavailable — degrade to "don't reap".
+    return null;
+  }
+}
+
+/**
+ * Read a live PID's reuse-safe identity, or null when unavailable — so the
+ * registry degrades to "don't reap" rather than risk killing an unrelated pid.
+ */
+function defaultReadProcInfo(pid: number): ProcInfo | null {
+  return process.platform === "darwin" ? readProcInfoFromPs(pid) : readProcInfoFromProc(pid);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,3 +209,5 @@ export class DetachedRegistry {
     }
   }
 }
+
+export { defaultReadProcInfo };
