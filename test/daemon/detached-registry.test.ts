@@ -1,11 +1,16 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DetachedRegistry } from "../../src/daemon/detached-registry.js";
+import { DetachedRegistry, defaultReadProcInfo } from "../../src/daemon/detached-registry.js";
 import type { DetachedRegistryDeps } from "../../src/daemon/detached-registry.js";
+
+vi.mock("node:child_process", () => ({ execFileSync: vi.fn() }));
+
+const mockExecFileSync = vi.mocked(execFileSync);
 
 let tmpDir = "";
 let filePath = "";
@@ -70,6 +75,45 @@ describe("DetachedRegistry record/remove", () => {
     registry.record(1);
     registry.remove(999);
     expect(Object.keys(readFile())).toEqual(["1"]);
+  });
+});
+
+describe("defaultReadProcInfo platform dispatch", () => {
+  const originalPlatform = process.platform;
+  afterEach(() => {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  });
+
+  it("reads identity from `ps` on macOS (no /proc)", () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockExecFileSync
+      .mockReturnValueOnce("Mon Jun 30 14:51:34 2026\n")
+      .mockReturnValueOnce("node worker.js\n");
+
+    const info = defaultReadProcInfo(4321);
+
+    expect(info).toEqual({ startTime: "Mon Jun 30 14:51:34 2026", cmdline: "node worker.js" });
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      1,
+      "ps",
+      ["-o", "lstart=", "-p", "4321"],
+      expect.anything(),
+    );
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      2,
+      "ps",
+      ["-o", "command=", "-p", "4321"],
+      expect.anything(),
+    );
+  });
+
+  it("returns null on macOS when the pid is gone (`ps` throws)", () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error("No such process");
+    });
+
+    expect(defaultReadProcInfo(4321)).toBeNull();
   });
 });
 

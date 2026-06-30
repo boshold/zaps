@@ -98,7 +98,14 @@ function parseDarwinLsof(output: string, pidSet: Set<number>): number[] {
  * Returns array including rootPid itself.
  */
 async function getDescendantPidsImpl(rootPid: number): Promise<number[]> {
-  const output = await exec("ps", ["-eo", "pid,ppid,sid"]);
+  // Linux/procps spells the session-id column `sid`; BSD `ps` (macOS) rejects
+  // That keyword ("ps: keyword sid not found"), exits non-zero, and the call
+  // Yields "" — losing the whole process tree, so every paned service looks
+  // Crashed ("Process exited unexpectedly") and port detection finds nothing.
+  // The BSD session-id keyword is `sess`. Pick per-platform, mirroring
+  // GetListeningPortsImpl below.
+  const sessionKeyword = process.platform === "darwin" ? "sess" : "sid";
+  const output = await exec("ps", ["-eo", `pid,ppid,${sessionKeyword}`]);
   if (!output) {
     return [];
   }
