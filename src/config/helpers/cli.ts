@@ -1,23 +1,31 @@
-import chalk from "chalk";
+import { styleText } from "node:util";
 
 import { ConfigError } from "#src/config/errors.js";
 import type { CliHelpers, ConfigNotice, NoticeLevel, NoticeSink } from "#src/config/types.js";
 
-const NOTICE_STYLES: Record<NoticeLevel, { glyph: string; color: (text: string) => string }> = {
-  warn: { glyph: "⚠", color: chalk.yellow },
-  info: { glyph: "ℹ", color: chalk.blue },
-  success: { glyph: "✔", color: chalk.green },
+const NOTICE_STYLES: Record<NoticeLevel, { glyph: string; color: "yellow" | "blue" | "green" }> = {
+  warn: { glyph: "⚠", color: "yellow" },
+  info: { glyph: "ℹ", color: "blue" },
+  success: { glyph: "✔", color: "green" },
 };
 
+/** Applies `format` only when stderr is a TTY and `NO_COLOR` is unset. */
+function paint(format: Parameters<typeof styleText>[0], text: string): string {
+  if (process.env.NO_COLOR !== undefined || !process.stderr.isTTY) {
+    return text;
+  }
+  return styleText(format, text, { validateStream: false });
+}
+
 /**
- * Default `NoticeSink`: writes chalk-styled lines to stderr (one bold glyph +
- * colored message per level). chalk auto-disables color on non-TTY / `NO_COLOR`.
- * Mirrors `renderCliError`'s `✖` style from P01-T06.
+ * Default `NoticeSink`: writes `styleText`-styled lines to stderr (one bold
+ * glyph + colored message per level). Color auto-disables on non-TTY /
+ * `NO_COLOR`. Mirrors `renderCliError`'s `✖` style from P01-T06.
  */
 export function createStderrSink(): NoticeSink {
   return (notice: ConfigNotice): void => {
     const { glyph, color } = NOTICE_STYLES[notice.level];
-    process.stderr.write(`\n  ${chalk.bold(color(glyph))} ${color(notice.message)}\n`);
+    process.stderr.write(`\n  ${paint(["bold", color], glyph)} ${paint(color, notice.message)}\n`);
   };
 }
 
