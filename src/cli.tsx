@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { program } from "commander";
+import { cli, command } from "cleye";
+import type { Command } from "cleye";
 
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
@@ -37,16 +38,74 @@ declare const __VERSION__: string;
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
 
-program
-  .name("zaps")
-  .version(
-    `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`,
-  )
-  .description("Terminal session manager")
-  .option("-s, --session <session>", "Target session by id/name prefix");
+const VERSION = `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`;
+
+// --- Global -s/--session (commander parity) ---
+
+/**
+ * Commander exposed a root-level `-s/--session` readable from every subcommand
+ * via `program.opts()`, accepted both before and after the command name. cleye
+ * has no inherited flags, so parity is kept with a thin adapter: leading
+ * occurrences are hoisted off argv before dispatch, and every command declares
+ * the same flag and folds its parsed value back in via `adoptGlobalSession`.
+ */
+let sessionOption: string | undefined = undefined;
 
 function globalSession(): string | undefined {
-  return program.opts().session as string | undefined;
+  return sessionOption;
+}
+
+function adoptGlobalSession(session: string | undefined): void {
+  if (session !== undefined) {
+    sessionOption = session;
+  }
+}
+
+/** Hoist leading `-s <v>` / `--session <v>` / `--session=<v>` off argv. */
+function consumeLeadingSessionFlag(argv: string[]): string[] {
+  const rest = [...argv];
+  let consuming = true;
+  while (consuming && rest.length > 0) {
+    const [arg] = rest;
+    if (arg === "-s" || arg === "--session") {
+      if (rest.length < 2) {
+        process.stderr.write("error: option '-s, --session <session>' argument missing\n");
+        process.exit(1);
+      }
+      [, sessionOption] = rest;
+      rest.splice(0, 2);
+    } else if (arg.startsWith("--session=")) {
+      sessionOption = arg.slice("--session=".length);
+      rest.shift();
+    } else {
+      consuming = false;
+    }
+  }
+  return rest;
+}
+
+const sessionFlag = {
+  session: {
+    type: String,
+    alias: "s",
+    placeholder: "<session>",
+    description: "Target session by id/name prefix",
+  },
+};
+
+const formatFlags = {
+  json: { type: Boolean, description: "Output as JSON" },
+  toon: { type: Boolean, description: "Output as TOON" },
+};
+
+/** Commander errors on excess command-arguments by default; keep that. */
+function rejectExcessArgs(name: string, args: readonly string[], expected: number): void {
+  if (args.length > expected) {
+    process.stderr.write(
+      `error: too many arguments for '${name}'. Expected ${expected} argument${expected === 1 ? "" : "s"} but got ${args.length}.\n`,
+    );
+    process.exit(1);
+  }
 }
 
 // --- TUI ---
@@ -268,7 +327,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   const originPane = await currentPaneId();
   const tmuxSession = await currentSession();
 
-  const command = resolveCommand();
+  const zapsCommand = resolveCommand();
   const sock = await ensureDaemon(resolveCommandArgv());
 
   const res = await ipcRequest(sock, "session.create", {
@@ -315,7 +374,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   } else {
     await sendKeys(
       tuiPaneId,
-      `${command} ui --session ${session.id} --socket ${sock} --start; exit`,
+      `${zapsCommand} ui --session ${session.id} --socket ${sock} --start; exit`,
     );
     await selectPane(focusPane);
   }
@@ -323,11 +382,19 @@ async function upFlow(detach?: boolean): Promise<void> {
 
 // --- Smart default: attach if running, else up ---
 
-program
-  .command("up")
-  .description("Create session, start services, attach TUI")
-  .option("-d, --detach", "Start without attaching TUI")
-  .action(async (opts: { detach?: boolean }) => {
+const upCommand = command(
+  {
+    name: "up",
+    flags: {
+      ...sessionFlag,
+      detach: { type: Boolean, alias: "d", description: "Start without attaching TUI" },
+    },
+    help: { description: "Create session, start services, attach TUI" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("up", parsed._, 0);
+    const opts = { detach: parsed.flags.detach };
     const sessionOpt = globalSession();
     if (sessionOpt && isDaemonRunning()) {
       const sock = socketPath();
@@ -378,14 +445,20 @@ program
     }
 
     await upFlow(opts.detach);
-  });
+  },
+);
 
 // --- Core Lifecycle ---
 
-program
-  .command("down")
-  .description("Stop all services and destroy session")
-  .action(async () => {
+const downCommand = command(
+  {
+    name: "down",
+    flags: { ...sessionFlag },
+    help: { description: "Stop all services and destroy session" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("down", parsed._, 0);
     const code = await runDown({
       daemonRunning: isDaemonRunning,
       socket: socketPath,
@@ -403,17 +476,25 @@ program
     if (code !== 0) {
       process.exit(code);
     }
-  });
+  },
+);
 
 // --- Service Operations (flat, variadic) ---
 
-for (const action of ["start", "stop", "restart"] as const) {
-  program
-    .command(`${action} [services...]`)
-    .description(`${action.charAt(0).toUpperCase()}${action.slice(1)} service(s). All if omitted`)
-    .option("--json", "Output as JSON")
-    .option("--toon", "Output as TOON")
-    .action(async (services: string[], opts: { json?: boolean; toon?: boolean }) => {
+function serviceActionCommand(action: "start" | "stop" | "restart") {
+  return command(
+    {
+      name: action,
+      parameters: ["[services...]"],
+      flags: { ...sessionFlag, ...formatFlags },
+      help: {
+        description: `${action.charAt(0).toUpperCase()}${action.slice(1)} service(s). All if omitted`,
+      },
+    },
+    async (parsed) => {
+      adoptGlobalSession(parsed.flags.session);
+      const { services } = parsed._;
+      const opts = parsed.flags;
       try {
         await withDaemon(async (ipc) => {
           const params = services.length > 0 ? { names: services } : undefined;
@@ -438,17 +519,26 @@ for (const action of ["start", "stop", "restart"] as const) {
         }
         throw error;
       }
-    });
+    },
+  );
 }
+
+const startCommand = serviceActionCommand("start");
+const stopCommand = serviceActionCommand("stop");
+const restartCommand = serviceActionCommand("restart");
 
 // --- Query ---
 
-program
-  .command("ps")
-  .description("List services and their status")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+const psCommand = command(
+  {
+    name: "ps",
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "List services and their status" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("ps", parsed._, 0);
+    const opts = parsed.flags;
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("services.list");
@@ -483,14 +573,19 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("ls")
-  .description("List active sessions")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+const lsCommand = command(
+  {
+    name: "ls",
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "List active sessions" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("ls", parsed._, 0);
+    const opts = parsed.flags;
     const format = resolveFormat(opts);
     const sock = socketPath();
     // No daemon → no sessions can exist; report it (E7) and emit an empty list
@@ -521,14 +616,21 @@ program
     for (const s of sessions) {
       process.stdout.write(`${s.id}  ${s.name}  ${s.projectDir}\n`);
     }
-  });
+  },
+);
 
-program
-  .command("inspect <service>")
-  .description("Show service details")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (name: string, opts: { json?: boolean; toon?: boolean }) => {
+const inspectCommand = command(
+  {
+    name: "inspect",
+    parameters: ["<service>"],
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "Show service details" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("inspect", parsed._, 1);
+    const name = parsed._.service;
+    const opts = parsed.flags;
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("services.details", { name });
@@ -562,7 +664,8 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
 // --- New Commands ---
 
@@ -576,12 +679,26 @@ const SERVICE_COLORS = [
 ];
 const RESET = "\x1b[0m";
 
-program
-  .command("logs [services...]")
-  .description("Dump log buffer. -f to stream live")
-  .option("-f, --follow", "Stream live logs")
-  .option("--tail <n>", "Number of lines to show", "100")
-  .action(async (services: string[], opts: { follow?: boolean; tail: string }) => {
+const logsCommand = command(
+  {
+    name: "logs",
+    parameters: ["[services...]"],
+    flags: {
+      ...sessionFlag,
+      follow: { type: Boolean, alias: "f", description: "Stream live logs" },
+      tail: {
+        type: String,
+        default: "100",
+        placeholder: "<n>",
+        description: "Number of lines to show",
+      },
+    },
+    help: { description: "Dump log buffer. -f to stream live" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    const { services } = parsed._;
+    const opts = parsed.flags;
     const tail = parsePositiveInt(opts.tail);
     if (tail === null) {
       process.stderr.write(`Invalid --tail value "${opts.tail}": expected a positive integer.\n`);
@@ -675,14 +792,21 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("run <task>")
-  .description("Run a task")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (key: string, opts: { json?: boolean; toon?: boolean }) => {
+const runCommand = command(
+  {
+    name: "run",
+    parameters: ["<task>"],
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "Run a task" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("run", parsed._, 1);
+    const key = parsed._.task;
+    const opts = parsed.flags;
     try {
       const format = resolveFormat(opts);
       await withDaemon(async (ipc) => {
@@ -711,13 +835,22 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("events")
-  .description("Stream daemon events as ndjson")
-  .option("--filter <type>", "Filter events by type (regex)")
-  .action(async (opts: { filter?: string }) => {
+const eventsCommand = command(
+  {
+    name: "events",
+    flags: {
+      ...sessionFlag,
+      filter: { type: String, placeholder: "<type>", description: "Filter events by type (regex)" },
+    },
+    help: { description: "Stream daemon events as ndjson" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("events", parsed._, 0);
+    const opts = parsed.flags;
     const sock = socketPath();
 
     if (!isDaemonRunning()) {
@@ -778,15 +911,23 @@ program
         resolve();
       });
     });
-  });
+  },
+);
 
-program
-  .command("config")
-  .description("Validate and print resolved config")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .option("--path", "Print config file path only")
-  .action(async (opts: { json?: boolean; toon?: boolean; path?: boolean }) => {
+const configCommand = command(
+  {
+    name: "config",
+    flags: {
+      ...sessionFlag,
+      ...formatFlags,
+      path: { type: Boolean, description: "Print config file path only" },
+    },
+    help: { description: "Validate and print resolved config" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("config", parsed._, 0);
+    const opts = parsed.flags;
     const configPath = discoverConfig(process.cwd());
     if (!configPath) {
       process.stderr.write("No config found. Run `zaps init` to create one.\n");
@@ -851,12 +992,18 @@ program
         process.stdout.write(`  ${key}  ${t.name}\n`);
       }
     }
-  });
+  },
+);
 
-program
-  .command("prime-agent", { hidden: !isCodingAgent() })
-  .description("Print project overview for AI agent priming")
-  .action(async () => {
+const primeAgentCommand = command(
+  {
+    name: "prime-agent",
+    flags: { ...sessionFlag },
+    help: { description: "Print project overview for AI agent priming" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("prime-agent", parsed._, 0);
     try {
       await withDaemon(async (ipc) => {
         const [svcRes, taskRes] = await Promise.all([
@@ -905,12 +1052,18 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("reload")
-  .description("Reload config for running session")
-  .action(async () => {
+const reloadCommand = command(
+  {
+    name: "reload",
+    flags: { ...sessionFlag },
+    help: { description: "Reload config for running session" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("reload", parsed._, 0);
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("session.reload");
@@ -926,14 +1079,20 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
 // --- Kept As-Is ---
 
-program
-  .command("init")
-  .description("Create a starter .zaps.mts config")
-  .action(async () => {
+const initCommand = command(
+  {
+    name: "init",
+    flags: { ...sessionFlag },
+    help: { description: "Create a starter .zaps.mts config" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("init", parsed._, 0);
     const cwd = process.cwd();
     const existing = discoverConfig(cwd);
     if (existing) {
@@ -942,12 +1101,18 @@ program
     }
     const written = await scaffoldConfig(cwd);
     process.stdout.write(`Created ${written}\n`);
-  });
+  },
+);
 
-program
-  .command("attach")
-  .description("Attach to a running zaps session")
-  .action(async () => {
+const attachCommand = command(
+  {
+    name: "attach",
+    flags: { ...sessionFlag },
+    help: { description: "Attach to a running zaps session" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("attach", parsed._, 0);
     if (!getEnv("TMUX")) {
       process.stderr.write("zaps must be run from inside a tmux session.\n");
       process.exit(1);
@@ -980,14 +1145,19 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("tasks")
-  .description("List tasks")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+const tasksCommand = command(
+  {
+    name: "tasks",
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "List tasks" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("tasks", parsed._, 0);
+    const opts = parsed.flags;
     try {
       await withDaemon(async (ipc) => {
         const res = await ipc.request("tasks.list");
@@ -1017,22 +1187,45 @@ program
       }
       throw error;
     }
-  });
+  },
+);
 
-program
-  .command("ui", { hidden: true })
-  .description("Run zaps TUI (internal)")
-  .option("--start", "Start services before rendering TUI")
-  .requiredOption("--session <id>", "Daemon session ID")
-  .requiredOption("--socket <path>", "Daemon socket path")
-  .action(async (opts: { start?: boolean; session: string; socket: string }) => {
+const uiCommand = command(
+  {
+    name: "ui",
+    flags: {
+      start: { type: Boolean, description: "Start services before rendering TUI" },
+      session: { type: String, placeholder: "<id>", description: "Daemon session ID" },
+      socket: { type: String, placeholder: "<path>", description: "Daemon socket path" },
+    },
+    help: { description: "Run zaps TUI (internal)" },
+  },
+  async (parsed) => {
+    rejectExcessArgs("ui", parsed._, 0);
+    const opts = parsed.flags;
+    if (opts.session === undefined) {
+      process.stderr.write("error: required option '--session <id>' not specified\n");
+      process.exit(1);
+    }
+    if (opts.socket === undefined) {
+      process.stderr.write("error: required option '--socket <path>' not specified\n");
+      process.exit(1);
+    }
     await runTui({ sessionId: opts.session, socketPath: opts.socket, autoStart: opts.start });
-  });
+  },
+);
 
-program
-  .command("exec-service <name>", { hidden: true })
-  .description("Execute a service via wrapper (internal)")
-  .action(async (name: string) => {
+const execServiceCommand = command(
+  {
+    name: "exec-service",
+    parameters: ["<name>"],
+    flags: { ...sessionFlag },
+    help: { description: "Execute a service via wrapper (internal)" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("exec-service", parsed._, 1);
+    const { name } = parsed._;
     const session = globalSession();
     if (!session) {
       process.stderr.write("Error: -s/--session is required for exec-service\n");
@@ -1040,12 +1233,20 @@ program
     }
     const { execService } = await import("./cli/exec-service.js");
     await execService(name, session);
-  });
+  },
+);
 
-program
-  .command("exec-task <runId>", { hidden: true })
-  .description("Execute a run-in-pane task via wrapper (internal)")
-  .action(async (runId: string) => {
+const execTaskCommand = command(
+  {
+    name: "exec-task",
+    parameters: ["<runId>"],
+    flags: { ...sessionFlag },
+    help: { description: "Execute a run-in-pane task via wrapper (internal)" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("exec-task", parsed._, 1);
+    const { runId } = parsed._;
     const session = globalSession();
     if (!session) {
       process.stderr.write("Error: -s/--session is required for exec-task\n");
@@ -1053,35 +1254,51 @@ program
     }
     const { execTask } = await import("./cli/exec-task.js");
     await execTask(runId, session);
-  });
+  },
+);
 
 // --- Daemon management ---
 
-const daemonCmd = program.command("daemon").description("Daemon management");
-
-daemonCmd
-  .command("run")
-  .description("Run daemon in foreground (internal)")
-  .action(async () => {
+const daemonRunCommand = command(
+  {
+    name: "run",
+    flags: { ...sessionFlag },
+    help: { description: "Run daemon in foreground (internal)" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("run", parsed._, 0);
     await runDaemon();
-  });
+  },
+);
 
-daemonCmd
-  .command("start")
-  .description("Start the background daemon")
-  .action(async () => {
+const daemonStartCommand = command(
+  {
+    name: "start",
+    flags: { ...sessionFlag },
+    help: { description: "Start the background daemon" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("start", parsed._, 0);
     if (isDaemonRunning()) {
       process.stdout.write("Daemon already running.\n");
       return;
     }
     await ensureDaemon(resolveCommandArgv());
     process.stdout.write("Daemon started.\n");
-  });
+  },
+);
 
-daemonCmd
-  .command("stop")
-  .description("Stop the background daemon")
-  .action(async () => {
+const daemonStopCommand = command(
+  {
+    name: "stop",
+    flags: { ...sessionFlag },
+    help: { description: "Stop the background daemon" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("stop", parsed._, 0);
     if (!isDaemonRunning()) {
       process.stdout.write("Daemon not running.\n");
       return;
@@ -1113,14 +1330,19 @@ daemonCmd
     /* eslint-enable no-await-in-loop */
 
     process.stdout.write(`Stopped ${sessionCount} session(s), ${serviceCount} service(s).\n`);
-  });
+  },
+);
 
-daemonCmd
-  .command("status")
-  .description("Show daemon status")
-  .option("--json", "Output as JSON")
-  .option("--toon", "Output as TOON")
-  .action(async (opts: { json?: boolean; toon?: boolean }) => {
+const daemonStatusCommand = command(
+  {
+    name: "status",
+    flags: { ...sessionFlag, ...formatFlags },
+    help: { description: "Show daemon status" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("status", parsed._, 0);
+    const opts = parsed.flags;
     const format = resolveFormat(opts);
     if (!isDaemonRunning()) {
       if (format !== "text") {
@@ -1146,12 +1368,18 @@ daemonCmd
         process.stdout.write(`  ${s.id}  ${s.name}\n`);
       }
     }
-  });
+  },
+);
 
-daemonCmd
-  .command("ping")
-  .description("Check if daemon is responsive")
-  .action(async () => {
+const daemonPingCommand = command(
+  {
+    name: "ping",
+    flags: { ...sessionFlag },
+    help: { description: "Check if daemon is responsive" },
+  },
+  async (parsed) => {
+    adoptGlobalSession(parsed.flags.session);
+    rejectExcessArgs("ping", parsed._, 0);
     if (!isDaemonRunning()) {
       process.stderr.write("Daemon not running.\n");
       process.exit(1);
@@ -1163,23 +1391,182 @@ daemonCmd
       process.exit(1);
     }
     process.stdout.write(`${res.result as string}\n`);
-  });
+  },
+);
 
-program
-  .command("mcp")
-  .description("Start MCP server for AI tool integration")
-  .option("-s, --session <id>", "Target session (auto-detected from CWD)")
-  .action(async (opts: { session?: string }) => {
+/**
+ * `daemon` is a nested command group; cleye commands are flat, so the group is
+ * dispatched as its own cleye instance on the remaining argv.
+ */
+function runDaemonCli(rawArgv: string[]): void {
+  const argv = consumeLeadingSessionFlag(rawArgv);
+  void cli(
+    {
+      name: "zaps daemon",
+      commands: [
+        daemonRunCommand,
+        daemonStartCommand,
+        daemonStopCommand,
+        daemonStatusCommand,
+        daemonPingCommand,
+      ],
+      flags: { ...sessionFlag },
+      help: { description: "Daemon management" },
+      strictFlags: true,
+    },
+    (parsed) => {
+      adoptGlobalSession(parsed.flags.session);
+      const [unknownCommand] = parsed._;
+      if (unknownCommand !== undefined) {
+        process.stderr.write(`error: unknown command '${unknownCommand}'\n`);
+        process.exit(1);
+      }
+      parsed.showHelp();
+      process.exit(1);
+    },
+    argv,
+  );
+}
+
+/** Listed in root help only; dispatch is intercepted in `runRootCli`. */
+const daemonGroupCommand = command({
+  name: "daemon",
+  help: { description: "Daemon management" },
+});
+
+const mcpCommand = command(
+  {
+    name: "mcp",
+    flags: {
+      session: {
+        type: String,
+        alias: "s",
+        placeholder: "<id>",
+        description: "Target session (auto-detected from CWD)",
+      },
+    },
+    help: { description: "Start MCP server for AI tool integration" },
+  },
+  async (parsed) => {
+    rejectExcessArgs("mcp", parsed._, 0);
     const sock = socketPath();
     // Session binding is resolved per tool call inside the server (E9) — not
     // Cached here — so an MCP server started before `zaps up`, or surviving a
     // Session restart, picks up the current session on the next call.
     const { startMcpServer } = await import("./mcp/server.js");
-    await startMcpServer(sock, opts.session);
-  });
+    await startMcpServer(sock, parsed.flags.session);
+  },
+);
+
+const rootCommands: Command[] = [
+  upCommand,
+  downCommand,
+  startCommand,
+  stopCommand,
+  restartCommand,
+  psCommand,
+  lsCommand,
+  inspectCommand,
+  logsCommand,
+  runCommand,
+  eventsCommand,
+  configCommand,
+  primeAgentCommand,
+  reloadCommand,
+  initCommand,
+  attachCommand,
+  tasksCommand,
+  uiCommand,
+  execServiceCommand,
+  execTaskCommand,
+  daemonGroupCommand,
+  mcpCommand,
+];
+
+/** Commands omitted from `--help`; still invocable directly. */
+function hiddenCommandNames(): Set<string> {
+  const hidden = new Set(["ui", "exec-service", "exec-task"]);
+  if (!isCodingAgent()) {
+    hidden.add("prime-agent");
+  }
+  return hidden;
+}
+
+function runRootCli(argv: string[]): void {
+  if (argv[0] === "daemon") {
+    runDaemonCli(argv.slice(1));
+    return;
+  }
+  void cli(
+    {
+      name: "zaps",
+      commands: rootCommands,
+      flags: {
+        ...sessionFlag,
+        version: { type: Boolean, alias: "V", description: "output the version number" },
+      },
+      help: {
+        description: "Terminal session manager",
+        render: (nodes, renderers) => {
+          const hidden = hiddenCommandNames();
+          for (const node of nodes) {
+            if (node.id === "commands") {
+              const section = node.data as { body: { data: { tableData: string[][] } } };
+              section.body.data.tableData = section.body.data.tableData.filter(
+                (row) => !hidden.has(row[0]),
+              );
+            }
+          }
+          return renderers.render(nodes);
+        },
+      },
+      strictFlags: true,
+    },
+    (parsed) => {
+      if (parsed.flags.version) {
+        process.stdout.write(`${VERSION}\n`);
+        process.exit(0);
+      }
+      adoptGlobalSession(parsed.flags.session);
+      const [unknownCommand] = parsed._;
+      if (unknownCommand !== undefined) {
+        process.stderr.write(`error: unknown command '${unknownCommand}'\n`);
+        process.exit(1);
+      }
+      parsed.showHelp();
+      process.exit(1);
+    },
+    argv,
+  );
+}
+
+// Registered last (matching commander's implicit trailing `help [command]`)
+// And defined after `runRootCli` so it can re-dispatch `<cmd> --help`.
+const helpCommand = command(
+  {
+    name: "help",
+    parameters: ["[command]"],
+    help: { description: "display help for command" },
+  },
+  (parsed) => {
+    rejectExcessArgs("help", parsed._, 1);
+    const target = parsed._.command;
+    if (target === undefined) {
+      runRootCli(["--help"]);
+      return;
+    }
+    if (rootCommands.some((c) => c.options.name === target)) {
+      runRootCli([target, "--help"]);
+      return;
+    }
+    process.stderr.write(`error: unknown command '${target}'\n`);
+    process.exit(1);
+  },
+);
+rootCommands.push(helpCommand);
 
 if (process.argv.length === 2) {
   process.argv.push("up");
 }
 
-program.parse();
+runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
