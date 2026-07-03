@@ -45,9 +45,6 @@ importers:
       react:
         specifier: ^19.2.7
         version: 19.2.7
-      tsx:
-        specifier: ^4.22.4
-        version: 4.22.4
       yoga-layout:
         specifier: ^3.2.1
         version: 3.2.1
@@ -82,6 +79,9 @@ importers:
       testcontainers:
         specifier: ^12.0.1
         version: 12.0.1
+      tsx:
+        specifier: ^4.22.4
+        version: 4.22.4
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
