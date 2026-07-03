@@ -27,9 +27,9 @@ importers:
       '@types/node':
         specifier: ^26.0.0
         version: 26.0.1
-      commander:
-        specifier: ^15.0.0
-        version: 15.0.0
+      cleye:
+        specifier: ^2.6.0
+        version: 2.6.0
       fuzzysort:
         specifier: ^3.1.0
         version: 3.1.0
@@ -1184,6 +1184,9 @@ packages:
   chownr@1.1.4:
     resolution: {integrity: sha512-jJ0bqzaylmJtVnNgzTeSOs8DPavpbYgEr/b0YL8/2GO3xJEhInFmhKMUnEJQjZumK7KXGFhUy89PrsJWlakBVg==}
 
+  cleye@2.6.0:
+    resolution: {integrity: sha512-u0SQCsega/ox+2GSuUlG6wvA9c2FtH8sPmv9G9Q3JRTs7FK6+LtaziRAQgx7lrJ1J7bOd3palhwgZKMg8R6JbQ==}
+
   cli-boxes@4.0.1:
     resolution: {integrity: sha512-5IOn+jcCEHEraYolBPs/sT4BxYCe2nHg374OPiItB1O96KZFseS2gthU4twyYzeDcFew4DaUM/xwc5BQf08JJw==}
     engines: {node: '>=18.20 <19 || >=20.10'}
@@ -1210,10 +1213,6 @@ packages:
 
   color-name@1.1.4:
     resolution: {integrity: sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA==}
-
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
-    engines: {node: '>=22.12.0'}
 
   compress-commons@6.0.2:
     resolution: {integrity: sha512-6FqVXeETqWPoGcfzrXb37E50NP0LXT8kAMu5ooZayhWWdgEY4lBEEcbQNXtkuKQsGduxiIcI4gOTsxTmuq/bSg==}
@@ -2048,6 +2047,9 @@ packages:
   teex@1.0.1:
     resolution: {integrity: sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg==}
 
+  terminal-columns@2.0.0:
+    resolution: {integrity: sha512-6IByuUjyNZJXUtwDNm+OIe62zgwwaRbH+WMNTcx05O2G5V9WhvluAAHJY8OvUdwmzMPpqAD/7EUpGdI6ae1aiQ==}
+
   terminal-size@4.0.1:
     resolution: {integrity: sha512-avMLDQpUI9I5XFrklECw1ZEUPJhqzcwSWsyyI8blhRLT+8N1jLJWLWWYQpB2q2xthq8xDvjZPISVh53T/+CLYQ==}
     engines: {node: '>=18'}
@@ -2096,6 +2098,9 @@ packages:
   type-fest@5.7.0:
     resolution: {integrity: sha512-1URUxUqfHFM1c+zfSPsa3gnkO7Aq21qyH75SIduNYz4SzY964rn1X2vCMQaHSHhktiw+0kPa2iyb6PUpXqB6Vg==}
     engines: {node: '>=20'}
+
+  type-flag@4.5.0:
+    resolution: {integrity: sha512-1aLzxcL6u1O9XHieAJBBX9U4QzwzDTWN0ER9M7QQSvS24NBmGM+N8FcghlgHAzOvDlEEpOx4hEml9CVcDnflcw==}
 
   type-is@2.1.0:
     resolution: {integrity: sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA==}
@@ -3055,6 +3060,11 @@ snapshots:
 
   chownr@1.1.4: {}
 
+  cleye@2.6.0:
+    dependencies:
+      terminal-columns: 2.0.0
+      type-flag: 4.5.0
+
   cli-boxes@4.0.1: {}
 
   cli-cursor@4.0.0:
@@ -3081,8 +3091,6 @@ snapshots:
       color-name: 1.1.4
 
   color-name@1.1.4: {}
-
-  commander@15.0.0: {}
 
   compress-commons@6.0.2:
     dependencies:
@@ -4046,6 +4054,8 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
+  terminal-columns@2.0.0: {}
+
   terminal-size@4.0.1: {}
 
   testcontainers@12.0.1:
@@ -4105,6 +4115,8 @@ snapshots:
   type-fest@5.7.0:
     dependencies:
       tagged-tag: 1.0.0
+
+  type-flag@4.5.0: {}
 
   type-is@2.1.0:
     dependencies:

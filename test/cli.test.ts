@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock all external dependencies before importing the module under test
 
@@ -366,6 +371,209 @@ describe("CLI — session naming", () => {
     const sessionName = `zaps-${projectName}`;
     expect(sessionName).toBe("zaps-my_app-v2");
   });
+});
+
+describe("CLI — cleye parse layer (subprocess parity)", () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const CLI_TIMEOUT = 60_000;
+
+  let spawnSyncReal: typeof import("node:child_process").spawnSync;
+  let runtimeDir: string;
+
+  beforeAll(async () => {
+    // The module-level vi.mock replaces node:child_process; the parse-layer
+    // Tests need the real spawnSync to exercise the actual CLI surface.
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    spawnSyncReal = actual.spawnSync;
+    // Isolated runtime dir so isDaemonRunning() never sees a real daemon.
+    runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-parse-"));
+  });
+
+  afterAll(() => {
+    fs.rmSync(runtimeDir, { recursive: true, force: true });
+  });
+
+  function runCli(args: string[], envOverrides: Record<string, string> = {}) {
+    return spawnSyncReal(process.execPath, ["--import", "tsx", "src/cli.tsx", ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      timeout: CLI_TIMEOUT,
+      env: {
+        ...process.env,
+        CLAUDECODE: undefined,
+        CURSOR_TRACE_DIR: undefined,
+        TMUX: undefined,
+        ZAPS_FORMAT: undefined,
+        ZAPS_RUNTIME: undefined,
+        ZAPS_SOCKET_PATH: undefined,
+        XDG_RUNTIME_DIR: runtimeDir,
+        ...envOverrides,
+      },
+    });
+  }
+
+  it(
+    "--help lists every visible command and hides internal ones",
+    () => {
+      const res = runCli(["--help"]);
+      expect(res.status).toBe(0);
+
+      const visible = [
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "ps",
+        "ls",
+        "inspect",
+        "logs",
+        "run",
+        "events",
+        "config",
+        "reload",
+        "init",
+        "attach",
+        "tasks",
+        "daemon",
+        "mcp",
+        "help",
+      ];
+      for (const name of visible) {
+        expect(res.stdout).toMatch(new RegExp(`^\\s{2}${name}\\s`, "m"));
+      }
+
+      expect(res.stdout).not.toMatch(/^\s*ui\s/m);
+      expect(res.stdout).not.toContain("exec-service");
+      expect(res.stdout).not.toContain("exec-task");
+      expect(res.stdout).not.toContain("prime-agent");
+      // Global option + version flag documented at the root
+      expect(res.stdout).toContain("-s, --session <session>");
+      expect(res.stdout).toContain("-V, --version");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "prime-agent is listed exactly once when a coding-agent env var is set",
+    () => {
+      const res = runCli(["--help"], { CLAUDECODE: "1", CURSOR_TRACE_DIR: "/tmp" });
+      expect(res.status).toBe(0);
+      expect(res.stdout.split("prime-agent").length - 1).toBe(1);
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "--version and -V print the version shape and exit 0",
+    () => {
+      const long = runCli(["--version"]);
+      expect(long.status).toBe(0);
+      expect(long.stdout).toBe("dev (source) built from source\n");
+
+      const short = runCli(["-V"]);
+      expect(short.status).toBe(0);
+      expect(short.stdout).toBe("dev (source) built from source\n");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "daemon --help lists the nested subcommand group",
+    () => {
+      const res = runCli(["daemon", "--help"]);
+      expect(res.status).toBe(0);
+      for (const name of ["run", "start", "stop", "status", "ping"]) {
+        expect(res.stdout).toMatch(new RegExp(`^\\s{2}${name}\\s`, "m"));
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "unknown commands exit 1 with an error",
+    () => {
+      const res = runCli(["bogus"]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("unknown command 'bogus'");
+
+      const nested = runCli(["daemon", "bogus"]);
+      expect(nested.status).toBe(1);
+      expect(nested.stderr).toContain("unknown command 'bogus'");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "ui without its required options exits 1 with a clear message",
+    () => {
+      const res = runCli(["ui"]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("required option '--session <id>' not specified");
+
+      const withSession = runCli(["ui", "--session", "abc"]);
+      expect(withSession.status).toBe(1);
+      expect(withSession.stderr).toContain("required option '--socket <path>' not specified");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "exec-service/exec-task keep the verbatim -s/--session runtime check",
+    () => {
+      const service = runCli(["exec-service", "api"]);
+      expect(service.status).toBe(1);
+      expect(service.stderr).toContain("Error: -s/--session is required for exec-service");
+
+      const task = runCli(["exec-task", "run-1"]);
+      expect(task.status).toBe(1);
+      expect(task.stderr).toContain("Error: -s/--session is required for exec-task");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "global -s/--session is accepted before and after the command name",
+    () => {
+      // Daemon is isolated away, so reaching "Daemon not running." proves the
+      // Flag was parsed (an unknown flag would error differently via strictFlags).
+      const before = runCli(["-s", "foo", "ps"]);
+      expect(before.status).toBe(1);
+      expect(before.stderr).toContain("Daemon not running.");
+
+      const after = runCli(["ps", "-s", "foo"]);
+      expect(after.status).toBe(1);
+      expect(after.stderr).toContain("Daemon not running.");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "logs --help documents -f/--follow and the --tail default",
+    () => {
+      const res = runCli(["logs", "--help"]);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("-f, --follow");
+      expect(res.stdout).toContain("--tail <n>");
+      expect(res.stdout).toContain('(default: "100")');
+      expect(res.stdout).toContain("[services...]");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "unknown flags and excess arguments exit 1",
+    () => {
+      const unknownFlag = runCli(["ps", "--bogus"]);
+      expect(unknownFlag.status).toBe(1);
+      expect(unknownFlag.stderr).toContain("Unknown flag: --bogus");
+
+      const excess = runCli(["ps", "extra"]);
+      expect(excess.status).toBe(1);
+      expect(excess.stderr).toContain("too many arguments for 'ps'");
+    },
+    CLI_TIMEOUT,
+  );
 });
 
 describe("CLI — buildDeps", () => {
