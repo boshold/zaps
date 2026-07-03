@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -393,9 +394,14 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
     fs.rmSync(runtimeDir, { recursive: true, force: true });
   });
 
-  function runCli(args: string[], envOverrides: Record<string, string> = {}) {
-    return spawnSyncReal(process.execPath, ["--import", "tsx", "src/cli.tsx", ...args], {
-      cwd: repoRoot,
+  // Absolute specifiers so the CLI can be spawned from any cwd (e.g. a config-
+  // Free temp dir for the zero-argument default-command test).
+  const tsxImport = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const cliEntry = path.join(repoRoot, "src/cli.tsx");
+
+  function runCli(args: string[], envOverrides: Record<string, string> = {}, cwd = repoRoot) {
+    return spawnSyncReal(process.execPath, ["--import", tsxImport, cliEntry, ...args], {
+      cwd,
       encoding: "utf8",
       timeout: CLI_TIMEOUT,
       env: {
@@ -571,6 +577,110 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
       const excess = runCli(["ps", "extra"]);
       expect(excess.status).toBe(1);
       expect(excess.stderr).toContain("too many arguments for 'ps'");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "every command's --help exits 0, hidden and daemon subcommands included",
+    () => {
+      const rootLevel = [
+        "up",
+        "down",
+        "start",
+        "stop",
+        "restart",
+        "ps",
+        "ls",
+        "inspect",
+        "logs",
+        "run",
+        "events",
+        "config",
+        "reload",
+        "init",
+        "attach",
+        "tasks",
+        "mcp",
+        "help",
+        // Hidden commands stay invocable directly, help included.
+        "ui",
+        "exec-service",
+        "exec-task",
+        "prime-agent",
+      ];
+      for (const name of rootLevel) {
+        const res = runCli([name, "--help"]);
+        expect(res.status, `${name} --help exit code`).toBe(0);
+        expect(res.stdout, `${name} --help heading`).toContain(`zaps ${name}`);
+      }
+      for (const sub of ["run", "start", "stop", "status", "ping"]) {
+        const res = runCli(["daemon", sub, "--help"]);
+        expect(res.status, `daemon ${sub} --help exit code`).toBe(0);
+        expect(res.stdout, `daemon ${sub} --help heading`).toContain(`zaps daemon ${sub}`);
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "bare `zaps daemon` prints the group help to stdout and exits 1",
+    () => {
+      const res = runCli(["daemon"]);
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain("Daemon management");
+      for (const name of ["run", "start", "stop", "status", "ping"]) {
+        expect(res.stdout).toMatch(new RegExp(`^\\s{2}${name}\\s`, "m"));
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "variadic [services...] accepts zero (= all) and multiple values alike",
+    () => {
+      // Daemon is isolated away: reaching "Daemon not running." proves the
+      // Argv shape parsed cleanly for both the empty and multi-value forms.
+      for (const cmd of ["start", "stop", "restart", "logs"]) {
+        const none = runCli([cmd]);
+        expect(none.status, `${cmd} (no services) exit code`).toBe(1);
+        expect(none.stderr, `${cmd} (no services) stderr`).toContain("Daemon not running.");
+
+        const many = runCli([cmd, "api", "db"]);
+        expect(many.status, `${cmd} api db exit code`).toBe(1);
+        expect(many.stderr, `${cmd} api db stderr`).toContain("Daemon not running.");
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "zero-argument `zaps` behaves exactly like `zaps up`",
+    () => {
+      // A config-free temp cwd makes both paths fail identically and fast.
+      const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-noconfig-"));
+      try {
+        const bare = runCli([], {}, emptyDir);
+        const explicit = runCli(["up"], {}, emptyDir);
+        expect(bare.status).toBe(1);
+        expect(bare.stderr).toBe("No config found. Run `zaps init` to create one.\n");
+        expect(explicit.status).toBe(bare.status);
+        expect(explicit.stderr).toBe(bare.stderr);
+        expect(explicit.stdout).toBe(bare.stdout);
+      } finally {
+        fs.rmSync(emptyDir, { recursive: true, force: true });
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "mcp --help documents its local -s/--session <id> option",
+    () => {
+      const res = runCli(["mcp", "--help"]);
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain("-s, --session <id>");
+      expect(res.stdout).toContain("Target session (auto-detected from CWD)");
     },
     CLI_TIMEOUT,
   );
