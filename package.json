@@ -73,7 +73,7 @@
     "@vitest/coverage-v8": "^4.1.8",
     "esbuild": "^0.28.1",
     "ink-testing-library": "^4.0.0",
-    "oxfmt": "^0.54.0",
+    "oxfmt": "^0.61.0",
     "oxlint": "^1.69.0",
     "oxlint-tsgolint": "^0.23.0",
     "react-devtools-core": "^7.0.1",
