@@ -10,6 +10,7 @@ const sessions: SessionInfo[] = [
     projectDir: "/projects/my-app",
     tmuxSession: "tmux-abc123def456",
     managed: false,
+    tuiPane: null,
   },
   {
     id: "xyz789ghi012",
@@ -17,6 +18,7 @@ const sessions: SessionInfo[] = [
     projectDir: "/projects/api-server",
     tmuxSession: "tmux-xyz789ghi012",
     managed: false,
+    tuiPane: null,
   },
   {
     id: "abc999zzz000",
@@ -24,6 +26,7 @@ const sessions: SessionInfo[] = [
     projectDir: "/projects/other",
     tmuxSession: "tmux-abc999zzz000",
     managed: false,
+    tuiPane: null,
   },
 ];
 

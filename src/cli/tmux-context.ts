@@ -14,6 +14,8 @@ interface DaemonSessionView {
   tmuxSession: string;
   /** True when zaps owns the hosting tmux session. */
   managed: boolean;
+  /** `%N` of its TUI pane — the pane the re-attach path revives. */
+  tuiPane: string | null;
 }
 
 interface TmuxContextInput {
@@ -27,6 +29,12 @@ interface TmuxContextInput {
   tmuxAvailability: TmuxAvailability;
   /** Live session for this project, or undefined when the daemon has none. */
   daemonSession: DaemonSessionView | undefined;
+  /**
+   * Name of the tmux session we are currently inside, when `tmuxEnv` is set.
+   * Distinguishes "inside the project's own managed session" (carry on) from
+   * "inside some other tmux while the session lives in a managed one" (F7).
+   */
+  currentTmuxSession: string | undefined;
   /** Managed session name for this project (`zaps-<project>-<id>`). */
   managedName: string;
   /** True when `managedName` exists on the managed socket. */
@@ -43,7 +51,7 @@ type TmuxContextDecision =
   | { kind: "spawn"; name: string }
   | { kind: "spawn-detached"; name: string }
   | { kind: "kill-stale-then-spawn"; name: string; detach: boolean }
-  | { kind: "reattach"; name: string }
+  | { kind: "reattach"; name: string; tuiPane: string | null }
   | { kind: "already-running"; message: string }
   | { kind: "refuse-personal"; message: string }
   | { kind: "refuse-managed"; message: string }
@@ -88,9 +96,14 @@ function refuseManagedMessage(session: DaemonSessionView): string {
  */
 function decideTmuxContext(input: TmuxContextInput): TmuxContextDecision {
   if (input.tmuxEnv) {
-    // Already inside tmux: today's behavior, except a managed session can only
-    // Be driven from a plain terminal (F7).
-    if (input.daemonSession?.managed) {
+    // Inside the project's OWN managed session (the tmux-naive user who quit the
+    // TUI and is back at the pane's shell): carry on exactly like any in-tmux
+    // Run — the TUI attaches in the current pane. Only a managed session hosted
+    // By some OTHER tmux we are not in has to be refused (F7).
+    if (
+      input.daemonSession?.managed &&
+      input.currentTmuxSession !== input.daemonSession.tmuxSession
+    ) {
       return { kind: "refuse-managed", message: refuseManagedMessage(input.daemonSession) };
     }
     return { kind: "proceed-inside" };
@@ -114,7 +127,11 @@ function decideTmuxContext(input: TmuxContextInput): TmuxContextDecision {
     // With), everything else re-enters it (F3).
     return input.detach
       ? { kind: "already-running", message: alreadyRunningMessage(input.daemonSession) }
-      : { kind: "reattach", name: input.daemonSession.tmuxSession };
+      : {
+          kind: "reattach",
+          name: input.daemonSession.tmuxSession,
+          tuiPane: input.daemonSession.tuiPane,
+        };
   }
 
   if (input.managedSessionExists) {

@@ -44,6 +44,7 @@ import {
   windowLayout,
   paneIndexOrder,
   tmuxFor,
+  detachClient,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -454,11 +455,12 @@ describe("selectPane", () => {
 
 describe("listPanes", () => {
   it("parses pane info from output", async () => {
-    mockSpawn.mockReturnValue(createMockProc("%0:1234:120:40\n%1:5678:60:20"));
+    mockSpawn.mockReturnValue(createMockProc("%0:1234:120:40:0\n%1:5678:60:20:1"));
     const panes = await listPanes("my-project");
     expect(panes).toEqual([
-      { id: "%0", pid: 1234, width: 120, height: 40 },
-      { id: "%1", pid: 5678, width: 60, height: 20 },
+      { id: "%0", pid: 1234, width: 120, height: 40, dead: false },
+      // `dead` is what the re-attach path reads to decide whether to respawn.
+      { id: "%1", pid: 5678, width: 60, height: 20, dead: true },
     ]);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
@@ -467,7 +469,7 @@ describe("listPanes", () => {
         "-t",
         "my-project",
         "-F",
-        "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}",
+        "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}:#{pane_dead}",
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -619,6 +621,16 @@ describe("resyncPaneSizes", () => {
   it("swallows errors so startup is never blocked", async () => {
     mockSpawn.mockImplementation(() => createMockProc("", 1, "boom"));
     await expect(resyncPaneSizes("%7", 0)).resolves.toBeUndefined();
+  });
+});
+
+describe("detachClient", () => {
+  it("detaches the client owning the target pane", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await detachClient("%7");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["detach-client", "-t", "%7"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   });
 });
 

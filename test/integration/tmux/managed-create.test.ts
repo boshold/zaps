@@ -1,121 +1,19 @@
-import { execFile } from "node:child_process";
-import fs from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { promisify } from "node:util";
-
 import { afterEach, describe, expect, it } from "vitest";
 
-import { sessionId } from "#src/daemon/session.js";
-import { MANAGED_SOCKET, managedSessionName } from "#src/lib/managed-tmux.js";
+import { MANAGED_SOCKET } from "#src/lib/managed-tmux.js";
 
+import type { Project } from "../helpers/managed.js";
+import {
+  createProject,
+  managed,
+  managedSessionExists,
+  pollUntil,
+  runZaps,
+  serviceAnswers,
+  serviceConfig,
+} from "../helpers/managed.js";
 import { reservePort } from "../helpers/port.js";
 import { hasBinary, hasTmux } from "../helpers/skip.js";
-
-const execFileAsync = promisify(execFile);
-const binaryPath = path.resolve("dist/zaps");
-
-interface RunResult {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-/** `tmux -L zaps …` — the real managed server, never the per-file test socket. */
-async function managed(args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("tmux", ["-L", MANAGED_SOCKET, ...args]);
-  return stdout.trim();
-}
-
-async function managedSessionExists(name: string): Promise<boolean> {
-  try {
-    await managed(["has-session", "-t", name]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Run zaps as a user would from a plain terminal: no `$TMUX`, no inherited tmux
- * socket, and a private `XDG_RUNTIME_DIR` so this test drives its own daemon
- * instead of the developer's.
- */
-async function runZaps(
-  args: string[],
-  cwd: string,
-  runtimeDir: string,
-  extraEnv: NodeJS.ProcessEnv = {},
-): Promise<RunResult> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    XDG_RUNTIME_DIR: runtimeDir,
-    ZAPS_COMMAND: binaryPath,
-    ...extraEnv,
-  };
-  delete env.TMUX;
-  delete env.TMUX_PANE;
-  delete env.ZAPS_TMUX_SOCKET;
-  try {
-    const { stdout, stderr } = await execFileAsync(binaryPath, args, { cwd, env });
-    return { code: 0, stdout, stderr };
-  } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string };
-    return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
-  }
-}
-
-async function pollUntil(check: () => Promise<boolean>, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  /* eslint-disable no-await-in-loop -- poll a real condition, never sleep-and-hope */
-  while (Date.now() < deadline) {
-    if (await check()) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  /* eslint-enable no-await-in-loop */
-  return false;
-}
-
-/** A project dir with a config, plus everything needed to address it later. */
-interface Project {
-  dir: string;
-  runtimeDir: string;
-  sessionName: string;
-}
-
-async function createProject(configBody: string): Promise<Project> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-managed-"));
-  // Real path: macOS tmpdir is a symlink, and zaps resolves cwd before hashing.
-  const realDir = fs.realpathSync(dir);
-  const configPath = path.join(realDir, ".zaps.mts");
-  await writeFile(configPath, configBody, "utf8");
-  const runtimeDir = path.join(realDir, "run");
-  fs.mkdirSync(runtimeDir, { recursive: true });
-  return {
-    dir: realDir,
-    runtimeDir,
-    sessionName: managedSessionName(path.basename(realDir), sessionId(configPath)),
-  };
-}
-
-function serviceConfig(port: number): string {
-  const start = `node -e \\"require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port},()=>console.log('ready on port ${port}'))\\"`;
-  return `export function config({ define }) {
-  return define({
-    name: "managed-create",
-    services: {
-      web: {
-        start: "${start}",
-        ready: { port: ${port} },
-      },
-    },
-  });
-}
-`;
-}
 
 describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 120_000 }, () => {
   let project: Project | undefined = undefined;
@@ -129,7 +27,6 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
       } catch {
         // Already gone — the failure paths kill it themselves.
       }
-      await rm(project.dir, { recursive: true, force: true });
       project = undefined;
     }
   });
@@ -169,17 +66,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     );
 
     // Services really run inside the managed session.
-    const ready = await pollUntil(async () => {
-      try {
-        const response = await fetch(`http://localhost:${port}`, {
-          signal: AbortSignal.timeout(1000),
-        });
-        return response.status === 200;
-      } catch {
-        return false;
-      }
-    });
-    expect(ready).toBe(true);
+    expect(await pollUntil(async () => serviceAnswers(port))).toBe(true);
 
     // The daemon reports it as managed, hosted by the managed tmux session.
     const listed = await runZaps(["ls", "--json"], project.dir, project.runtimeDir);

@@ -136,6 +136,7 @@ describe("resolveTargetSession", () => {
       projectDir: "/a",
       tmuxSession: "tmux-abc123",
       managed: false,
+      tuiPane: null,
     },
     {
       id: "def456",
@@ -143,6 +144,7 @@ describe("resolveTargetSession", () => {
       projectDir: "/b",
       tmuxSession: "tmux-def456",
       managed: false,
+      tuiPane: null,
     },
     {
       id: "ghi789",
@@ -150,6 +152,7 @@ describe("resolveTargetSession", () => {
       projectDir: "/c",
       tmuxSession: "tmux-ghi789",
       managed: false,
+      tuiPane: null,
     },
   ];
 
@@ -199,8 +202,22 @@ describe("resolveTargetSession", () => {
 
   it("prefers exact id over exact name", () => {
     const dupes: SessionInfo[] = [
-      { id: "abc", name: "xyz", projectDir: "/1", tmuxSession: "tmux-abc", managed: false },
-      { id: "xyz", name: "abc", projectDir: "/2", tmuxSession: "tmux-xyz", managed: false },
+      {
+        id: "abc",
+        name: "xyz",
+        projectDir: "/1",
+        tmuxSession: "tmux-abc",
+        managed: false,
+        tuiPane: null,
+      },
+      {
+        id: "xyz",
+        name: "abc",
+        projectDir: "/2",
+        tmuxSession: "tmux-xyz",
+        managed: false,
+        tuiPane: null,
+      },
     ];
     // "abc" should match first by exact id
     expect(resolveTargetSession(dupes, "abc")).toBe(dupes[0]);
@@ -298,6 +315,7 @@ describe("withDaemon", () => {
           projectDir: "/a",
           tmuxSession: "tmux-abc123",
           managed: false,
+          tuiPane: null,
         },
       ],
     });
@@ -336,6 +354,7 @@ describe("withDaemon", () => {
           projectDir: "/my",
           tmuxSession: "tmux-session-/my/.zaps.mts",
           managed: false,
+          tuiPane: null,
         },
       ],
     });
@@ -364,6 +383,7 @@ describe("withDaemon", () => {
           projectDir: "/other",
           tmuxSession: "tmux-other-session",
           managed: false,
+          tuiPane: null,
         },
       ],
     });
@@ -389,7 +409,14 @@ describe("withDaemon", () => {
 
 describe("runDown", () => {
   const sessions = [
-    { id: "abc", name: "proj", projectDir: "/proj", tmuxSession: "tmux-abc", managed: false },
+    {
+      id: "abc",
+      name: "proj",
+      projectDir: "/proj",
+      tmuxSession: "tmux-abc",
+      managed: false,
+      tuiPane: null,
+    },
   ];
 
   function makeDeps(over: Partial<DownDeps> = {}): {
@@ -484,13 +511,21 @@ describe("parsePositiveInt", () => {
 
 describe("resolveTargetSession — subdirectory resolution (E12)", () => {
   const sessions: SessionInfo[] = [
-    { id: "a1", name: "app", projectDir: "/home/u/app", tmuxSession: "tmux-a1", managed: false },
+    {
+      id: "a1",
+      name: "app",
+      projectDir: "/home/u/app",
+      tmuxSession: "tmux-a1",
+      managed: false,
+      tuiPane: null,
+    },
     {
       id: "b1",
       name: "other",
       projectDir: "/home/u/other",
       tmuxSession: "tmux-b1",
       managed: false,
+      tuiPane: null,
     },
   ];
 
@@ -511,13 +546,21 @@ describe("resolveTargetSession — subdirectory resolution (E12)", () => {
 
   it("does not match a sibling dir sharing a name prefix (/app vs /app2)", () => {
     const siblings: SessionInfo[] = [
-      { id: "a1", name: "app", projectDir: "/home/u/app", tmuxSession: "tmux-a1", managed: false },
+      {
+        id: "a1",
+        name: "app",
+        projectDir: "/home/u/app",
+        tmuxSession: "tmux-a1",
+        managed: false,
+        tuiPane: null,
+      },
       {
         id: "c1",
         name: "other",
         projectDir: "/home/u/zzz",
         tmuxSession: "tmux-c1",
         managed: false,
+        tuiPane: null,
       },
     ];
     withCwd("/home/u/app2", () => {
@@ -533,6 +576,7 @@ describe("resolveTargetSession — subdirectory resolution (E12)", () => {
         projectDir: "/home/u/app",
         tmuxSession: "tmux-root",
         managed: false,
+        tuiPane: null,
       },
       {
         id: "pkg",
@@ -540,6 +584,7 @@ describe("resolveTargetSession — subdirectory resolution (E12)", () => {
         projectDir: "/home/u/app/packages/api",
         tmuxSession: "tmux-pkg",
         managed: false,
+        tuiPane: null,
       },
     ];
     withCwd("/home/u/app/packages/api/src", () => {
@@ -569,6 +614,7 @@ describe("resolveListedSessionId (E8 events validation)", () => {
         projectDir: "/my",
         tmuxSession: "tmux-session-/my/.zaps.mts",
         managed: false,
+        tuiPane: null,
       },
     ];
     expect(resolveListedSessionId(sessions)).toBe("session-/my/.zaps.mts");
@@ -582,14 +628,28 @@ describe("resolveListedSessionId (E8 events validation)", () => {
 
   it("defers to resolveTargetSession for an explicit arg", () => {
     const sessions: SessionInfo[] = [
-      { id: "abc", name: "proj", projectDir: "/p", tmuxSession: "tmux-abc", managed: false },
+      {
+        id: "abc",
+        name: "proj",
+        projectDir: "/p",
+        tmuxSession: "tmux-abc",
+        managed: false,
+        tuiPane: null,
+      },
     ];
     expect(resolveListedSessionId(sessions, "proj")).toBe("abc");
   });
 
   it("throws for an explicit arg that matches nothing", () => {
     const sessions: SessionInfo[] = [
-      { id: "abc", name: "proj", projectDir: "/p", tmuxSession: "tmux-abc", managed: false },
+      {
+        id: "abc",
+        name: "proj",
+        projectDir: "/p",
+        tmuxSession: "tmux-abc",
+        managed: false,
+        tuiPane: null,
+      },
     ];
     expect(() => resolveListedSessionId(sessions, "ghost")).toThrow(/Session not found/);
   });

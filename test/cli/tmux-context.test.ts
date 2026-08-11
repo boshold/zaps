@@ -17,6 +17,7 @@ function input(overrides: Partial<TmuxContextInput> = {}): TmuxContextInput {
     detach: false,
     tmuxAvailability: { ok: true, version: "3.5" },
     daemonSession: undefined,
+    currentTmuxSession: undefined,
     managedName: MANAGED_NAME,
     managedSessionExists: false,
     ...overrides,
@@ -27,12 +28,14 @@ const managedSession: DaemonSessionView = {
   name: "app",
   tmuxSession: MANAGED_NAME,
   managed: true,
+  tuiPane: "%3",
 };
 
 const personalSession: DaemonSessionView = {
   name: "app",
   tmuxSession: "work",
   managed: false,
+  tuiPane: "%1",
 };
 
 describe("decideTmuxContext — inside tmux", () => {
@@ -60,9 +63,26 @@ describe("decideTmuxContext — inside tmux", () => {
     expect(decision).toEqual({ kind: "proceed-inside" });
   });
 
-  it("refuses when this project's session is managed (F7)", () => {
+  it("carries on inside the project's OWN managed session (post-detach shell)", () => {
+    // The tmux-naive user quit the TUI and typed `zaps` at the pane's shell:
+    // Refusing here would be a dead end — the TUI just attaches in this pane.
     const decision = decideTmuxContext(
-      input({ tmuxEnv: "/tmp/tmux-1000/default,123,0", daemonSession: managedSession }),
+      input({
+        tmuxEnv: "/tmp/tmux-1000/zaps,123,0",
+        daemonSession: managedSession,
+        currentTmuxSession: MANAGED_NAME,
+      }),
+    );
+    expect(decision).toEqual({ kind: "proceed-inside" });
+  });
+
+  it("refuses when the session is managed by a tmux we are NOT in (F7)", () => {
+    const decision = decideTmuxContext(
+      input({
+        tmuxEnv: "/tmp/tmux-1000/default,123,0",
+        daemonSession: managedSession,
+        currentTmuxSession: "work",
+      }),
     );
     expect(decision.kind).toBe("refuse-managed");
     expect(decision).toMatchObject({
@@ -126,10 +146,11 @@ describe("decideTmuxContext — escape hatch and tmux gate", () => {
 });
 
 describe("decideTmuxContext — running sessions", () => {
-  it("re-attaches to this project's managed session (F3)", () => {
+  it("re-attaches to this project's managed session, carrying its TUI pane (F3)", () => {
     expect(decideTmuxContext(input({ daemonSession: managedSession }))).toEqual({
       kind: "reattach",
       name: MANAGED_NAME,
+      tuiPane: "%3",
     });
   });
 

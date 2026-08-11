@@ -17,6 +17,8 @@ interface PaneInfo {
   pid: number;
   width: number;
   height: number;
+  /** `#{pane_dead}` — true for a pane held open by `remain-on-exit`. */
+  dead: boolean;
 }
 
 interface SplitPaneOptions {
@@ -100,18 +102,24 @@ function createTmux(resolveSocket: () => string | null) {
     if (allWindows) {
       args.push("-s");
     }
-    args.push("-t", session, "-F", "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}");
+    args.push(
+      "-t",
+      session,
+      "-F",
+      "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}:#{pane_dead}",
+    );
     const out = await run(args);
     if (!out) {
       return [];
     }
     return out.split("\n").map((line) => {
-      const [id, pid, width, height] = line.split(":");
+      const [id, pid, width, height, dead] = line.split(":");
       return {
         id,
         pid: Number.parseInt(pid, 10),
         width: Number.parseInt(width, 10),
         height: Number.parseInt(height, 10),
+        dead: dead === "1",
       };
     });
   }
@@ -210,6 +218,17 @@ function createTmux(resolveSocket: () => string | null) {
 
   async function killPane(target: string): Promise<void> {
     await run(["kill-pane", "-t", target]);
+  }
+
+  /**
+   * Detach the client attached to this pane's session (`detach-client -t <pane>`).
+   * Targeting the PANE (not the session) detaches only the client this process
+   * belongs to, so a second terminal attached to the same managed session keeps
+   * its view. Used by the TUI's managed-mode quit: the user lands back in the
+   * plain shell they started from while the session (and services) live on.
+   */
+  async function detachClient(paneTarget: string): Promise<void> {
+    await run(["detach-client", "-t", paneTarget]);
   }
 
   async function panePid(target: string): Promise<number> {
@@ -400,6 +419,7 @@ function createTmux(resolveSocket: () => string | null) {
     capturePane,
     currentPaneId,
     currentSession,
+    detachClient,
     displayMessage,
     displayPopup,
     editPaneCapture,
@@ -454,6 +474,7 @@ export const {
   capturePane,
   currentPaneId,
   currentSession,
+  detachClient,
   displayMessage,
   displayPopup,
   editPaneCapture,

@@ -33,7 +33,9 @@ function harness(overrides: Partial<BootstrapDeps> = {}): Harness {
       displayMessage: vi.fn().mockResolvedValue("1|0|"),
       hasSession: vi.fn().mockResolvedValue(false),
       killSession: vi.fn().mockResolvedValue(undefined),
-      listPanes: vi.fn().mockResolvedValue([{ id: "%3", pid: 42, width: 80, height: 24 }]),
+      listPanes: vi
+        .fn()
+        .mockResolvedValue([{ id: "%3", pid: 42, width: 80, height: 24, dead: false }]),
       tmuxVersion: vi.fn().mockResolvedValue({ major: 3, minor: 5 }),
     },
     runTmux: vi.fn(async (args: string[]) => {
@@ -41,6 +43,7 @@ function harness(overrides: Partial<BootstrapDeps> = {}): Harness {
       return 0;
     }),
     daemonSession: vi.fn().mockResolvedValue(undefined),
+    currentTmuxSession: vi.fn().mockResolvedValue(undefined),
     zapsArgv: () => ["/usr/bin/zaps"],
     size: () => ({ width: 200, height: 50 }),
     settleTimeoutMs: 200,
@@ -109,7 +112,12 @@ describe("ensureTmuxContext — refusals", () => {
   });
 
   it("refuses a session running in the user's own tmux", async () => {
-    const personal: DaemonSessionView = { name: "app", tmuxSession: "work", managed: false };
+    const personal: DaemonSessionView = {
+      name: "app",
+      tmuxSession: "work",
+      managed: false,
+      tuiPane: "%3",
+    };
     const h = harness({ daemonSession: vi.fn().mockResolvedValue(personal) });
     await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("running inside tmux session 'work'");
@@ -122,10 +130,19 @@ describe("ensureTmuxContext — re-attach", () => {
     name: "app",
     tmuxSession: "zaps-app-abc",
     managed: true,
+    tuiPane: "%3",
   };
+
+  /** Dead-but-held TUI pane: what `remain-on-exit` leaves behind after a detach. */
+  function deadTuiPane(h: Harness): void {
+    h.deps.tmux.listPanes = vi
+      .fn()
+      .mockResolvedValue([{ id: "%3", pid: 42, width: 80, height: 24, dead: true }]);
+  }
 
   it("attaches with the TTY handed to tmux and mirrors its exit code", async () => {
     const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    // Pane still alive (nothing to revive) — just attach.
     h.deps.runTmux = vi.fn(async (args: string[]) => {
       h.tmuxCalls.push(args);
       return 130;
@@ -133,6 +150,70 @@ describe("ensureTmuxContext — re-attach", () => {
     await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 130 });
     expect(h.tmuxCalls).toEqual([["-L", "zaps", "attach-session", "-t", "zaps-app-abc"]]);
     expect(vi.mocked(h.deps.runTmux).mock.calls[0][1]).toBe(true);
+  });
+
+  it("revives a dead TUI pane in place before attaching (F3)", async () => {
+    const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    deadTuiPane(h);
+    await run(h);
+    expect(h.tmuxCalls).toEqual([
+      // No `-k`: the pane is dead-but-held, respawning it must not need a kill.
+      ["-L", "zaps", "respawn-pane", "-t", "%3", "--", "/usr/bin/zaps", "attach"],
+      ["-L", "zaps", "attach-session", "-t", "zaps-app-abc"],
+    ]);
+  });
+
+  it("opens a window instead of failing when the TUI pane is gone", async () => {
+    const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    // The pane is not in the session's pane list at all.
+    h.deps.tmux.listPanes = vi
+      .fn()
+      .mockResolvedValue([{ id: "%9", pid: 1, width: 8, height: 2, dead: false }]);
+    await run(h);
+    expect(h.tmuxCalls[0]).toEqual([
+      "-L",
+      "zaps",
+      "new-window",
+      "-t",
+      "zaps-app-abc",
+      "--",
+      "/usr/bin/zaps",
+      "attach",
+    ]);
+    expect(h.err.join("")).toContain("opening a new window instead");
+  });
+
+  it("falls back to a new window when the respawn itself fails", async () => {
+    const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    deadTuiPane(h);
+    h.deps.runTmux = vi.fn(async (args: string[]) => {
+      h.tmuxCalls.push(args);
+      return args[2] === "respawn-pane" ? 1 : 0;
+    });
+    await run(h);
+    expect(h.tmuxCalls.map((args) => args[2])).toEqual([
+      "respawn-pane",
+      "new-window",
+      "attach-session",
+    ]);
+  });
+
+  it("prints the detach hint when the session outlives the client (F2)", async () => {
+    const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    deadTuiPane(h);
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    await run(h);
+    expect(h.out.join("")).toContain(
+      "detached — services still running. zaps to re-attach, zaps down to stop.",
+    );
+  });
+
+  it("stays silent when the session is gone (teardown prints its own summary)", async () => {
+    const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
+    deadTuiPane(h);
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(false);
+    await run(h);
+    expect(h.out.join("")).toBe("");
   });
 
   it("reports instead of re-creating when `up -d` finds it running", async () => {
@@ -185,6 +266,13 @@ describe("ensureTmuxContext — attached create (F1)", () => {
       "remain-on-exit",
       "on",
     ]);
+  });
+
+  it("prints the detach hint after the foreground client exits (F2)", async () => {
+    const h = harness();
+    sessionAppearsAfterCreate(h);
+    await run(h);
+    expect(h.out.join("")).toContain("detached — services still running");
   });
 
   it("still exits with tmux's code when the session never appears", async () => {
@@ -304,11 +392,18 @@ describe("ensureTmuxContext — stale session (F9)", () => {
     expect(h.tmuxCalls[0][2]).toBe("new-session");
   });
 
-  it("never probes staleness while the daemon still owns the session", async () => {
-    const managed: DaemonSessionView = { name: "app", tmuxSession: "zaps-app", managed: true };
+  it("never reaps a session the daemon still owns", async () => {
+    const managed: DaemonSessionView = {
+      name: "app",
+      tmuxSession: "zaps-app",
+      managed: true,
+      tuiPane: "%3",
+    };
     const h = harness({ daemonSession: vi.fn().mockResolvedValue(managed) });
     await run(h);
-    expect(h.deps.tmux.hasSession).not.toHaveBeenCalled();
     expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+    // The only `has-session` here is the post-detach probe, which runs AFTER the
+    // Client exits — never as a staleness check that could reap a live session.
+    expect(h.tmuxCalls.at(-1)?.[2]).toBe("attach-session");
   });
 });

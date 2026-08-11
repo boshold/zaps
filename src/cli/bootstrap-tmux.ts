@@ -9,6 +9,7 @@ import {
   MANAGED_SOCKET,
   buildAttachArgs,
   buildCreateArgs,
+  buildNewWindowArgs,
   buildRespawnArgs,
   buildSetPaneOptionArgs,
   buildSetSessionOptionArgs,
@@ -18,6 +19,7 @@ import {
   tmuxAvailable,
   waitForPaneSettled,
 } from "#src/lib/managed-tmux.js";
+import { defaultTmux } from "#src/lib/tmux-default.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
@@ -34,6 +36,9 @@ const SESSION_VISIBLE_TIMEOUT_MS = 5000;
 
 /** Gap between `has-session` probes while waiting for the session to appear. */
 const SESSION_POLL_MS = 25;
+
+/** Printed to the plain terminal after the tmux client goes away (F2). */
+const DETACHED_HINT = "detached — services still running. zaps to re-attach, zaps down to stop.";
 
 interface BootstrapIo {
   stdout: (text: string) => void;
@@ -53,6 +58,8 @@ interface BootstrapDeps {
   runTmux: (args: string[], inherit: boolean) => Promise<number>;
   /** This project's live daemon session, or undefined (daemon down / none). */
   daemonSession: (configPath: string) => Promise<DaemonSessionView | undefined>;
+  /** Name of the tmux session this process runs in (only asked for inside tmux). */
+  currentTmuxSession: () => Promise<string | undefined>;
   /** How to invoke zaps inside the managed pane, as argv (never a joined string). */
   zapsArgv: () => string[];
   /** Terminal size to create the session at, so panes start at the right size. */
@@ -95,7 +102,14 @@ async function daemonSessionFor(configPath: string): Promise<DaemonSessionView |
   const sessions = res.result as SessionInfo[];
   const id = sessionId(configPath);
   const match = sessions.find((s) => s.id === id);
-  return match && { name: match.name, tmuxSession: match.tmuxSession, managed: match.managed };
+  return (
+    match && {
+      name: match.name,
+      tmuxSession: match.tmuxSession,
+      managed: match.managed,
+      tuiPane: match.tuiPane,
+    }
+  );
 }
 
 function defaultDeps(): BootstrapDeps {
@@ -111,6 +125,15 @@ function defaultDeps(): BootstrapDeps {
     tmux: tmuxFor(MANAGED_SOCKET),
     runTmux: spawnTmux,
     daemonSession: daemonSessionFor,
+    // Env-based handle on purpose: this asks about the tmux we are INSIDE, which
+    // Is the managed server only when the marker env says so.
+    currentTmuxSession: async () => {
+      try {
+        return await defaultTmux.currentSession();
+      } catch {
+        return undefined;
+      }
+    },
     zapsArgv: () => {
       const { file, args } = resolveCommandArgv();
       return [file, ...args];
@@ -180,6 +203,17 @@ async function waitForSession(deps: BootstrapDeps, name: string): Promise<boolea
 }
 
 /**
+ * Print the post-detach line (F2) when the session outlived the tmux client.
+ * A session that is gone means teardown (`zaps down` / Ctrl-D), which prints its
+ * own summary — so the `has-session` probe is what tells the two apart.
+ */
+async function reportDetached(deps: BootstrapDeps, name: string): Promise<void> {
+  if (await hasManagedSession(name, deps.tmux)) {
+    deps.io.stdout(`${DETACHED_HINT}\n`);
+  }
+}
+
+/**
  * Wait for a foreground-created session, then apply its options. Best-effort by
  * design: a missing option never justifies failing the session the user is
  * already looking at.
@@ -211,6 +245,7 @@ async function spawnAttached(deps: BootstrapDeps, name: string): Promise<Bootstr
 
   const exitCode = await attached;
   await options;
+  await reportDetached(deps, name);
   return { proceed: false, exitCode };
 }
 
@@ -273,6 +308,75 @@ async function spawnDetached(deps: BootstrapDeps, name: string): Promise<Bootstr
 }
 
 /**
+ * State of the TUI pane we want to re-enter: `"alive"` (still running — nothing
+ * to do), `"dead"` (held by `remain-on-exit`, revive it), `"gone"` (the pane no
+ * longer exists at all).
+ */
+async function tuiPaneState(
+  deps: BootstrapDeps,
+  session: string,
+  paneId: string | null,
+): Promise<"alive" | "dead" | "gone"> {
+  if (!paneId) {
+    return "gone";
+  }
+  // Listing the SESSION's panes and looking ours up, rather than probing the
+  // Pane directly: tmux answers `display-message -t %99` for a pane that no
+  // Longer exists with an empty string and exit 0, which would read as "alive".
+  const livePanes = await deps.tmux.listPanes(session).catch(() => []);
+  const pane = livePanes.find((p) => p.id === paneId);
+  if (!pane) {
+    return "gone";
+  }
+  return pane.dead ? "dead" : "alive";
+}
+
+/**
+ * F3: put a live `zaps attach` back into the preserved TUI pane, then hand the
+ * terminal to tmux. The pane is respawned WITHOUT `-k`: it is dead-but-held, and
+ * demanding a kill would mask the case where the TUI is somehow still running.
+ * If the pane is gone entirely (user killed it by hand) a new window takes its
+ * place rather than failing the command — 70_risks fallback.
+ */
+async function reviveTuiPane(
+  deps: BootstrapDeps,
+  name: string,
+  paneId: string | null,
+): Promise<void> {
+  const zapsArgv = [...deps.zapsArgv(), "attach"];
+  const state = await tuiPaneState(deps, name, paneId);
+  if (state === "alive") {
+    return;
+  }
+  if (state === "dead" && paneId) {
+    if ((await deps.runTmux(buildRespawnArgs(paneId, zapsArgv), false)) === 0) {
+      return;
+    }
+    deps.io.stderr(`Could not revive the zaps pane; opening a new window instead.\n`);
+  } else {
+    deps.io.stderr(`zaps pane is gone; opening a new window instead.\n`);
+  }
+  await deps.runTmux(buildNewWindowArgs(name, zapsArgv), false);
+}
+
+/**
+ * Re-enter an existing managed session: revive its TUI pane, attach in the
+ * foreground, and report on the way out. Exported for `zaps attach`, which
+ * resolves its target itself (`-s`, or the cwd's project).
+ */
+async function reattachManaged(options: {
+  name: string;
+  tuiPane: string | null;
+  deps?: Partial<BootstrapDeps>;
+}): Promise<BootstrapResult> {
+  const deps: BootstrapDeps = { ...defaultDeps(), ...options.deps };
+  await reviveTuiPane(deps, options.name, options.tuiPane);
+  const exitCode = await deps.runTmux(buildAttachArgs(options.name), true);
+  await reportDetached(deps, options.name);
+  return { proceed: false, exitCode };
+}
+
+/**
  * Decide and act on this process's tmux context before `up` / the smart default
  * runs. `{ proceed: true }` means "carry on with today's in-tmux flow"; anything
  * else means the terminal was handed to tmux (or a message was printed) and the
@@ -282,6 +386,10 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
   const deps: BootstrapDeps = { ...defaultDeps(), ...options.deps };
   const tmuxEnv = getEnv("TMUX");
   const daemonSession = await deps.daemonSession(options.configPath);
+  // Only needed to tell "inside the project's own managed session" apart from
+  // "inside some other tmux" — so only asked for when both can be true.
+  const currentTmuxSession =
+    tmuxEnv && daemonSession?.managed ? await deps.currentTmuxSession() : undefined;
 
   // Named from the project DIRECTORY (not the config's display name) so the name
   // Is stable across runs without loading the config here — that stability is
@@ -307,6 +415,7 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
     detach: options.detach,
     tmuxAvailability: availability,
     daemonSession,
+    currentTmuxSession,
     managedName,
     managedSessionExists,
   });
@@ -339,7 +448,7 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
       return spawnDetached(deps, decision.name);
     }
     case "reattach": {
-      return { proceed: false, exitCode: await deps.runTmux(buildAttachArgs(decision.name), true) };
+      return reattachManaged({ name: decision.name, tuiPane: decision.tuiPane, deps });
     }
     default: {
       // Unreachable: the union above is exhaustive.
@@ -348,5 +457,5 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
   }
 }
 
-export { ensureTmuxContext };
+export { DETACHED_HINT, ensureTmuxContext, reattachManaged };
 export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux };

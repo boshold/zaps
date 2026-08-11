@@ -65,6 +65,7 @@ describe("tmux binary missing", () => {
       detach: false,
       tmuxAvailability: availability,
       daemonSession: undefined,
+      currentTmuxSession: undefined,
       managedName: "zaps-app-abc123abc123",
       managedSessionExists: false,
     });

@@ -4,6 +4,7 @@ import {
   MANAGED_SOCKET,
   buildAttachArgs,
   buildCreateArgs,
+  buildNewWindowArgs,
   buildRespawnArgs,
   buildSetPaneOptionArgs,
   buildSetSessionOptionArgs,
@@ -188,6 +189,19 @@ describe("argv builders", () => {
     ]);
   });
 
+  it("builds the new-window fallback for a vanished TUI pane", () => {
+    expect(buildNewWindowArgs("zaps-app-abc123", ["zaps", "attach"])).toEqual([
+      "-L",
+      "zaps",
+      "new-window",
+      "-t",
+      "zaps-app-abc123",
+      "--",
+      "zaps",
+      "attach",
+    ]);
+  });
+
   it("builds the session + pane option invocations", () => {
     expect(buildSetSessionOptionArgs("zaps-app-abc123", "destroy-unattached", "off")).toEqual([
       "-L",
@@ -216,6 +230,7 @@ describe("argv builders", () => {
       buildCreateArgs({ name: "n", zapsArgv: ["zaps"] }),
       buildAttachArgs("n"),
       buildRespawnArgs("%0", ["zaps"]),
+      buildNewWindowArgs("n", ["zaps"]),
       buildSetSessionOptionArgs("n", "o", "v"),
       buildSetPaneOptionArgs("%0", "o", "v"),
     ]) {

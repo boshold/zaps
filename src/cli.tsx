@@ -2,7 +2,7 @@
 import { cli, command } from "cleye";
 import type { Command } from "cleye";
 
-import { ensureTmuxContext } from "./cli/bootstrap-tmux.js";
+import { ensureTmuxContext, reattachManaged } from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -445,7 +445,11 @@ const upCommand = command(
     // Anything else runs; inside tmux this falls straight through.
     const bootstrap = await bootstrapTmux(Boolean(opts.detach));
     if (!bootstrap.proceed) {
-      process.exit(bootstrap.exitCode);
+      // `process.exitCode` + return, never `process.exit()`: the bootstrap has
+      // Just written user-facing lines, and exiting outright discards whatever
+      // Is still buffered on a piped stdout/stderr.
+      process.exitCode = bootstrap.exitCode;
+      return;
     }
 
     // Smart default: if session already running for this project, attach
@@ -1135,10 +1139,6 @@ const attachCommand = command(
   async (parsed) => {
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("attach", parsed._, 0);
-    if (!getEnv("TMUX")) {
-      process.stderr.write("zaps must be run from inside a tmux session.\n");
-      process.exit(1);
-    }
 
     const sock = socketPath();
     if (!isDaemonRunning()) {
@@ -1160,6 +1160,22 @@ const attachCommand = command(
 
     try {
       const targetSession = resolveTargetSession(sessions, globalSession());
+      if (!getEnv("TMUX")) {
+        // Plain terminal: a managed session is re-entered by reviving its TUI
+        // Pane and attaching (F3). Attach never creates anything, so a session
+        // In the user's own tmux still errors (F6 wording lands in P03-T02).
+        if (!targetSession.managed) {
+          process.stderr.write("zaps must be run from inside a tmux session.\n");
+          process.exit(1);
+        }
+        const result = await reattachManaged({
+          name: targetSession.tmuxSession,
+          tuiPane: targetSession.tuiPane,
+        });
+        // See the `up` bootstrap: exit via the code, so buffered output flushes.
+        process.exitCode = result.proceed ? 0 : result.exitCode;
+        return;
+      }
       await runTui({ sessionId: targetSession.id, socketPath: sock });
     } catch (error) {
       if (error instanceof CliError) {

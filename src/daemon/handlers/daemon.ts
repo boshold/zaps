@@ -56,6 +56,9 @@ export const daemonHandlers: Record<
         createdAt: s.createdAt,
         tmuxSession: s.tmuxSession,
         managed: s.managedTmux,
+        // Lets an unattached client (the re-attach bootstrap) find the TUI pane
+        // Without subscribing to the session.
+        tuiPane: s.paneMap["@tui"] ?? null,
       })),
     );
   },

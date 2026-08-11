@@ -29,6 +29,8 @@ export interface SessionInfo {
   tmuxSession: string;
   /** True when zaps owns the hosting tmux session (managed-tmux mode). */
   managed: boolean;
+  /** `%N` of the TUI pane, or null when the layout has none (re-attach target). */
+  tuiPane: string | null;
 }
 
 export interface SessionIpc {

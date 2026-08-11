@@ -170,6 +170,15 @@ function buildRespawnArgs(
 }
 
 /**
+ * `tmux -L zaps new-window -t <name> -- <zaps argv>` argv. Fallback for the
+ * re-attach path when the TUI pane is gone entirely (user killed it by hand):
+ * a fresh window running `zaps attach` beats failing the command outright.
+ */
+function buildNewWindowArgs(name: string, zapsArgv: string[]): string[] {
+  return ["-L", MANAGED_SOCKET, "new-window", "-t", name, "--", ...zapsArgv];
+}
+
+/**
  * `tmux -L zaps set-option -t <name> <option> <value>` argv. Used at create for
  * `destroy-unattached off`, which stops exotic user configs from killing the
  * session (and its services) the moment the client detaches.
@@ -263,6 +272,7 @@ export {
   MIN_TMUX_VERSION,
   buildAttachArgs,
   buildCreateArgs,
+  buildNewWindowArgs,
   buildRespawnArgs,
   buildSetPaneOptionArgs,
   buildSetSessionOptionArgs,

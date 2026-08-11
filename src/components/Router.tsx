@@ -13,6 +13,7 @@ import { useServices } from "#src/hooks/useServices.js";
 import { useToasts } from "#src/hooks/useToasts.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
+import { detachManagedClient } from "#src/lib/managed-detach.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
@@ -219,13 +220,17 @@ export function Router({
   }
 
   // Detach (services keep running) — shared by `q`/Ctrl-C and the palette.
+  // In a zaps-managed tmux the client is detached first, so quitting drops the
+  // User back into their plain shell; in a personal tmux this is a no-op.
   function detachSession() {
     if (globalBusyRef.current) {
       return;
     }
     globalBusyRef.current = true;
-    client.disconnect();
-    exit();
+    void detachManagedClient().finally(() => {
+      client.disconnect();
+      exit();
+    });
   }
 
   // Run services.rebuild with the same per-service busy guard the quick keys use.

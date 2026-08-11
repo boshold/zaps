@@ -26,6 +26,8 @@ vi.mock("../../src/lib/open.js", () => ({
 vi.mock("../../src/lib/tmux.js", () => ({
   zoomPane: vi.fn(),
   editPaneCapture: vi.fn().mockResolvedValue(undefined),
+  // Quitting asks tmux to detach the client (managed mode only).
+  detachClient: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../src/lib/task/popup-picker.js", () => ({
@@ -34,7 +36,7 @@ vi.mock("../../src/lib/task/popup-picker.js", () => ({
 }));
 
 const { openInBrowser } = await import("../../src/lib/open.js");
-const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
+const { zoomPane, editPaneCapture, detachClient } = await import("../../src/lib/tmux.js");
 const { popupPickerAvailable, runPopupPicker } = await import("../../src/lib/task/popup-picker.js");
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -457,11 +459,39 @@ describe("Router", () => {
 
   // ── global input: quit (q) ───────────────────────────────────
 
-  it("disconnects client on q", () => {
+  it("disconnects client on q", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("q");
+    // Quitting first asks tmux to detach the client (a no-op outside a managed
+    // Session), so the disconnect lands one microtask later.
+    await act(async () => {
+      /* Flush */
+    });
     expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it("detaches the tmux client on q in a managed session (F2)", async () => {
+    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
+    vi.stubEnv("TMUX_PANE", "%4");
+    const client = createMockClient();
+    const { stdin } = renderRouter({ client });
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(detachClient).toHaveBeenCalledWith("%4");
+    expect(client.disconnect).toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it("does not touch tmux on q in a personal session", async () => {
+    const { stdin } = renderRouter();
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(detachClient).not.toHaveBeenCalled();
   });
 
   // ── logs view input ──────────────────────────────────────────
@@ -763,7 +793,7 @@ describe("Router", () => {
 
   // ── q still works during per-service busy ───────────────────
 
-  it("allows q even when a service is busy", () => {
+  it("allows q even when a service is busy", async () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -773,6 +803,9 @@ describe("Router", () => {
     const { stdin } = renderRouter({ client });
     stdin.write("r"); // Makes service busy (per-service, not global)
     stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
     expect(client.disconnect).toHaveBeenCalled();
   });
 
