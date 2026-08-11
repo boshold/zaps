@@ -14,7 +14,7 @@ import { createTestDaemon, waitForServiceState, writeTestConfig } from "../helpe
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("daemon e2e", () => {
   // ── Daemon-level handlers ─────────────────────────────────────────────
@@ -105,6 +105,7 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
         projectDir: tmpDir,
         tmuxSession: tmux.name,
         originPane: tmux.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       expect(res.error).toBeUndefined();
 
@@ -131,6 +132,7 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
         projectDir: tmpDir,
         tmuxSession: tmux.name,
         originPane: tmux.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       const sid = (createRes.result as { id: string }).id;
 
@@ -174,6 +176,7 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
         projectDir: tmpDir,
         tmuxSession: tmux.name,
         originPane: tmux.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sid = (res.result as { id: string }).id;
 
@@ -390,6 +393,7 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
         projectDir: "/tmp",
         tmuxSession: tmux.name,
         originPane: tmux.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       expect(res.error).toBeDefined();
     });

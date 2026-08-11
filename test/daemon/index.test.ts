@@ -174,6 +174,30 @@ describe("ensureDaemon", () => {
     expect(opts.env.ZAPS_COMMAND).toBe("node /path/cli.mjs");
   });
 
+  it("strips ZAPS_TMUX_SOCKET + TMUX from the daemon child env (sanitization rule)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    process.env.ZAPS_TMUX_SOCKET = "zaps";
+    process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+
+    try {
+      await ensureDaemon({ file: "zaps", args: [] });
+    } finally {
+      delete process.env.ZAPS_TMUX_SOCKET;
+      delete process.env.TMUX;
+    }
+
+    const { spawn } = await import("node:child_process");
+    const call = vi.mocked(spawn).mock.calls.at(-1);
+    const opts = call?.[2] as { env: Record<string, string | undefined> };
+    expect(opts.env.ZAPS_TMUX_SOCKET).toBeUndefined();
+    expect(opts.env.TMUX).toBeUndefined();
+    expect(opts.env.ZAPS_COMMAND).toBe("zaps");
+  });
+
   it("throws a clear error when the daemon spawn fails (E1)", async () => {
     vi.useFakeTimers();
     const fsModule = await import("node:fs");
@@ -273,6 +297,16 @@ describe("runDaemon", () => {
     expect(fs.writeFileSync).toHaveBeenCalled();
     expect(fs.openSync).toHaveBeenCalled();
     expect(serverInstance().start).toHaveBeenCalledWith(expect.stringMatching(/daemon\.sock$/));
+  });
+
+  it("deletes inherited tmux env at startup (socket selection is per-session)", async () => {
+    process.env.ZAPS_TMUX_SOCKET = "zaps";
+    process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+
+    await runDaemon();
+
+    expect(process.env.ZAPS_TMUX_SOCKET).toBeUndefined();
+    expect(process.env.TMUX).toBeUndefined();
   });
 
   it("shuts down on idle timeout with no sessions", async () => {

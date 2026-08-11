@@ -14,7 +14,7 @@ import { createTestDaemon, waitForServiceState } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const localZaps = path.join(projectRoot, "bin", "zaps");
@@ -76,6 +76,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (res.result as { id: string }).id;
 
@@ -119,6 +120,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (res.result as { id: string }).id;
 
@@ -167,6 +169,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (res.result as { id: string }).id;
 

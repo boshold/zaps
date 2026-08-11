@@ -25,6 +25,10 @@ export interface SessionInfo {
   id: string;
   name: string;
   projectDir: string;
+  /** Tmux session hosting the panes — powers the `zaps ls` location column. */
+  tmuxSession: string;
+  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
+  managed: boolean;
 }
 
 export interface SessionIpc {

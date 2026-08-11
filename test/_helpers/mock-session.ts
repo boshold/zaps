@@ -25,6 +25,8 @@ export interface MockSession {
   };
   paneMap: Record<string, string>;
   tmux: TmuxHandle;
+  tmuxSocket: string | null;
+  managedTmux: boolean;
   tmuxSession: string;
   originPane: string;
   execInfo: Map<string, { command: string; cwd: string; env: Record<string, string> }>;
@@ -84,6 +86,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     },
     paneMap: { "@tui": "%0", api: "%1" },
     tmux: defaultTmux,
+    tmuxSocket: null,
+    managedTmux: false,
     tmuxSession: "test-tmux",
     originPane: "%0",
     execInfo: overrides.execInfo ?? new Map(),

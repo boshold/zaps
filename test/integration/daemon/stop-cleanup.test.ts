@@ -14,7 +14,7 @@ import { waitForServiceState, writeTestConfig } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasBinary, hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const execFileAsync = promisify(execFile);
 const binaryPath = path.resolve("dist/zaps");
@@ -105,6 +105,7 @@ describe.skipIf(!hasBinary() || !hasTmux())("zaps daemon stop cleanup", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     const data = createRes.result as { paneMap: Record<string, string> };
     webPane = data.paneMap.web;

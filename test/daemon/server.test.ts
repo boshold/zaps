@@ -60,27 +60,34 @@ vi.mock("#src/lib/tmux-layout.js", () => ({
   createLayout: vi.fn(),
 }));
 
-vi.mock("#src/lib/tmux.js", () => ({
-  capturePane: vi.fn(),
-  selectPane: vi.fn(),
-  sendKeys: vi.fn(),
-  sendCtrlC: vi.fn(),
-  panePid: vi.fn(),
-  paneExists: vi.fn(),
-  killPane: vi.fn(),
-  renameWindow: vi.fn(),
-  getWindowName: vi.fn(),
-  getWindowOption: vi.fn(),
-  setWindowOption: vi.fn(),
-  resyncPaneSizes: vi.fn(),
-  // LayoutReflow (constructed by Session) imports these too.
-  getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
-  paneIndexOrder: vi.fn().mockResolvedValue([]),
-  selectLayout: vi.fn().mockResolvedValue(undefined),
-  splitPane: vi.fn().mockResolvedValue("%99"),
-  swapPanes: vi.fn().mockResolvedValue(undefined),
-  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
-}));
+vi.mock("#src/lib/tmux.js", () => {
+  // Server + Session bind handles via `tmuxFor(tmuxSocket)`; the factory returns
+  // The SAME stub surface for both the module exports and the handle, so
+  // Assertions on the named exports still observe every call.
+  const api = {
+    capturePane: vi.fn(),
+    selectPane: vi.fn(),
+    sendKeys: vi.fn(),
+    sendCtrlC: vi.fn(),
+    panePid: vi.fn(),
+    paneExists: vi.fn(),
+    killPane: vi.fn(),
+    renameWindow: vi.fn(),
+    getWindowName: vi.fn(),
+    getWindowOption: vi.fn(),
+    setWindowOption: vi.fn(),
+    displayPopup: vi.fn(),
+    resyncPaneSizes: vi.fn(),
+    // LayoutReflow (constructed by Session) uses these too.
+    getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
+    paneIndexOrder: vi.fn().mockResolvedValue([]),
+    selectLayout: vi.fn().mockResolvedValue(undefined),
+    splitPane: vi.fn().mockResolvedValue("%99"),
+    swapPanes: vi.fn().mockResolvedValue(undefined),
+    windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
+  };
+  return { ...api, tmuxFor: vi.fn(() => api) };
+});
 
 vi.mock("#src/lib/port.js", () => ({
   detectPorts: vi.fn(),

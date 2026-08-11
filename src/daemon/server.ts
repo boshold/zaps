@@ -9,8 +9,8 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
-import { defaultTmux } from "#src/lib/tmux-default.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
+import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
 import { daemonHandlers } from "./handlers/daemon.js";
@@ -25,6 +25,10 @@ interface CreateParams {
   projectDir: string;
   tmuxSession: string;
   originPane: string;
+  /** Tmux socket hosting the session; omitted/null = the user's default server. */
+  tmuxSocket?: string | null;
+  /** True when zaps owns the hosting tmux session. Validated at the IPC boundary. */
+  managedTmux?: boolean;
 }
 
 interface SessionStore {
@@ -161,7 +165,10 @@ class DaemonServer implements SessionStore {
 
   private async buildSession(id: string, params: CreateParams): Promise<Session> {
     // Every tmux command for this session goes through one socket-bound handle.
-    const tmux = defaultTmux;
+    // The Session builds an identical one from `tmuxSocket`; this one covers the
+    // Layout build that has to happen before the Session exists.
+    const tmuxSocket = params.tmuxSocket ?? null;
+    const tmux = tmuxFor(tmuxSocket);
 
     // Load config
     const config = await loadConfig(params.configPath, params.projectDir);
@@ -206,6 +213,7 @@ class DaemonServer implements SessionStore {
       getWindowName: tmux.getWindowName,
       getWindowOption: tmux.getWindowOption,
       setWindowOption: tmux.setWindowOption,
+      displayPopup: tmux.displayPopup,
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
@@ -247,7 +255,8 @@ class DaemonServer implements SessionStore {
       tmuxSession: params.tmuxSession,
       originPane: params.originPane,
       deps,
-      tmux,
+      tmuxSocket,
+      managedTmux: params.managedTmux ?? false,
     };
 
     const session = new Session(sessionParams, manager);

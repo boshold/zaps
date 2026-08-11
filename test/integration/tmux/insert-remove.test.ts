@@ -17,7 +17,7 @@ import { capturePane, getWindowSize, paneIndexOrder, sendKeys, splitPane } from 
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -169,6 +169,8 @@ function makeSession(
     paneMap,
     tmuxSession,
     originPane: initialPaneId,
+    tmuxSocket: testTmuxSocket(),
+    managedTmux: false,
     deps: {
       capturePane,
       sendKeys: vi.fn().mockResolvedValue(undefined),

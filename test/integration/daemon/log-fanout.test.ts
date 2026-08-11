@@ -13,7 +13,7 @@ import { makeConfig } from "../helpers/config.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 /**
  * A combined group puts every member service on one shared tmux pane. This
@@ -78,6 +78,8 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       paneMap,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
+      managedTmux: false,
       deps: tmuxDeps as unknown as SessionCreateParams["deps"],
     };
     session = new Session(params, fakeManager());

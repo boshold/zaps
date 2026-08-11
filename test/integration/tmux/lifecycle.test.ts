@@ -44,7 +44,7 @@ import {
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -276,6 +276,8 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     paneMap,
     tmuxSession: testSession.name,
     originPane: testSession.initialPaneId,
+    tmuxSocket: testTmuxSocket(),
+    managedTmux: false,
     deps,
   };
   const session = new Session(params, manager);

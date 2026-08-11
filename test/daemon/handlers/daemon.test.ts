@@ -94,6 +94,24 @@ describe("daemon handlers", () => {
         name: "proj",
         configPath: "/a/.zaps.mts",
         projectDir: "/a",
+        tmuxSession: "test-tmux",
+        managed: false,
+      });
+    });
+
+    it("reports the hosting tmux session + managed flag (F6/F7 hints)", async () => {
+      const session = createMockSession({
+        id: "s2",
+        tmuxSession: "zaps-proj-abc123",
+        tmuxSocket: "zaps",
+        managedTmux: true,
+      });
+      const store = createMockStore([session]);
+      const req: IpcRequest = { id: "r5a", method: "session.list" };
+      const res = await daemonHandlers["session.list"](req, store);
+      expect((res.result as unknown[])[0]).toMatchObject({
+        tmuxSession: "zaps-proj-abc123",
+        managed: true,
       });
     });
   });
@@ -129,6 +147,82 @@ describe("daemon handlers", () => {
       };
       const res = await daemonHandlers["session.create"](req, store);
       expect(res.error).toBe("configPath required");
+    });
+
+    it("forwards tmuxSocket + managedTmux to the store", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const req: IpcRequest = {
+        id: "r6a",
+        method: "session.create",
+        params: {
+          configPath: "/fake/.zaps.mts",
+          projectDir: "/fake",
+          tmuxSession: "zaps-fake-abc123",
+          originPane: "%0",
+          tmuxSocket: "zaps",
+          managedTmux: true,
+        },
+      };
+      await daemonHandlers["session.create"](req, store);
+      expect(store.create).toHaveBeenCalledWith(
+        expect.objectContaining({ tmuxSocket: "zaps", managedTmux: true }),
+      );
+    });
+
+    it("defaults to the user's default server when no socket is sent", async () => {
+      const session = createMockSession();
+      const store = createMockStore([session]);
+      const req: IpcRequest = {
+        id: "r6b",
+        method: "session.create",
+        params: {
+          configPath: "/fake/.zaps.mts",
+          projectDir: "/fake",
+          tmuxSession: "main",
+          originPane: "%0",
+        },
+      };
+      await daemonHandlers["session.create"](req, store);
+      expect(store.create).toHaveBeenCalledWith(
+        expect.objectContaining({ tmuxSocket: null, managedTmux: false }),
+      );
+    });
+
+    it.each(["", "   "])("rejects a blank tmuxSocket (%j)", async (socket) => {
+      const store = createMockStore();
+      const req: IpcRequest = {
+        id: "r6c",
+        method: "session.create",
+        params: {
+          configPath: "/fake/.zaps.mts",
+          projectDir: "/fake",
+          tmuxSession: "main",
+          originPane: "%0",
+          tmuxSocket: socket,
+        },
+      };
+      const res = await daemonHandlers["session.create"](req, store);
+      expect(res.error).toBe("tmuxSocket must be a non-empty string or null");
+      expect(store.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects managedTmux without a socket — never kill-session on the default server", async () => {
+      const store = createMockStore();
+      const req: IpcRequest = {
+        id: "r6d",
+        method: "session.create",
+        params: {
+          configPath: "/fake/.zaps.mts",
+          projectDir: "/fake",
+          tmuxSession: "main",
+          originPane: "%0",
+          managedTmux: true,
+        },
+      };
+      const res = await daemonHandlers["session.create"](req, store);
+      expect(res.error).toBe("managed session requires tmuxSocket");
+      expect(store.create).not.toHaveBeenCalled();
     });
 
     it("returns error when store.create throws", async () => {

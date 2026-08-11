@@ -10,9 +10,9 @@ import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manage
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
-import { defaultTmux } from "#src/lib/tmux-default.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
+import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -95,8 +95,10 @@ export interface SessionCreateParams {
   tmuxSession: string;
   originPane: string;
   deps: ServiceManagerDeps;
-  /** Tmux surface bound to this session's server socket; defaults to the env-based handle. */
-  tmux?: TmuxHandle;
+  /** Tmux server socket hosting this session (`null` = the user's default server). */
+  tmuxSocket: string | null;
+  /** True when zaps spawned and owns the tmux session (teardown kills it). */
+  managedTmux: boolean;
 }
 
 export function sessionId(configPath: string): string {
@@ -122,6 +124,10 @@ export class Session {
   /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
   public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;
+  /** Tmux server socket hosting this session (`null` = the user's default server). */
+  public readonly tmuxSocket: string | null;
+  /** True when zaps spawned and owns the tmux session (teardown kills it). */
+  public readonly managedTmux: boolean;
   /** Every tmux command for this session runs through this socket-bound handle. */
   public readonly tmux: TmuxHandle;
 
@@ -179,7 +185,9 @@ export class Session {
     this.tmuxSession = params.tmuxSession;
     this.originPane = params.originPane;
     this.deps = params.deps;
-    this.tmux = params.tmux ?? defaultTmux;
+    this.tmuxSocket = params.tmuxSocket;
+    this.managedTmux = params.managedTmux;
+    this.tmux = tmuxFor(this.tmuxSocket);
     this.manager = manager;
     this.configLoadedAt = Date.now();
 
@@ -727,6 +735,7 @@ export class Session {
       name: this.name,
       paneMap: this.paneMap,
       tmuxSession: this.tmuxSession,
+      managed: this.managedTmux,
       originPane: this.originPane,
       statuses: this.manager.getAllStatuses(),
       logSnapshots,
@@ -758,6 +767,8 @@ export interface SessionSnapshot {
   name: string;
   paneMap: PaneMap;
   tmuxSession: string;
+  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
+  managed: boolean;
   originPane: string;
   statuses: ServiceStatus[];
   logSnapshots: Record<string, string[]>;

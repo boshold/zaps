@@ -101,6 +101,12 @@ function createShutdownAll(
  * Run the daemon in the current process (called after fork+detach).
  */
 async function runDaemon(): Promise<void> {
+  // Socket selection is per-session only: a daemon started from inside a managed
+  // Tmux must never inherit that socket and route every session's tmux calls to
+  // It (50_api sanitization rule). `ensureDaemon` strips these too.
+  delete process.env.ZAPS_TMUX_SOCKET;
+  delete process.env.TMUX;
+
   writePid();
 
   const logFile = fs.openSync(logPath(), "a");
@@ -263,10 +269,15 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
   try {
     const logFile = fs.openSync(logPath(), "a");
     const zapsCommand = [command.file, ...command.args].join(" ");
+    // Strip the caller's tmux context: the daemon picks a socket per session via
+    // `tmuxFor(session.tmuxSocket)`, never from its own env (50_api).
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, ZAPS_COMMAND: zapsCommand };
+    delete childEnv.ZAPS_TMUX_SOCKET;
+    delete childEnv.TMUX;
     const child = spawn(command.file, [...command.args, "daemon", "run"], {
       detached: true,
       stdio: ["ignore", logFile, logFile],
-      env: { ...process.env, ZAPS_COMMAND: zapsCommand },
+      env: childEnv,
     });
 
     // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error

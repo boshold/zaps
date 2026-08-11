@@ -335,6 +335,8 @@ async function upFlow(detach?: boolean): Promise<void> {
     projectDir: invokeDir,
     tmuxSession,
     originPane,
+    tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
+    managedTmux: getEnv("ZAPS_MANAGED_TMUX") === "1",
   });
 
   if (res.error) {

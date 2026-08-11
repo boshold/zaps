@@ -14,7 +14,7 @@ import { createTestDaemon, waitForServiceState, writeTestConfig } from "../helpe
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () => {
   let daemon: TestDaemon;
@@ -50,6 +50,7 @@ describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () =
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     };
 
     // Fire both creates in the same tick — they must share one in-flight build.
@@ -77,6 +78,7 @@ describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () =
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (firstRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
@@ -100,6 +102,7 @@ describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () =
         projectDir: tmpDir,
         tmuxSession: tmux2.name,
         originPane: tmux2.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sid = (secondRes.result as { id: string }).id;
       const secondPaneMap = (secondRes.result as { paneMap: Record<string, string> }).paneMap;
@@ -122,6 +125,7 @@ describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () =
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");

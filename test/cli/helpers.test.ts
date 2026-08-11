@@ -130,9 +130,27 @@ describe("resolveRuntime", () => {
 
 describe("resolveTargetSession", () => {
   const sessions: SessionInfo[] = [
-    { id: "abc123", name: "project-a", projectDir: "/a" },
-    { id: "def456", name: "project-b", projectDir: "/b" },
-    { id: "ghi789", name: "project-c", projectDir: "/c" },
+    {
+      id: "abc123",
+      name: "project-a",
+      projectDir: "/a",
+      tmuxSession: "tmux-abc123",
+      managed: false,
+    },
+    {
+      id: "def456",
+      name: "project-b",
+      projectDir: "/b",
+      tmuxSession: "tmux-def456",
+      managed: false,
+    },
+    {
+      id: "ghi789",
+      name: "project-c",
+      projectDir: "/c",
+      tmuxSession: "tmux-ghi789",
+      managed: false,
+    },
   ];
 
   it("returns exact id match", () => {
@@ -181,8 +199,8 @@ describe("resolveTargetSession", () => {
 
   it("prefers exact id over exact name", () => {
     const dupes: SessionInfo[] = [
-      { id: "abc", name: "xyz", projectDir: "/1" },
-      { id: "xyz", name: "abc", projectDir: "/2" },
+      { id: "abc", name: "xyz", projectDir: "/1", tmuxSession: "tmux-abc", managed: false },
+      { id: "xyz", name: "abc", projectDir: "/2", tmuxSession: "tmux-xyz", managed: false },
     ];
     // "abc" should match first by exact id
     expect(resolveTargetSession(dupes, "abc")).toBe(dupes[0]);
@@ -273,7 +291,15 @@ describe("withDaemon", () => {
     const { ipcRequest } = await import("../../src/lib/ipc/client.js");
     vi.mocked(ipcRequest).mockResolvedValue({
       id: "r1",
-      result: [{ id: "abc123", name: "project-a", projectDir: "/a" }],
+      result: [
+        {
+          id: "abc123",
+          name: "project-a",
+          projectDir: "/a",
+          tmuxSession: "tmux-abc123",
+          managed: false,
+        },
+      ],
     });
 
     const result = await withDaemon(async (ipc) => {
@@ -303,7 +329,15 @@ describe("withDaemon", () => {
     const { ipcRequest } = await import("../../src/lib/ipc/client.js");
     vi.mocked(ipcRequest).mockResolvedValue({
       id: "r1",
-      result: [{ id: "session-/my/.zaps.mts", name: "my-project", projectDir: "/my" }],
+      result: [
+        {
+          id: "session-/my/.zaps.mts",
+          name: "my-project",
+          projectDir: "/my",
+          tmuxSession: "tmux-session-/my/.zaps.mts",
+          managed: false,
+        },
+      ],
     });
 
     const result = await withDaemon(async (ipc) => {
@@ -323,7 +357,15 @@ describe("withDaemon", () => {
     const { ipcRequest } = await import("../../src/lib/ipc/client.js");
     vi.mocked(ipcRequest).mockResolvedValue({
       id: "r1",
-      result: [{ id: "other-session", name: "other", projectDir: "/other" }],
+      result: [
+        {
+          id: "other-session",
+          name: "other",
+          projectDir: "/other",
+          tmuxSession: "tmux-other-session",
+          managed: false,
+        },
+      ],
     });
 
     await expect(withDaemon(async () => "result")).rejects.toThrow(
@@ -346,7 +388,9 @@ describe("withDaemon", () => {
 });
 
 describe("runDown", () => {
-  const sessions = [{ id: "abc", name: "proj", projectDir: "/proj" }];
+  const sessions = [
+    { id: "abc", name: "proj", projectDir: "/proj", tmuxSession: "tmux-abc", managed: false },
+  ];
 
   function makeDeps(over: Partial<DownDeps> = {}): {
     deps: DownDeps;
@@ -440,8 +484,14 @@ describe("parsePositiveInt", () => {
 
 describe("resolveTargetSession — subdirectory resolution (E12)", () => {
   const sessions: SessionInfo[] = [
-    { id: "a1", name: "app", projectDir: "/home/u/app" },
-    { id: "b1", name: "other", projectDir: "/home/u/other" },
+    { id: "a1", name: "app", projectDir: "/home/u/app", tmuxSession: "tmux-a1", managed: false },
+    {
+      id: "b1",
+      name: "other",
+      projectDir: "/home/u/other",
+      tmuxSession: "tmux-b1",
+      managed: false,
+    },
   ];
 
   function withCwd(cwd: string, fn: () => void) {
@@ -461,8 +511,14 @@ describe("resolveTargetSession — subdirectory resolution (E12)", () => {
 
   it("does not match a sibling dir sharing a name prefix (/app vs /app2)", () => {
     const siblings: SessionInfo[] = [
-      { id: "a1", name: "app", projectDir: "/home/u/app" },
-      { id: "c1", name: "other", projectDir: "/home/u/zzz" },
+      { id: "a1", name: "app", projectDir: "/home/u/app", tmuxSession: "tmux-a1", managed: false },
+      {
+        id: "c1",
+        name: "other",
+        projectDir: "/home/u/zzz",
+        tmuxSession: "tmux-c1",
+        managed: false,
+      },
     ];
     withCwd("/home/u/app2", () => {
       expect(() => resolveTargetSession(siblings)).toThrow(/Multiple sessions/);
@@ -471,8 +527,20 @@ describe("resolveTargetSession — subdirectory resolution (E12)", () => {
 
   it("prefers the deepest (longest) projectDir for nested projects", () => {
     const nested: SessionInfo[] = [
-      { id: "root", name: "monorepo", projectDir: "/home/u/app" },
-      { id: "pkg", name: "api", projectDir: "/home/u/app/packages/api" },
+      {
+        id: "root",
+        name: "monorepo",
+        projectDir: "/home/u/app",
+        tmuxSession: "tmux-root",
+        managed: false,
+      },
+      {
+        id: "pkg",
+        name: "api",
+        projectDir: "/home/u/app/packages/api",
+        tmuxSession: "tmux-pkg",
+        managed: false,
+      },
     ];
     withCwd("/home/u/app/packages/api/src", () => {
       expect(resolveTargetSession(nested).id).toBe("pkg");
@@ -495,7 +563,13 @@ describe("resolveListedSessionId (E8 events validation)", () => {
     const { discoverConfig } = await import("../../src/config/discovery.js");
     vi.mocked(discoverConfig).mockReturnValue("/my/.zaps.mts");
     const sessions: SessionInfo[] = [
-      { id: "session-/my/.zaps.mts", name: "my", projectDir: "/my" },
+      {
+        id: "session-/my/.zaps.mts",
+        name: "my",
+        projectDir: "/my",
+        tmuxSession: "tmux-session-/my/.zaps.mts",
+        managed: false,
+      },
     ];
     expect(resolveListedSessionId(sessions)).toBe("session-/my/.zaps.mts");
   });
@@ -507,12 +581,16 @@ describe("resolveListedSessionId (E8 events validation)", () => {
   });
 
   it("defers to resolveTargetSession for an explicit arg", () => {
-    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    const sessions: SessionInfo[] = [
+      { id: "abc", name: "proj", projectDir: "/p", tmuxSession: "tmux-abc", managed: false },
+    ];
     expect(resolveListedSessionId(sessions, "proj")).toBe("abc");
   });
 
   it("throws for an explicit arg that matches nothing", () => {
-    const sessions: SessionInfo[] = [{ id: "abc", name: "proj", projectDir: "/p" }];
+    const sessions: SessionInfo[] = [
+      { id: "abc", name: "proj", projectDir: "/p", tmuxSession: "tmux-abc", managed: false },
+    ];
     expect(() => resolveListedSessionId(sessions, "ghost")).toThrow(/Session not found/);
   });
 });

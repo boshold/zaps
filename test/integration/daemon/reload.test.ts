@@ -13,7 +13,7 @@ import { createTestDaemon, waitForServiceState } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 function writeConfig(
   dir: string,
@@ -75,6 +75,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
@@ -105,6 +106,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
@@ -147,6 +149,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
@@ -181,6 +184,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
@@ -224,6 +228,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     const tuiPaneBefore = (createRes.result as { paneMap: Record<string, string> }).paneMap["@tui"];
@@ -252,6 +257,7 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     sid = (createRes.result as { id: string }).id;
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
