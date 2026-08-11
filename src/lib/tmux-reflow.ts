@@ -1,6 +1,7 @@
 import type { LayoutLeaf, LayoutNode } from "#src/config/types.js";
 import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
+import { defaultTmux } from "./tmux-default.js";
 import {
   PaneTooSmallError,
   computeRects,
@@ -10,18 +11,21 @@ import {
   splitAnchor,
 } from "./tmux-layout.js";
 import type { Rect } from "./tmux-layout.js";
-import {
-  getWindowSize as defaultGetWindowSize,
-  killPane as defaultKillPane,
-  paneIndexOrder as defaultPaneIndexOrder,
-  resyncPaneSizes as defaultResyncPaneSizes,
-  selectLayout as defaultSelectLayout,
-  selectPane as defaultSelectPane,
-  splitPane as defaultSplitPane,
-  swapPanes as defaultSwapPanes,
-  windowLayout as defaultWindowLayout,
-} from "./tmux.js";
-import type { SplitPaneOptions } from "./tmux.js";
+import type { SplitPaneOptions, TmuxHandle } from "./tmux.js";
+
+/** The tmux commands a reflow issues. */
+type ReflowTmux = Pick<
+  TmuxHandle,
+  | "getWindowSize"
+  | "killPane"
+  | "paneIndexOrder"
+  | "resyncPaneSizes"
+  | "selectLayout"
+  | "selectPane"
+  | "splitPane"
+  | "swapPanes"
+  | "windowLayout"
+>;
 
 /**
  * A tmux command failed during a reflow operation. Wraps the original cause and
@@ -57,6 +61,8 @@ type PaneMap = Record<string, string>;
  * injected too so unit tests can pin behavior without spawning tmux.
  */
 interface LayoutReflowDeps {
+  /** Socket-bound tmux surface; per-command overrides below still win. */
+  tmux?: ReflowTmux;
   /** The declared layout tree (may be undefined when the project has no layout). */
   getLayout: () => LayoutNode | undefined;
   /** Live name → pane-id map; mutated by insert/remove, replaced by reload. */
@@ -234,35 +240,22 @@ interface ApplyGeometryOptions {
  */
 class LayoutReflow {
   private readonly deps: LayoutReflowDeps;
-  private readonly tmux: {
-    getWindowSize: (target: string) => Promise<{ width: number; height: number }>;
-    paneIndexOrder: (target: string) => Promise<{ index: number; id: string }[]>;
-    swapPanes: (src: string, dst: string) => Promise<void>;
-    selectLayout: (target: string, layout: string) => Promise<void>;
-    resyncPaneSizes: (target: string) => Promise<void>;
-    splitPane: (
-      target: string,
-      direction: "h" | "v",
-      options?: SplitPaneOptions,
-    ) => Promise<string>;
-    selectPane: (target: string) => Promise<void>;
-    killPane: (target: string) => Promise<void>;
-    windowLayout: (target: string) => Promise<string>;
-  };
+  private readonly tmux: ReflowTmux;
 
   public constructor(deps: LayoutReflowDeps) {
     this.deps = deps;
-    // Fill in real tmux wrappers; tests can override any subset via deps.
+    // Socket-bound handle (env-based default); tests override any subset via deps.
+    const tmux = deps.tmux ?? defaultTmux;
     this.tmux = {
-      getWindowSize: deps.getWindowSize ?? defaultGetWindowSize,
-      paneIndexOrder: deps.paneIndexOrder ?? defaultPaneIndexOrder,
-      swapPanes: deps.swapPanes ?? defaultSwapPanes,
-      selectLayout: deps.selectLayout ?? defaultSelectLayout,
-      resyncPaneSizes: deps.resyncPaneSizes ?? defaultResyncPaneSizes,
-      splitPane: deps.splitPane ?? defaultSplitPane,
-      selectPane: deps.selectPane ?? defaultSelectPane,
-      killPane: deps.killPane ?? defaultKillPane,
-      windowLayout: deps.windowLayout ?? defaultWindowLayout,
+      getWindowSize: deps.getWindowSize ?? tmux.getWindowSize,
+      paneIndexOrder: deps.paneIndexOrder ?? tmux.paneIndexOrder,
+      swapPanes: deps.swapPanes ?? tmux.swapPanes,
+      selectLayout: deps.selectLayout ?? tmux.selectLayout,
+      resyncPaneSizes: deps.resyncPaneSizes ?? tmux.resyncPaneSizes,
+      splitPane: deps.splitPane ?? tmux.splitPane,
+      selectPane: deps.selectPane ?? tmux.selectPane,
+      killPane: deps.killPane ?? tmux.killPane,
+      windowLayout: deps.windowLayout ?? tmux.windowLayout,
     };
   }
 

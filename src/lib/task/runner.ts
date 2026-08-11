@@ -2,7 +2,11 @@ import type { TaskConfig } from "#src/config/types.js";
 import { execCommand, execCommandWithResult } from "#src/lib/exec.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { displayPopup } from "#src/lib/tmux.js";
+import { defaultTmux } from "#src/lib/tmux-default.js";
+import type { TmuxHandle } from "#src/lib/tmux.js";
+
+/** The tmux command a popup task issues. */
+type RunnerTmux = Pick<TmuxHandle, "displayPopup">;
 
 interface TaskRunnerDeps {
   tasks: Record<string, TaskConfig>;
@@ -11,6 +15,8 @@ interface TaskRunnerDeps {
   services?: Record<string, { cwd?: string }>;
   onProgress?: (key: string, result: "success" | "error") => void;
   onLine?: (key: string, line: string) => void;
+  /** Tmux surface for popup tasks; defaults to the env-based handle. */
+  tmux?: RunnerTmux;
 }
 
 interface ExecuteContext {
@@ -20,6 +26,7 @@ interface ExecuteContext {
   emitLine: (line: string) => void;
   serviceCtx: ReturnType<typeof buildServiceContext>;
   projectDir: string;
+  tmux: RunnerTmux;
 }
 
 async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
@@ -54,7 +61,7 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
       const popupCfg = typeof t.popup === "object" ? t.popup : {};
       const joined = resolvedCommands.join(" && ");
       const wrapped = `${joined}; echo; echo 'Press Enter to close...'; read`;
-      await displayPopup({
+      await ctx.tmux.displayPopup({
         cwd: ctx.taskCwd,
         command: wrapped,
         title: t.name,
@@ -120,6 +127,7 @@ export async function runTaskWithDeps(
       emitLine,
       serviceCtx,
       projectDir: deps.projectDir,
+      tmux: deps.tmux ?? defaultTmux,
     });
   } catch {
     results.set(key, "error");

@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock child_process.spawn before importing tmux
 vi.mock("node:child_process", () => ({
@@ -43,6 +43,7 @@ import {
   selectLayout,
   windowLayout,
   paneIndexOrder,
+  tmuxFor,
 } from "../../src/lib/tmux.js";
 
 const mockSpawn = vi.mocked(spawn);
@@ -618,5 +619,73 @@ describe("resyncPaneSizes", () => {
   it("swallows errors so startup is never blocked", async () => {
     mockSpawn.mockImplementation(() => createMockProc("", 1, "boom"));
     await expect(resyncPaneSizes("%7", 0)).resolves.toBeUndefined();
+  });
+});
+
+describe("tmuxFor", () => {
+  const originalSocket = process.env.ZAPS_TMUX_SOCKET;
+
+  afterEach(() => {
+    if (originalSocket === undefined) {
+      delete process.env.ZAPS_TMUX_SOCKET;
+    } else {
+      process.env.ZAPS_TMUX_SOCKET = originalSocket;
+    }
+  });
+
+  it("prefixes every command with -L <socket>", async () => {
+    mockSpawn.mockReturnValue(createMockProc("%3"));
+    const tmux = tmuxFor("foo");
+    await tmux.splitPane("%0", "v");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["-L", "foo", "split-window", "-v", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+
+  it("targets the default server (no -L) for a null socket", async () => {
+    process.env.ZAPS_TMUX_SOCKET = "ignored";
+    mockSpawn.mockReturnValue(createMockProc("%0"));
+    await tmuxFor(null).currentPaneId();
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+
+  it("ignores ZAPS_TMUX_SOCKET — the bound socket wins", async () => {
+    process.env.ZAPS_TMUX_SOCKET = "env-socket";
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await tmuxFor("bound").killPane("%1");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-L", "bound", "kill-pane", "-t", "%1"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+
+  it("binds the socket for display-popup too", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc());
+    await tmuxFor("zaps").displayPopup({ command: "echo hi" });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["-L", "zaps", "display-popup", "-EE", "--", "echo hi"],
+      { stdio: "ignore" },
+    );
+  });
+
+  it("module-level exports read ZAPS_TMUX_SOCKET per call", async () => {
+    process.env.ZAPS_TMUX_SOCKET = "first";
+    mockSpawn.mockImplementation(() => createMockProc(""));
+    await killPane("%1");
+    process.env.ZAPS_TMUX_SOCKET = "second";
+    await killPane("%2");
+    delete process.env.ZAPS_TMUX_SOCKET;
+    await killPane("%3");
+
+    const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
+    expect(calls).toEqual([
+      "-L first kill-pane -t %1",
+      "-L second kill-pane -t %2",
+      "kill-pane -t %3",
+    ]);
   });
 });

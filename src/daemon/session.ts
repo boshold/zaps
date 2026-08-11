@@ -10,9 +10,10 @@ import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manage
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
+import { defaultTmux } from "#src/lib/tmux-default.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
-import { killPane } from "#src/lib/tmux.js";
+import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
@@ -94,6 +95,8 @@ export interface SessionCreateParams {
   tmuxSession: string;
   originPane: string;
   deps: ServiceManagerDeps;
+  /** Tmux surface bound to this session's server socket; defaults to the env-based handle. */
+  tmux?: TmuxHandle;
 }
 
 export function sessionId(configPath: string): string {
@@ -119,6 +122,8 @@ export class Session {
   /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
   public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;
+  /** Every tmux command for this session runs through this socket-bound handle. */
+  public readonly tmux: TmuxHandle;
 
   public name: string;
   public config: ResolvedConfig;
@@ -174,6 +179,7 @@ export class Session {
     this.tmuxSession = params.tmuxSession;
     this.originPane = params.originPane;
     this.deps = params.deps;
+    this.tmux = params.tmux ?? defaultTmux;
     this.manager = manager;
     this.configLoadedAt = Date.now();
 
@@ -190,6 +196,7 @@ export class Session {
     // Bind through `this` for the same reason — they re-read `this.logMonitor`
     // And the log maps fresh on every fire, never closing over stale instances.
     this.reflow = new LayoutReflow({
+      tmux: this.tmux,
       getLayout: () => this.config.project.layout,
       getPaneMap: () => this.paneMap,
       getWindowTarget: () => this.tmuxSession,
@@ -410,7 +417,7 @@ export class Session {
         newConfig.project.layout,
         newConfig.project.services,
         newConfig.groups,
-        { reserveTuiPane: true, skip },
+        { reserveTuiPane: true, skip, tmux: this.tmux },
       );
       return paneMap;
     } catch (error) {
@@ -442,7 +449,7 @@ export class Session {
     const tuiPaneId = this.paneMap["@tui"];
     for (const [name, paneId] of Object.entries(this.paneMap)) {
       if (name !== "@tui") {
-        await killPane(paneId).catch(() => {
+        await this.tmux.killPane(paneId).catch(() => {
           /* Best-effort cleanup */
         });
       }
