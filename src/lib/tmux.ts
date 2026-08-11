@@ -56,6 +56,10 @@ function createTmux(resolveSocket: () => string | null) {
       let stderr = "";
       proc.stdout.on("data", (d: Buffer) => (stdout += d));
       proc.stderr.on("data", (d: Buffer) => (stderr += d));
+      // Without this the spawn failure (no tmux on PATH → ENOENT) surfaces as an
+      // Unhandled 'error' event and takes the whole process down, so callers'
+      // Try/catch — including the tmux-presence gate — never runs.
+      proc.on("error", reject);
       proc.on("close", (code: number | null) => {
         if (code === 0) {
           resolve(stdout.trim());
@@ -368,6 +372,9 @@ function createTmux(resolveSocket: () => string | null) {
       args.push("--", opts.command);
 
       const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: "ignore" });
+      // Same reason as in `run()`: an unhandled 'error' event would crash the
+      // Process instead of rejecting this promise.
+      proc.on("error", reject);
       proc.on("close", (code: number | null) => {
         if (code === 0) {
           resolve();
