@@ -4,15 +4,15 @@ import { detachClient } from "./tmux.js";
 interface DetachDeps {
   /** `ZAPS_MANAGED_TMUX` — only `"1"` means "zaps owns this tmux session". */
   managedEnv: string | undefined;
-  /** `TMUX_PANE` — the pane this process runs in, i.e. which client to detach. */
-  paneTarget: string | undefined;
-  detach: (paneTarget: string) => Promise<void>;
+  /** `TMUX` — present only inside tmux; it is what tmux resolves the client from. */
+  tmuxEnv: string | undefined;
+  detach: () => Promise<void>;
 }
 
 function defaultDeps(): DetachDeps {
   return {
     managedEnv: getEnv("ZAPS_MANAGED_TMUX"),
-    paneTarget: getEnv("TMUX_PANE"),
+    tmuxEnv: getEnv("TMUX"),
     detach: detachClient,
   };
 }
@@ -24,17 +24,17 @@ function defaultDeps(): DetachDeps {
  * (set at create), so it is held dead at its layout position for the re-attach
  * revival while the services keep running.
  *
- * Returns true when a client was detached. In a personal tmux session — or with
- * no pane to target — this is a no-op and today's quit path is untouched.
+ * Returns true when a client was detached. In a personal tmux session — or
+ * outside tmux entirely — this is a no-op and today's quit path is untouched.
  * Failures are swallowed on purpose: quitting must never be blocked by tmux.
  */
 async function detachManagedClient(overrides: Partial<DetachDeps> = {}): Promise<boolean> {
   const deps = { ...defaultDeps(), ...overrides };
-  if (deps.managedEnv !== "1" || !deps.paneTarget) {
+  if (deps.managedEnv !== "1" || !deps.tmuxEnv) {
     return false;
   }
   try {
-    await deps.detach(deps.paneTarget);
+    await deps.detach();
     return true;
   } catch {
     // Already detached, or tmux is gone: exiting is still the right next step.

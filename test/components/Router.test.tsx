@@ -473,14 +473,14 @@ describe("Router", () => {
 
   it("detaches the tmux client on q in a managed session (F2)", async () => {
     vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
-    vi.stubEnv("TMUX_PANE", "%4");
+    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("q");
     await act(async () => {
       /* Flush */
     });
-    expect(detachClient).toHaveBeenCalledWith("%4");
+    expect(detachClient).toHaveBeenCalledWith();
     expect(client.disconnect).toHaveBeenCalled();
     vi.unstubAllEnvs();
   });

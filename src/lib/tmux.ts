@@ -221,14 +221,16 @@ function createTmux(resolveSocket: () => string | null) {
   }
 
   /**
-   * Detach the client attached to this pane's session (`detach-client -t <pane>`).
-   * Targeting the PANE (not the session) detaches only the client this process
-   * belongs to, so a second terminal attached to the same managed session keeps
-   * its view. Used by the TUI's managed-mode quit: the user lands back in the
-   * plain shell they started from while the session (and services) live on.
+   * Detach the client this process is running under. No `-t`: that flag takes a
+   * target-CLIENT (a tty name, e.g. `/dev/pts/3`) — passing a pane id fails with
+   * `can't find client: %N`. Without it tmux resolves the current client from
+   * the caller's `$TMUX`, which is exactly the client to drop.
+   *
+   * Used by the TUI's managed-mode quit: the user lands back in the plain shell
+   * they started from while the session (and its services) live on.
    */
-  async function detachClient(paneTarget: string): Promise<void> {
-    await run(["detach-client", "-t", paneTarget]);
+  async function detachClient(): Promise<void> {
+    await run(["detach-client"]);
   }
 
   async function panePid(target: string): Promise<number> {

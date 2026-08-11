@@ -1,7 +1,11 @@
+import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { Project } from "../helpers/managed.js";
 import {
+  clients,
   createProject,
   managed,
   managedSessionExists,
@@ -12,7 +16,7 @@ import {
   serviceConfig,
 } from "../helpers/managed.js";
 import { reservePort } from "../helpers/port.js";
-import { hasBinary, hasTmux } from "../helpers/skip.js";
+import { hasBinary, hasScriptPty, hasTmux } from "../helpers/skip.js";
 
 /**
  * CI has no TTY, so `attach-session` itself cannot succeed here — the exit code
@@ -128,6 +132,72 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       expect(windows.split("\n").length).toBeGreaterThanOrEqual(1);
       expect(await serviceAnswers(port)).toBe(true);
     });
+
+    // The one case that needs a real client: `q` only detaches something when
+    // Something is attached, and the bug this pins (`detach-client -t <pane>`)
+    // Fails silently — every pane-level assertion still passed.
+    it.skipIf(!hasScriptPty())(
+      "quitting with q detaches the real client and holds the pane (F2)",
+      async () => {
+        const { port, tuiPane } = await startDetached();
+        if (!project) {
+          throw new Error("no project");
+        }
+        const session = project.sessionName;
+
+        // Revive the TUI so there is a live process to press `q` in.
+        await runZaps(["attach"], project.dir, project.runtimeDir);
+        expect(
+          await pollUntil(async () => {
+            const live = await panes(session);
+            return live.find((p) => p.id === tuiPane)?.dead === false;
+          }, 15_000),
+        ).toBe(true);
+
+        // A real tmux client over a pty — `script` is the only way to get one
+        // In a headless run.
+        const client: ChildProcess = spawn(
+          "script",
+          ["-qec", `tmux -L zaps attach -t ${session}`, "/dev/null"],
+          { stdio: "ignore" },
+        );
+        try {
+          const attached = await pollUntil(async () => {
+            const live = await clients(session);
+            return live.length > 0;
+          }, 15_000);
+          expect(attached).toBe(true);
+
+          // Wait for the dashboard to actually paint: Ink only starts reading
+          // Keys once it has mounted, and a `q` sent before that is dropped.
+          expect(
+            await pollUntil(async () => {
+              const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
+              return frame.includes("web");
+            }, 30_000),
+          ).toBe(true);
+          await managed(["send-keys", "-t", tuiPane, "q"]);
+
+          // The MUST-HAVE of F2: the real client is gone, not just the process.
+          const detached = await pollUntil(async () => {
+            const live = await clients(session);
+            return live.length === 0;
+          }, 20_000);
+          expect(detached).toBe(true);
+          expect(
+            await pollUntil(async () => {
+              const live = await panes(session);
+              return live.find((p) => p.id === tuiPane)?.dead === true;
+            }, 20_000),
+          ).toBe(true);
+          // Detach, not teardown: the session and its services live on.
+          expect(await managedSessionExists(session)).toBe(true);
+          expect(await serviceAnswers(port)).toBe(true);
+        } finally {
+          client.kill("SIGKILL");
+        }
+      },
+    );
 
     it("routes the bare `zaps` smart default through the same re-attach path", async () => {
       const { tuiPane } = await startDetached();

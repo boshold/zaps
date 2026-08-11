@@ -625,10 +625,12 @@ describe("resyncPaneSizes", () => {
 });
 
 describe("detachClient", () => {
-  it("detaches the client owning the target pane", async () => {
+  it("detaches the current client, resolved by tmux from $TMUX", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
-    await detachClient("%7");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["detach-client", "-t", "%7"], {
+    await detachClient();
+    // Never `-t <pane>`: detach-client's target is a client tty, and a pane id
+    // Fails outright (`can't find client: %N`), silently skipping the detach.
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["detach-client"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });

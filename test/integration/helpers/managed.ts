@@ -138,6 +138,17 @@ export function serviceConfig(port: number): string {
 `;
 }
 
+/** TTYs of the clients attached to `session` (empty when nobody is attached). */
+export async function clients(session: string): Promise<string[]> {
+  try {
+    const out = await managed(["list-clients", "-t", session, "-F", "#{client_tty}"]);
+    return out ? out.split("\n") : [];
+  } catch {
+    // No server / session gone → nobody is attached.
+    return [];
+  }
+}
+
 /** True while the service still answers — i.e. the session survived. */
 export async function serviceAnswers(port: number): Promise<boolean> {
   try {
