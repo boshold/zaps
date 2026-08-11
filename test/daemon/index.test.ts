@@ -184,12 +184,14 @@ describe("ensureDaemon", () => {
     });
     process.env.ZAPS_TMUX_SOCKET = "zaps";
     process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+    process.env.TMUX_PANE = "%3";
 
     try {
       await ensureDaemon({ file: "zaps", args: [] });
     } finally {
       delete process.env.ZAPS_TMUX_SOCKET;
       delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
     }
 
     const { spawn } = await import("node:child_process");
@@ -197,6 +199,7 @@ describe("ensureDaemon", () => {
     const opts = call?.[2] as { env: Record<string, string | undefined> };
     expect(opts.env.ZAPS_TMUX_SOCKET).toBeUndefined();
     expect(opts.env.TMUX).toBeUndefined();
+    expect(opts.env.TMUX_PANE).toBeUndefined();
     expect(opts.env.ZAPS_COMMAND).toBe("zaps");
   });
 
@@ -326,11 +329,13 @@ describe("runDaemon", () => {
   it("deletes inherited tmux env at startup (socket selection is per-session)", async () => {
     process.env.ZAPS_TMUX_SOCKET = "zaps";
     process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+    process.env.TMUX_PANE = "%3";
 
     await runDaemon();
 
     expect(process.env.ZAPS_TMUX_SOCKET).toBeUndefined();
     expect(process.env.TMUX).toBeUndefined();
+    expect(process.env.TMUX_PANE).toBeUndefined();
   });
 
   it("shuts down on idle timeout with no sessions", async () => {

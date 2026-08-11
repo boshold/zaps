@@ -4,6 +4,7 @@ import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import {
   capturePane,
+  displayPopup,
   getWindowName,
   getWindowOption,
   panePid,
@@ -33,6 +34,7 @@ const deps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  displayPopup,
   exec: async () => {
     /* No-op */
   },

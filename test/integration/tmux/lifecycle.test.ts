@@ -228,6 +228,9 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     setWindowOption: async () => {
       /* No-op */
     },
+    displayPopup: async () => {
+      /* No-op */
+    },
     exec: async () => {
       /* No-op */
     },

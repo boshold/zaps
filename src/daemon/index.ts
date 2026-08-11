@@ -122,6 +122,7 @@ async function runDaemon(): Promise<void> {
   // It (50_api sanitization rule). `ensureDaemon` strips these too.
   delete process.env.ZAPS_TMUX_SOCKET;
   delete process.env.TMUX;
+  delete process.env.TMUX_PANE;
 
   // Same protection `ensureDaemon` gives the spawned path: never hold the
   // Invoking project dir open, since deleting it makes every later spawn() fail
@@ -299,6 +300,7 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
     const childEnv: NodeJS.ProcessEnv = { ...process.env, ZAPS_COMMAND: zapsCommand };
     delete childEnv.ZAPS_TMUX_SOCKET;
     delete childEnv.TMUX;
+    delete childEnv.TMUX_PANE;
     const child = spawn(command.file, [...command.args, "daemon", "run"], {
       detached: true,
       stdio: ["ignore", logFile, logFile],

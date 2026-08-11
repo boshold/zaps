@@ -3,6 +3,7 @@ import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import {
   capturePane,
+  displayPopup,
   getWindowName,
   getWindowOption,
   panePid,
@@ -26,6 +27,7 @@ export const tmuxDeps = {
   getWindowName,
   getWindowOption,
   setWindowOption,
+  displayPopup,
   exec: async () => {
     /* No-op */
   },

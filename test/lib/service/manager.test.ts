@@ -33,6 +33,7 @@ function createMockDeps(): ServiceManagerDeps {
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
     preflightPorts: vi.fn<ServiceManagerDeps["preflightPorts"]>().mockResolvedValue(null),
+    displayPopup: vi.fn<ServiceManagerDeps["displayPopup"]>().mockResolvedValue(),
     storeExecInfo: vi.fn(),
     sessionId: "test-session-id",
     zapsCommand: "zaps",
