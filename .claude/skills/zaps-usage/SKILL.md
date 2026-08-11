@@ -67,6 +67,36 @@ Target a specific session with the global `-s, --session <id|name>` flag (before
 command): `zaps -s my-app down`, `zaps -s my-app restart api`. Without it, ZAPS resolves
 the session for the current directory.
 
+### Managed tmux (running outside tmux)
+
+zaps no longer requires a tmux session. When `$TMUX` is unset it creates its own
+("managed") tmux session on a dedicated tmux server (`tmux -L zaps`), so it never
+touches the user's own tmux.
+
+```
+zaps up -d   # Session zaps-<name>-<id> started (detached, managed tmux). zaps attach to view.
+zaps ls      # LOCATION column shows `zaps-<name>-<id> (managed)` for those sessions
+zaps attach  # revives the TUI pane and attaches (never creates a session)
+zaps down    # stops services AND kills the managed tmux session
+             #   prints `Killed managed tmux session zaps-<name>-<id>.`
+```
+
+- **Prefer `zaps up -d` from an agent shell** — there is no TTY to attach a TUI to.
+  Against an already-running managed session it is a no-op that prints
+  `Session "<name>" is already running (managed tmux). zaps attach to view.` and exits 0.
+- **`q` in the TUI detaches** the tmux client (services keep running); only `zaps down`
+  / `Ctrl-D` tears the session down.
+- **Conflicts** — a session belongs to the tmux context it was created in; both refusals
+  exit 1 and are resolved by following the message, not by retrying:
+  - `Session "<name>" is running inside tmux session '<tmux>'. Attach from within tmux, or run zaps down first.`
+    (session lives in the user's own tmux; attach from there or `zaps down`)
+  - `Session "<name>" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`
+    (followed by a copy-pasteable `tmux -L zaps attach -t =<name>`)
+- **`zaps requires tmux (>= 3.5a) — install it and re-run.`** — tmux is missing or too
+  old; install it, nothing else will work.
+- `ZAPS_AUTO_TMUX=0` disables auto-spawn and restores the old behavior (`zaps must be run
+from inside a tmux session.`). Don't set it unless the user asks.
+
 ### TUI
 
 `zaps up` attaches the interactive dashboard. Key interactions:

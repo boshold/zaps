@@ -8,7 +8,7 @@ conventions we follow.
 - [Node.js](https://nodejs.org) >= 22
 - [pnpm](https://pnpm.io) (the repo pins a version via `packageManager`)
 - [Bun](https://bun.sh) — used to build the native binary
-- [tmux](https://github.com/tmux/tmux/wiki) >= 3.5a — ZAPS runs inside tmux
+- [tmux](https://github.com/tmux/tmux/wiki) >= 3.5a — ZAPS runs inside tmux (it starts its own session when you aren't in one)
 
 ## Setup
 
