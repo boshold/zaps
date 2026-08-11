@@ -467,6 +467,31 @@ describe("runDown", () => {
     expect(destroy).not.toHaveBeenCalled();
   });
 
+  it("reports the managed tmux kill that came with the destroy (F5)", async () => {
+    const managedSessions = [
+      {
+        id: "abc",
+        name: "proj",
+        projectDir: "/proj",
+        tmuxSession: "zaps-proj-abc123abc123",
+        managed: true,
+        tuiPane: "%0",
+      },
+    ];
+    const { deps, out } = makeDeps({
+      listSessions: async () => ({ id: "l1", result: managedSessions }),
+    });
+    expect(await runDown(deps)).toBe(0);
+    expect(out.join("")).toContain("Session destroyed.");
+    expect(out.join("")).toContain("Killed managed tmux session zaps-proj-abc123abc123.");
+  });
+
+  it("says nothing about tmux for a session in the user's own tmux", async () => {
+    const { deps, out } = makeDeps();
+    expect(await runDown(deps)).toBe(0);
+    expect(out.join("")).not.toContain("Killed managed tmux session");
+  });
+
   it("returns 1 when destroy fails", async () => {
     const { deps, err } = makeDeps({ destroy: async () => ({ id: "d1", error: "no" }) });
     expect(await runDown(deps)).toBe(1);

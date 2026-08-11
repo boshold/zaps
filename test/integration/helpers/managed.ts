@@ -69,11 +69,17 @@ export async function runZaps(
     ...process.env,
     XDG_RUNTIME_DIR: runtimeDir,
     ZAPS_COMMAND: binaryPath,
-    ...extraEnv,
   };
+  // Plain terminal by default: strip the tmux context first, so a test that
+  // Wants to simulate one can put it back via `extraEnv`.
   delete env.TMUX;
   delete env.TMUX_PANE;
   delete env.ZAPS_TMUX_SOCKET;
+  // `zaps ls` picks toon when it thinks an agent is driving it; tests assert the
+  // Human table unless they ask for a machine format explicitly.
+  delete env.CLAUDECODE;
+  delete env.CURSOR_TRACE_DIR;
+  Object.assign(env, extraEnv);
   try {
     const { stdout, stderr } = await execFileAsync(binaryPath, args, { cwd, env });
     return { code: 0, stdout, stderr };

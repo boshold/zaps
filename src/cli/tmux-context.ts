@@ -73,13 +73,16 @@ function alreadyRunningMessage(session: DaemonSessionView): string {
   return `Session "${session.name}" is already running (managed tmux). zaps attach to view.`;
 }
 
+/** The bits of a session both refusal messages name. */
+type ConflictSession = Pick<DaemonSessionView, "name" | "tmuxSession">;
+
 /** F6 — the session lives in the user's own tmux; only reachable from there. */
-function refusePersonalMessage(session: DaemonSessionView): string {
+function refusePersonalMessage(session: ConflictSession): string {
   return `Session "${session.name}" is running inside tmux session '${session.tmuxSession}'. Attach from within tmux, or run zaps down first.`;
 }
 
 /** F7 — the session lives in a managed tmux; re-attach from a plain terminal. */
-function refuseManagedMessage(session: DaemonSessionView): string {
+function refuseManagedMessage(session: ConflictSession): string {
   return [
     `Session "${session.name}" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`,
     `  tmux -L ${MANAGED_SOCKET} attach -t ${session.tmuxSession}`,
@@ -145,5 +148,11 @@ function decideTmuxContext(input: TmuxContextInput): TmuxContextDecision {
     : { kind: "spawn", name: input.managedName };
 }
 
-export { LEGACY_TMUX_ERROR, TMUX_INSTALL_URL, decideTmuxContext };
-export type { DaemonSessionView, TmuxContextDecision, TmuxContextInput };
+export {
+  LEGACY_TMUX_ERROR,
+  TMUX_INSTALL_URL,
+  decideTmuxContext,
+  refuseManagedMessage,
+  refusePersonalMessage,
+};
+export type { ConflictSession, DaemonSessionView, TmuxContextDecision, TmuxContextInput };

@@ -102,14 +102,17 @@ async function daemonSessionFor(configPath: string): Promise<DaemonSessionView |
   const sessions = res.result as SessionInfo[];
   const id = sessionId(configPath);
   const match = sessions.find((s) => s.id === id);
-  return (
-    match && {
-      name: match.name,
-      tmuxSession: match.tmuxSession,
-      managed: match.managed,
-      tuiPane: match.tuiPane,
-    }
-  );
+  if (!match) {
+    return undefined;
+  }
+  // Defaults, not assumptions: an older daemon omits the newer fields, and
+  // "unknown" must read as "not managed" so nothing here touches its tmux.
+  return {
+    name: match.name,
+    tmuxSession: match.tmuxSession ?? "",
+    managed: match.managed === true,
+    tuiPane: match.tuiPane ?? null,
+  };
 }
 
 function defaultDeps(): BootstrapDeps {

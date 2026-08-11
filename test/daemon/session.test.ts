@@ -29,6 +29,7 @@ vi.mock("#src/lib/tmux.js", () => {
   // Assertions on the named exports still observe every call.
   const api = {
     killPane: vi.fn().mockResolvedValue(undefined),
+    killSession: vi.fn().mockResolvedValue(undefined),
     // LayoutReflow (constructed by Session) uses these as defaults. They are
     // Stored as function refs at construction but only invoked when reflow code
     // Runs; stub them so tests that never exercise the reflow path still work.
@@ -346,6 +347,62 @@ describe("Session", () => {
       await session.destroy();
       await session.destroy();
       expect(vi.mocked(manager.stopAll)).toHaveBeenCalledTimes(1);
+    });
+
+    it("kills the tmux session zaps owns, by exact name (F5)", async () => {
+      const { killSession, tmuxFor } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      const managed = new Session(
+        createSessionParams({
+          tmuxSocket: "zaps",
+          managedTmux: true,
+          tmuxSession: "zaps-app-abc123abc123",
+        }),
+        createMockManager(),
+      );
+      await managed.destroy();
+      expect(killSession).toHaveBeenCalledWith("zaps-app-abc123abc123");
+      // On the session's own socket handle — never the default server.
+      expect(tmuxFor).toHaveBeenCalledWith("zaps");
+    });
+
+    it("never kills a tmux session zaps does not own", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      await session.destroy();
+      expect(killSession).not.toHaveBeenCalled();
+    });
+
+    it("treats an already-gone tmux session as non-fatal", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockRejectedValueOnce(new Error("can't find session"));
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const managed = new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true, tmuxSession: "zaps-gone" }),
+        createMockManager(),
+      );
+      await expect(managed.destroy()).resolves.toBeUndefined();
+      expect(managed.destroyed).toBe(true);
+      expect(stderr.mock.calls.join("")).toContain("zaps-gone");
+      stderr.mockRestore();
+    });
+
+    it("stops the services before killing the tmux session that hosts them", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      const order: string[] = [];
+      const managed = createMockManager();
+      vi.mocked(managed.stopAll).mockImplementation(async () => {
+        order.push("stopAll");
+      });
+      vi.mocked(killSession).mockImplementation(async () => {
+        order.push("killSession");
+      });
+      await new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        managed,
+      ).destroy();
+      expect(order).toEqual(["stopAll", "killSession"]);
     });
 
     it("serializes behind an in-flight reload via the shared op lock", async () => {

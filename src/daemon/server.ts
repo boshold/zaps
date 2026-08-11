@@ -39,6 +39,30 @@ interface SessionStore {
   destroy(id: string): Promise<void>;
 }
 
+/**
+ * A cache hit must not silently hand back a session living somewhere else: the
+ * caller's panes, ports and teardown all assume the socket it asked for. Two
+ * zaps in different tmux contexts (personal vs managed) sharing a config path
+ * would otherwise "succeed" and then drive tmux commands at the wrong server.
+ */
+function describeTmuxContext(socket: string | null, managed: boolean): string {
+  const where = socket === null ? "the default tmux server" : `tmux socket '${socket}'`;
+  return managed ? `${where} (managed)` : where;
+}
+
+function assertSameTmuxContext(existing: Session, params: CreateParams): void {
+  const requestedSocket = params.tmuxSocket ?? null;
+  const requestedManaged = params.managedTmux === true;
+  if (existing.tmuxSocket === requestedSocket && existing.managedTmux === requestedManaged) {
+    return;
+  }
+  throw new Error(
+    `Session already running on ${describeTmuxContext(existing.tmuxSocket, existing.managedTmux)}; ` +
+      `this request asked for ${describeTmuxContext(requestedSocket, requestedManaged)}. ` +
+      `Run zaps down first.`,
+  );
+}
+
 class DaemonServer implements SessionStore {
   private server: net.Server | null = null;
   private readonly sessions = new Map<string, Session>();
@@ -150,6 +174,7 @@ class DaemonServer implements SessionStore {
     try {
       const existing = this.sessions.get(id);
       if (existing) {
+        assertSameTmuxContext(existing, params);
         const tuiPane = existing.paneMap["@tui"];
         if (tuiPane && (await existing.tmux.paneExists(tuiPane))) {
           return existing;

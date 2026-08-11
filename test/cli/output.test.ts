@@ -1,7 +1,13 @@
 import { encode } from "@toon-format/toon";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { isCodingAgent, resolveFormat, writeData } from "../../src/cli/output.js";
+import {
+  isCodingAgent,
+  resolveFormat,
+  sessionLocation,
+  sessionRows,
+  writeData,
+} from "../../src/cli/output.js";
 
 const AGENT_VARS = ["CLAUDECODE", "CURSOR_TRACE_DIR"];
 
@@ -157,5 +163,43 @@ describe("writeData", () => {
   it("handles arrays", () => {
     writeData([], "json");
     expect(written).toBe("[]\n");
+  });
+});
+
+describe("sessionLocation", () => {
+  it("marks a tmux session zaps owns", () => {
+    expect(
+      sessionLocation({
+        id: "a",
+        name: "app",
+        projectDir: "/app",
+        tmuxSession: "zaps-app-abc123abc123",
+        managed: true,
+      }),
+    ).toBe("zaps-app-abc123abc123 (managed)");
+  });
+
+  it("names a personal tmux session without the marker", () => {
+    expect(sessionLocation({ id: "a", name: "app", projectDir: "/app", tmuxSession: "work" })).toBe(
+      "work",
+    );
+  });
+
+  it("stays blank when an older daemon reports no tmux session", () => {
+    expect(sessionLocation({ id: "a", name: "app", projectDir: "/app" })).toBe("");
+  });
+});
+
+describe("sessionRows", () => {
+  it("puts the location last, after id/name/dir", () => {
+    expect(
+      sessionRows([
+        { id: "a1", name: "app", projectDir: "/app", tmuxSession: "zaps-app-a1", managed: true },
+        { id: "b2", name: "api", projectDir: "/api", tmuxSession: "work" },
+      ]),
+    ).toEqual([
+      ["a1", "app", "/app", "zaps-app-a1 (managed)"],
+      ["b2", "api", "/api", "work"],
+    ]);
   });
 });

@@ -85,9 +85,14 @@ describe("decideTmuxContext — inside tmux", () => {
       }),
     );
     expect(decision.kind).toBe("refuse-managed");
-    expect(decision).toMatchObject({
-      message: expect.stringContaining("zaps-managed tmux") as unknown as string,
-    });
+    const { message } = decision as { message: string };
+    // Exact spec wording, plus the copy-pasteable escape hatch (Q5).
+    expect(message).toBe(
+      [
+        `Session "app" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`,
+        `  tmux -L zaps attach -t ${MANAGED_NAME}`,
+      ].join("\n"),
+    );
   });
 });
 
@@ -162,12 +167,13 @@ describe("decideTmuxContext — running sessions", () => {
     });
   });
 
-  it("refuses a session living in the user's own tmux (F6)", () => {
+  it("refuses a session living in the user's own tmux with the spec message (F6)", () => {
     const decision = decideTmuxContext(input({ daemonSession: personalSession }));
     expect(decision.kind).toBe("refuse-personal");
     const { message } = decision as { message: string };
-    expect(message).toContain(`Session "app" is running inside tmux session 'work'`);
-    expect(message).toContain("zaps down");
+    expect(message).toBe(
+      `Session "app" is running inside tmux session 'work'. Attach from within tmux, or run zaps down first.`,
+    );
   });
 
   it("refuses the personal session even with -d (never spawns a second one)", () => {

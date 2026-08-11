@@ -314,6 +314,38 @@ describe("DaemonServer", () => {
     expect(mockCreateLayout).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses a create whose tmux context disagrees with the live session", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    await server.create(params);
+    tmux.paneExists.mockResolvedValue(true);
+
+    // Same project, but this caller runs in a managed tmux: handing back the
+    // Session on the default server would drive tmux at the wrong one.
+    await expect(
+      server.create({ ...params, tmuxSocket: "zaps", managedTmux: true }),
+    ).rejects.toThrow(/Session already running on the default tmux server/u);
+    expect(server.sessionCount).toBe(1);
+  });
+
+  it("still reuses the session for an identical tmux context", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "zaps-test-abc",
+      originPane: "%0",
+      tmuxSocket: "zaps",
+      managedTmux: true,
+    };
+    const s1 = await server.create(params);
+    tmux.paneExists.mockResolvedValue(true);
+    await expect(server.create(params)).resolves.toBe(s1);
+  });
+
   it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {
     const params = {
       configPath: "/test/.zaps.mts",

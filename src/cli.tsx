@@ -19,7 +19,8 @@ import {
   runDown,
   withDaemon,
 } from "./cli/helpers.js";
-import { isCodingAgent, resolveFormat, writeData } from "./cli/output.js";
+import { isCodingAgent, resolveFormat, sessionRows, writeData } from "./cli/output.js";
+import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -639,9 +640,7 @@ const lsCommand = command(
       process.stdout.write("No active sessions.\n");
       return;
     }
-    for (const s of sessions) {
-      process.stdout.write(`${s.id}  ${s.name}  ${s.projectDir}\n`);
-    }
+    process.stdout.write(`${formatTable(sessionRows(sessions))}\n`);
   },
 );
 
@@ -1130,6 +1129,31 @@ const initCommand = command(
   },
 );
 
+/**
+ * Why `zaps attach` cannot reach `session`, if it cannot (F6/F7), as the message
+ * to print. Attach never creates or moves anything, so both conflicts are hard
+ * refusals — the user picks a terminal, or runs `zaps down`.
+ */
+async function attachConflict(session: SessionInfo): Promise<string | undefined> {
+  const view = {
+    name: session.name,
+    tmuxSession: session.tmuxSession ?? "",
+    managed: session.managed === true,
+  };
+  if (!getEnv("TMUX")) {
+    // Outside tmux: a session in the user's own tmux is only reachable there.
+    return view.managed ? undefined : refusePersonalMessage(view);
+  }
+  if (!view.managed) {
+    return undefined;
+  }
+  // Inside tmux: fine when this IS the managed session (the TUI attaches in the
+  // Current pane); refuse from any other tmux, where pane ops would target the
+  // Wrong server.
+  const current = await currentSession().catch(() => undefined);
+  return current === view.tmuxSession ? undefined : refuseManagedMessage(view);
+}
+
 const attachCommand = command(
   {
     name: "attach",
@@ -1160,17 +1184,18 @@ const attachCommand = command(
 
     try {
       const targetSession = resolveTargetSession(sessions, globalSession());
+      const conflict = await attachConflict(targetSession);
+      if (conflict) {
+        process.stderr.write(`${conflict}\n`);
+        // Exit via the code so the multi-line hint is flushed first.
+        process.exitCode = 1;
+        return;
+      }
       if (!getEnv("TMUX")) {
-        // Plain terminal: a managed session is re-entered by reviving its TUI
-        // Pane and attaching (F3). Attach never creates anything, so a session
-        // In the user's own tmux still errors (F6 wording lands in P03-T02).
-        if (!targetSession.managed) {
-          process.stderr.write("zaps must be run from inside a tmux session.\n");
-          process.exit(1);
-        }
+        // Plain terminal, managed session: revive its TUI pane and attach (F3).
         const result = await reattachManaged({
-          name: targetSession.tmuxSession,
-          tuiPane: targetSession.tuiPane,
+          name: targetSession.tmuxSession ?? "",
+          tuiPane: targetSession.tuiPane ?? null,
         });
         // See the `up` bootstrap: exit via the code, so buffered output flushes.
         process.exitCode = result.proceed ? 0 : result.exitCode;

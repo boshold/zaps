@@ -527,7 +527,34 @@ export class Session {
         sock.destroy();
       }
       this.subscribers.clear();
+
+      await this.killManagedTmuxSession();
     });
+  }
+
+  /**
+   * Kill the tmux session zaps owns, once its services are stopped (F5).
+   *
+   * Only for managed sessions, only by exact name, and only on this session's
+   * own socket handle — a session living in the user's tmux is never killed, and
+   * `kill-server` is never issued, so a sibling managed project on the same
+   * socket survives untouched (the tmux server exits by itself with its last
+   * session). An already-gone session is logged, not fatal: the post-condition
+   * ("no managed tmux session left") holds either way.
+   */
+  private async killManagedTmuxSession(): Promise<void> {
+    if (!this.managedTmux) {
+      return;
+    }
+    try {
+      await this.tmux.killSession(this.tmuxSession);
+    } catch (error) {
+      process.stderr.write(
+        `Managed tmux session ${this.tmuxSession} could not be killed (already gone?): ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
   }
 
   /**
