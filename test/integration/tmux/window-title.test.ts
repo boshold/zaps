@@ -11,6 +11,7 @@ import {
   sendCtrlC,
   sendKeys,
   setWindowOption,
+  tmuxFor,
 } from "#src/lib/tmux.js";
 
 import { makeConfig } from "../helpers/config.js";
@@ -18,14 +19,14 @@ import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { buildTestPaneMap, createTestSession } from "../helpers/tmux.js";
+import { buildTestPaneMap, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 import { waitFor } from "../helpers/wait.js";
 
 const deps = {
   sendKeys,
   sendCtrlC,
   panePid,
-  detectPorts,
+  detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmuxFor(testTmuxSocket())),
   capturePane,
   getDescendantPids,
   renameWindow,

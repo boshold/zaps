@@ -1,7 +1,6 @@
 import type { LayoutLeaf, LayoutNode, LayoutSplit, ServiceConfig } from "#src/config/types.js";
 import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
-import { defaultTmux } from "./tmux-default.js";
 import type { TmuxHandle } from "./tmux.js";
 
 type PaneMap = Record<string, string>;
@@ -512,12 +511,12 @@ export async function createLayout(
   startPaneId: string,
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
-  groups?: Map<string, string[]>,
-  options?: { reserveTuiPane?: boolean; skip?: Set<string>; tmux?: LayoutTmux },
+  groups: Map<string, string[]> | undefined,
+  options: { reserveTuiPane?: boolean; skip?: Set<string>; tmux: LayoutTmux },
 ): Promise<{ paneMap: PaneMap; focusPane: string }> {
-  const reserveTuiPane = options?.reserveTuiPane ?? false;
-  const tmux = options?.tmux ?? defaultTmux;
-  const skip = options?.skip;
+  const reserveTuiPane = options.reserveTuiPane ?? false;
+  const { tmux } = options;
+  const { skip } = options;
   const hasSkip = skip !== undefined && skip.size > 0;
   const paneMap: PaneMap = {};
   // Pane-less lazy services don't get a leftover-pane split. `skip` is pre-

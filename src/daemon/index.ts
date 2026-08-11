@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 
 import {
   IdleTimer,
@@ -19,6 +20,21 @@ import { DaemonServer } from "#src/daemon/server.js";
 import { registerShutdownHook } from "#src/daemon/shutdown.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Working directory for the detached daemon. The invoking CLI's cwd is a project
+ * dir that can be deleted while the daemon outlives it — on Linux every later
+ * `spawn()` from a deleted cwd then fails with ENOENT (observed: a lingering
+ * daemon whose tmux calls all died). Home (or `/`) is stable.
+ */
+function daemonSpawnCwd(): string {
+  try {
+    const home = os.homedir();
+    return home && fs.existsSync(home) ? home : "/";
+  } catch {
+    return "/";
+  }
+}
 
 async function pingSocket(sock: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -278,6 +294,7 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
       detached: true,
       stdio: ["ignore", logFile, logFile],
       env: childEnv,
+      cwd: daemonSpawnCwd(),
     });
 
     // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error

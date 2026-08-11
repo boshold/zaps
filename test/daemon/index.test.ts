@@ -18,6 +18,7 @@ vi.mock("node:fs", () => ({
     writeSync: vi.fn(),
     closeSync: vi.fn(),
     statSync: vi.fn(() => ({ mtimeMs: Date.now() })),
+    existsSync: vi.fn(() => true),
   },
 }));
 
@@ -25,6 +26,7 @@ vi.mock("node:os", () => ({
   default: {
     tmpdir: () => "/tmp",
     userInfo: () => ({ uid: 1000 }),
+    homedir: () => "/home/test",
   },
 }));
 
@@ -196,6 +198,20 @@ describe("ensureDaemon", () => {
     expect(opts.env.ZAPS_TMUX_SOCKET).toBeUndefined();
     expect(opts.env.TMUX).toBeUndefined();
     expect(opts.env.ZAPS_COMMAND).toBe("zaps");
+  });
+
+  it("spawns the daemon in a stable cwd so a deleted project dir can't poison it", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    await ensureDaemon({ file: "zaps", args: [] });
+
+    const { spawn } = await import("node:child_process");
+    const opts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as { cwd?: string };
+    expect(opts.cwd).toBe("/home/test");
   });
 
   it("throws a clear error when the daemon spawn fails (E1)", async () => {

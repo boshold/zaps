@@ -196,6 +196,42 @@ describe("DaemonServer", () => {
     expect(server.get(session.id)).toBe(session);
   });
 
+  it("binds the layout + session handle to the requested tmux socket", async () => {
+    const { tmuxFor } = await import("#src/lib/tmux.js");
+    vi.mocked(tmuxFor).mockClear();
+
+    const session = await server.create({
+      configPath: "/socket/.zaps.mts",
+      projectDir: "/socket",
+      tmuxSession: "zaps-socket-abc",
+      originPane: "%0",
+      tmuxSocket: "zaps",
+      managedTmux: true,
+    });
+
+    expect(tmuxFor).toHaveBeenCalledWith("zaps");
+    expect(session.tmuxSocket).toBe("zaps");
+    expect(session.managedTmux).toBe(true);
+    const layoutCall = mockCreateLayout.mock.calls.at(-1);
+    expect(layoutCall?.[4]).toMatchObject({ tmux: expect.any(Object) });
+  });
+
+  it("defaults an unmanaged session to the user's default server", async () => {
+    const { tmuxFor } = await import("#src/lib/tmux.js");
+    vi.mocked(tmuxFor).mockClear();
+
+    const session = await server.create({
+      configPath: "/default/.zaps.mts",
+      projectDir: "/default",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+
+    expect(tmuxFor).toHaveBeenCalledWith(null);
+    expect(session.tmuxSocket).toBeNull();
+    expect(session.managedTmux).toBe(false);
+  });
+
   it("returns existing session on duplicate create", async () => {
     const s1 = await server.create({
       configPath: "/test/.zaps.mts",

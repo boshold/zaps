@@ -1,7 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { defaultTmux } from "./tmux-default.js";
 import type { TmuxHandle } from "./tmux.js";
 
 /** The tmux command port detection issues. */
@@ -198,10 +197,7 @@ async function getListeningPortsImpl(pids: number[]): Promise<number[]> {
  * Detect listening ports for a tmux pane's process tree.
  * Returns deduplicated sorted port list.
  */
-async function detectPortsImpl(
-  paneTarget: string,
-  tmux: PortTmux = defaultTmux,
-): Promise<number[]> {
+async function detectPortsImpl(paneTarget: string, tmux: PortTmux): Promise<number[]> {
   const rootPid = await tmux.panePid(paneTarget);
   const pids = await getDescendantPidsImpl(rootPid);
   const ports = await getListeningPortsImpl(pids);

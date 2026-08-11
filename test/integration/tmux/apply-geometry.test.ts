@@ -15,12 +15,13 @@ import {
   paneIndexOrder,
   sendKeys,
   splitPane,
+  tmuxFor,
   windowLayout,
 } from "#src/lib/tmux.js";
 
 import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
-import { attachClient, createTestSession } from "../helpers/tmux.js";
+import { attachClient, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 import { waitFor } from "../helpers/wait.js";
 
 const execFileAsync = promisify(execFile);
@@ -135,6 +136,7 @@ async function probeSttyUntil(
 
 function makeReflow(layout: LayoutNode, paneMap: PaneMap, sessionName: string): LayoutReflow {
   return new LayoutReflow({
+    tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
     getWindowTarget: () => sessionName,

@@ -19,11 +19,17 @@ vi.mock("../../../src/lib/task/runner.js", () => ({
   runTaskWithDeps: vi.fn().mockResolvedValue(true),
 }));
 
-vi.mock("../../../src/lib/tmux.js", () => ({
-  newWindow: vi.fn().mockResolvedValue("%win"),
-  splitPane: vi.fn().mockResolvedValue("%split"),
-  sendKeys: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("../../../src/lib/tmux.js", () => {
+  // Handlers reach tmux through `session.tmux`, so the factory returns the SAME
+  // Stub surface for the module exports and for `tmuxFor()` — assertions on the
+  // Named exports still observe every call.
+  const api = {
+    newWindow: vi.fn().mockResolvedValue("%win"),
+    splitPane: vi.fn().mockResolvedValue("%split"),
+    sendKeys: vi.fn().mockResolvedValue(undefined),
+  };
+  return { ...api, tmuxFor: vi.fn(() => api) };
+});
 
 // `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
 

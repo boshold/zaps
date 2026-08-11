@@ -44,6 +44,7 @@ function makeReflow(
   extra: Partial<LayoutReflowDeps> = {},
 ): { reflow: LayoutReflow; deps: LayoutReflowDeps } {
   const deps: LayoutReflowDeps = {
+    tmux,
     getLayout: () => layout,
     getPaneMap: () => paneMap,
     getWindowTarget: () => "@0",
@@ -210,6 +211,7 @@ describe("LayoutReflow — live getters survive Session._reload's paneMap reassi
 
     const tmux = makeFakeTmux(["%1", "%2"]); // First call.
     const reflow = new LayoutReflow({
+      tmux,
       getLayout: () => layout,
       getPaneMap: () => live, // Live getter — survives reassignment.
       getWindowTarget: () => "@0",
@@ -254,6 +256,7 @@ describe("LayoutReflow — live getters survive Session._reload's paneMap reassi
     let live = oldLayout;
     const tmux = makeFakeTmux(["%1", "%2"]);
     const reflow = new LayoutReflow({
+      tmux,
       getLayout: () => live,
       getPaneMap: () => ({ "@tui": "%1", api: "%2" }),
       getWindowTarget: () => "@0",

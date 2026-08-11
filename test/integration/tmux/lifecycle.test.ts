@@ -40,6 +40,7 @@ import {
   panePid,
   sendCtrlC,
   sendKeys,
+  tmuxFor,
 } from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
@@ -202,7 +203,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     config.project.layout,
     config.project.services,
     config.groups,
-    { skip },
+    { skip, tmux: tmuxFor(testTmuxSocket()) },
   );
 
   const ref: { session: Session | null } = { session: null };
@@ -212,7 +213,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     sendKeys,
     sendCtrlC,
     panePid,
-    detectPorts,
+    detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmuxFor(testTmuxSocket())),
     capturePane,
     // Real PID walker — required for crash detection (Flow D) and the
     // ManagerLoop's "process still alive" probe. Stubbing it (e.g. always
@@ -820,7 +821,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
       config.project.layout,
       config.project.services,
       config.groups,
-      { skip, reserveTuiPane: true },
+      { skip, reserveTuiPane: true, tmux: tmuxFor(testTmuxSocket()) },
     );
 
     try {

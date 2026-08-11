@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { LayoutNode, ServiceConfig } from "#src/config/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
-import { listPanes } from "#src/lib/tmux.js";
+import { listPanes, tmuxFor } from "#src/lib/tmux.js";
 import type { PaneInfo } from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 /** Poll listPanes until expected count or timeout — tmux may lag behind splitPane. */
 async function waitForPaneCount(
@@ -41,7 +41,9 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       worker: { start: "echo worker" },
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, undefined, services);
+    const { paneMap } = await createLayout(session.initialPaneId, undefined, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
     const panes = await waitForPaneCount(session.name, 3);
 
     expect(panes).toHaveLength(3);
@@ -57,7 +59,9 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       bg: { start: "echo bg", detached: true },
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, undefined, services);
+    const { paneMap } = await createLayout(session.initialPaneId, undefined, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
     const panes = await waitForPaneCount(session.name, 2);
 
     expect(panes).toHaveLength(2);
@@ -79,7 +83,9 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       ],
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, layout, services);
+    const { paneMap } = await createLayout(session.initialPaneId, layout, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
     const panes = await waitForPaneCount(session.name, 2);
 
     expect(panes).toHaveLength(2);
@@ -108,7 +114,9 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       ],
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, layout, services);
+    const { paneMap } = await createLayout(session.initialPaneId, layout, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
     const panes = await waitForPaneCount(session.name, 3);
 
     expect(panes).toHaveLength(3);
@@ -131,7 +139,9 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       ],
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, layout, services);
+    const { paneMap } = await createLayout(session.initialPaneId, layout, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
     const panes = await waitForPaneCount(session.name, 3);
 
     // @tui + api from layout + worker auto-split
@@ -154,7 +164,13 @@ describe.skipIf(!hasTmux())("tmux layout integration", () => {
       ],
     };
 
-    const { paneMap, focusPane } = await createLayout(session.initialPaneId, layout, services);
+    const { paneMap, focusPane } = await createLayout(
+      session.initialPaneId,
+      layout,
+      services,
+      undefined,
+      { tmux: tmuxFor(testTmuxSocket()) },
+    );
 
     expect(focusPane).toBe(paneMap.api);
   });

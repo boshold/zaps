@@ -13,7 +13,14 @@ import type { Rect } from "#src/lib/tmux-layout.js";
 import { computeRects } from "#src/lib/tmux-layout.js";
 import type { LayoutReflowDeps, PaneMap } from "#src/lib/tmux-reflow.js";
 import { LayoutReflow, TmuxFailedError } from "#src/lib/tmux-reflow.js";
-import { capturePane, getWindowSize, paneIndexOrder, sendKeys, splitPane } from "#src/lib/tmux.js";
+import {
+  capturePane,
+  getWindowSize,
+  paneIndexOrder,
+  sendKeys,
+  splitPane,
+  tmuxFor,
+} from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
@@ -106,6 +113,7 @@ function makeReflow(
   overrides: Partial<LayoutReflowDeps> = {},
 ): LayoutReflow {
   return new LayoutReflow({
+    tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
     getWindowTarget: () => sessionName,
@@ -648,6 +656,7 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
     let calls = 0;
     let observedPaneId: string | undefined;
     const faultyReflow = new LayoutReflow({
+      tmux: tmuxFor(testTmuxSocket()),
       getLayout: () => layout,
       getPaneMap: () => zapsSession.paneMap,
       getWindowTarget: () => session.name,

@@ -1,7 +1,6 @@
 import type { LayoutLeaf, LayoutNode } from "#src/config/types.js";
 import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
-import { defaultTmux } from "./tmux-default.js";
 import {
   PaneTooSmallError,
   computeRects,
@@ -62,7 +61,7 @@ type PaneMap = Record<string, string>;
  */
 interface LayoutReflowDeps {
   /** Socket-bound tmux surface; per-command overrides below still win. */
-  tmux?: ReflowTmux;
+  tmux: ReflowTmux;
   /** The declared layout tree (may be undefined when the project has no layout). */
   getLayout: () => LayoutNode | undefined;
   /** Live name → pane-id map; mutated by insert/remove, replaced by reload. */
@@ -244,8 +243,8 @@ class LayoutReflow {
 
   public constructor(deps: LayoutReflowDeps) {
     this.deps = deps;
-    // Socket-bound handle (env-based default); tests override any subset via deps.
-    const tmux = deps.tmux ?? defaultTmux;
+    // Socket-bound handle; tests override any subset via the per-command deps.
+    const { tmux } = deps;
     this.tmux = {
       getWindowSize: deps.getWindowSize ?? tmux.getWindowSize,
       paneIndexOrder: deps.paneIndexOrder ?? tmux.paneIndexOrder,
