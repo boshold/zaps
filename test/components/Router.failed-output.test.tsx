@@ -18,6 +18,9 @@ import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 vi.mock("../../src/lib/open.js", () => ({ openInBrowser: vi.fn() }));
 vi.mock("../../src/lib/tmux.js", () => ({
+  // `q` detaches the tmux client in managed mode; keep the mock complete so a
+  // Future test pressing `q` fails loudly instead of silently skipping it.
+  detachClient: vi.fn().mockResolvedValue(undefined),
   zoomPane: vi.fn(),
   editPaneCapture: vi.fn().mockResolvedValue(undefined),
 }));

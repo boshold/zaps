@@ -21,6 +21,9 @@ vi.mock("../src/lib/tmux.js", () => ({
   setWindowOption: vi.fn().mockResolvedValue(undefined),
   currentSession: vi.fn().mockResolvedValue(""),
   showEnv: vi.fn().mockResolvedValue(""),
+  // Quitting detaches the tmux client in managed mode; without this export the
+  // Detach throws inside its own catch and the tests below pass vacuously.
+  detachClient: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../src/lib/open.js", () => ({
@@ -237,6 +240,49 @@ describe("Keyboard routing — Dashboard", () => {
       /* Flush */
     });
 
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+  });
+
+  it("q hands the terminal back by detaching the managed tmux client", async () => {
+    const { detachClient } = await import("../src/lib/tmux.js");
+    vi.mocked(detachClient).mockClear();
+    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
+    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses });
+
+    act(() => {
+      stdin.write("q");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+
+    expect(vi.mocked(detachClient)).toHaveBeenCalled();
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it("q in a personal tmux leaves the client attached", async () => {
+    const { detachClient } = await import("../src/lib/tmux.js");
+    vi.mocked(detachClient).mockClear();
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses });
+
+    act(() => {
+      stdin.write("q");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+
+    expect(vi.mocked(detachClient)).not.toHaveBeenCalled();
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
