@@ -97,8 +97,22 @@ interface CreateArgsOptions {
   name: string;
   /** `-d`: create without attaching (the `up -d` path). */
   detach?: boolean;
-  /** The zaps invocation to run in the bootstrap pane, e.g. `["/usr/bin/zaps", "up"]`. */
-  zapsArgv: string[];
+  /**
+   * The zaps invocation for the bootstrap pane, e.g. `["/usr/bin/zaps", "up"]`.
+   * Omit to start the default shell — used by the detached path, which sets the
+   * pane options first and only then respawns the pane with the real command.
+   */
+  zapsArgv?: string[];
+  /**
+   * Extra `-e` session env on top of the two markers. Used to forward the
+   * daemon-locating vars so the inner zaps talks to the same daemon the outer
+   * one just consulted — a session created with `-e` does not inherit them from
+   * a tmux server that may long predate this process.
+   */
+  env?: Record<string, string>;
+  /** `-x`/`-y`: initial size, so panes are laid out at the real terminal size. */
+  width?: number;
+  height?: number;
 }
 
 /**
@@ -110,6 +124,9 @@ function buildCreateArgs(options: CreateArgsOptions): string[] {
   if (options.detach) {
     args.push("-d");
   }
+  if (options.width && options.height) {
+    args.push("-x", String(options.width), "-y", String(options.height));
+  }
   args.push(
     "-s",
     options.name,
@@ -117,9 +134,13 @@ function buildCreateArgs(options: CreateArgsOptions): string[] {
     `ZAPS_TMUX_SOCKET=${MANAGED_SOCKET}`,
     "-e",
     "ZAPS_MANAGED_TMUX=1",
-    "--",
-    ...options.zapsArgv,
   );
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    args.push("-e", `${key}=${value}`);
+  }
+  if (options.zapsArgv?.length) {
+    args.push("--", ...options.zapsArgv);
+  }
   return args;
 }
 
@@ -129,12 +150,23 @@ function buildAttachArgs(name: string): string[] {
 }
 
 /**
- * `tmux -L zaps respawn-pane -t <paneId> -- <zaps argv>` argv. The argv form is
- * mandatory: passing the command as one shell string misbehaved in live testing.
- * `paneId` must be a `%N` pane id — index targeting breaks under `pane-base-index`.
+ * `tmux -L zaps respawn-pane [-k] -t <paneId> -- <zaps argv>` argv. The argv form
+ * is mandatory: passing the command as one shell string misbehaved in live
+ * testing. `paneId` must be a `%N` pane id — index targeting breaks under
+ * `pane-base-index`. Pass `kill` when the pane is still ALIVE (bootstrap: the
+ * placeholder shell); tmux refuses to respawn a live pane without `-k`.
  */
-function buildRespawnArgs(paneId: string, zapsArgv: string[]): string[] {
-  return ["-L", MANAGED_SOCKET, "respawn-pane", "-t", paneId, "--", ...zapsArgv];
+function buildRespawnArgs(
+  paneId: string,
+  zapsArgv: string[],
+  options: { kill?: boolean } = {},
+): string[] {
+  const args = ["-L", MANAGED_SOCKET, "respawn-pane"];
+  if (options.kill) {
+    args.push("-k");
+  }
+  args.push("-t", paneId, "--", ...zapsArgv);
+  return args;
 }
 
 /**
@@ -158,7 +190,7 @@ function buildSetPaneOptionArgs(paneId: string, option: string, value: string): 
 /** Outcome of {@link waitForPaneSettled}. */
 type PaneSettlement =
   | { settled: true; exitCode: number }
-  | { settled: false; reason: "timeout" | "gone" };
+  | { settled: false; reason: "timeout" | "gone" | "unknown-status" };
 
 interface WaitForPaneSettledOptions {
   /** Give up after this long; the caller decides what a timeout means. */
@@ -168,11 +200,22 @@ interface WaitForPaneSettledOptions {
   tmux?: ManagedTmux;
 }
 
+/** Probe format: `|`-joined so an empty field survives the split. */
+const SETTLE_FORMAT = "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}";
+
+/** Consecutive probe errors tolerated before declaring the pane gone. */
+const MAX_PROBE_ERRORS = 3;
+
 /**
  * Poll `#{pane_dead}` until the bootstrap pane's command exits, then report the
  * inner exit code from `#{pane_dead_status}` (the pane must have
  * `remain-on-exit on`, else it vanishes and there is nothing left to read).
  * Bounded polling on a real condition — never a fixed sleep.
+ *
+ * A dead pane with no readable status is NEVER reported as exit 0: a pane killed
+ * by a signal exposes `#{pane_dead_signal}` instead, which maps to the usual
+ * `128 + signal`, and anything still unreadable settles as `unknown-status` so a
+ * SIGKILLed run can't be mistaken for success.
  */
 async function waitForPaneSettled(
   paneId: string,
@@ -180,21 +223,33 @@ async function waitForPaneSettled(
 ): Promise<PaneSettlement> {
   const { timeoutMs = 60_000, pollMs = 100, tmux = managedTmux() } = options;
   const deadline = Date.now() + timeoutMs;
+  let probeErrors = 0;
 
   /* eslint-disable no-await-in-loop -- sequential polling is the point */
   while (Date.now() < deadline) {
-    // Null signals the pane (or its session) disappeared — no exit code will
-    // Ever arrive, so stop polling for one.
-    const probe = await tmux
-      .displayMessage(paneId, "#{pane_dead} #{pane_dead_status}")
-      .catch(() => null);
+    // Null means this probe failed; only a RUN of failures means the pane (or
+    // Its session) is really gone — a single transient tmux error must not end
+    // The wait.
+    const probe = await tmux.displayMessage(paneId, SETTLE_FORMAT).catch(() => null);
     if (probe === null) {
-      return { settled: false, reason: "gone" };
-    }
-    const [dead, status] = probe.trim().split(/\s+/u);
-    if (dead === "1") {
-      const exitCode = Number.parseInt(status ?? "", 10);
-      return { settled: true, exitCode: Number.isNaN(exitCode) ? 0 : exitCode };
+      probeErrors += 1;
+      if (probeErrors >= MAX_PROBE_ERRORS) {
+        return { settled: false, reason: "gone" };
+      }
+    } else {
+      probeErrors = 0;
+      const [dead, status, signal] = probe.trim().split("|");
+      if (dead === "1") {
+        const exitCode = Number.parseInt(status ?? "", 10);
+        if (!Number.isNaN(exitCode)) {
+          return { settled: true, exitCode };
+        }
+        const deadSignal = Number.parseInt(signal ?? "", 10);
+        if (!Number.isNaN(deadSignal)) {
+          return { settled: true, exitCode: 128 + deadSignal };
+        }
+        return { settled: false, reason: "unknown-status" };
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   }

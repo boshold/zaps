@@ -21,7 +21,7 @@ function fakeTmux(overrides: Partial<Parameters<typeof hasManagedSession>[1]> = 
     hasSession: vi.fn().mockResolvedValue(false),
     killSession: vi.fn().mockResolvedValue(undefined),
     tmuxVersion: vi.fn().mockResolvedValue({ major: 3, minor: 5 }),
-    displayMessage: vi.fn().mockResolvedValue("0 "),
+    displayMessage: vi.fn().mockResolvedValue("0||"),
     ...overrides,
   };
 }
@@ -124,6 +124,33 @@ describe("argv builders", () => {
     expect(args.some((arg) => arg.includes("zaps up"))).toBe(false);
   });
 
+  it("starts the plain shell when no zaps argv is given", () => {
+    // The detached path creates the session bare, sets `remain-on-exit`, and
+    // Only then respawns the pane with zaps — so no `--` and no command here.
+    const args = buildCreateArgs({ name: "zaps-app-abc123", detach: true });
+    expect(args).not.toContain("--");
+    expect(args.at(-1)).toBe("ZAPS_MANAGED_TMUX=1");
+  });
+
+  it("passes an initial size so panes are laid out at terminal size", () => {
+    const args = buildCreateArgs({ name: "n", detach: true, width: 203, height: 51 });
+    expect(args.slice(0, 8)).toEqual(["-L", "zaps", "new-session", "-d", "-x", "203", "-y", "51"]);
+  });
+
+  it("omits the size unless both dimensions are known", () => {
+    expect(buildCreateArgs({ name: "n", width: 100 })).not.toContain("-x");
+    expect(buildCreateArgs({ name: "n", height: 40 })).not.toContain("-y");
+  });
+
+  it("forwards extra session env after the markers", () => {
+    const args = buildCreateArgs({
+      name: "n",
+      zapsArgv: ["zaps", "up"],
+      env: { XDG_RUNTIME_DIR: "/run/user/1000" },
+    });
+    expect(args.join(" ")).toContain("-e ZAPS_MANAGED_TMUX=1 -e XDG_RUNTIME_DIR=/run/user/1000 --");
+  });
+
   it("builds the attach invocation", () => {
     expect(buildAttachArgs("zaps-app-abc123")).toEqual([
       "-L",
@@ -131,6 +158,20 @@ describe("argv builders", () => {
       "attach-session",
       "-t",
       "zaps-app-abc123",
+    ]);
+  });
+
+  it("kills a live pane when asked (tmux refuses to respawn one otherwise)", () => {
+    expect(buildRespawnArgs("%7", ["zaps", "up"], { kill: true })).toEqual([
+      "-L",
+      "zaps",
+      "respawn-pane",
+      "-k",
+      "-t",
+      "%7",
+      "--",
+      "zaps",
+      "up",
     ]);
   });
 
@@ -235,42 +276,62 @@ describe("tmuxAvailable", () => {
 
 describe("waitForPaneSettled", () => {
   it("returns the inner exit code once the pane is dead", async () => {
-    const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1 42") });
+    const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1|42|") });
     await expect(waitForPaneSettled("%0", { tmux, pollMs: 1 })).resolves.toEqual({
       settled: true,
       exitCode: 42,
     });
-    expect(tmux.displayMessage).toHaveBeenCalledWith("%0", "#{pane_dead} #{pane_dead_status}");
+    expect(tmux.displayMessage).toHaveBeenCalledWith(
+      "%0",
+      "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}",
+    );
   });
 
   it("polls until the pane dies rather than sleeping a fixed time", async () => {
     const displayMessage = vi
       .fn()
-      .mockResolvedValueOnce("0 ")
-      .mockResolvedValueOnce("0 ")
-      .mockResolvedValue("1 0");
+      .mockResolvedValueOnce("0||")
+      .mockResolvedValueOnce("0||")
+      .mockResolvedValue("1|0|");
     await expect(
       waitForPaneSettled("%0", { tmux: fakeTmux({ displayMessage }), pollMs: 1 }),
     ).resolves.toEqual({ settled: true, exitCode: 0 });
     expect(displayMessage).toHaveBeenCalledTimes(3);
   });
 
-  it("treats a dead pane with no readable status as exit 0", async () => {
-    const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1 ") });
+  it("maps a signal death to 128 + signal instead of success", async () => {
+    // SIGKILLed inner zaps: no exit status, only a signal.
+    const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1||9") });
     await expect(waitForPaneSettled("%0", { tmux, pollMs: 1 })).resolves.toEqual({
       settled: true,
-      exitCode: 0,
+      exitCode: 137,
     });
   });
 
-  it("reports 'gone' when the pane or its session disappeared", async () => {
-    const tmux = fakeTmux({
-      displayMessage: vi.fn().mockRejectedValue(new Error("can't find pane")),
-    });
+  it("never reports success when a dead pane has no readable status", async () => {
+    const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1||") });
     await expect(waitForPaneSettled("%0", { tmux, pollMs: 1 })).resolves.toEqual({
       settled: false,
-      reason: "gone",
+      reason: "unknown-status",
     });
+  });
+
+  it("rides out a transient probe failure", async () => {
+    const displayMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("tmux hiccup"))
+      .mockResolvedValue("1|7|");
+    await expect(
+      waitForPaneSettled("%0", { tmux: fakeTmux({ displayMessage }), pollMs: 1 }),
+    ).resolves.toEqual({ settled: true, exitCode: 7 });
+  });
+
+  it("reports 'gone' only after consecutive probe failures", async () => {
+    const displayMessage = vi.fn().mockRejectedValue(new Error("can't find pane"));
+    await expect(
+      waitForPaneSettled("%0", { tmux: fakeTmux({ displayMessage }), pollMs: 1 }),
+    ).resolves.toEqual({ settled: false, reason: "gone" });
+    expect(displayMessage).toHaveBeenCalledTimes(3);
   });
 
   it("gives up at the deadline while the pane is still alive", async () => {

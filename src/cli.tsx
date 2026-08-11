@@ -2,6 +2,7 @@
 import { cli, command } from "cleye";
 import type { Command } from "cleye";
 
+import { ensureTmuxContext } from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -169,17 +170,18 @@ async function runTui(opts: {
   process.stdout.write("\x1b[?1049h");
 
   if (showSplash) {
-    const { renderSplash } = await import("./components/logo.js");
+    const { managedSplashHint, renderSplash } = await import("./components/logo.js");
     const { resolveIconTier } = await import("./components/theme/IconTheme.js");
     const { listPanes } = await import("./lib/tmux.js");
     const splashTier = resolveIconTier(snapshot.ui?.icons);
+    const hint = managedSplashHint(getEnv("ZAPS_MANAGED_TMUX"));
     const tmuxSession = await currentSession();
     const panes = await listPanes(tmuxSession);
     const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
     if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier);
+      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier, hint);
     } else {
-      renderSplash(undefined, splashTier);
+      renderSplash(undefined, splashTier, hint);
     }
   }
 
@@ -319,11 +321,8 @@ async function upFlow(detach?: boolean): Promise<void> {
 
   const invokeDir = process.cwd();
 
-  if (!getEnv("TMUX")) {
-    process.stderr.write("zaps must be run from inside a tmux session.\n");
-    process.exit(1);
-  }
-
+  // Outside tmux we never get here: `upCommand` bootstraps a managed session
+  // First and only falls through once `$TMUX` is set.
   const originPane = await currentPaneId();
   const tmuxSession = await currentSession();
 
@@ -382,6 +381,24 @@ async function upFlow(detach?: boolean): Promise<void> {
   }
 }
 
+/**
+ * Resolve this process's tmux context for `zaps` / `zaps up`. Outside tmux this
+ * spawns (or re-attaches to, or refuses) the project's managed tmux session and
+ * the caller exits with the returned code; inside tmux it proceeds unchanged.
+ * A missing config fails here with the same message `upFlow` would print, so no
+ * tmux session is ever created for a non-project directory.
+ */
+async function bootstrapTmux(
+  detach: boolean,
+): Promise<{ proceed: true } | { exitCode: number; proceed: false }> {
+  const configPath = discoverConfig(process.cwd());
+  if (!configPath) {
+    process.stderr.write("No config found. Run `zaps init` to create one.\n");
+    process.exit(1);
+  }
+  return ensureTmuxContext({ configPath, projectDir: process.cwd(), detach });
+}
+
 // --- Smart default: attach if running, else up ---
 
 const upCommand = command(
@@ -424,6 +441,13 @@ const upCommand = command(
       }
     }
 
+    // Outside tmux, hand over to a zaps-managed tmux session (or refuse) before
+    // Anything else runs; inside tmux this falls straight through.
+    const bootstrap = await bootstrapTmux(Boolean(opts.detach));
+    if (!bootstrap.proceed) {
+      process.exit(bootstrap.exitCode);
+    }
+
     // Smart default: if session already running for this project, attach
     if (!opts.detach && isDaemonRunning()) {
       const configPath = discoverConfig(process.cwd());
@@ -435,10 +459,6 @@ const upCommand = command(
           const id = sessionId(configPath);
           const match = sessions.find((s) => s.id === id);
           if (match) {
-            if (!getEnv("TMUX")) {
-              process.stderr.write("zaps must be run from inside a tmux session.\n");
-              process.exit(1);
-            }
             await runTui({ sessionId: match.id, socketPath: sock });
             return;
           }
