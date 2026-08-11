@@ -148,7 +148,7 @@ describe("ensureTmuxContext — re-attach", () => {
       return 130;
     });
     await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 130 });
-    expect(h.tmuxCalls).toEqual([["-L", "zaps", "attach-session", "-t", "zaps-app-abc"]]);
+    expect(h.tmuxCalls).toEqual([["-L", "zaps", "attach-session", "-t", "=zaps-app-abc"]]);
     expect(vi.mocked(h.deps.runTmux).mock.calls[0][1]).toBe(true);
   });
 
@@ -159,7 +159,7 @@ describe("ensureTmuxContext — re-attach", () => {
     expect(h.tmuxCalls).toEqual([
       // No `-k`: the pane is dead-but-held, respawning it must not need a kill.
       ["-L", "zaps", "respawn-pane", "-t", "%3", "--", "/usr/bin/zaps", "attach"],
-      ["-L", "zaps", "attach-session", "-t", "zaps-app-abc"],
+      ["-L", "zaps", "attach-session", "-t", "=zaps-app-abc"],
     ]);
   });
 
@@ -175,7 +175,7 @@ describe("ensureTmuxContext — re-attach", () => {
       "zaps",
       "new-window",
       "-t",
-      "zaps-app-abc",
+      "=zaps-app-abc",
       "--",
       "/usr/bin/zaps",
       "attach",
@@ -252,7 +252,7 @@ describe("ensureTmuxContext — attached create (F1)", () => {
       "zaps",
       "set-option",
       "-t",
-      expect.stringContaining("zaps-zaps-bootstrap-test-") as unknown as string,
+      expect.stringMatching(/^=zaps-zaps-bootstrap-test-.*:$/u) as unknown as string,
       "destroy-unattached",
       "off",
     ]);

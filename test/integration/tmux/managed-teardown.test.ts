@@ -47,7 +47,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       await runZaps(["daemon", "stop"], project.dir, project.runtimeDir);
       try {
         // eslint-disable-next-line no-await-in-loop
-        await managed(["kill-session", "-t", project.sessionName]);
+        await managed(["kill-session", "-t", `=${project.sessionName}`]);
       } catch {
         // Already gone — which is the point of most of these tests.
       }
@@ -205,6 +205,30 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
     },
   );
 
+  // The safety invariant behind every managed kill: tmux resolves session
+  // Targets exact → prefix → fnmatch, so without `=` a teardown or stale-reap
+  // Aimed at an already-gone session silently hits a longer-named neighbour —
+  // E.g. a user's own `zaps-<project>-<id>-notes` window on the same server.
+  it("never touches a session whose name merely starts with the target", async () => {
+    const { project } = await startManaged();
+    const neighbour = `${project.sessionName}-notes`;
+    await managed(["new-session", "-d", "-s", neighbour, "--", "sleep", "600"]);
+
+    try {
+      await runZaps(["down"], project.dir, project.runtimeDir);
+      expect(await managedSessionExists(project.sessionName)).toBe(false);
+      // The neighbour is still there — and the short name must not "exist"
+      // Just because the neighbour does.
+      expect(await managedSessionExists(neighbour)).toBe(true);
+
+      // A second teardown of the (now gone) short name must be a no-op too.
+      await runZaps(["down"], project.dir, project.runtimeDir);
+      expect(await managedSessionExists(neighbour)).toBe(true);
+    } finally {
+      await managed(["kill-session", "-t", `=${neighbour}`]).catch(() => undefined);
+    }
+  });
+
   it("shows the tmux location in `zaps ls`", async () => {
     const { project } = await startManaged();
 
@@ -228,11 +252,11 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("is running in a zaps-managed tmux");
     // The copy-pasteable escape hatch (Q5).
-    expect(result.stderr).toContain(`tmux -L zaps attach -t ${project.sessionName}`);
+    expect(result.stderr).toContain(`tmux -L zaps attach -t =${project.sessionName}`);
 
     const attach = await runZaps(["attach"], project.dir, project.runtimeDir, inside);
     expect(attach.code).toBe(1);
-    expect(attach.stderr).toContain(`tmux -L zaps attach -t ${project.sessionName}`);
+    expect(attach.stderr).toContain(`tmux -L zaps attach -t =${project.sessionName}`);
   });
 
   it("refuses a session hosted in the user's own tmux from a plain terminal (F6)", async () => {
@@ -288,7 +312,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
         personalSocket,
         "kill-session",
         "-t",
-        personalSession,
+        `=${personalSession}`,
       ]).then(
         () => undefined,
         () => undefined,

@@ -16,6 +16,15 @@ type ManagedTmux = Pick<
   "displayMessage" | "hasSession" | "killSession" | "tmuxVersion"
 >;
 
+/**
+ * `=name` — the exact-match form of a tmux session target. Without it tmux falls
+ * back to prefix (then fnmatch) matching, so a command aimed at a session that
+ * is already gone silently hits a longer-named neighbour on the same server.
+ */
+function exactSession(name: string): string {
+  return `=${name}`;
+}
+
 /** Handle bound to the managed socket — never the env, never the default server. */
 function managedTmux(): ManagedTmux {
   return tmuxFor(MANAGED_SOCKET);
@@ -144,9 +153,12 @@ function buildCreateArgs(options: CreateArgsOptions): string[] {
   return args;
 }
 
-/** `tmux -L zaps attach-session -t <name>` argv. */
+/**
+ * `tmux -L zaps attach-session -t =<name>` argv. The `=` forces an exact match:
+ * tmux would otherwise prefix-match the name and attach to a longer one.
+ */
 function buildAttachArgs(name: string): string[] {
-  return ["-L", MANAGED_SOCKET, "attach-session", "-t", name];
+  return ["-L", MANAGED_SOCKET, "attach-session", "-t", exactSession(name)];
 }
 
 /**
@@ -175,16 +187,21 @@ function buildRespawnArgs(
  * a fresh window running `zaps attach` beats failing the command outright.
  */
 function buildNewWindowArgs(name: string, zapsArgv: string[]): string[] {
-  return ["-L", MANAGED_SOCKET, "new-window", "-t", name, "--", ...zapsArgv];
+  return ["-L", MANAGED_SOCKET, "new-window", "-t", exactSession(name), "--", ...zapsArgv];
 }
 
 /**
- * `tmux -L zaps set-option -t <name> <option> <value>` argv. Used at create for
+ * `tmux -L zaps set-option -t =<name>: <option> <value>` argv. Used at create for
  * `destroy-unattached off`, which stops exotic user configs from killing the
  * session (and its services) the moment the client detaches.
+ *
+ * The target is `=<name>:` — with a trailing colon — because `set-option`
+ * resolves its `-t` as a pane target unless the spec names a window/session, and
+ * rejects a bare `=<name>` outright (`no such session: =name`). Verified live;
+ * the plain name would prefix-match and configure the wrong session.
  */
 function buildSetSessionOptionArgs(name: string, option: string, value: string): string[] {
-  return ["-L", MANAGED_SOCKET, "set-option", "-t", name, option, value];
+  return ["-L", MANAGED_SOCKET, "set-option", "-t", `${exactSession(name)}:`, option, value];
 }
 
 /**

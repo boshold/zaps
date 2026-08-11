@@ -85,7 +85,9 @@ function refusePersonalMessage(session: ConflictSession): string {
 function refuseManagedMessage(session: ConflictSession): string {
   return [
     `Session "${session.name}" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`,
-    `  tmux -L ${MANAGED_SOCKET} attach -t ${session.tmuxSession}`,
+    // `=` for the same reason zaps uses it internally: without it tmux
+    // Prefix-matches, so a hand-typed name can attach to the wrong session.
+    `  tmux -L ${MANAGED_SOCKET} attach -t =${session.tmuxSession}`,
   ].join("\n");
 }
 

@@ -30,6 +30,19 @@ interface SplitPaneOptions {
   before?: boolean;
 }
 
+/**
+ * Force EXACT session-name matching (`-t =name`).
+ *
+ * tmux resolves a target-session as exact → prefix → fnmatch, so `kill-session
+ * -t zaps-app-a1` happily kills `zaps-app-a1-notes` when the exact name is gone
+ * — and `has-session` reports the short name as existing. Every session-name
+ * target zaps sends goes through here; pane targets (`%N`) are unambiguous and
+ * are left alone.
+ */
+function exact(sessionName: string): string {
+  return `=${sessionName}`;
+}
+
 interface DisplayPopupOptions {
   cwd?: string;
   command: string;
@@ -90,7 +103,7 @@ function createTmux(resolveSocket: () => string | null) {
 
   async function showEnv(session: string, key: string): Promise<string | null> {
     try {
-      const out = await run(["show-environment", "-t", session, key]);
+      const out = await run(["show-environment", "-t", exact(session), key]);
       return out.replace(`${key}=`, "");
     } catch {
       return null;
@@ -104,7 +117,7 @@ function createTmux(resolveSocket: () => string | null) {
     }
     args.push(
       "-t",
-      session,
+      exact(session),
       "-F",
       "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}:#{pane_dead}",
     );
@@ -126,7 +139,7 @@ function createTmux(resolveSocket: () => string | null) {
 
   async function hasSession(name: string): Promise<boolean> {
     try {
-      await run(["has-session", "-t", name]);
+      await run(["has-session", "-t", exact(name)]);
       return true;
     } catch {
       return false;
@@ -151,11 +164,11 @@ function createTmux(resolveSocket: () => string | null) {
   }
 
   async function newWindow(session: string): Promise<string> {
-    return run(["new-window", "-t", session, "-d", "-P", "-F", "#{pane_id}"]);
+    return run(["new-window", "-t", exact(session), "-d", "-P", "-F", "#{pane_id}"]);
   }
 
   async function killSession(name: string): Promise<void> {
-    await run(["kill-session", "-t", name]);
+    await run(["kill-session", "-t", exact(name)]);
   }
 
   async function splitPane(
@@ -261,11 +274,11 @@ function createTmux(resolveSocket: () => string | null) {
   }
 
   async function setEnv(session: string, key: string, value: string): Promise<void> {
-    await run(["set-environment", "-t", session, key, value]);
+    await run(["set-environment", "-t", exact(session), key, value]);
   }
 
   async function removeEnv(session: string, key: string): Promise<void> {
-    await run(["set-environment", "-u", "-t", session, key]);
+    await run(["set-environment", "-u", "-t", exact(session), key]);
   }
 
   async function selectPane(target: string): Promise<void> {

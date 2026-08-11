@@ -37,7 +37,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       if (project) {
         await runZaps(["daemon", "stop"], project.dir, project.runtimeDir);
         try {
-          await managed(["kill-session", "-t", project.sessionName]);
+          await managed(["kill-session", "-t", `=${project.sessionName}`]);
         } catch {
           // Already gone.
         }

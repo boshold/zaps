@@ -152,13 +152,15 @@ describe("argv builders", () => {
     expect(args.join(" ")).toContain("-e ZAPS_MANAGED_TMUX=1 -e XDG_RUNTIME_DIR=/run/user/1000 --");
   });
 
-  it("builds the attach invocation", () => {
+  it("builds the attach invocation with an exact-match target", () => {
     expect(buildAttachArgs("zaps-app-abc123")).toEqual([
       "-L",
       "zaps",
       "attach-session",
       "-t",
-      "zaps-app-abc123",
+      // `=`: tmux prefix-matches session targets, so a bare name could attach to
+      // `zaps-app-abc123-notes` once the exact session is gone.
+      "=zaps-app-abc123",
     ]);
   });
 
@@ -195,7 +197,7 @@ describe("argv builders", () => {
       "zaps",
       "new-window",
       "-t",
-      "zaps-app-abc123",
+      "=zaps-app-abc123",
       "--",
       "zaps",
       "attach",
@@ -207,8 +209,10 @@ describe("argv builders", () => {
       "-L",
       "zaps",
       "set-option",
+      // `=name:` — `set-option` rejects a bare `=name` and prefix-matches a
+      // Bare name; the trailing colon makes it an exact session target.
       "-t",
-      "zaps-app-abc123",
+      "=zaps-app-abc123:",
       "destroy-unattached",
       "off",
     ]);

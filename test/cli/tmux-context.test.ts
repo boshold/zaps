@@ -90,7 +90,7 @@ describe("decideTmuxContext — inside tmux", () => {
     expect(message).toBe(
       [
         `Session "app" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`,
-        `  tmux -L zaps attach -t ${MANAGED_NAME}`,
+        `  tmux -L zaps attach -t =${MANAGED_NAME}`,
       ].join("\n"),
     );
   });

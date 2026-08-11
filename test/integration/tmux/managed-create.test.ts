@@ -23,7 +23,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
       // Stop the daemon this test started, then reap its tmux session.
       await runZaps(["daemon", "stop"], project.dir, project.runtimeDir);
       try {
-        await managed(["kill-session", "-t", project.sessionName]);
+        await managed(["kill-session", "-t", `=${project.sessionName}`]);
       } catch {
         // Already gone — the failure paths kill it themselves.
       }

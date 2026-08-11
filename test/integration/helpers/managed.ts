@@ -27,7 +27,9 @@ export async function managed(args: string[]): Promise<string> {
 
 export async function managedSessionExists(name: string): Promise<boolean> {
   try {
-    await managed(["has-session", "-t", name]);
+    // `=<name>`: tmux prefix-matches session targets, so a bare name would
+    // Report "exists" whenever a longer-named session is around.
+    await managed(["has-session", "-t", `=${name}`]);
     return true;
   } catch {
     return false;

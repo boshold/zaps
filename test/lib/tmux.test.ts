@@ -82,7 +82,8 @@ describe("hasSession", () => {
   it("returns true when session exists", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     expect(await hasSession("my-sess")).toBe(true);
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["has-session", "-t", "my-sess"], {
+    // `=` forces exact matching; a bare name would prefix-match a neighbour.
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["has-session", "-t", "=my-sess"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -132,7 +133,7 @@ describe("newWindow", () => {
     expect(paneId).toBe("%3");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["new-window", "-t", "my-project", "-d", "-P", "-F", "#{pane_id}"],
+      ["new-window", "-t", "=my-project", "-d", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -142,7 +143,7 @@ describe("killSession", () => {
   it("kills session by name", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await killSession("my-project");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["kill-session", "-t", "my-project"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["kill-session", "-t", "=my-project"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -325,7 +326,7 @@ describe("setEnv", () => {
     await setEnv("my-project", "FOO", "bar");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["set-environment", "-t", "my-project", "FOO", "bar"],
+      ["set-environment", "-t", "=my-project", "FOO", "bar"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -337,7 +338,7 @@ describe("removeEnv", () => {
     await removeEnv("my-project", "FOO");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["set-environment", "-u", "-t", "my-project", "FOO"],
+      ["set-environment", "-u", "-t", "=my-project", "FOO"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -467,7 +468,7 @@ describe("listPanes", () => {
       [
         "list-panes",
         "-t",
-        "my-project",
+        "=my-project",
         "-F",
         "#{pane_id}:#{pane_pid}:#{pane_width}:#{pane_height}:#{pane_dead}",
       ],
