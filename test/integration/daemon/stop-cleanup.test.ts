@@ -56,7 +56,7 @@ function listAllPanes(): string[] {
   try {
     const result = execFileSync(
       "tmux",
-      ["-L", "zaps-test", "list-panes", "-a", "-F", "#{pane_id}"],
+      ["-L", testTmuxSocket() ?? "zaps-test", "list-panes", "-a", "-F", "#{pane_id}"],
       { encoding: "utf8" },
     );
     return result.split("\n").filter((line) => line.trim() !== "");
@@ -92,7 +92,7 @@ describe.skipIf(!hasBinary() || !hasTmux())("zaps daemon stop cleanup", () => {
     const childEnv = {
       ...process.env,
       XDG_RUNTIME_DIR: runtimeDir,
-      ZAPS_TMUX_SOCKET: "zaps-test",
+      ZAPS_TMUX_SOCKET: testTmuxSocket() ?? "zaps-test",
     };
 
     // Fork a real background daemon (isolated runtime dir + tmux server).
