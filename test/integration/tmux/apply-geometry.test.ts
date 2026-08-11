@@ -142,7 +142,7 @@ function makeReflow(layout: LayoutNode, paneMap: PaneMap, sessionName: string): 
     tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
-    getWindowTarget: () => sessionName,
+    getWindowTarget: () => `=${sessionName}:`,
   });
 }
 

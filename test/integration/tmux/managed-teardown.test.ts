@@ -181,7 +181,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
         const tui = await managed([
           "list-panes",
           "-t",
-          project.sessionName,
+          `=${project.sessionName}`,
           "-F",
           "#{pane_id}",
         ]).then((out) => out.split("\n")[0]);

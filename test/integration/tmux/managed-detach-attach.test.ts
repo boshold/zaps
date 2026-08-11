@@ -125,7 +125,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       const windows = await managed([
         "list-windows",
         "-t",
-        project.sessionName,
+        `=${project.sessionName}`,
         "-F",
         "#{window_id}",
       ]);

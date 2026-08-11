@@ -43,6 +43,19 @@ function exact(sessionName: string): string {
   return `=${sessionName}`;
 }
 
+/**
+ * Exact target for the session's CURRENT WINDOW (`=name:`).
+ *
+ * Window-scoped commands (`display-message`, `select-layout`, `resize-window`,
+ * `set-option`) need the trailing colon: verified live, a bare `=name` makes
+ * `display-message` return an empty string and `select-layout` fail outright,
+ * while a bare `name` prefix-matches a longer-named session exactly like the
+ * session-target commands do.
+ */
+function exactWindowTarget(sessionName: string): string {
+  return `=${sessionName}:`;
+}
+
 interface DisplayPopupOptions {
   cwd?: string;
   command: string;
@@ -484,7 +497,7 @@ type TmuxHandle = ReturnType<typeof tmuxFor>;
 const defaultTmux = createTmux(() => getEnv("ZAPS_TMUX_SOCKET") ?? null);
 
 export type { DisplayPopupOptions, PaneInfo, SplitPaneOptions, TmuxHandle };
-export { tmuxFor };
+export { exactWindowTarget, tmuxFor };
 export const {
   capturePane,
   currentPaneId,

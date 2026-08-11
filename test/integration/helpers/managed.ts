@@ -43,7 +43,7 @@ export async function panes(
   const out = await managed([
     "list-panes",
     "-t",
-    session,
+    `=${session}`,
     "-F",
     "#{pane_id}|#{pane_dead}|#{pane_pid}|#{pane_current_command}",
   ]);
@@ -149,7 +149,8 @@ export function serviceConfig(port: number): string {
 /** TTYs of the clients attached to `session` (empty when nobody is attached). */
 export async function clients(session: string): Promise<string[]> {
   try {
-    const out = await managed(["list-clients", "-t", session, "-F", "#{client_tty}"]);
+    // `=<name>`: without it tmux prefix-matches and lists a neighbour's clients.
+    const out = await managed(["list-clients", "-t", `=${session}`, "-F", "#{client_tty}"]);
     return out ? out.split("\n") : [];
   } catch {
     // No server / session gone → nobody is attached.

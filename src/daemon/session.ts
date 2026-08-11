@@ -12,7 +12,7 @@ import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
-import { tmuxFor } from "#src/lib/tmux.js";
+import { exactWindowTarget, tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -207,7 +207,10 @@ export class Session {
       tmux: this.tmux,
       getLayout: () => this.config.project.layout,
       getPaneMap: () => this.paneMap,
-      getWindowTarget: () => this.tmuxSession,
+      // `=name:` — exact session, its current window: every geometry command
+      // The reflow issues is window-scoped, and a bare name would prefix-match
+      // A longer-named session on the same server.
+      getWindowTarget: () => exactWindowTarget(this.tmuxSession),
       onPaneInserted: (name, paneId) => {
         this.allocatePaneLog(name, paneId);
         // Lazy panes are created/destroyed after the TUI captured its startup

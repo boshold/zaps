@@ -116,7 +116,7 @@ function makeReflow(
     tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
-    getWindowTarget: () => sessionName,
+    getWindowTarget: () => `=${sessionName}:`,
     ...overrides,
   });
 }
@@ -659,7 +659,7 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
       tmux: tmuxFor(testTmuxSocket()),
       getLayout: () => layout,
       getPaneMap: () => zapsSession.paneMap,
-      getWindowTarget: () => session.name,
+      getWindowTarget: () => `=${session.name}:`,
       selectLayout: async (target, layoutStr) => {
         calls += 1;
         if (calls === 1) {

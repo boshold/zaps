@@ -12,6 +12,7 @@ vi.mock("node:child_process", () => ({
 import { spawn } from "node:child_process";
 
 import {
+  exactWindowTarget,
   hasSession,
   sendKeys,
   newSession,
@@ -76,6 +77,17 @@ function createSilentMockProc(exitCode = 0): ChildProcess {
 
 beforeEach(() => {
   mockSpawn.mockReset();
+});
+
+describe("exactWindowTarget", () => {
+  // Window-scoped commands (`display-message`, `select-layout`, `resize-window`,
+  // `set-option`/`show-options`) need `=name:`. Verified against live tmux: a
+  // Bare `=name` makes `display-message` return an empty string, `select-layout`
+  // Fail, and `show-options` error with "no such session: =name" — while a bare
+  // `name` prefix-matches a longer-named neighbour.
+  it("marks the session exact and scopes to its current window", () => {
+    expect(exactWindowTarget("zaps-app-a1")).toBe("=zaps-app-a1:");
+  });
 });
 
 describe("hasSession", () => {

@@ -19,7 +19,10 @@ vi.mock("#src/config/loader.js", () => ({
   computeBootSkip: vi.fn(() => new Set<string>()),
 }));
 
-vi.mock("#src/lib/tmux-layout.js", () => ({
+// Only `createLayout` is stubbed: the pure tree helpers (`filterTree`, …) stay
+// Real so the reflow path can actually run.
+vi.mock("#src/lib/tmux-layout.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#src/lib/tmux-layout.js")>()),
   createLayout: vi.fn(),
 }));
 
@@ -42,7 +45,12 @@ vi.mock("#src/lib/tmux.js", () => {
     swapPanes: vi.fn().mockResolvedValue(undefined),
     windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
   };
-  return { ...api, tmuxFor: vi.fn(() => api) };
+  // Real implementation: the exact-target form is what these tests assert on.
+  return {
+    ...api,
+    exactWindowTarget: (name: string) => `=${name}:`,
+    tmuxFor: vi.fn(() => api),
+  };
 });
 
 function createMockManager(): ServiceManager {
@@ -836,6 +844,47 @@ describe("Session.reflow — wired with live-getter deps", () => {
     const beforeReflow = session.reflow;
     session.paneMap = { "@tui": "%9", api: "%10" };
     expect(session.reflow).toBe(beforeReflow);
+  });
+
+  // Every geometry command the reflow issues is WINDOW-scoped, and tmux matches
+  // Targets exact → prefix → fnmatch: a bare `main` would drive `main-notes`'s
+  // Window on the same server. `=main:` is the only form all four commands
+  // Accept — a bare `=main` makes `display-message` return empty and
+  // `select-layout` fail outright (verified against live tmux).
+  it("targets the session's own window exactly (`=name:`)", async () => {
+    const session = new Session(
+      createSessionParams({
+        tmuxSession: "zaps-app-a1",
+        paneMap: { "@tui": "%0", api: "%1" },
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" } },
+            layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "api" }] },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          groups: new Map(),
+          unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
+        } as SessionCreateParams["config"],
+      }),
+      createMockManager(),
+    );
+
+    const tmux = await import("#src/lib/tmux.js");
+    vi.mocked(tmux.paneIndexOrder).mockResolvedValueOnce([
+      { index: 0, id: "%0" },
+      { index: 1, id: "%1" },
+    ]);
+
+    await session.reflow.applyGeometry(new Set(["@tui", "api"]));
+
+    // One getter feeds every window-scoped call site (incl. insert/remove's
+    // `windowLayout` snapshot), so pinning the geometry path pins them all.
+    expect(tmux.getWindowSize).toHaveBeenCalledWith("=zaps-app-a1:");
+    expect(tmux.paneIndexOrder).toHaveBeenCalledWith("=zaps-app-a1:");
+    expect(tmux.selectLayout).toHaveBeenCalledWith("=zaps-app-a1:", expect.any(String));
   });
 });
 

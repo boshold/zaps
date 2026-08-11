@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { render } from "ink-testing-library";
 import { act } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock tmux functions to prevent real tmux commands
 vi.mock("../src/lib/tmux.js", () => ({
@@ -155,6 +155,11 @@ describe("App", () => {
 });
 
 describe("Keyboard routing — Dashboard", () => {
+  // Env stubs must come back even when a test throws mid-body.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("up/down changes selection index", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
@@ -263,7 +268,6 @@ describe("Keyboard routing — Dashboard", () => {
 
     expect(vi.mocked(detachClient)).toHaveBeenCalled();
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
-    vi.unstubAllEnvs();
   });
 
   it("q in a personal tmux leaves the client attached", async () => {

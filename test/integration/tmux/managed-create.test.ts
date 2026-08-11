@@ -44,20 +44,20 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
 
     // The markers the inner zaps reads: socket routing + managed reporting.
     await expect(
-      managed(["show-environment", "-t", project.sessionName, "ZAPS_TMUX_SOCKET"]),
+      managed(["show-environment", "-t", `=${project.sessionName}`, "ZAPS_TMUX_SOCKET"]),
     ).resolves.toBe(`ZAPS_TMUX_SOCKET=${MANAGED_SOCKET}`);
     await expect(
-      managed(["show-environment", "-t", project.sessionName, "ZAPS_MANAGED_TMUX"]),
+      managed(["show-environment", "-t", `=${project.sessionName}`, "ZAPS_MANAGED_TMUX"]),
     ).resolves.toBe("ZAPS_MANAGED_TMUX=1");
 
     // Options that keep the session (and its services) alive while unattached.
     await expect(
-      managed(["show-options", "-t", project.sessionName, "destroy-unattached"]),
+      managed(["show-options", "-t", `=${project.sessionName}:`, "destroy-unattached"]),
     ).resolves.toBe("destroy-unattached off");
     const paneId = await managed([
       "list-panes",
       "-t",
-      project.sessionName,
+      `=${project.sessionName}`,
       "-F",
       "#{pane_id}",
     ]).then((out) => out.split("\n")[0]);
@@ -105,7 +105,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
 
     // Same name, but a fresh session: the markers only exist on the new one.
     await expect(
-      managed(["show-environment", "-t", project.sessionName, "ZAPS_MANAGED_TMUX"]),
+      managed(["show-environment", "-t", `=${project.sessionName}`, "ZAPS_MANAGED_TMUX"]),
     ).resolves.toBe("ZAPS_MANAGED_TMUX=1");
   });
 
