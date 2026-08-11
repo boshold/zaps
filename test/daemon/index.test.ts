@@ -261,6 +261,8 @@ describe("runDaemon", () => {
     vi.useFakeTimers();
     process.exit = vi.fn() as unknown as typeof process.exit;
     processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
+    // Never move the test worker's cwd; runDaemon chdirs to a stable dir.
+    vi.spyOn(process, "chdir").mockImplementation(() => undefined);
     delete process.env.XDG_RUNTIME_DIR;
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
@@ -313,6 +315,12 @@ describe("runDaemon", () => {
     expect(fs.writeFileSync).toHaveBeenCalled();
     expect(fs.openSync).toHaveBeenCalled();
     expect(serverInstance().start).toHaveBeenCalledWith(expect.stringMatching(/daemon\.sock$/));
+  });
+
+  it("chdirs to a stable dir so a deleted project dir can't poison spawns", async () => {
+    await runDaemon();
+
+    expect(process.chdir).toHaveBeenCalledWith("/home/test");
   });
 
   it("deletes inherited tmux env at startup (socket selection is per-session)", async () => {

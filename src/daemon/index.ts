@@ -123,6 +123,15 @@ async function runDaemon(): Promise<void> {
   delete process.env.ZAPS_TMUX_SOCKET;
   delete process.env.TMUX;
 
+  // Same protection `ensureDaemon` gives the spawned path: never hold the
+  // Invoking project dir open, since deleting it makes every later spawn() fail
+  // With ENOENT. Matters for a manually started `zaps daemon run`.
+  try {
+    process.chdir(daemonSpawnCwd());
+  } catch {
+    // Unusable stable dir — keep the inherited cwd rather than refusing to boot.
+  }
+
   writePid();
 
   const logFile = fs.openSync(logPath(), "a");
