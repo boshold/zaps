@@ -70,6 +70,14 @@ function createTmux(resolveSocket: () => string | null) {
     return run(["display-message", "-p", "#{pane_id}"]);
   }
 
+  /**
+   * Raw `display-message -p -t <target> <format>` for format strings the typed
+   * helpers don't cover (e.g. `#{pane_dead}`/`#{pane_dead_status}`).
+   */
+  async function displayMessage(target: string, format: string): Promise<string> {
+    return run(["display-message", "-p", "-t", target, format]);
+  }
+
   async function currentSession(): Promise<string> {
     return run(["display-message", "-p", "#{session_name}"]);
   }
@@ -385,6 +393,7 @@ function createTmux(resolveSocket: () => string | null) {
     capturePane,
     currentPaneId,
     currentSession,
+    displayMessage,
     displayPopup,
     editPaneCapture,
     getWindowName,
@@ -438,6 +447,7 @@ export const {
   capturePane,
   currentPaneId,
   currentSession,
+  displayMessage,
   displayPopup,
   editPaneCapture,
   getWindowName,
