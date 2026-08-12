@@ -192,7 +192,15 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
           }, 30_000),
         ).toBe(true);
 
+        // Ctrl-D asks first — a single stray byte must never tear a session down.
         await managed(["send-keys", "-t", tui, "C-d"]);
+        expect(
+          await pollUntil(async () => {
+            const frame = await managed(["capture-pane", "-t", tui, "-p"]);
+            return frame.includes("Shut down session?");
+          }, 15_000),
+        ).toBe(true);
+        await managed(["send-keys", "-t", tui, "y"]);
 
         await exited;
         const printed = fs.readFileSync(transcript, "utf8");

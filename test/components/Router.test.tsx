@@ -395,11 +395,16 @@ describe("Router", () => {
 
   // ── dashboard input: destroy session (d) ─────────────────────
 
-  it("destroys session with d key", () => {
+  it("asks before destroying the session on `d`", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("d");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    // Nothing torn down yet — `d` only opens the confirmation overlay.
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
   });
 
   // ── single sort, shared by render + input handler (F8) ───────
@@ -784,11 +789,22 @@ describe("Router", () => {
 
   // ── ctrl+d: destroy from any view ────────────────────────────
 
-  it("destroys session on ctrl+d", () => {
+  // A tmux client attaching with its own stdin at EOF makes the pty emit VEOF
+  // (0x04), which tmux hands to the pane as a plain Ctrl-D. A single stray byte
+  // Must never stop every service — the end-to-end case lives in the managed
+  // Re-attach integration suite.
+  it("asks before destroying the session on ctrl+d, and never on the byte alone", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("\x04");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
+    // A repeat of the same byte cannot confirm it either.
+    stdin.write("\x04");
+    expect(client.destroySession).not.toHaveBeenCalled();
   });
 
   // ── q still works during per-service busy ───────────────────
@@ -811,7 +827,7 @@ describe("Router", () => {
 
   // ── ctrl+d still works during per-service busy ────────────
 
-  it("allows ctrl+d even when a service is busy", () => {
+  it("still offers shutdown when a service is busy", async () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -821,6 +837,9 @@ describe("Router", () => {
     const { stdin } = renderRouter({ client });
     stdin.write("r"); // Makes service busy
     stdin.write("\x04");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
   });
 });

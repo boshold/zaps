@@ -85,7 +85,7 @@ zaps down    # stops services AND kills the managed tmux session
   Against an already-running managed session it is a no-op that prints
   `Session "<name>" is already running (managed tmux). zaps attach to view.` and exits 0.
 - **`q` in the TUI detaches** the tmux client (services keep running); only `zaps down`
-  / `Ctrl-D` tears the session down.
+  / `Ctrl-D` tears the session down (`Ctrl-D` and the dashboard's `d` ask for a `y` first).
 - **Conflicts** — a session belongs to the tmux context it was created in; both refusals
   exit 1 and are resolved by following the message, not by retrying:
   - `Session "<name>" is running inside tmux session '<tmux>'. Attach from within tmux, or run zaps down first.`
@@ -109,7 +109,7 @@ Global
   f           open the latest failure's captured output
   x           acknowledge (clear sticky failure toasts)
   q / Ctrl-C  detach (services keep running)
-  Ctrl-D      shut down the session
+  Ctrl-D      shut down the session (confirm with y)
   Esc         close overlay / leave view
 
 Dashboard
@@ -118,7 +118,7 @@ Dashboard
   a / c       restart all / reload config
   l / o       logs / open URL
   R           docker rebuild     z / Z  zoom service / TUI pane
-  E           edit-capture pane  d      shut down session
+  E           edit-capture pane  d      shut down session (confirm with y)
 
 Task picker (t)
   type        fuzzy filter

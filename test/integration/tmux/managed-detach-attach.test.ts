@@ -133,6 +133,64 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       expect(await serviceAnswers(port)).toBe(true);
     });
 
+    // A tmux client whose own stdin is at EOF (`script … < /dev/null`, CI, an
+    // Agent shell) makes the pty emit `VEOF` (0x04) the moment it attaches, and
+    // Tmux delivers that to the pane as a plain Ctrl-D. With shutdown bound to a
+    // Single key, merely running the documented escape-hatch attach destroyed the
+    // Session and stopped every service before the user typed anything.
+    it.skipIf(!hasScriptPty())(
+      "survives a raw client attaching onto a live, unattached TUI",
+      async () => {
+        const { port, tuiPane } = await startDetached();
+        if (!project) {
+          throw new Error("no project");
+        }
+        const session = project.sessionName;
+
+        // Revive the TUI and let it fully mount: a live TUI with NO client
+        // Attached is exactly the state the stray byte lands in.
+        await runZaps(["attach"], project.dir, project.runtimeDir);
+        expect(
+          await pollUntil(async () => {
+            const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
+            return frame.includes("web");
+          }, 30_000),
+        ).toBe(true);
+        expect(await clients(session)).toEqual([]);
+
+        // The README/F7 escape hatch, run the way a script or agent would.
+        const raw: ChildProcess = spawn(
+          "script",
+          ["-qec", `tmux -L zaps attach -t =${session}`, "/dev/null"],
+          { stdio: "ignore" },
+        );
+        try {
+          // Either the client shows up, or the session died under it — the
+          // Regression is the latter, so wait for whichever happens first.
+          await pollUntil(async () => {
+            const live = await clients(session);
+            return live.length > 0 || !(await managedSessionExists(session));
+          }, 15_000);
+          expect(await managedSessionExists(session)).toBe(true);
+          expect(await clients(session)).not.toEqual([]);
+
+          // Give the byte every chance to be processed before asserting: poll for
+          // The FAILURE condition instead of assuming it can't happen.
+          const died = await pollUntil(async () => !(await managedSessionExists(session)), 8000);
+          expect(died).toBe(false);
+
+          const listed = await runZaps(["ls", "--json"], project.dir, project.runtimeDir);
+          expect(JSON.parse(listed.stdout || "[]")).toHaveLength(1);
+          expect(await serviceAnswers(port)).toBe(true);
+          const live = await panes(session);
+          expect(live.find((p) => p.id === tuiPane)?.dead).toBe(false);
+          expect(await managed(["capture-pane", "-t", tuiPane, "-p"])).toContain("web");
+        } finally {
+          raw.kill("SIGKILL");
+        }
+      },
+    );
+
     // The one case that needs a real client: `q` only detaches something when
     // Something is attached, and the bug this pins (`detach-client -t <pane>`)
     // Fails silently — every pane-level assertion still passed.

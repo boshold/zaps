@@ -30,6 +30,7 @@ import type { DockerFlags } from "./overlay/DockerRebuildOverlay.js";
 import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuildOverlay.js";
 import { FAILED_OUTPUT_ID, FailedOutputOverlay } from "./overlay/FailedOutputOverlay.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
+import { SHUTDOWN_CONFIRM_ID, ShutdownConfirmOverlay } from "./overlay/ShutdownConfirmOverlay.js";
 import { TASK_PICKER_ID, TaskPicker } from "./overlay/TaskPicker.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 
@@ -217,6 +218,21 @@ export function Router({
         client.disconnect();
         exit();
       });
+  }
+
+  // Every shutdown entry point (Ctrl-D, dashboard `d`, palette) goes through
+  // Here: destroying the session is irreversible, and the pane's stdin is not a
+  // Trusted source of intent — a tmux client attaching with its own stdin at EOF
+  // Makes the pty emit `VEOF` (0x04), which tmux delivers to the pane as Ctrl-D.
+  // One key must never be enough; the overlay asks for a second, distinct one.
+  function confirmShutdown() {
+    if (globalBusyRef.current || overlay.isTop(SHUTDOWN_CONFIRM_ID)) {
+      return;
+    }
+    overlay.push({
+      id: SHUTDOWN_CONFIRM_ID,
+      render: () => <ShutdownConfirmOverlay onConfirm={destroySession} />,
+    });
   }
 
   // Detach (services keep running) — shared by `q`/Ctrl-C and the palette.
@@ -465,7 +481,7 @@ export function Router({
         editCapture: editCaptureService,
         runTask: runTaskByKey,
         detach: detachSession,
-        shutdown: destroySession,
+        shutdown: confirmShutdown,
         help: openHelp,
       },
     });
@@ -518,9 +534,9 @@ export function Router({
         }
         return;
       }
-      // Ctrl+d: shut down — destroy session from any view.
+      // Ctrl+d: shut down — asks for confirmation first, from any view.
       if (key.ctrl && input === "d") {
-        destroySession();
+        confirmShutdown();
       }
     },
     { isActive: flags.global },
@@ -539,7 +555,7 @@ export function Router({
     reloadConfig: async () => client.reloadConfig(),
     goToLogs,
     openTaskPicker,
-    destroySession,
+    destroySession: confirmShutdown,
     paneMap,
     goToDockerRebuild: openDockerRebuild,
   };

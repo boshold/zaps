@@ -118,7 +118,7 @@ zaps down     # stop the services and clean everything up
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `q`         | Leaves the dashboard. Services keep running in the background. Your terminal prints `detached — services still running. zaps to re-attach, zaps down to stop.` |
 | `zaps down` | Stops every service and removes the session, including the tmux session ZAPS created (`Killed managed tmux session zaps-<name>-<id>.`)                         |
-| `Ctrl-D`    | Same as `zaps down`, from inside the dashboard                                                                                                                 |
+| `Ctrl-D`    | Same as `zaps down`, from inside the dashboard (asks to confirm with `y`)                                                                                      |
 
 **Starting in the background**
 
@@ -1078,33 +1078,33 @@ failed-output), and a responsive layout that adapts to the pane size.
 
 Work from any base view; survive a disconnect; yield to an open overlay.
 
-| Key          | Action                                          |
-| ------------ | ----------------------------------------------- |
-| `Ctrl-K` `:` | Open the command palette (fuzzy actions)        |
-| `?`          | Toggle the help overlay                         |
-| `t`          | Open the task picker                            |
-| `f`          | Open the captured output of the latest failure  |
-| `x`          | Acknowledge — clear sticky failure toasts       |
-| `q` `Ctrl-C` | Detach (services keep running)                  |
-| `Ctrl-D`     | Shut down the session (stop services + destroy) |
-| `Esc`        | Close the top overlay / leave the current view  |
+| Key          | Action                                                             |
+| ------------ | ------------------------------------------------------------------ |
+| `Ctrl-K` `:` | Open the command palette (fuzzy actions)                           |
+| `?`          | Toggle the help overlay                                            |
+| `t`          | Open the task picker                                               |
+| `f`          | Open the captured output of the latest failure                     |
+| `x`          | Acknowledge — clear sticky failure toasts                          |
+| `q` `Ctrl-C` | Detach (services keep running)                                     |
+| `Ctrl-D`     | Shut down the session (stop services + destroy) — confirm with `y` |
+| `Esc`        | Close the top overlay / leave the current view                     |
 
 ### Dashboard
 
-| Key           | Action                               |
-| ------------- | ------------------------------------ |
-| `Up/Down/j/k` | Navigate services                    |
-| `r`           | Restart selected service             |
-| `s`           | Start/stop selected service          |
-| `l`           | View logs for selected service       |
-| `o`           | Open service URL in browser          |
-| `R`           | Docker rebuild (docker services)     |
-| `z` / `Z`     | Zoom the service pane / the TUI pane |
-| `E`           | Edit-capture the selected pane       |
-| `a`           | Restart all services                 |
-| `c`           | Reload config (when changed + idle)  |
-| `t`           | Open the task picker                 |
-| `d`           | Shut down the session                |
+| Key           | Action                                   |
+| ------------- | ---------------------------------------- |
+| `Up/Down/j/k` | Navigate services                        |
+| `r`           | Restart selected service                 |
+| `s`           | Start/stop selected service              |
+| `l`           | View logs for selected service           |
+| `o`           | Open service URL in browser              |
+| `R`           | Docker rebuild (docker services)         |
+| `z` / `Z`     | Zoom the service pane / the TUI pane     |
+| `E`           | Edit-capture the selected pane           |
+| `a`           | Restart all services                     |
+| `c`           | Reload config (when changed + idle)      |
+| `t`           | Open the task picker                     |
+| `d`           | Shut down the session (confirm with `y`) |
 
 On wide panes a **detail pane** shows the selected service's fields; it collapses
 when `cols < ui.wideThreshold` (default `100`). See [UI Config](#ui-config).

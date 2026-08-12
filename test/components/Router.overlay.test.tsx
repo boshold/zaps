@@ -179,3 +179,57 @@ describe("Router help overlay", () => {
     expect(overlay?.top?.id).toBe("help");
   });
 });
+
+// The shutdown gate lives here (not in Router.test.tsx) because it needs a real
+// `OverlayHost` mounted: the overlay owns its own `useInput`.
+describe("Router shutdown confirmation", () => {
+  afterEach(() => {
+    overlay = undefined;
+  });
+
+  it("tears the session down only after `y`", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+
+    stdin.write("\x04"); // Ctrl-D
+    await flush();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
+    expect(client.destroySession).not.toHaveBeenCalled();
+
+    stdin.write("y");
+    await flush();
+    expect(client.destroySession).toHaveBeenCalledTimes(1);
+    expect(overlay?.isOpen).toBe(false);
+  });
+
+  // A tmux client attaching with its own stdin at EOF makes the pty emit VEOF
+  // (0x04), which tmux hands to the pane as a plain Ctrl-D. Repeats of that byte
+  // Must stay harmless — only a distinct key confirms.
+  it("survives a stream of stray Ctrl-D bytes", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+
+    stdin.write("\x04");
+    await flush();
+    stdin.write("\x04");
+    await flush();
+    stdin.write("\x04");
+    await flush();
+
+    expect(client.destroySession).not.toHaveBeenCalled();
+  });
+
+  it("cancels on any other key", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+
+    stdin.write("d");
+    await flush();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
+
+    stdin.write("n");
+    await flush();
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(overlay?.isOpen).toBe(false);
+  });
+});

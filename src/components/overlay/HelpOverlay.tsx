@@ -24,7 +24,7 @@ const KEYMAP: KeymapGroup[] = [
       ["Ctrl-K / :", "Command palette"],
       ["?", "Help (this)"],
       ["q / Ctrl-C", "Detach (services keep running)"],
-      ["Ctrl-D", "Shut down session"],
+      ["Ctrl-D", "Shut down session (confirm with y)"],
       ["Esc", "Close overlay / leave view"],
     ],
   },

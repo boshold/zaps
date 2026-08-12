@@ -290,15 +290,24 @@ describe("Keyboard routing — Dashboard", () => {
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
-  it("d destroys session (shut down)", async () => {
+  it("d destroys session (shut down) once confirmed", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
 
-    const { stdin, client } = renderApp({ statuses });
+    const { stdin, client, lastFrame } = renderApp({ statuses });
 
     act(() => {
       stdin.write("d");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+    expect(vi.mocked(client.destroySession)).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain("Shut down session?");
+
+    act(() => {
+      stdin.write("y");
     });
     await act(async () => {
       /* Flush */
@@ -498,7 +507,7 @@ describe("Keyboard routing — ctrl keys", () => {
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
-  it("ctrl+d destroys session from dashboard", async () => {
+  it("ctrl+d destroys session from dashboard once confirmed", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -507,6 +516,16 @@ describe("Keyboard routing — ctrl keys", () => {
 
     act(() => {
       stdin.write("\x04"); // Ctrl+d
+    });
+    await act(async () => {
+      /* Flush */
+    });
+    // A lone 0x04 — which a tmux client attaching with stdin at EOF injects —
+    // Must not tear the session down.
+    expect(vi.mocked(client.destroySession)).not.toHaveBeenCalled();
+
+    act(() => {
+      stdin.write("y");
     });
     await act(async () => {
       /* Flush */
