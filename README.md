@@ -1,6 +1,6 @@
 <div align='center'>
    <p>
-     
+
 <img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/banner.png" alt="ZAPS" width="600">
 
    <p>
@@ -318,9 +318,7 @@ run `zaps` from a nested package but want the project root:
 export function config({ define, find }) {
   return define({
     cwd: find.up("package.json"),
-    services: {
-      /* … */
-    },
+    services: {/* … */},
   });
 }
 ```

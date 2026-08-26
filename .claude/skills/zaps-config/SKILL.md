@@ -179,9 +179,7 @@ services: {
 ```ts
 export function config({ define, task }: Library) {
   return define({
-    services: {
-      /* ... */
-    },
+    services: {/* ... */},
     hooks: {
       onStart: () => task.run("setup"),
     },

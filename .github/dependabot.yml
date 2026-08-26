@@ -1,6 +1,6 @@
 # Update-PR cadence only — install-time supply-chain enforcement lives in
 # pnpm-workspace.yaml (minimumReleaseAge / trustPolicy). Keep cooldowns here
-# aligned with pnpm's minimumReleaseAge (7 days) so Dependabot never proposes
+# aligned with pnpm's minimumReleaseAge (3 days) so Dependabot never proposes
 # a version pnpm then refuses to install.
 version: 2
 
@@ -11,10 +11,10 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 10
     cooldown:
-      default-days: 7
-      semver-major-days: 14 # extra caution on majors
-      semver-minor-days: 7
-      semver-patch-days: 7
+      default-days: 3
+      semver-major-days: 3
+      semver-minor-days: 3
+      semver-patch-days: 3
     # First matching group wins — named groups before the catch-alls.
     groups:
       react-ink:
@@ -51,7 +51,7 @@ updates:
     schedule:
       interval: "weekly"
     cooldown:
-      default-days: 7
+      default-days: 3
     groups:
       github-actions:
         patterns:

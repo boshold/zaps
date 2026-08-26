@@ -1,4 +1,4 @@
-import fuzzysort from "fuzzysort";
+import { go } from "fuzzysort";
 
 /** A ranked match: the original item, its score, and the matched character indexes. */
 interface FuzzyMatch<T> {
@@ -36,7 +36,7 @@ function fuzzyRank<T>(
     return options.limit === undefined ? passthrough : passthrough.slice(0, options.limit);
   }
 
-  const results = fuzzysort.go(trimmed, items, {
+  const results = go(trimmed, items, {
     key: keyFn,
     limit: options.limit,
     threshold: options.threshold,
