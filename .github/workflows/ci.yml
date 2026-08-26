@@ -97,6 +97,7 @@ jobs:
         with:
           name: dist
           path: dist/
+      - run: chmod +x dist/zaps
       - run: tmux -V
       - run: docker info
       # Pre-pull compose images so the cold-runner pull doesn't count against the
