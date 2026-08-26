@@ -56,31 +56,31 @@
     "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "@toon-format/toon": "^2.3.0",
-    "@types/node": "^26.0.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@toon-format/toon": "^4.1.1",
+    "@types/node": "^26.2.0",
     "cleye": "^2.6.0",
-    "fuzzysort": "^3.1.0",
-    "ink": "^7.0.5",
+    "fuzzysort": "^4.0.2",
+    "ink": "^7.1.1",
     "jiti": "^2.7.0",
-    "open": "^11.0.0",
-    "react": "^19.2.7",
+    "open": "^11.0.1",
+    "react": "^19.2.8",
     "yoga-layout": "^3.2.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/react": "^19.2.17",
-    "@vitest/coverage-v8": "^4.1.8",
-    "esbuild": "^0.28.1",
+    "@types/react": "^19.2.18",
+    "@vitest/coverage-v8": "^4.1.11",
+    "esbuild": "^0.28.2",
     "ink-testing-library": "^4.0.0",
-    "oxfmt": "^0.54.0",
-    "oxlint": "^1.69.0",
-    "oxlint-tsgolint": "^0.23.0",
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
+    "oxlint-tsgolint": "^7.0.2001",
     "react-devtools-core": "^7.0.1",
-    "testcontainers": "^12.0.1",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "testcontainers": "^12.1.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=22"

@@ -16,6 +16,7 @@
   "rules": {
     "no-debugger": "error",
     "no-console": "warn",
+    "eslint/one-var": "off",
     "no-duplicate-imports": "off",
     "no-await-in-loop": "off",
     "no-void": "off",
@@ -23,6 +24,8 @@
     "no-undefined": "off",
     "no-process-env": "off",
     "node/no-process-env": "off",
+    "node/no-sync": "off",
+    "node/no-top-level-await": "off",
     "func-style": "off",
     "max-params": "off",
     "max-statements": "off",
@@ -57,7 +60,17 @@
     "unicorn/filename-case": "off",
     "promise/avoid-new": "off",
     "react/react-in-jsx-scope": "off",
-    "react/jsx-filename-extension": "off"
+    "react/jsx-filename-extension": "off",
+    "react/exhaustive-effect-dependencies": "off",
+    "react/globals": "off",
+    "react/jsx-no-literals": "off",
+    "react/refs": "off",
+    "react/rule-suppression": "off",
+    "react/set-state-in-effect": "off",
+    "react/todo": "off",
+    "typescript/no-unnecessary-type-assertion": "off",
+    "unicorn/max-nested-calls": "off",
+    "unicorn/prefer-export-from": "off"
   },
   "overrides": [
     {

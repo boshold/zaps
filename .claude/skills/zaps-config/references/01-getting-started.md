@@ -91,9 +91,7 @@ export interface CwdContext {
 export function config({ define }: Library) {
   return define({
     cwd: "./packages/app",
-    services: {
-      /* ... */
-    },
+    services: {/* ... */},
   });
 }
 
@@ -101,9 +99,7 @@ export function config({ define }: Library) {
 export function config({ define }: Library) {
   return define({
     cwd: ({ configDir }) => `${configDir}/packages/app`,
-    services: {
-      /* ... */
-    },
+    services: {/* ... */},
   });
 }
 
@@ -111,9 +107,7 @@ export function config({ define }: Library) {
 export function config({ define, find }: Library) {
   return define({
     cwd: find.up("package.json"),
-    services: {
-      /* ... */
-    },
+    services: {/* ... */},
   });
 }
 ```

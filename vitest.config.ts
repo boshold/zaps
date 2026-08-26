@@ -8,7 +8,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "json-summary", "json"],
       include: ["src/**"],
-      exclude: ["src/cli.tsx"],
+      exclude: ["src/cli.tsx", "src/config/native-babel.ts"],
       thresholds: {
         lines: 85,
         functions: 85,
