@@ -60,7 +60,7 @@ type TmuxContextDecision =
 
 /** F8 — one message for both "not installed" and "too old", per 50_api. */
 function noTmuxMessage(availability: TmuxAvailability): string {
-  const base = `zaps requires tmux (>= 3.5a) — install it and re-run.`;
+  const base = `zaps requires tmux (>= 3.5) — install it and re-run.`;
   const found =
     !availability.ok && availability.reason === "too-old"
       ? ` Found tmux ${availability.version}.`

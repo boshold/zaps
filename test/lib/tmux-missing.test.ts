@@ -71,7 +71,7 @@ describe("tmux binary missing", () => {
     });
     expect(decision.kind).toBe("error-no-tmux");
     const { message } = decision as { message: string };
-    expect(message).toContain("zaps requires tmux (>= 3.5a) — install it and re-run.");
+    expect(message).toContain("zaps requires tmux (>= 3.5) — install it and re-run.");
     expect(message).toContain("https://github.com/tmux/tmux/wiki/Installing");
     expect(message).not.toContain("ENOENT");
   });

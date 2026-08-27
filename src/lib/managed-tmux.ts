@@ -4,7 +4,7 @@ import type { TmuxHandle } from "./tmux.js";
 /** Socket of the tmux server zaps owns. The user's own server is never touched. */
 const MANAGED_SOCKET = "zaps";
 
-/** Oldest tmux zaps supports (3.5a — the letter suffix is not part of the check). */
+/** Oldest tmux zaps supports (a release letter like 3.5a satisfies it). */
 const MIN_TMUX_VERSION = { major: 3, minor: 5 } as const;
 
 /** Longest sanitized project-name segment in a managed session name. */

@@ -92,7 +92,7 @@ zaps down    # stops services AND kills the managed tmux session
     (session lives in the user's own tmux; attach from there or `zaps down`)
   - `Session "<name>" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`
     (followed by a copy-pasteable `tmux -L zaps attach -t =<name>`)
-- **`zaps requires tmux (>= 3.5a) — install it and re-run.`** — tmux is missing or too
+- **`zaps requires tmux (>= 3.5) — install it and re-run.`** — tmux is missing or too
   old; install it, nothing else will work.
 - `ZAPS_AUTO_TMUX=0` disables auto-spawn and restores the old behavior (`zaps must be run
 from inside a tmux session.`). Don't set it unless the user asks.

@@ -122,7 +122,7 @@ describe("decideTmuxContext — escape hatch and tmux gate", () => {
     );
     expect(decision.kind).toBe("error-no-tmux");
     const { message } = decision as { message: string };
-    expect(message).toContain("zaps requires tmux (>= 3.5a)");
+    expect(message).toContain("zaps requires tmux (>= 3.5)");
     expect(message).toContain(TMUX_INSTALL_URL);
     expect(message).not.toContain("Found tmux");
   });
@@ -134,7 +134,7 @@ describe("decideTmuxContext — escape hatch and tmux gate", () => {
     expect(decision.kind).toBe("error-no-tmux");
     const { message } = decision as { message: string };
     // The requirement is quoted verbatim from the spec, never the parsed label.
-    expect(message).toContain(">= 3.5a");
+    expect(message).toContain(">= 3.5");
     expect(message).toContain("Found tmux 3.2.");
   });
 

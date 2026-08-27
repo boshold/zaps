@@ -108,7 +108,7 @@ describe("ensureTmuxContext — refusals", () => {
     const h = harness();
     h.deps.tmux.tmuxVersion = vi.fn().mockResolvedValue(null);
     await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 1 });
-    expect(h.err.join("")).toContain("zaps requires tmux (>= 3.5a)");
+    expect(h.err.join("")).toContain("zaps requires tmux (>= 3.5)");
   });
 
   it("refuses a session running in the user's own tmux", async () => {

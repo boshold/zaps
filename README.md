@@ -30,8 +30,8 @@
       </a>
       <a href="https://github.com/tmux/tmux/wiki#-is-awesome">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5a-94e2d5?logo=tmux&label=tmux&labelColor=313244&logoColor=94e2d5">
-            <img alt="Tmux >= 3.5a" src="https://img.shields.io/badge/%3E%3D3.5a-179299?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=179299">
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5-94e2d5?logo=tmux&label=tmux&labelColor=313244&logoColor=94e2d5">
+            <img alt="Tmux >= 3.5" src="https://img.shields.io/badge/%3E%3D3.5-179299?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=179299">
          </picture>
        </a>
    </p>
@@ -45,7 +45,7 @@
 
 ## Prerequisites
 
-- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5a) — it has to be
+- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5) — it has to be
   installed, but you don't have to know it or start it yourself: `zaps` opens and
   manages its own session for you. See
   [Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux).
@@ -164,7 +164,7 @@ Set `ZAPS_AUTO_TMUX=0` to disable auto-start; `zaps` then requires you to be ins
 tmux yourself and errors with `zaps must be run from inside a tmux session.`
 
 If tmux isn't installed at all, ZAPS says so instead of starting:
-`zaps requires tmux (>= 3.5a) — install it and re-run.`
+`zaps requires tmux (>= 3.5) — install it and re-run.`
 
 ## Commands
 
