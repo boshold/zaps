@@ -215,7 +215,13 @@ async function runTui(opts: {
       configStale={snapshot.configStale}
       ui={snapshot.ui}
     />,
-    { patchConsole: false },
+    {
+      patchConsole: false,
+      // On a real pty, paint frames even when CI env vars leak into the pane
+      // (a tmux server started on CI hands CI=true to every pane, and Ink's
+      // Is-in-ci check would then skip every frame until unmount).
+      interactive: process.stdout.isTTY ? true : undefined,
+    },
   );
 
   await waitUntilExit();
