@@ -7,6 +7,7 @@ import type { Project } from "../helpers/managed.js";
 import {
   clients,
   createProject,
+  dumpManagedState,
   managed,
   managedSessionExists,
   panes,
@@ -154,12 +155,14 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         // Revive the TUI and let it fully mount: a live TUI with NO client
         // Attached is exactly the state the stray byte lands in.
         await runZaps(["attach"], project.dir, project.runtimeDir);
-        expect(
-          await pollUntil(async () => {
-            const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
-            return frame.includes("web");
-          }, 30_000),
-        ).toBe(true);
+        const painted = await pollUntil(async () => {
+          const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
+          return frame.includes("web");
+        }, 30_000);
+        if (!painted) {
+          await dumpManagedState(session, project.runtimeDir);
+        }
+        expect(painted).toBe(true);
         expect(await clients(session)).toEqual([]);
 
         // The README/F7 escape hatch, run the way a script or agent would.
@@ -232,12 +235,14 @@ describe.skipIf(!hasTmux() || !hasBinary())(
 
           // Wait for the dashboard to actually paint: Ink only starts reading
           // Keys once it has mounted, and a `q` sent before that is dropped.
-          expect(
-            await pollUntil(async () => {
-              const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
-              return frame.includes("web");
-            }, 30_000),
-          ).toBe(true);
+          const qPainted = await pollUntil(async () => {
+            const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
+            return frame.includes("web");
+          }, 30_000);
+          if (!qPainted) {
+            await dumpManagedState(session, project.runtimeDir);
+          }
+          expect(qPainted).toBe(true);
           await managed(["send-keys", "-t", tuiPane, "q"]);
 
           // The MUST-HAVE of F2: the real client is gone, not just the process.

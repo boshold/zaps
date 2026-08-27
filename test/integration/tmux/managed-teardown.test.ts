@@ -13,6 +13,7 @@ import {
   binaryPath,
   clients,
   createProject,
+  dumpManagedState,
   managed,
   managedSessionExists,
   pollUntil,
@@ -185,12 +186,14 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
           "-F",
           "#{pane_id}",
         ]).then((out) => out.split("\n")[0]);
-        expect(
-          await pollUntil(async () => {
-            const frame = await managed(["capture-pane", "-t", tui, "-p"]);
-            return frame.includes("web");
-          }, 30_000),
-        ).toBe(true);
+        const painted = await pollUntil(async () => {
+          const frame = await managed(["capture-pane", "-t", tui, "-p"]);
+          return frame.includes("web");
+        }, 30_000);
+        if (!painted) {
+          await dumpManagedState(project.sessionName, project.runtimeDir);
+        }
+        expect(painted).toBe(true);
 
         // Ctrl-D asks first — a single stray byte must never tear a session down.
         await managed(["send-keys", "-t", tui, "C-d"]);

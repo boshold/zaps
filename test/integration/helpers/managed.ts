@@ -158,6 +158,25 @@ export async function clients(session: string): Promise<string[]> {
   }
 }
 
+/**
+ * Print everything needed to diagnose a dead assertion from a CI log: what the
+ * TUI pane shows, the pane table, and what the daemon believes.
+ */
+export async function dumpManagedState(session: string, runtimeDir: string): Promise<void> {
+  const frame = await managed(["capture-pane", "-t", `=${session}`, "-p", "-S", "-100"]).catch(
+    (error: unknown) => `capture failed: ${String(error)}`,
+  );
+  const paneTable = await managed([
+    "list-panes",
+    "-t",
+    `=${session}`,
+    "-F",
+    "#{pane_id}|#{pane_dead}|#{pane_current_command}",
+  ]).catch((error: unknown) => `list-panes failed: ${String(error)}`);
+  const ls = await runZaps(["ls", "--json"], process.cwd(), runtimeDir);
+  
+}
+
 /** True while the service still answers — i.e. the session survived. */
 export async function serviceAnswers(port: number): Promise<boolean> {
   try {
