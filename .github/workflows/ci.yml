@@ -102,7 +102,7 @@ jobs:
       - name: Install tmux 3.5a
         run: |
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev bison
+          sudo apt-get install -y libevent-dev libncurses-dev bison ncurses-term
           curl -fsSL https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz | tar -xz -C /tmp
           (cd /tmp/tmux-3.5a && ./configure --prefix=/usr/local >/dev/null && make -j"$(nproc)" >/dev/null && sudo make install >/dev/null)
       - run: tmux -V
@@ -111,6 +111,8 @@ jobs:
       # per-test 60s timeout (the docker-expand/docker-ready flake).
       - run: docker pull redis:7-alpine && docker pull memcached:1-alpine
       - run: pnpm test:integration --coverage
+        env:
+          TERM: xterm-256color
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
