@@ -40,11 +40,12 @@ import {
   panePid,
   sendCtrlC,
   sendKeys,
+  tmuxFor,
 } from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -202,7 +203,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     config.project.layout,
     config.project.services,
     config.groups,
-    { skip },
+    { skip, tmux: tmuxFor(testTmuxSocket()) },
   );
 
   const ref: { session: Session | null } = { session: null };
@@ -212,7 +213,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     sendKeys,
     sendCtrlC,
     panePid,
-    detectPorts,
+    detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmuxFor(testTmuxSocket())),
     capturePane,
     // Real PID walker — required for crash detection (Flow D) and the
     // ManagerLoop's "process still alive" probe. Stubbing it (e.g. always
@@ -225,6 +226,9 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     getWindowName: async () => "test",
     getWindowOption: async () => "off",
     setWindowOption: async () => {
+      /* No-op */
+    },
+    displayPopup: async () => {
       /* No-op */
     },
     exec: async () => {
@@ -276,6 +280,8 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     paneMap,
     tmuxSession: testSession.name,
     originPane: testSession.initialPaneId,
+    tmuxSocket: testTmuxSocket(),
+    managedTmux: false,
     deps,
   };
   const session = new Session(params, manager);
@@ -818,7 +824,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
       config.project.layout,
       config.project.services,
       config.groups,
-      { skip, reserveTuiPane: true },
+      { skip, reserveTuiPane: true, tmux: tmuxFor(testTmuxSocket()) },
     );
 
     try {

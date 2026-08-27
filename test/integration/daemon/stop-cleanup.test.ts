@@ -14,7 +14,7 @@ import { waitForServiceState, writeTestConfig } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasBinary, hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const execFileAsync = promisify(execFile);
 const binaryPath = path.resolve("dist/zaps");
@@ -56,7 +56,7 @@ function listAllPanes(): string[] {
   try {
     const result = execFileSync(
       "tmux",
-      ["-L", "zaps-test", "list-panes", "-a", "-F", "#{pane_id}"],
+      ["-L", testTmuxSocket() ?? "zaps-test", "list-panes", "-a", "-F", "#{pane_id}"],
       { encoding: "utf8" },
     );
     return result.split("\n").filter((line) => line.trim() !== "");
@@ -92,7 +92,7 @@ describe.skipIf(!hasBinary() || !hasTmux())("zaps daemon stop cleanup", () => {
     const childEnv = {
       ...process.env,
       XDG_RUNTIME_DIR: runtimeDir,
-      ZAPS_TMUX_SOCKET: "zaps-test",
+      ZAPS_TMUX_SOCKET: testTmuxSocket() ?? "zaps-test",
     };
 
     // Fork a real background daemon (isolated runtime dir + tmux server).
@@ -105,6 +105,7 @@ describe.skipIf(!hasBinary() || !hasTmux())("zaps daemon stop cleanup", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     const data = createRes.result as { paneMap: Record<string, string> };
     webPane = data.paneMap.web;

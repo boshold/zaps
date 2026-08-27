@@ -2,11 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { ServiceConfig } from "#src/config/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
-import { removeEnv, setEnv, showEnv } from "#src/lib/tmux.js";
+import { removeEnv, setEnv, showEnv, tmuxFor } from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("tmux pane-env integration", () => {
   let session: TestSession;
@@ -45,7 +45,9 @@ describe.skipIf(!hasTmux())("tmux pane-env integration", () => {
       worker: { start: "echo worker" },
     };
 
-    const { paneMap } = await createLayout(session.initialPaneId, undefined, services);
+    const { paneMap } = await createLayout(session.initialPaneId, undefined, services, undefined, {
+      tmux: tmuxFor(testTmuxSocket()),
+    });
 
     // Serialize and store like cli.tsx does
     const serialized = JSON.stringify(paneMap);

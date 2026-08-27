@@ -4,6 +4,11 @@ import { runShutdownHook } from "#src/daemon/shutdown.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 
+/** A tmux socket name is a non-empty, non-blank string (used verbatim for `-L`). */
+function isSocketName(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
 export const daemonHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>
@@ -49,6 +54,11 @@ export const daemonHandlers: Record<
         configPath: s.configPath,
         projectDir: s.projectDir,
         createdAt: s.createdAt,
+        tmuxSession: s.tmuxSession,
+        managed: s.managedTmux,
+        // Lets an unattached client (the re-attach bootstrap) find the TUI pane
+        // Without subscribing to the session.
+        tuiPane: s.paneMap["@tui"] ?? null,
       })),
     );
   },
@@ -59,14 +69,29 @@ export const daemonHandlers: Record<
       projectDir: string;
       tmuxSession: string;
       originPane: string;
+      tmuxSocket?: string | null;
+      managedTmux?: boolean;
     };
 
     if (!params?.configPath) {
       return ipcErr(req.id, "configPath required");
     }
 
+    // A socket is either absent/null (default server) or a non-empty name — an
+    // Empty string must never silently degrade into "default server".
+    const rawSocket = params.tmuxSocket;
+    if (rawSocket !== undefined && rawSocket !== null && !isSocketName(rawSocket)) {
+      return ipcErr(req.id, "tmuxSocket must be a non-empty string or null");
+    }
+    const tmuxSocket = typeof rawSocket === "string" ? rawSocket : null;
+    const managedTmux = params.managedTmux === true;
+    // The daemon must never kill-session on the user's default server (50_api).
+    if (managedTmux && tmuxSocket === null) {
+      return ipcErr(req.id, "managed session requires tmuxSocket");
+    }
+
     try {
-      const session = await store.create(params);
+      const session = await store.create({ ...params, tmuxSocket, managedTmux });
       return ipcOk(req.id, {
         id: session.id,
         name: session.name,

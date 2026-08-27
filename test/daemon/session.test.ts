@@ -19,25 +19,39 @@ vi.mock("#src/config/loader.js", () => ({
   computeBootSkip: vi.fn(() => new Set<string>()),
 }));
 
-vi.mock("#src/lib/tmux-layout.js", () => ({
+// Only `createLayout` is stubbed: the pure tree helpers (`filterTree`, …) stay
+// Real so the reflow path can actually run.
+vi.mock("#src/lib/tmux-layout.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#src/lib/tmux-layout.js")>()),
   createLayout: vi.fn(),
 }));
 
-vi.mock("#src/lib/tmux.js", () => ({
-  killPane: vi.fn().mockResolvedValue(undefined),
-  // LayoutReflow (constructed by Session) imports these as defaults. They are
-  // Stored as function refs at construction but only invoked when reflow code
-  // Runs; stub them so the import-time destructure succeeds in tests that
-  // Never exercise the reflow path.
-  getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
-  paneIndexOrder: vi.fn().mockResolvedValue([]),
-  resyncPaneSizes: vi.fn().mockResolvedValue(undefined),
-  selectLayout: vi.fn().mockResolvedValue(undefined),
-  selectPane: vi.fn().mockResolvedValue(undefined),
-  splitPane: vi.fn().mockResolvedValue("%99"),
-  swapPanes: vi.fn().mockResolvedValue(undefined),
-  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
-}));
+vi.mock("#src/lib/tmux.js", () => {
+  // The Session binds its handle via `tmuxFor(tmuxSocket)`, so the factory
+  // Returns the SAME stub surface for both the module exports and the handle —
+  // Assertions on the named exports still observe every call.
+  const api = {
+    killPane: vi.fn().mockResolvedValue(undefined),
+    killSession: vi.fn().mockResolvedValue(undefined),
+    // LayoutReflow (constructed by Session) uses these as defaults. They are
+    // Stored as function refs at construction but only invoked when reflow code
+    // Runs; stub them so tests that never exercise the reflow path still work.
+    getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
+    paneIndexOrder: vi.fn().mockResolvedValue([]),
+    resyncPaneSizes: vi.fn().mockResolvedValue(undefined),
+    selectLayout: vi.fn().mockResolvedValue(undefined),
+    selectPane: vi.fn().mockResolvedValue(undefined),
+    splitPane: vi.fn().mockResolvedValue("%99"),
+    swapPanes: vi.fn().mockResolvedValue(undefined),
+    windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
+  };
+  // Real implementation: the exact-target form is what these tests assert on.
+  return {
+    ...api,
+    exactWindowTarget: (name: string) => `=${name}:`,
+    tmuxFor: vi.fn(() => api),
+  };
+});
 
 function createMockManager(): ServiceManager {
   const emitter = new EventEmitter();
@@ -57,6 +71,8 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
   return {
     configPath: "/test/.zaps.mts",
     projectDir: "/test",
+    tmuxSocket: null,
+    managedTmux: false,
     config: {
       project: {
         name: "test-project",
@@ -341,6 +357,62 @@ describe("Session", () => {
       expect(vi.mocked(manager.stopAll)).toHaveBeenCalledTimes(1);
     });
 
+    it("kills the tmux session zaps owns, by exact name (F5)", async () => {
+      const { killSession, tmuxFor } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      const managed = new Session(
+        createSessionParams({
+          tmuxSocket: "zaps",
+          managedTmux: true,
+          tmuxSession: "zaps-app-abc123abc123",
+        }),
+        createMockManager(),
+      );
+      await managed.destroy();
+      expect(killSession).toHaveBeenCalledWith("zaps-app-abc123abc123");
+      // On the session's own socket handle — never the default server.
+      expect(tmuxFor).toHaveBeenCalledWith("zaps");
+    });
+
+    it("never kills a tmux session zaps does not own", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      await session.destroy();
+      expect(killSession).not.toHaveBeenCalled();
+    });
+
+    it("treats an already-gone tmux session as non-fatal", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockRejectedValueOnce(new Error("can't find session"));
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const managed = new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true, tmuxSession: "zaps-gone" }),
+        createMockManager(),
+      );
+      await expect(managed.destroy()).resolves.toBeUndefined();
+      expect(managed.destroyed).toBe(true);
+      expect(stderr.mock.calls.join("")).toContain("zaps-gone");
+      stderr.mockRestore();
+    });
+
+    it("stops the services before killing the tmux session that hosts them", async () => {
+      const { killSession } = await import("#src/lib/tmux.js");
+      vi.mocked(killSession).mockClear();
+      const order: string[] = [];
+      const managed = createMockManager();
+      vi.mocked(managed.stopAll).mockImplementation(async () => {
+        order.push("stopAll");
+      });
+      vi.mocked(killSession).mockImplementation(async () => {
+        order.push("killSession");
+      });
+      await new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        managed,
+      ).destroy();
+      expect(order).toEqual(["stopAll", "killSession"]);
+    });
+
     it("serializes behind an in-flight reload via the shared op lock", async () => {
       const { loadConfig } = await import("#src/config/loader.js");
       let rejectLoad!: () => void;
@@ -384,6 +456,25 @@ describe("Session", () => {
     });
   });
 
+  describe("managed tmux context", () => {
+    it("defaults to the user's default server", () => {
+      expect(session.tmuxSocket).toBeNull();
+      expect(session.managedTmux).toBe(false);
+    });
+
+    it("binds its tmux handle to the session socket", async () => {
+      const { tmuxFor } = await import("#src/lib/tmux.js");
+      vi.mocked(tmuxFor).mockClear();
+      const managed = new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        createMockManager(),
+      );
+      expect(managed.tmuxSocket).toBe("zaps");
+      expect(managed.managedTmux).toBe(true);
+      expect(tmuxFor).toHaveBeenCalledWith("zaps");
+    });
+  });
+
   describe("attachSnapshot", () => {
     it("returns full snapshot", () => {
       const snap = session.attachSnapshot();
@@ -394,6 +485,16 @@ describe("Session", () => {
       expect(snap.logSnapshots).toHaveProperty("api");
       expect(snap.tasks).toBeDefined();
       expect(snap.servicesMeta).toBeDefined();
+      expect(snap.tmuxSession).toBe(session.tmuxSession);
+      expect(snap.managed).toBe(false);
+    });
+
+    it("reports managed sessions so the client can route attach/teardown", () => {
+      const managed = new Session(
+        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        createMockManager(),
+      );
+      expect(managed.attachSnapshot().managed).toBe(true);
     });
 
     it("flags detached services in servicesMeta (E4)", () => {
@@ -743,6 +844,47 @@ describe("Session.reflow — wired with live-getter deps", () => {
     const beforeReflow = session.reflow;
     session.paneMap = { "@tui": "%9", api: "%10" };
     expect(session.reflow).toBe(beforeReflow);
+  });
+
+  // Every geometry command the reflow issues is WINDOW-scoped, and tmux matches
+  // Targets exact → prefix → fnmatch: a bare `main` would drive `main-notes`'s
+  // Window on the same server. `=main:` is the only form all four commands
+  // Accept — a bare `=main` makes `display-message` return empty and
+  // `select-layout` fail outright (verified against live tmux).
+  it("targets the session's own window exactly (`=name:`)", async () => {
+    const session = new Session(
+      createSessionParams({
+        tmuxSession: "zaps-app-a1",
+        paneMap: { "@tui": "%0", api: "%1" },
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" } },
+            layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "api" }] },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          groups: new Map(),
+          unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
+        } as SessionCreateParams["config"],
+      }),
+      createMockManager(),
+    );
+
+    const tmux = await import("#src/lib/tmux.js");
+    vi.mocked(tmux.paneIndexOrder).mockResolvedValueOnce([
+      { index: 0, id: "%0" },
+      { index: 1, id: "%1" },
+    ]);
+
+    await session.reflow.applyGeometry(new Set(["@tui", "api"]));
+
+    // One getter feeds every window-scoped call site (incl. insert/remove's
+    // `windowLayout` snapshot), so pinning the geometry path pins them all.
+    expect(tmux.getWindowSize).toHaveBeenCalledWith("=zaps-app-a1:");
+    expect(tmux.paneIndexOrder).toHaveBeenCalledWith("=zaps-app-a1:");
+    expect(tmux.selectLayout).toHaveBeenCalledWith("=zaps-app-a1:", expect.any(String));
   });
 });
 

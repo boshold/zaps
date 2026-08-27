@@ -13,11 +13,18 @@ import type { Rect } from "#src/lib/tmux-layout.js";
 import { computeRects } from "#src/lib/tmux-layout.js";
 import type { LayoutReflowDeps, PaneMap } from "#src/lib/tmux-reflow.js";
 import { LayoutReflow, TmuxFailedError } from "#src/lib/tmux-reflow.js";
-import { capturePane, getWindowSize, paneIndexOrder, sendKeys, splitPane } from "#src/lib/tmux.js";
+import {
+  capturePane,
+  getWindowSize,
+  paneIndexOrder,
+  sendKeys,
+  splitPane,
+  tmuxFor,
+} from "#src/lib/tmux.js";
 
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -106,9 +113,10 @@ function makeReflow(
   overrides: Partial<LayoutReflowDeps> = {},
 ): LayoutReflow {
   return new LayoutReflow({
+    tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
-    getWindowTarget: () => sessionName,
+    getWindowTarget: () => `=${sessionName}:`,
     ...overrides,
   });
 }
@@ -169,6 +177,8 @@ function makeSession(
     paneMap,
     tmuxSession,
     originPane: initialPaneId,
+    tmuxSocket: testTmuxSocket(),
+    managedTmux: false,
     deps: {
       capturePane,
       sendKeys: vi.fn().mockResolvedValue(undefined),
@@ -646,9 +656,10 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
     let calls = 0;
     let observedPaneId: string | undefined;
     const faultyReflow = new LayoutReflow({
+      tmux: tmuxFor(testTmuxSocket()),
       getLayout: () => layout,
       getPaneMap: () => zapsSession.paneMap,
-      getWindowTarget: () => session.name,
+      getWindowTarget: () => `=${session.name}:`,
       selectLayout: async (target, layoutStr) => {
         calls += 1;
         if (calls === 1) {

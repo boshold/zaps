@@ -25,6 +25,9 @@ import { killPane, splitPane } from "../../src/lib/tmux.js";
 const mockSplitPane = vi.mocked(splitPane);
 const mockKillPane = vi.mocked(killPane);
 
+/** Layout builds take an explicit socket-bound handle; here it is the mocked module. */
+const tmuxStub = { splitPane: mockSplitPane, killPane: mockKillPane };
+
 let paneCounter = 0;
 
 beforeEach(() => {
@@ -45,7 +48,9 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    const { paneMap } = await createLayout("%0", undefined, services);
+    const { paneMap } = await createLayout("%0", undefined, services, undefined, {
+      tmux: tmuxStub,
+    });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.db).toBe("%1");
@@ -59,7 +64,9 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    const { paneMap } = await createLayout("%0", undefined, services);
+    const { paneMap } = await createLayout("%0", undefined, services, undefined, {
+      tmux: tmuxStub,
+    });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.api).toBe("%1");
@@ -80,7 +87,7 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.api).toBe("%1");
@@ -110,7 +117,7 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     expect(paneMap["@tui"]).toBe("%0");
     // First split creates %1 for the right column
@@ -135,7 +142,7 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.api).toBe("%1");
@@ -161,7 +168,7 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.api).toBe("%1");
@@ -179,7 +186,7 @@ describe("createLayout", () => {
       children: [{ pane: "@tui", size: "60%" }, { pane: "api" }],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     expect(paneMap["@tui"]).toBe("%0");
     expect(paneMap.api).toBe("%1");
@@ -202,7 +209,9 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap, focusPane } = await createLayout("%0", layout, services);
+    const { paneMap, focusPane } = await createLayout("%0", layout, services, undefined, {
+      tmux: tmuxStub,
+    });
 
     expect(paneMap.api).toBe("%1");
     expect(focusPane).toBe("%1");
@@ -221,7 +230,9 @@ describe("createLayout", () => {
       ],
     };
 
-    const { paneMap, focusPane } = await createLayout("%0", layout, services);
+    const { paneMap, focusPane } = await createLayout("%0", layout, services, undefined, {
+      tmux: tmuxStub,
+    });
 
     expect(focusPane).toBe(paneMap["@tui"]);
   });
@@ -231,7 +242,9 @@ describe("createLayout", () => {
       api: { start: "npm start" },
     };
 
-    const { paneMap, focusPane } = await createLayout("%0", undefined, services);
+    const { paneMap, focusPane } = await createLayout("%0", undefined, services, undefined, {
+      tmux: tmuxStub,
+    });
 
     expect(focusPane).toBe(paneMap["@tui"]);
   });
@@ -243,7 +256,7 @@ describe("createLayout", () => {
       children: [{ pane: "api" }, { pane: "@tui" }],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services);
+    const { paneMap } = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
 
     // Free mode keeps today's behavior: first leaf inherits the start pane.
     expect(paneMap.api).toBe("%0");
@@ -259,6 +272,7 @@ describe("createLayout", () => {
 
     const { paneMap } = await createLayout("%0", layout, services, undefined, {
       reserveTuiPane: true,
+      tmux: tmuxStub,
     });
 
     // The TUI pane (start pane) is never handed to a service on reload (A2).
@@ -275,6 +289,7 @@ describe("createLayout", () => {
 
     const { paneMap } = await createLayout("%0", layout, services, undefined, {
       reserveTuiPane: true,
+      tmux: tmuxStub,
     });
 
     expect(paneMap["@tui"]).toBe("%0");
@@ -297,7 +312,9 @@ describe("createLayout", () => {
       throw new Error("tmux split failed");
     });
 
-    await expect(createLayout("%0", undefined, services)).rejects.toThrow("tmux split failed");
+    await expect(
+      createLayout("%0", undefined, services, undefined, { tmux: tmuxStub }),
+    ).rejects.toThrow("tmux split failed");
 
     // The one pane created before the failure is cleaned up (best-effort).
     expect(mockKillPane).toHaveBeenCalledTimes(1);
@@ -312,7 +329,7 @@ describe("createLayout", () => {
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
 
-    const { paneMap } = await createLayout("%0", layout, services, groups);
+    const { paneMap } = await createLayout("%0", layout, services, groups, { tmux: tmuxStub });
 
     // One shared pane for the whole group; every member maps to it.
     expect(paneMap.dbgroup).toBe("%2");
@@ -335,6 +352,7 @@ describe("createLayout", () => {
 
       const { paneMap } = await createLayout("%0", layout, services, undefined, {
         skip: new Set(["worker"]),
+        tmux: tmuxStub,
       });
 
       expect(paneMap["@tui"]).toBeDefined();
@@ -350,6 +368,7 @@ describe("createLayout", () => {
 
       const { paneMap } = await createLayout("%0", undefined, services, undefined, {
         skip: new Set(["worker"]),
+        tmux: tmuxStub,
       });
 
       expect(paneMap["@tui"]).toBe("%0");
@@ -376,6 +395,7 @@ describe("createLayout", () => {
       const { paneMap } = await createLayout("%0", layout, services, undefined, {
         skip: new Set(["worker"]),
         reserveTuiPane: true,
+        tmux: tmuxStub,
       });
 
       // @tui maps to the start pane (the SURVIVING first leaf in the filtered
@@ -398,13 +418,14 @@ describe("createLayout", () => {
         children: [{ pane: "@tui" }, { pane: "api" }, { pane: "worker" }],
       };
 
-      const ref = await createLayout("%0", layout, services);
+      const ref = await createLayout("%0", layout, services, undefined, { tmux: tmuxStub });
       paneCounter = 0;
       vi.clearAllMocks();
       mockSplitPane.mockImplementation(async () => `%${(paneCounter += 1)}`);
       mockKillPane.mockResolvedValue(undefined);
       const withEmptySkip = await createLayout("%0", layout, services, undefined, {
         skip: new Set<string>(),
+        tmux: tmuxStub,
       });
 
       expect(withEmptySkip.paneMap).toEqual(ref.paneMap);
@@ -423,6 +444,7 @@ describe("createLayout", () => {
 
       const { paneMap, focusPane } = await createLayout("%0", layout, services, undefined, {
         skip: new Set(["worker"]),
+        tmux: tmuxStub,
       });
 
       // Worker was the declared focus target but it's skipped → fallback @tui.
@@ -456,6 +478,7 @@ describe("createLayout", () => {
 
       const { paneMap } = await createLayout("%0", layout, services, undefined, {
         skip: new Set(["rainfrog", "mailtrap"]),
+        tmux: tmuxStub,
       });
 
       expect(paneMap["@tui"]).toBe("%0");
@@ -484,9 +507,7 @@ describe("createLayout", () => {
       };
 
       await expect(
-        createLayout("%0", layout, services, undefined, {
-          skip: new Set(["api"]),
-        }),
+        createLayout("%0", layout, services, undefined, { skip: new Set(["api"]), tmux: tmuxStub }),
       ).rejects.toThrow(/every layout leaf is skipped/);
     });
   });

@@ -30,8 +30,8 @@
       </a>
       <a href="https://github.com/tmux/tmux/wiki#-is-awesome">
          <picture>
-            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5a-94e2d5?logo=tmux&label=tmux&labelColor=313244&logoColor=94e2d5">
-            <img alt="Tmux >= 3.5a" src="https://img.shields.io/badge/%3E%3D3.5a-179299?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=179299">
+            <source media="(prefers-color-scheme: dark)" type="image/svg+xml" srcset="https://img.shields.io/badge/%3E%3D3.5-94e2d5?logo=tmux&label=tmux&labelColor=313244&logoColor=94e2d5">
+            <img alt="Tmux >= 3.5" src="https://img.shields.io/badge/%3E%3D3.5-179299?logo=tmux&label=tmux&labelColor=ccd0da&logoColor=179299">
          </picture>
        </a>
    </p>
@@ -45,7 +45,10 @@
 
 ## Prerequisites
 
-- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5a)
+- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5) — it has to be
+  installed, but you don't have to know it or start it yourself: `zaps` opens and
+  manages its own session for you. See
+  [Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux).
 
 ## Install
 
@@ -85,13 +88,83 @@ sha256sum --check --ignore-missing SHA256SUMS
 ## Quick Start
 
 ```bash
-# Inside a tmux session:
 zaps init          # Scaffold .zaps.mts config
 # Edit .zaps.mts to define your services
 zaps               # Launch
 ```
 
-> ZAPS must be run from inside a tmux session.
+Run it from any normal terminal. `zaps` starts your services and opens the
+dashboard; press `q` to get your terminal back (services keep running) and `zaps`
+again to come back. See
+[Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux).
+
+## Running without tmux (auto-tmux)
+
+You can run `zaps` straight from a normal terminal — no tmux knowledge required.
+When you're not already in tmux, ZAPS starts a session for you, keeps it on its
+own private tmux server (so it can never disturb a tmux setup you may use for
+other things), and drops you into the dashboard.
+
+```bash
+zaps          # starts services + opens the dashboard
+# press q     → back to your shell, services keep running
+zaps          # back into the dashboard
+zaps down     # stop the services and clean everything up
+```
+
+**`q` vs `zaps down`**
+
+| Action      | What happens                                                                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `q`         | Leaves the dashboard. Services keep running in the background. Your terminal prints `detached — services still running. zaps to re-attach, zaps down to stop.` |
+| `zaps down` | Stops every service and removes the session, including the tmux session ZAPS created (`Killed managed tmux session zaps-<name>-<id>.`)                         |
+| `Ctrl-D`    | Same as `zaps down`, from inside the dashboard (asks to confirm with `y`)                                                                                      |
+
+**Starting in the background**
+
+```bash
+zaps up -d    # Session zaps-<name>-<id> started (detached, managed tmux). zaps attach to view.
+zaps attach   # open the dashboard later
+```
+
+Services run inside the session ZAPS created, so they see that session's
+environment rather than a copy of your current shell. ZAPS forwards what it needs
+(its socket path and runtime dir); if a service depends on a variable you export
+per-shell, set it in the service's `env` in `.zaps.mts` instead of relying on
+inheritance — the background tmux server may be older than your shell.
+
+**Seeing where a session lives**
+
+`zaps ls` shows a location column: the tmux session hosting each project, marked
+`(managed)` when ZAPS created it (i.e. `zaps down` will remove it too).
+
+```
+a1b2c3d4e5f6  my-app  /home/me/my-app  zaps-my-app-a1b2c3d4e5f6 (managed)
+```
+
+**If you already use tmux**
+
+Nothing changes: run `zaps` inside your own tmux session and it uses that session's
+panes, exactly as before. ZAPS only creates a session of its own when you're not in
+one. A session belongs to the place it was started, so ZAPS refuses to mix them:
+
+- `Session "<name>" is running inside tmux session '<tmux>'. Attach from within tmux, or run zaps down first.`
+- `Session "<name>" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`
+
+In the second case ZAPS also prints a copy-pasteable line for tmux users who would
+rather attach by hand (`=` forces an exact name match):
+
+```bash
+tmux -L zaps attach -t =zaps-my-app-a1b2c3d4e5f6
+```
+
+**Turning it off**
+
+Set `ZAPS_AUTO_TMUX=0` to disable auto-start; `zaps` then requires you to be inside
+tmux yourself and errors with `zaps must be run from inside a tmux session.`
+
+If tmux isn't installed at all, ZAPS says so instead of starting:
+`zaps requires tmux (>= 3.5) — install it and re-run.`
 
 ## Commands
 
@@ -1005,33 +1078,33 @@ failed-output), and a responsive layout that adapts to the pane size.
 
 Work from any base view; survive a disconnect; yield to an open overlay.
 
-| Key          | Action                                          |
-| ------------ | ----------------------------------------------- |
-| `Ctrl-K` `:` | Open the command palette (fuzzy actions)        |
-| `?`          | Toggle the help overlay                         |
-| `t`          | Open the task picker                            |
-| `f`          | Open the captured output of the latest failure  |
-| `x`          | Acknowledge — clear sticky failure toasts       |
-| `q` `Ctrl-C` | Detach (services keep running)                  |
-| `Ctrl-D`     | Shut down the session (stop services + destroy) |
-| `Esc`        | Close the top overlay / leave the current view  |
+| Key          | Action                                                             |
+| ------------ | ------------------------------------------------------------------ |
+| `Ctrl-K` `:` | Open the command palette (fuzzy actions)                           |
+| `?`          | Toggle the help overlay                                            |
+| `t`          | Open the task picker                                               |
+| `f`          | Open the captured output of the latest failure                     |
+| `x`          | Acknowledge — clear sticky failure toasts                          |
+| `q` `Ctrl-C` | Detach (services keep running)                                     |
+| `Ctrl-D`     | Shut down the session (stop services + destroy) — confirm with `y` |
+| `Esc`        | Close the top overlay / leave the current view                     |
 
 ### Dashboard
 
-| Key           | Action                               |
-| ------------- | ------------------------------------ |
-| `Up/Down/j/k` | Navigate services                    |
-| `r`           | Restart selected service             |
-| `s`           | Start/stop selected service          |
-| `l`           | View logs for selected service       |
-| `o`           | Open service URL in browser          |
-| `R`           | Docker rebuild (docker services)     |
-| `z` / `Z`     | Zoom the service pane / the TUI pane |
-| `E`           | Edit-capture the selected pane       |
-| `a`           | Restart all services                 |
-| `c`           | Reload config (when changed + idle)  |
-| `t`           | Open the task picker                 |
-| `d`           | Shut down the session                |
+| Key           | Action                                   |
+| ------------- | ---------------------------------------- |
+| `Up/Down/j/k` | Navigate services                        |
+| `r`           | Restart selected service                 |
+| `s`           | Start/stop selected service              |
+| `l`           | View logs for selected service           |
+| `o`           | Open service URL in browser              |
+| `R`           | Docker rebuild (docker services)         |
+| `z` / `Z`     | Zoom the service pane / the TUI pane     |
+| `E`           | Edit-capture the selected pane           |
+| `a`           | Restart all services                     |
+| `c`           | Reload config (when changed + idle)      |
+| `t`           | Open the task picker                     |
+| `d`           | Shut down the session (confirm with `y`) |
 
 On wide panes a **detail pane** shows the selected service's fields; it collapses
 when `cols < ui.wideThreshold` (default `100`). See [UI Config](#ui-config).
@@ -1264,6 +1337,23 @@ Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectiv
 `zaps daemon stop` now performs a **full cleanup**: it stops every service in every
 session the daemon manages before shutting the daemon down, and reports what it tore
 down (`Stopped <n> session(s), <m> service(s).`). It is no longer a bare process kill.
+Sessions ZAPS started for you (see
+[Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux)) are removed as
+part of that cleanup — each one prints `Killed managed tmux session <name>.`.
+Sessions running inside your own tmux are left alone.
+
+### A session ZAPS started is stuck
+
+`zaps down` is the normal way out, and it also removes the tmux session. If a
+session was left behind (e.g. the daemon was killed with `kill -9`), running `zaps`
+in that project detects the leftover and replaces it — no manual cleanup needed.
+To inspect or clean up by hand, everything ZAPS creates lives on its own tmux
+server:
+
+```bash
+tmux -L zaps ls                 # list the sessions ZAPS created
+tmux -L zaps kill-session -t =zaps-my-app-a1b2c3d4e5f6
+```
 
 ### Error messages you may see
 

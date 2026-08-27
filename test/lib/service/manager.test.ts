@@ -33,6 +33,7 @@ function createMockDeps(): ServiceManagerDeps {
     setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
     exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
     preflightPorts: vi.fn<ServiceManagerDeps["preflightPorts"]>().mockResolvedValue(null),
+    displayPopup: vi.fn<ServiceManagerDeps["displayPopup"]>().mockResolvedValue(),
     storeExecInfo: vi.fn(),
     sessionId: "test-session-id",
     zapsCommand: "zaps",
@@ -2115,6 +2116,31 @@ describe("bindActions", () => {
         result: "success",
       },
     ]);
+  });
+
+  it("runs popup tasks on the injected (session-bound) tmux socket", async () => {
+    let capturedActions: LibraryActions | undefined;
+    const config = makeConfig({ db: { start: "start-db" } });
+    config.project.tasks = {
+      seed: { name: "Seed", popup: true, commands: "echo seed" },
+    };
+    config.bindActions = (actions) => {
+      capturedActions = actions;
+    };
+
+    const displayPopup = vi.fn().mockResolvedValue(undefined);
+    const deps = { ...createMockDeps(), displayPopup };
+    const mgr = new ServiceManager(config, makePaneMap(["db"]), deps, "test-session");
+    expect(mgr).toBeDefined();
+
+    if (!capturedActions) {
+      throw new Error("bindActions was not called");
+    }
+    await capturedActions.runTask("seed");
+
+    expect(displayPopup).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Seed", command: expect.stringContaining("echo seed") }),
+    );
   });
 
   it("emits taskComplete with error when runTask fails", async () => {

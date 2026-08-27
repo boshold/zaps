@@ -85,3 +85,11 @@ export async function buildTestPaneMap(
   }
   return paneMap;
 }
+
+/**
+ * Socket the integration suite pins via its vitest env — passed explicitly to
+ * `session.create` / `Session`, since the daemon no longer reads the env.
+ */
+export function testTmuxSocket(): string | null {
+  return getEnv("ZAPS_TMUX_SOCKET") ?? null;
+}

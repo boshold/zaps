@@ -3,11 +3,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { shellEscape } from "#src/lib/service/env.js";
-import { displayPopup, tmuxSupportsPopup } from "#src/lib/tmux.js";
+import { defaultTmux } from "#src/lib/tmux-default.js";
+import type { TmuxHandle } from "#src/lib/tmux.js";
+
+/** The tmux commands an output popup issues. */
+type PopupTmux = Pick<TmuxHandle, "displayPopup" | "tmuxSupportsPopup">;
 
 /** True when tmux supports `display-popup` (>= 3.2) — the escalation target (Q3). */
-export async function outputPopupAvailable(): Promise<boolean> {
-  return tmuxSupportsPopup();
+export async function outputPopupAvailable(tmux: PopupTmux = defaultTmux): Promise<boolean> {
+  return tmux.tmuxSupportsPopup();
 }
 
 /**
@@ -18,7 +22,11 @@ export async function outputPopupAvailable(): Promise<boolean> {
  * `less`. Everything runs under `sh -c` (fish-safe). The temp dir is always
  * cleaned up. Callers should gate on {@link outputPopupAvailable} first.
  */
-export async function showOutputPopup(title: string, lines: string[]): Promise<void> {
+export async function showOutputPopup(
+  title: string,
+  lines: string[],
+  tmux: PopupTmux = defaultTmux,
+): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-task-output-"));
   const file = path.join(dir, "output");
   try {
@@ -26,7 +34,7 @@ export async function showOutputPopup(title: string, lines: string[]): Promise<v
     const esc = shellEscape(file);
     // `less` for scrollback; if absent, print + pause so -EE doesn't close instantly.
     const viewer = `less -R ${esc} 2>/dev/null || { cat ${esc}; printf '\\n[press enter to close]'; read _; }`;
-    await displayPopup({
+    await tmux.displayPopup({
       command: `sh -c ${shellEscape(viewer)}`,
       title,
       width: "80%",

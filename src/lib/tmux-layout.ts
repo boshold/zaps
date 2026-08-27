@@ -1,9 +1,12 @@
 import type { LayoutLeaf, LayoutNode, LayoutSplit, ServiceConfig } from "#src/config/types.js";
 import { isLayoutLeaf, isLayoutSplit } from "#src/config/types.js";
 
-import { killPane, splitPane } from "./tmux.js";
+import type { TmuxHandle } from "./tmux.js";
 
 type PaneMap = Record<string, string>;
+
+/** The tmux commands a layout build issues. */
+type LayoutTmux = Pick<TmuxHandle, "killPane" | "splitPane">;
 
 function collectPaneNames(node: LayoutNode): string[] {
   if (isLayoutLeaf(node)) {
@@ -54,6 +57,7 @@ async function walkLayout(
   currentPaneId: string,
   paneMap: PaneMap,
   createdPanes: string[],
+  tmux: LayoutTmux,
 ): Promise<string> {
   if (isLayoutLeaf(node)) {
     paneMap[node.pane] = currentPaneId;
@@ -92,7 +96,7 @@ async function walkLayout(
       const tmuxPercent =
         parentRemaining > 0 ? Math.round((childRemaining / parentRemaining) * 100) : 0;
 
-      const newPaneId = await splitPane(splitTarget, dir, { percent: tmuxPercent });
+      const newPaneId = await tmux.splitPane(splitTarget, dir, { percent: tmuxPercent });
       createdPanes.push(newPaneId);
       paneIds.push(newPaneId);
       splitTarget = newPaneId;
@@ -102,7 +106,7 @@ async function walkLayout(
     // Recurse into each child (must be sequential for tmux ordering)
     let focusPane = "";
     for (let i = 0; i < children.length; i += 1) {
-      const result = await walkLayout(children[i], paneIds[i], paneMap, createdPanes);
+      const result = await walkLayout(children[i], paneIds[i], paneMap, createdPanes, tmux);
       if (result) {
         focusPane = result;
       }
@@ -143,8 +147,12 @@ function expandGroupPanes(paneMap: PaneMap, groups: Map<string, string[]>): void
 }
 
 /** Split a vertical pane off `startPaneId`, recording it for rollback. */
-async function splitTracked(startPaneId: string, createdPanes: string[]): Promise<string> {
-  const paneId = await splitPane(startPaneId, "v");
+async function splitTracked(
+  startPaneId: string,
+  createdPanes: string[],
+  tmux: LayoutTmux,
+): Promise<string> {
+  const paneId = await tmux.splitPane(startPaneId, "v");
   createdPanes.push(paneId);
   return paneId;
 }
@@ -168,12 +176,13 @@ async function mapUnreferencedGroups(
   groups: Map<string, string[]>,
   paneMap: PaneMap,
   createdPanes: string[],
+  tmux: LayoutTmux,
 ): Promise<void> {
   for (const [groupName, children] of groups) {
     if (groupName in paneMap) {
       continue;
     }
-    const paneId = await splitTracked(startPaneId, createdPanes);
+    const paneId = await splitTracked(startPaneId, createdPanes, tmux);
     paneMap[groupName] = paneId;
     for (const child of children) {
       paneMap[child] = paneId;
@@ -189,10 +198,11 @@ async function mapLeftoverServices(
   groupChildNames: Set<string>,
   paneMap: PaneMap,
   createdPanes: string[],
+  tmux: LayoutTmux,
 ): Promise<void> {
   for (const name of serviceNames) {
     if (!services[name].detached && !groupChildNames.has(name) && !(name in paneMap)) {
-      paneMap[name] = await splitTracked(startPaneId, createdPanes);
+      paneMap[name] = await splitTracked(startPaneId, createdPanes, tmux);
     }
   }
 }
@@ -501,11 +511,12 @@ export async function createLayout(
   startPaneId: string,
   layout: LayoutNode | undefined,
   services: Record<string, ServiceConfig>,
-  groups?: Map<string, string[]>,
-  options?: { reserveTuiPane?: boolean; skip?: Set<string> },
+  groups: Map<string, string[]> | undefined,
+  options: { reserveTuiPane?: boolean; skip?: Set<string>; tmux: LayoutTmux },
 ): Promise<{ paneMap: PaneMap; focusPane: string }> {
-  const reserveTuiPane = options?.reserveTuiPane ?? false;
-  const skip = options?.skip;
+  const reserveTuiPane = options.reserveTuiPane ?? false;
+  const { tmux } = options;
+  const { skip } = options;
   const hasSkip = skip !== undefined && skip.size > 0;
   const paneMap: PaneMap = {};
   // Pane-less lazy services don't get a leftover-pane split. `skip` is pre-
@@ -523,7 +534,7 @@ export async function createLayout(
       // Case 1: No layout — @tui gets the start pane, each service/group a split.
       paneMap["@tui"] = startPaneId;
       if (groups) {
-        await mapUnreferencedGroups(startPaneId, groups, paneMap, createdPanes);
+        await mapUnreferencedGroups(startPaneId, groups, paneMap, createdPanes, tmux);
       }
       await mapLeftoverServices(
         startPaneId,
@@ -532,6 +543,7 @@ export async function createLayout(
         groupChildNames,
         paneMap,
         createdPanes,
+        tmux,
       );
       return { paneMap, focusPane: paneMap["@tui"] };
     }
@@ -558,7 +570,7 @@ export async function createLayout(
       );
     }
 
-    const focusName = await walkLayout(bootLayout, startPaneId, paneMap, createdPanes);
+    const focusName = await walkLayout(bootLayout, startPaneId, paneMap, createdPanes, tmux);
 
     if (reserveTuiPane) {
       reserveStartPaneForTui(bootLayout, startPaneId, paneMap);
@@ -568,7 +580,7 @@ export async function createLayout(
       // Referenced groups: map members to the group's pane; unreferenced: one
       // Shared pane each (E10).
       expandGroupPanes(paneMap, groups);
-      await mapUnreferencedGroups(startPaneId, groups, paneMap, createdPanes);
+      await mapUnreferencedGroups(startPaneId, groups, paneMap, createdPanes, tmux);
     }
 
     await mapLeftoverServices(
@@ -578,6 +590,7 @@ export async function createLayout(
       groupChildNames,
       paneMap,
       createdPanes,
+      tmux,
     );
 
     return { paneMap, focusPane: (focusName && paneMap[focusName]) || paneMap["@tui"] };
@@ -585,7 +598,7 @@ export async function createLayout(
     // Best-effort: tear down every pane this call created so a failed
     // Create/reload never leaves a half-built layout behind (E15).
     for (const paneId of createdPanes) {
-      await killPane(paneId).catch(() => {
+      await tmux.killPane(paneId).catch(() => {
         /* Swallow — cleanup is best-effort */
       });
     }

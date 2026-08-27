@@ -12,7 +12,8 @@ import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
-import { killPane } from "#src/lib/tmux.js";
+import { exactWindowTarget, tmuxFor } from "#src/lib/tmux.js";
+import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { LogMonitor } from "./log-monitor.js";
@@ -94,6 +95,10 @@ export interface SessionCreateParams {
   tmuxSession: string;
   originPane: string;
   deps: ServiceManagerDeps;
+  /** Tmux server socket hosting this session (`null` = the user's default server). */
+  tmuxSocket: string | null;
+  /** True when zaps spawned and owns the tmux session (teardown kills it). */
+  managedTmux: boolean;
 }
 
 export function sessionId(configPath: string): string {
@@ -119,6 +124,12 @@ export class Session {
   /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
   public readonly taskOutput = new TaskOutputStore();
   public readonly deps: ServiceManagerDeps;
+  /** Tmux server socket hosting this session (`null` = the user's default server). */
+  public readonly tmuxSocket: string | null;
+  /** True when zaps spawned and owns the tmux session (teardown kills it). */
+  public readonly managedTmux: boolean;
+  /** Every tmux command for this session runs through this socket-bound handle. */
+  public readonly tmux: TmuxHandle;
 
   public name: string;
   public config: ResolvedConfig;
@@ -174,6 +185,9 @@ export class Session {
     this.tmuxSession = params.tmuxSession;
     this.originPane = params.originPane;
     this.deps = params.deps;
+    this.tmuxSocket = params.tmuxSocket;
+    this.managedTmux = params.managedTmux;
+    this.tmux = tmuxFor(this.tmuxSocket);
     this.manager = manager;
     this.configLoadedAt = Date.now();
 
@@ -190,9 +204,13 @@ export class Session {
     // Bind through `this` for the same reason — they re-read `this.logMonitor`
     // And the log maps fresh on every fire, never closing over stale instances.
     this.reflow = new LayoutReflow({
+      tmux: this.tmux,
       getLayout: () => this.config.project.layout,
       getPaneMap: () => this.paneMap,
-      getWindowTarget: () => this.tmuxSession,
+      // `=name:` — exact session, its current window: every geometry command
+      // The reflow issues is window-scoped, and a bare name would prefix-match
+      // A longer-named session on the same server.
+      getWindowTarget: () => exactWindowTarget(this.tmuxSession),
       onPaneInserted: (name, paneId) => {
         this.allocatePaneLog(name, paneId);
         // Lazy panes are created/destroyed after the TUI captured its startup
@@ -410,7 +428,7 @@ export class Session {
         newConfig.project.layout,
         newConfig.project.services,
         newConfig.groups,
-        { reserveTuiPane: true, skip },
+        { reserveTuiPane: true, skip, tmux: this.tmux },
       );
       return paneMap;
     } catch (error) {
@@ -442,7 +460,7 @@ export class Session {
     const tuiPaneId = this.paneMap["@tui"];
     for (const [name, paneId] of Object.entries(this.paneMap)) {
       if (name !== "@tui") {
-        await killPane(paneId).catch(() => {
+        await this.tmux.killPane(paneId).catch(() => {
           /* Best-effort cleanup */
         });
       }
@@ -512,7 +530,34 @@ export class Session {
         sock.destroy();
       }
       this.subscribers.clear();
+
+      await this.killManagedTmuxSession();
     });
+  }
+
+  /**
+   * Kill the tmux session zaps owns, once its services are stopped (F5).
+   *
+   * Only for managed sessions, only by exact name, and only on this session's
+   * own socket handle — a session living in the user's tmux is never killed, and
+   * `kill-server` is never issued, so a sibling managed project on the same
+   * socket survives untouched (the tmux server exits by itself with its last
+   * session). An already-gone session is logged, not fatal: the post-condition
+   * ("no managed tmux session left") holds either way.
+   */
+  private async killManagedTmuxSession(): Promise<void> {
+    if (!this.managedTmux) {
+      return;
+    }
+    try {
+      await this.tmux.killSession(this.tmuxSession);
+    } catch (error) {
+      process.stderr.write(
+        `Managed tmux session ${this.tmuxSession} could not be killed (already gone?): ${
+          error instanceof Error ? error.message : String(error)
+        }\n`,
+      );
+    }
   }
 
   /**
@@ -720,6 +765,7 @@ export class Session {
       name: this.name,
       paneMap: this.paneMap,
       tmuxSession: this.tmuxSession,
+      managed: this.managedTmux,
       originPane: this.originPane,
       statuses: this.manager.getAllStatuses(),
       logSnapshots,
@@ -751,6 +797,8 @@ export interface SessionSnapshot {
   name: string;
   paneMap: PaneMap;
   tmuxSession: string;
+  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
+  managed: boolean;
   originPane: string;
   statuses: ServiceStatus[];
   logSnapshots: Record<string, string[]>;

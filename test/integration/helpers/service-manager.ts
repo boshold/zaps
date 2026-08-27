@@ -3,6 +3,7 @@ import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import {
   capturePane,
+  displayPopup,
   getWindowName,
   getWindowOption,
   panePid,
@@ -10,19 +11,23 @@ import {
   sendCtrlC,
   sendKeys,
   setWindowOption,
+  tmuxFor,
 } from "#src/lib/tmux.js";
+
+import { testTmuxSocket } from "./tmux.js";
 
 export const tmuxDeps = {
   sendKeys,
   sendCtrlC,
   panePid,
-  detectPorts,
+  detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmuxFor(testTmuxSocket())),
   capturePane,
   getDescendantPids,
   renameWindow,
   getWindowName,
   getWindowOption,
   setWindowOption,
+  displayPopup,
   exec: async () => {
     /* No-op */
   },

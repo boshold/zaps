@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { render } from "ink-testing-library";
 import { act } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock tmux functions to prevent real tmux commands
 vi.mock("../src/lib/tmux.js", () => ({
@@ -21,6 +21,9 @@ vi.mock("../src/lib/tmux.js", () => ({
   setWindowOption: vi.fn().mockResolvedValue(undefined),
   currentSession: vi.fn().mockResolvedValue(""),
   showEnv: vi.fn().mockResolvedValue(""),
+  // Quitting detaches the tmux client in managed mode; without this export the
+  // Detach throws inside its own catch and the tests below pass vacuously.
+  detachClient: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../src/lib/open.js", () => ({
@@ -152,6 +155,11 @@ describe("App", () => {
 });
 
 describe("Keyboard routing — Dashboard", () => {
+  // Env stubs must come back even when a test throws mid-body.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("up/down changes selection index", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
@@ -240,7 +248,11 @@ describe("Keyboard routing — Dashboard", () => {
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
-  it("d destroys session (shut down)", async () => {
+  it("q hands the terminal back by detaching the managed tmux client", async () => {
+    const { detachClient } = await import("../src/lib/tmux.js");
+    vi.mocked(detachClient).mockClear();
+    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
+    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -248,7 +260,54 @@ describe("Keyboard routing — Dashboard", () => {
     const { stdin, client } = renderApp({ statuses });
 
     act(() => {
+      stdin.write("q");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+
+    expect(vi.mocked(detachClient)).toHaveBeenCalled();
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+  });
+
+  it("q in a personal tmux leaves the client attached", async () => {
+    const { detachClient } = await import("../src/lib/tmux.js");
+    vi.mocked(detachClient).mockClear();
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client } = renderApp({ statuses });
+
+    act(() => {
+      stdin.write("q");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+
+    expect(vi.mocked(detachClient)).not.toHaveBeenCalled();
+    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+  });
+
+  it("d destroys session (shut down) once confirmed", async () => {
+    const statuses: ServiceStatus[] = [
+      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
+    ];
+
+    const { stdin, client, lastFrame } = renderApp({ statuses });
+
+    act(() => {
       stdin.write("d");
+    });
+    await act(async () => {
+      /* Flush */
+    });
+    expect(vi.mocked(client.destroySession)).not.toHaveBeenCalled();
+    expect(lastFrame()).toContain("Shut down session?");
+
+    act(() => {
+      stdin.write("y");
     });
     await act(async () => {
       /* Flush */
@@ -448,7 +507,7 @@ describe("Keyboard routing — ctrl keys", () => {
     expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
   });
 
-  it("ctrl+d destroys session from dashboard", async () => {
+  it("ctrl+d destroys session from dashboard once confirmed", async () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
     ];
@@ -457,6 +516,16 @@ describe("Keyboard routing — ctrl keys", () => {
 
     act(() => {
       stdin.write("\x04"); // Ctrl+d
+    });
+    await act(async () => {
+      /* Flush */
+    });
+    // A lone 0x04 — which a tmux client attaching with stdin at EOF injects —
+    // Must not tear the session down.
+    expect(vi.mocked(client.destroySession)).not.toHaveBeenCalled();
+
+    act(() => {
+      stdin.write("y");
     });
     await act(async () => {
       /* Flush */

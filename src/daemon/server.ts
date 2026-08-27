@@ -10,20 +10,7 @@ import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
-import {
-  capturePane,
-  getWindowName,
-  getWindowOption,
-  killPane,
-  paneExists,
-  panePid,
-  renameWindow,
-  resyncPaneSizes,
-  selectPane,
-  sendCtrlC,
-  sendKeys,
-  setWindowOption,
-} from "#src/lib/tmux.js";
+import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
 import { daemonHandlers } from "./handlers/daemon.js";
@@ -38,6 +25,10 @@ interface CreateParams {
   projectDir: string;
   tmuxSession: string;
   originPane: string;
+  /** Tmux socket hosting the session; omitted/null = the user's default server. */
+  tmuxSocket?: string | null;
+  /** True when zaps owns the hosting tmux session. Validated at the IPC boundary. */
+  managedTmux?: boolean;
 }
 
 interface SessionStore {
@@ -46,6 +37,30 @@ interface SessionStore {
   getByProjectDir(dir: string): Session | undefined;
   create(params: CreateParams): Promise<Session>;
   destroy(id: string): Promise<void>;
+}
+
+/**
+ * A cache hit must not silently hand back a session living somewhere else: the
+ * caller's panes, ports and teardown all assume the socket it asked for. Two
+ * zaps in different tmux contexts (personal vs managed) sharing a config path
+ * would otherwise "succeed" and then drive tmux commands at the wrong server.
+ */
+function describeTmuxContext(socket: string | null, managed: boolean): string {
+  const where = socket === null ? "the default tmux server" : `tmux socket '${socket}'`;
+  return managed ? `${where} (managed)` : where;
+}
+
+function assertSameTmuxContext(existing: Session, params: CreateParams): void {
+  const requestedSocket = params.tmuxSocket ?? null;
+  const requestedManaged = params.managedTmux === true;
+  if (existing.tmuxSocket === requestedSocket && existing.managedTmux === requestedManaged) {
+    return;
+  }
+  throw new Error(
+    `Session already running on ${describeTmuxContext(existing.tmuxSocket, existing.managedTmux)}; ` +
+      `this request asked for ${describeTmuxContext(requestedSocket, requestedManaged)}. ` +
+      `Run zaps down first.`,
+  );
 }
 
 class DaemonServer implements SessionStore {
@@ -159,8 +174,9 @@ class DaemonServer implements SessionStore {
     try {
       const existing = this.sessions.get(id);
       if (existing) {
+        assertSameTmuxContext(existing, params);
         const tuiPane = existing.paneMap["@tui"];
-        if (tuiPane && (await paneExists(tuiPane))) {
+        if (tuiPane && (await existing.tmux.paneExists(tuiPane))) {
           return existing;
         }
         // The tmux window was closed externally — full teardown, then rebuild.
@@ -173,6 +189,12 @@ class DaemonServer implements SessionStore {
   }
 
   private async buildSession(id: string, params: CreateParams): Promise<Session> {
+    // Every tmux command for this session goes through one socket-bound handle.
+    // The Session builds an identical one from `tmuxSocket`; this one covers the
+    // Layout build that has to happen before the Session exists.
+    const tmuxSocket = params.tmuxSocket ?? null;
+    const tmux = tmuxFor(tmuxSocket);
+
     // Load config
     const config = await loadConfig(params.configPath, params.projectDir);
 
@@ -188,23 +210,23 @@ class DaemonServer implements SessionStore {
       config.project.layout,
       config.project.services,
       config.groups,
-      { skip },
+      { skip, tmux },
     );
     // Splitting panes off @tui can leave its kernel pty winsize stale at the
     // Pre-split width, garbling the in-process TUI until a manual resize. Force
     // Tmux to re-push every pane's winsize now that the layout is final.
-    await resyncPaneSizes(paneMap["@tui"] ?? focusPane);
-    await selectPane(focusPane);
+    await tmux.resyncPaneSizes(paneMap["@tui"] ?? focusPane);
+    await tmux.selectPane(focusPane);
 
     // Late-bound ref so storeExecInfo closure can capture session before it's created
     const ref: { session: Session | null } = { session: null };
     const deps = {
-      sendKeys,
-      sendCtrlC,
-      panePid,
-      detectPorts,
+      sendKeys: tmux.sendKeys,
+      sendCtrlC: tmux.sendCtrlC,
+      panePid: tmux.panePid,
+      detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
       detectPortsForPid,
-      capturePane,
+      capturePane: tmux.capturePane,
       getDescendantPids,
       recordDetached: (pid: number) => {
         this.detachedRegistry.record(pid);
@@ -212,10 +234,11 @@ class DaemonServer implements SessionStore {
       removeDetached: (pid: number) => {
         this.detachedRegistry.remove(pid);
       },
-      renameWindow,
-      getWindowName,
-      getWindowOption,
-      setWindowOption,
+      renameWindow: tmux.renameWindow,
+      getWindowName: tmux.getWindowName,
+      getWindowOption: tmux.getWindowOption,
+      setWindowOption: tmux.setWindowOption,
+      displayPopup: tmux.displayPopup,
       exec: async (cmd: string, args: string[], cwd?: string) => {
         await execFileAsync(cmd, args, cwd ? { cwd } : {});
       },
@@ -257,6 +280,8 @@ class DaemonServer implements SessionStore {
       tmuxSession: params.tmuxSession,
       originPane: params.originPane,
       deps,
+      tmuxSocket,
+      managedTmux: params.managedTmux ?? false,
     };
 
     const session = new Session(sessionParams, manager);
@@ -286,7 +311,7 @@ class DaemonServer implements SessionStore {
     // Kill non-origin, non-TUI panes
     for (const paneId of Object.values(session.paneMap)) {
       if (paneId !== session.originPane && paneId !== session.paneMap["@tui"]) {
-        await killPane(paneId).catch(() => {
+        await session.tmux.killPane(paneId).catch(() => {
           /* Best-effort cleanup */
         });
       }

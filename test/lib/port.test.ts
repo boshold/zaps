@@ -292,7 +292,7 @@ describe("detectPorts", () => {
       };
     });
 
-    const result = await detectPorts("%0");
+    const result = await detectPorts("%0", { panePid: mockPanePid });
     expect(result).toEqual([3000, 5432]);
   });
 });

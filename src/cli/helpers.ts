@@ -25,6 +25,16 @@ export interface SessionInfo {
   id: string;
   name: string;
   projectDir: string;
+  /**
+   * Tmux session hosting the panes — powers the `zaps ls` location column.
+   * Optional at runtime: a daemon from an older release omits it, and the CLI
+   * must degrade (blank location) rather than crash mid-command.
+   */
+  tmuxSession?: string;
+  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
+  managed?: boolean;
+  /** `%N` of the TUI pane, or null when the layout has none (re-attach target). */
+  tuiPane?: string | null;
 }
 
 export interface SessionIpc {
@@ -275,5 +285,10 @@ export async function runDown(deps: DownDeps): Promise<number> {
     return 1;
   }
   deps.stdout("Session destroyed.\n");
+  if (target.managed && target.tmuxSession) {
+    // The destroy also took the tmux session zaps owned — say so, since it is
+    // What just dropped an attached user back into their shell (F5).
+    deps.stdout(`Killed managed tmux session ${target.tmuxSession}.\n`);
+  }
   return 0;
 }

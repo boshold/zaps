@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { shellEscape } from "#src/lib/service/env.js";
-import { displayPopup, tmuxSupportsPopup } from "#src/lib/tmux.js";
+import { defaultTmux } from "#src/lib/tmux-default.js";
+import type { TmuxHandle } from "#src/lib/tmux.js";
+
+/** The tmux commands the picker popup issues. */
+type PopupTmux = Pick<TmuxHandle, "displayPopup" | "tmuxSupportsPopup">;
 
 /** Resolve true if `cmd --version` runs (a cheap presence probe). */
 async function binaryAvailable(cmd: string): Promise<boolean> {
@@ -26,6 +30,8 @@ export type PickerScriptBuilder = (inFile: string, outFile: string) => string;
 export interface PopupPickerOptions {
   /** Override the in-popup picker command — tests inject a non-interactive stub. */
   buildScript?: PickerScriptBuilder;
+  /** Tmux surface for the popup; defaults to the env-based handle. */
+  tmux?: PopupTmux;
 }
 
 /**
@@ -50,8 +56,8 @@ export function parseSelection(raw: string): string | null {
 }
 
 /** True when both tmux (>= 3.2, for `display-popup`) and `fzf` are available. */
-export async function popupPickerAvailable(): Promise<boolean> {
-  const [tmuxOk, fzfOk] = await Promise.all([tmuxSupportsPopup(), binaryAvailable("fzf")]);
+export async function popupPickerAvailable(tmux: PopupTmux = defaultTmux): Promise<boolean> {
+  const [tmuxOk, fzfOk] = await Promise.all([tmux.tmuxSupportsPopup(), binaryAvailable("fzf")]);
   return tmuxOk && fzfOk;
 }
 
@@ -66,13 +72,14 @@ export async function runPopupPicker(
   opts?: PopupPickerOptions,
 ): Promise<string | null> {
   const build = opts?.buildScript ?? buildFzfScript;
+  const tmux = opts?.tmux ?? defaultTmux;
   const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-task-pick-"));
   const inFile = path.join(dir, "tasks");
   const outFile = path.join(dir, "selection");
   try {
     const lines = tasks.map((t) => `${t.key}\t${t.name}`).join("\n");
     await writeFile(inFile, `${lines}\n`, "utf8");
-    await displayPopup({
+    await tmux.displayPopup({
       command: `sh -c ${shellEscape(build(inFile, outFile))}`,
       title: "Run a task",
       width: "60%",

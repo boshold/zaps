@@ -15,12 +15,13 @@ import {
   paneIndexOrder,
   sendKeys,
   splitPane,
+  tmuxFor,
   windowLayout,
 } from "#src/lib/tmux.js";
 
 import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
-import { attachClient, createTestSession } from "../helpers/tmux.js";
+import { attachClient, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 import { waitFor } from "../helpers/wait.js";
 
 const execFileAsync = promisify(execFile);
@@ -116,7 +117,10 @@ async function probeSttyOnce(paneId: string): Promise<{ rows: number; cols: numb
 async function probeSttyUntil(
   paneId: string,
   expected: { rows: number; cols: number },
-  timeoutMs = 10_000,
+  // Generous deadline: on a loaded machine the shell can take many seconds to
+  // Process the SIGWINCH, and this polls for the condition rather than sleeping
+  // — a correct resize still returns on the first matching poll.
+  timeoutMs = 30_000,
   pollMs = 100,
 ): Promise<{ rows: number; cols: number }> {
   const start = Date.now();
@@ -135,9 +139,10 @@ async function probeSttyUntil(
 
 function makeReflow(layout: LayoutNode, paneMap: PaneMap, sessionName: string): LayoutReflow {
   return new LayoutReflow({
+    tmux: tmuxFor(testTmuxSocket()),
     getLayout: () => layout,
     getPaneMap: () => paneMap,
-    getWindowTarget: () => sessionName,
+    getWindowTarget: () => `=${sessionName}:`,
   });
 }
 

@@ -5,6 +5,8 @@ import type { SessionStore } from "../../src/daemon/server.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
 import type { PaneRunInfo } from "../../src/lib/task/run-in-pane.js";
+import { tmuxFor } from "../../src/lib/tmux.js";
+import type { TmuxHandle } from "../../src/lib/tmux.js";
 
 export interface MockSession {
   id: string;
@@ -22,6 +24,9 @@ export interface MockSession {
     unavailableServices: Map<string, { name: string; reason: string }>;
   };
   paneMap: Record<string, string>;
+  tmux: TmuxHandle;
+  tmuxSocket: string | null;
+  managedTmux: boolean;
   tmuxSession: string;
   originPane: string;
   execInfo: Map<string, { command: string; cwd: string; env: Record<string, string> }>;
@@ -80,6 +85,9 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
       unavailableServices: new Map(),
     },
     paneMap: { "@tui": "%0", api: "%1" },
+    tmux: tmuxFor(null),
+    tmuxSocket: null,
+    managedTmux: false,
     tmuxSession: "test-tmux",
     originPane: "%0",
     execInfo: overrides.execInfo ?? new Map(),

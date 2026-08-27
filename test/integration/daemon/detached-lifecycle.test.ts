@@ -13,7 +13,7 @@ import { createTestDaemon, waitForServiceState } from "../helpers/daemon.js";
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 /**
  * Write a config with a single DETACHED service: a pane-less HTTP server that
@@ -79,6 +79,7 @@ describe.skipIf(!hasTmux())("detached service lifecycle (E4)", () => {
       projectDir: tmpDir,
       tmuxSession: tmux.name,
       originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
     });
     expect(createRes.error).toBeUndefined();
     sid = (createRes.result as { id: string }).id;

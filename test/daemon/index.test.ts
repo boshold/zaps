@@ -18,6 +18,7 @@ vi.mock("node:fs", () => ({
     writeSync: vi.fn(),
     closeSync: vi.fn(),
     statSync: vi.fn(() => ({ mtimeMs: Date.now() })),
+    existsSync: vi.fn(() => true),
   },
 }));
 
@@ -25,6 +26,7 @@ vi.mock("node:os", () => ({
   default: {
     tmpdir: () => "/tmp",
     userInfo: () => ({ uid: 1000 }),
+    homedir: () => "/home/test",
   },
 }));
 
@@ -174,6 +176,47 @@ describe("ensureDaemon", () => {
     expect(opts.env.ZAPS_COMMAND).toBe("node /path/cli.mjs");
   });
 
+  it("strips ZAPS_TMUX_SOCKET + TMUX from the daemon child env (sanitization rule)", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    process.env.ZAPS_TMUX_SOCKET = "zaps";
+    process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+    process.env.TMUX_PANE = "%3";
+
+    try {
+      await ensureDaemon({ file: "zaps", args: [] });
+    } finally {
+      delete process.env.ZAPS_TMUX_SOCKET;
+      delete process.env.TMUX;
+      delete process.env.TMUX_PANE;
+    }
+
+    const { spawn } = await import("node:child_process");
+    const call = vi.mocked(spawn).mock.calls.at(-1);
+    const opts = call?.[2] as { env: Record<string, string | undefined> };
+    expect(opts.env.ZAPS_TMUX_SOCKET).toBeUndefined();
+    expect(opts.env.TMUX).toBeUndefined();
+    expect(opts.env.TMUX_PANE).toBeUndefined();
+    expect(opts.env.ZAPS_COMMAND).toBe("zaps");
+  });
+
+  it("spawns the daemon in a stable cwd so a deleted project dir can't poison it", async () => {
+    const fsModule = await import("node:fs");
+    const fs = fsModule.default;
+    vi.mocked(fs.readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+
+    await ensureDaemon({ file: "zaps", args: [] });
+
+    const { spawn } = await import("node:child_process");
+    const opts = vi.mocked(spawn).mock.calls.at(-1)?.[2] as { cwd?: string };
+    expect(opts.cwd).toBe("/home/test");
+  });
+
   it("throws a clear error when the daemon spawn fails (E1)", async () => {
     vi.useFakeTimers();
     const fsModule = await import("node:fs");
@@ -221,6 +264,8 @@ describe("runDaemon", () => {
     vi.useFakeTimers();
     process.exit = vi.fn() as unknown as typeof process.exit;
     processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
+    // Never move the test worker's cwd; runDaemon chdirs to a stable dir.
+    vi.spyOn(process, "chdir").mockImplementation(() => undefined);
     delete process.env.XDG_RUNTIME_DIR;
 
     // Re-establish DaemonServer mock (vi.restoreAllMocks in other suites may clear it)
@@ -273,6 +318,24 @@ describe("runDaemon", () => {
     expect(fs.writeFileSync).toHaveBeenCalled();
     expect(fs.openSync).toHaveBeenCalled();
     expect(serverInstance().start).toHaveBeenCalledWith(expect.stringMatching(/daemon\.sock$/));
+  });
+
+  it("chdirs to a stable dir so a deleted project dir can't poison spawns", async () => {
+    await runDaemon();
+
+    expect(process.chdir).toHaveBeenCalledWith("/home/test");
+  });
+
+  it("deletes inherited tmux env at startup (socket selection is per-session)", async () => {
+    process.env.ZAPS_TMUX_SOCKET = "zaps";
+    process.env.TMUX = "/tmp/tmux-1000/zaps,123,0";
+    process.env.TMUX_PANE = "%3";
+
+    await runDaemon();
+
+    expect(process.env.ZAPS_TMUX_SOCKET).toBeUndefined();
+    expect(process.env.TMUX).toBeUndefined();
+    expect(process.env.TMUX_PANE).toBeUndefined();
   });
 
   it("shuts down on idle timeout with no sessions", async () => {

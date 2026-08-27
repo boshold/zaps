@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 
 import {
   IdleTimer,
@@ -19,6 +20,21 @@ import { DaemonServer } from "#src/daemon/server.js";
 import { registerShutdownHook } from "#src/daemon/shutdown.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
+
+/**
+ * Working directory for the detached daemon. The invoking CLI's cwd is a project
+ * dir that can be deleted while the daemon outlives it — on Linux every later
+ * `spawn()` from a deleted cwd then fails with ENOENT (observed: a lingering
+ * daemon whose tmux calls all died). Home (or `/`) is stable.
+ */
+function daemonSpawnCwd(): string {
+  try {
+    const home = os.homedir();
+    return home && fs.existsSync(home) ? home : "/";
+  } catch {
+    return "/";
+  }
+}
 
 async function pingSocket(sock: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -101,6 +117,22 @@ function createShutdownAll(
  * Run the daemon in the current process (called after fork+detach).
  */
 async function runDaemon(): Promise<void> {
+  // Socket selection is per-session only: a daemon started from inside a managed
+  // Tmux must never inherit that socket and route every session's tmux calls to
+  // It (50_api sanitization rule). `ensureDaemon` strips these too.
+  delete process.env.ZAPS_TMUX_SOCKET;
+  delete process.env.TMUX;
+  delete process.env.TMUX_PANE;
+
+  // Same protection `ensureDaemon` gives the spawned path: never hold the
+  // Invoking project dir open, since deleting it makes every later spawn() fail
+  // With ENOENT. Matters for a manually started `zaps daemon run`.
+  try {
+    process.chdir(daemonSpawnCwd());
+  } catch {
+    // Unusable stable dir — keep the inherited cwd rather than refusing to boot.
+  }
+
   writePid();
 
   const logFile = fs.openSync(logPath(), "a");
@@ -263,10 +295,17 @@ async function ensureDaemon(command: { file: string; args: string[] }): Promise<
   try {
     const logFile = fs.openSync(logPath(), "a");
     const zapsCommand = [command.file, ...command.args].join(" ");
+    // Strip the caller's tmux context: the daemon picks a socket per session via
+    // `tmuxFor(session.tmuxSocket)`, never from its own env (50_api).
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, ZAPS_COMMAND: zapsCommand };
+    delete childEnv.ZAPS_TMUX_SOCKET;
+    delete childEnv.TMUX;
+    delete childEnv.TMUX_PANE;
     const child = spawn(command.file, [...command.args, "daemon", "run"], {
       detached: true,
       stdio: ["ignore", logFile, logFile],
-      env: { ...process.env, ZAPS_COMMAND: zapsCommand },
+      env: childEnv,
+      cwd: daemonSpawnCwd(),
     });
 
     // Capture a spawn failure (e.g. ENOENT) so it surfaces as a clear error

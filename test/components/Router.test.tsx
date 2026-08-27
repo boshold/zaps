@@ -26,6 +26,8 @@ vi.mock("../../src/lib/open.js", () => ({
 vi.mock("../../src/lib/tmux.js", () => ({
   zoomPane: vi.fn(),
   editPaneCapture: vi.fn().mockResolvedValue(undefined),
+  // Quitting asks tmux to detach the client (managed mode only).
+  detachClient: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("../../src/lib/task/popup-picker.js", () => ({
@@ -34,7 +36,7 @@ vi.mock("../../src/lib/task/popup-picker.js", () => ({
 }));
 
 const { openInBrowser } = await import("../../src/lib/open.js");
-const { zoomPane, editPaneCapture } = await import("../../src/lib/tmux.js");
+const { zoomPane, editPaneCapture, detachClient } = await import("../../src/lib/tmux.js");
 const { popupPickerAvailable, runPopupPicker } = await import("../../src/lib/task/popup-picker.js");
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -393,11 +395,16 @@ describe("Router", () => {
 
   // ── dashboard input: destroy session (d) ─────────────────────
 
-  it("destroys session with d key", () => {
+  it("asks before destroying the session on `d`", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("d");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    // Nothing torn down yet — `d` only opens the confirmation overlay.
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
   });
 
   // ── single sort, shared by render + input handler (F8) ───────
@@ -457,11 +464,39 @@ describe("Router", () => {
 
   // ── global input: quit (q) ───────────────────────────────────
 
-  it("disconnects client on q", () => {
+  it("disconnects client on q", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("q");
+    // Quitting first asks tmux to detach the client (a no-op outside a managed
+    // Session), so the disconnect lands one microtask later.
+    await act(async () => {
+      /* Flush */
+    });
     expect(client.disconnect).toHaveBeenCalled();
+  });
+
+  it("detaches the tmux client on q in a managed session (F2)", async () => {
+    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
+    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
+    const client = createMockClient();
+    const { stdin } = renderRouter({ client });
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(detachClient).toHaveBeenCalledWith();
+    expect(client.disconnect).toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it("does not touch tmux on q in a personal session", async () => {
+    const { stdin } = renderRouter();
+    stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
+    expect(detachClient).not.toHaveBeenCalled();
   });
 
   // ── logs view input ──────────────────────────────────────────
@@ -754,16 +789,27 @@ describe("Router", () => {
 
   // ── ctrl+d: destroy from any view ────────────────────────────
 
-  it("destroys session on ctrl+d", () => {
+  // A tmux client attaching with its own stdin at EOF makes the pty emit VEOF
+  // (0x04), which tmux hands to the pane as a plain Ctrl-D. A single stray byte
+  // Must never stop every service — the end-to-end case lives in the managed
+  // Re-attach integration suite.
+  it("asks before destroying the session on ctrl+d, and never on the byte alone", async () => {
     const client = createMockClient();
     const { stdin } = renderRouter({ client });
     stdin.write("\x04");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
+    // A repeat of the same byte cannot confirm it either.
+    stdin.write("\x04");
+    expect(client.destroySession).not.toHaveBeenCalled();
   });
 
   // ── q still works during per-service busy ───────────────────
 
-  it("allows q even when a service is busy", () => {
+  it("allows q even when a service is busy", async () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -773,12 +819,15 @@ describe("Router", () => {
     const { stdin } = renderRouter({ client });
     stdin.write("r"); // Makes service busy (per-service, not global)
     stdin.write("q");
+    await act(async () => {
+      /* Flush */
+    });
     expect(client.disconnect).toHaveBeenCalled();
   });
 
   // ── ctrl+d still works during per-service busy ────────────
 
-  it("allows ctrl+d even when a service is busy", () => {
+  it("still offers shutdown when a service is busy", async () => {
     const client = createMockClient();
     client.restartService = vi.fn().mockReturnValue(
       new Promise(() => {
@@ -788,6 +837,9 @@ describe("Router", () => {
     const { stdin } = renderRouter({ client });
     stdin.write("r"); // Makes service busy
     stdin.write("\x04");
-    expect(client.destroySession).toHaveBeenCalled();
+    await act(async () => {
+      /* Flush */
+    });
+    expect(overlay?.top?.id).toBe("shutdown-confirm");
   });
 });

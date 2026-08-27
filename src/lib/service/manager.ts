@@ -16,6 +16,7 @@ import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 
 import { DetachedRunner } from "./detached.js";
 import type { SpawnFn } from "./detached.js";
@@ -330,6 +331,7 @@ export class ServiceManager extends EventEmitter {
             statuses: this.statuses,
             projectDir: config.projectDir,
             services: config.project.services,
+            tmux: { displayPopup: this.deps.displayPopup },
             onLine: (_taskKey, line) => {
               this.emit("taskLine", runId, line);
             },
@@ -1586,6 +1588,8 @@ export interface ServiceManagerDeps {
   getWindowName: (target: string) => Promise<string>;
   getWindowOption: (target: string, option: string) => Promise<string>;
   setWindowOption: (target: string, option: string, value: string) => Promise<void>;
+  /** Popup surface for hook-path popup tasks; bound to the session's tmux socket. */
+  displayPopup: (opts: DisplayPopupOptions) => Promise<void>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
   /** Pre-flight expected host ports; returns a conflict message or null (B2). */
   preflightPorts: (serviceConfig: ServiceConfig, projectDir: string) => Promise<string | null>;

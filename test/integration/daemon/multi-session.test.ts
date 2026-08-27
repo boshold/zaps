@@ -12,7 +12,7 @@ import { createTestDaemon, waitForServiceState, writeTestConfig } from "../helpe
 import { getFreePort } from "../helpers/port.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 describe.skipIf(!hasTmux())("daemon multi-session", () => {
   // ── Two sessions coexist on same daemon ──────────────────────────────
@@ -43,6 +43,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir1,
         tmuxSession: tmux1.name,
         originPane: tmux1.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidA = (resA.result as { id: string }).id;
 
@@ -51,6 +52,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir2,
         tmuxSession: tmux2.name,
         originPane: tmux2.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidB = (resB.result as { id: string }).id;
 
@@ -130,6 +132,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir1,
         tmuxSession: tmux1.name,
         originPane: tmux1.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidA = (resA.result as { id: string }).id;
 
@@ -138,6 +141,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir2,
         tmuxSession: tmux2.name,
         originPane: tmux2.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidB = (resB.result as { id: string }).id;
 
@@ -210,6 +214,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir1,
         tmuxSession: tmux1.name,
         originPane: tmux1.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidA = (resA.result as { id: string }).id;
 
@@ -218,6 +223,7 @@ describe.skipIf(!hasTmux())("daemon multi-session", () => {
         projectDir: tmpDir2,
         tmuxSession: tmux2.name,
         originPane: tmux2.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
       });
       sidB = (resB.result as { id: string }).id;
 

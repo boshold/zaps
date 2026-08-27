@@ -2,6 +2,7 @@
 import { cli, command } from "cleye";
 import type { Command } from "cleye";
 
+import { ensureTmuxContext, reattachManaged } from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -18,7 +19,8 @@ import {
   runDown,
   withDaemon,
 } from "./cli/helpers.js";
-import { isCodingAgent, resolveFormat, writeData } from "./cli/output.js";
+import { isCodingAgent, resolveFormat, sessionRows, writeData } from "./cli/output.js";
+import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadConfig } from "./config/loader.js";
@@ -169,17 +171,18 @@ async function runTui(opts: {
   process.stdout.write("\x1b[?1049h");
 
   if (showSplash) {
-    const { renderSplash } = await import("./components/logo.js");
+    const { managedSplashHint, renderSplash } = await import("./components/logo.js");
     const { resolveIconTier } = await import("./components/theme/IconTheme.js");
     const { listPanes } = await import("./lib/tmux.js");
     const splashTier = resolveIconTier(snapshot.ui?.icons);
+    const hint = managedSplashHint(getEnv("ZAPS_MANAGED_TMUX"));
     const tmuxSession = await currentSession();
     const panes = await listPanes(tmuxSession);
     const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
     if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier);
+      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier, hint);
     } else {
-      renderSplash(undefined, splashTier);
+      renderSplash(undefined, splashTier, hint);
     }
   }
 
@@ -212,7 +215,13 @@ async function runTui(opts: {
       configStale={snapshot.configStale}
       ui={snapshot.ui}
     />,
-    { patchConsole: false },
+    {
+      patchConsole: false,
+      // On a real pty, paint frames even when CI env vars leak into the pane
+      // (a tmux server started on CI hands CI=true to every pane, and Ink's
+      // Is-in-ci check would then skip every frame until unmount).
+      interactive: process.stdout.isTTY ? true : undefined,
+    },
   );
 
   await waitUntilExit();
@@ -319,11 +328,8 @@ async function upFlow(detach?: boolean): Promise<void> {
 
   const invokeDir = process.cwd();
 
-  if (!getEnv("TMUX")) {
-    process.stderr.write("zaps must be run from inside a tmux session.\n");
-    process.exit(1);
-  }
-
+  // Outside tmux we never get here: `upCommand` bootstraps a managed session
+  // First and only falls through once `$TMUX` is set.
   const originPane = await currentPaneId();
   const tmuxSession = await currentSession();
 
@@ -335,6 +341,8 @@ async function upFlow(detach?: boolean): Promise<void> {
     projectDir: invokeDir,
     tmuxSession,
     originPane,
+    tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
+    managedTmux: getEnv("ZAPS_MANAGED_TMUX") === "1",
   });
 
   if (res.error) {
@@ -380,6 +388,24 @@ async function upFlow(detach?: boolean): Promise<void> {
   }
 }
 
+/**
+ * Resolve this process's tmux context for `zaps` / `zaps up`. Outside tmux this
+ * spawns (or re-attaches to, or refuses) the project's managed tmux session and
+ * the caller exits with the returned code; inside tmux it proceeds unchanged.
+ * A missing config fails here with the same message `upFlow` would print, so no
+ * tmux session is ever created for a non-project directory.
+ */
+async function bootstrapTmux(
+  detach: boolean,
+): Promise<{ proceed: true } | { exitCode: number; proceed: false }> {
+  const configPath = discoverConfig(process.cwd());
+  if (!configPath) {
+    process.stderr.write("No config found. Run `zaps init` to create one.\n");
+    process.exit(1);
+  }
+  return ensureTmuxContext({ configPath, projectDir: process.cwd(), detach });
+}
+
 // --- Smart default: attach if running, else up ---
 
 const upCommand = command(
@@ -422,6 +448,17 @@ const upCommand = command(
       }
     }
 
+    // Outside tmux, hand over to a zaps-managed tmux session (or refuse) before
+    // Anything else runs; inside tmux this falls straight through.
+    const bootstrap = await bootstrapTmux(Boolean(opts.detach));
+    if (!bootstrap.proceed) {
+      // `process.exitCode` + return, never `process.exit()`: the bootstrap has
+      // Just written user-facing lines, and exiting outright discards whatever
+      // Is still buffered on a piped stdout/stderr.
+      process.exitCode = bootstrap.exitCode;
+      return;
+    }
+
     // Smart default: if session already running for this project, attach
     if (!opts.detach && isDaemonRunning()) {
       const configPath = discoverConfig(process.cwd());
@@ -433,10 +470,6 @@ const upCommand = command(
           const id = sessionId(configPath);
           const match = sessions.find((s) => s.id === id);
           if (match) {
-            if (!getEnv("TMUX")) {
-              process.stderr.write("zaps must be run from inside a tmux session.\n");
-              process.exit(1);
-            }
             await runTui({ sessionId: match.id, socketPath: sock });
             return;
           }
@@ -613,9 +646,7 @@ const lsCommand = command(
       process.stdout.write("No active sessions.\n");
       return;
     }
-    for (const s of sessions) {
-      process.stdout.write(`${s.id}  ${s.name}  ${s.projectDir}\n`);
-    }
+    process.stdout.write(`${formatTable(sessionRows(sessions))}\n`);
   },
 );
 
@@ -1104,6 +1135,31 @@ const initCommand = command(
   },
 );
 
+/**
+ * Why `zaps attach` cannot reach `session`, if it cannot (F6/F7), as the message
+ * to print. Attach never creates or moves anything, so both conflicts are hard
+ * refusals — the user picks a terminal, or runs `zaps down`.
+ */
+async function attachConflict(session: SessionInfo): Promise<string | undefined> {
+  const view = {
+    name: session.name,
+    tmuxSession: session.tmuxSession ?? "",
+    managed: session.managed === true,
+  };
+  if (!getEnv("TMUX")) {
+    // Outside tmux: a session in the user's own tmux is only reachable there.
+    return view.managed ? undefined : refusePersonalMessage(view);
+  }
+  if (!view.managed) {
+    return undefined;
+  }
+  // Inside tmux: fine when this IS the managed session (the TUI attaches in the
+  // Current pane); refuse from any other tmux, where pane ops would target the
+  // Wrong server.
+  const current = await currentSession().catch(() => undefined);
+  return current === view.tmuxSession ? undefined : refuseManagedMessage(view);
+}
+
 const attachCommand = command(
   {
     name: "attach",
@@ -1113,10 +1169,6 @@ const attachCommand = command(
   async (parsed) => {
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("attach", parsed._, 0);
-    if (!getEnv("TMUX")) {
-      process.stderr.write("zaps must be run from inside a tmux session.\n");
-      process.exit(1);
-    }
 
     const sock = socketPath();
     if (!isDaemonRunning()) {
@@ -1138,6 +1190,23 @@ const attachCommand = command(
 
     try {
       const targetSession = resolveTargetSession(sessions, globalSession());
+      const conflict = await attachConflict(targetSession);
+      if (conflict) {
+        process.stderr.write(`${conflict}\n`);
+        // Exit via the code so the multi-line hint is flushed first.
+        process.exitCode = 1;
+        return;
+      }
+      if (!getEnv("TMUX")) {
+        // Plain terminal, managed session: revive its TUI pane and attach (F3).
+        const result = await reattachManaged({
+          name: targetSession.tmuxSession ?? "",
+          tuiPane: targetSession.tuiPane ?? null,
+        });
+        // See the `up` bootstrap: exit via the code, so buffered output flushes.
+        process.exitCode = result.proceed ? 0 : result.exitCode;
+        return;
+      }
       await runTui({ sessionId: targetSession.id, socketPath: sock });
     } catch (error) {
       if (error instanceof CliError) {

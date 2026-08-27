@@ -12,7 +12,6 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import { newWindow, sendKeys, splitPane } from "#src/lib/tmux.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -354,6 +353,7 @@ export const sessionHandlers: Record<
           ),
           projectDir: session.config.projectDir,
           services: session.config.project.services,
+          tmux: session.tmux,
           onLine: (_taskKey, line) => {
             session.taskOutput.append(runId, line);
             send(socket, { id: req.id, event: "line", data: line });
@@ -430,8 +430,8 @@ export const sessionHandlers: Record<
     try {
       paneId =
         target === "pane"
-          ? await splitPane(session.paneMap["@tui"] ?? session.originPane, "v")
-          : await newWindow(session.tmuxSession);
+          ? await session.tmux.splitPane(session.paneMap["@tui"] ?? session.originPane, "v")
+          : await session.tmux.newWindow(session.tmuxSession);
     } catch {
       return ipcErr(req.id, "tmux_failed");
     }
@@ -477,7 +477,7 @@ export const sessionHandlers: Record<
       runId,
     });
     try {
-      await sendKeys(paneId, command);
+      await session.tmux.sendKeys(paneId, command);
     } catch {
       session.paneRunInfo.delete(runId);
       session.taskOutput.finish(runId, "error", Date.now());

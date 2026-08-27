@@ -60,27 +60,34 @@ vi.mock("#src/lib/tmux-layout.js", () => ({
   createLayout: vi.fn(),
 }));
 
-vi.mock("#src/lib/tmux.js", () => ({
-  capturePane: vi.fn(),
-  selectPane: vi.fn(),
-  sendKeys: vi.fn(),
-  sendCtrlC: vi.fn(),
-  panePid: vi.fn(),
-  paneExists: vi.fn(),
-  killPane: vi.fn(),
-  renameWindow: vi.fn(),
-  getWindowName: vi.fn(),
-  getWindowOption: vi.fn(),
-  setWindowOption: vi.fn(),
-  resyncPaneSizes: vi.fn(),
-  // LayoutReflow (constructed by Session) imports these too.
-  getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
-  paneIndexOrder: vi.fn().mockResolvedValue([]),
-  selectLayout: vi.fn().mockResolvedValue(undefined),
-  splitPane: vi.fn().mockResolvedValue("%99"),
-  swapPanes: vi.fn().mockResolvedValue(undefined),
-  windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
-}));
+vi.mock("#src/lib/tmux.js", () => {
+  // Server + Session bind handles via `tmuxFor(tmuxSocket)`; the factory returns
+  // The SAME stub surface for both the module exports and the handle, so
+  // Assertions on the named exports still observe every call.
+  const api = {
+    capturePane: vi.fn(),
+    selectPane: vi.fn(),
+    sendKeys: vi.fn(),
+    sendCtrlC: vi.fn(),
+    panePid: vi.fn(),
+    paneExists: vi.fn(),
+    killPane: vi.fn(),
+    renameWindow: vi.fn(),
+    getWindowName: vi.fn(),
+    getWindowOption: vi.fn(),
+    setWindowOption: vi.fn(),
+    displayPopup: vi.fn(),
+    resyncPaneSizes: vi.fn(),
+    // LayoutReflow (constructed by Session) uses these too.
+    getWindowSize: vi.fn().mockResolvedValue({ width: 100, height: 30 }),
+    paneIndexOrder: vi.fn().mockResolvedValue([]),
+    selectLayout: vi.fn().mockResolvedValue(undefined),
+    splitPane: vi.fn().mockResolvedValue("%99"),
+    swapPanes: vi.fn().mockResolvedValue(undefined),
+    windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
+  };
+  return { ...api, tmuxFor: vi.fn(() => api) };
+});
 
 vi.mock("#src/lib/port.js", () => ({
   detectPorts: vi.fn(),
@@ -189,6 +196,42 @@ describe("DaemonServer", () => {
     expect(server.get(session.id)).toBe(session);
   });
 
+  it("binds the layout + session handle to the requested tmux socket", async () => {
+    const { tmuxFor } = await import("#src/lib/tmux.js");
+    vi.mocked(tmuxFor).mockClear();
+
+    const session = await server.create({
+      configPath: "/socket/.zaps.mts",
+      projectDir: "/socket",
+      tmuxSession: "zaps-socket-abc",
+      originPane: "%0",
+      tmuxSocket: "zaps",
+      managedTmux: true,
+    });
+
+    expect(tmuxFor).toHaveBeenCalledWith("zaps");
+    expect(session.tmuxSocket).toBe("zaps");
+    expect(session.managedTmux).toBe(true);
+    const layoutCall = mockCreateLayout.mock.calls.at(-1);
+    expect(layoutCall?.[4]).toMatchObject({ tmux: expect.any(Object) });
+  });
+
+  it("defaults an unmanaged session to the user's default server", async () => {
+    const { tmuxFor } = await import("#src/lib/tmux.js");
+    vi.mocked(tmuxFor).mockClear();
+
+    const session = await server.create({
+      configPath: "/default/.zaps.mts",
+      projectDir: "/default",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+
+    expect(tmuxFor).toHaveBeenCalledWith(null);
+    expect(session.tmuxSocket).toBeNull();
+    expect(session.managedTmux).toBe(false);
+  });
+
   it("returns existing session on duplicate create", async () => {
     const s1 = await server.create({
       configPath: "/test/.zaps.mts",
@@ -269,6 +312,38 @@ describe("DaemonServer", () => {
     expect(s2).toBe(s1);
     // No rebuild on a live cache hit.
     expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a create whose tmux context disagrees with the live session", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    await server.create(params);
+    tmux.paneExists.mockResolvedValue(true);
+
+    // Same project, but this caller runs in a managed tmux: handing back the
+    // Session on the default server would drive tmux at the wrong one.
+    await expect(
+      server.create({ ...params, tmuxSocket: "zaps", managedTmux: true }),
+    ).rejects.toThrow(/Session already running on the default tmux server/u);
+    expect(server.sessionCount).toBe(1);
+  });
+
+  it("still reuses the session for an identical tmux context", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "zaps-test-abc",
+      originPane: "%0",
+      tmuxSocket: "zaps",
+      managedTmux: true,
+    };
+    const s1 = await server.create(params);
+    tmux.paneExists.mockResolvedValue(true);
+    await expect(server.create(params)).resolves.toBe(s1);
   });
 
   it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {

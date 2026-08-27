@@ -4,9 +4,30 @@ import { CliError, formatTable, resolveTargetSession } from "#src/cli/helpers.js
 import type { SessionInfo } from "#src/cli/helpers.js";
 
 const sessions: SessionInfo[] = [
-  { id: "abc123def456", name: "my-app", projectDir: "/projects/my-app" },
-  { id: "xyz789ghi012", name: "api-server", projectDir: "/projects/api-server" },
-  { id: "abc999zzz000", name: "other", projectDir: "/projects/other" },
+  {
+    id: "abc123def456",
+    name: "my-app",
+    projectDir: "/projects/my-app",
+    tmuxSession: "tmux-abc123def456",
+    managed: false,
+    tuiPane: null,
+  },
+  {
+    id: "xyz789ghi012",
+    name: "api-server",
+    projectDir: "/projects/api-server",
+    tmuxSession: "tmux-xyz789ghi012",
+    managed: false,
+    tuiPane: null,
+  },
+  {
+    id: "abc999zzz000",
+    name: "other",
+    projectDir: "/projects/other",
+    tmuxSession: "tmux-abc999zzz000",
+    managed: false,
+    tuiPane: null,
+  },
 ];
 
 describe("resolveTargetSession", () => {
