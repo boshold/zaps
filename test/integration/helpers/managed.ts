@@ -174,7 +174,15 @@ export async function dumpManagedState(session: string, runtimeDir: string): Pro
     "#{pane_id}|#{pane_dead}|#{pane_current_command}",
   ]).catch((error: unknown) => `list-panes failed: ${String(error)}`);
   const ls = await runZaps(["ls", "--json"], process.cwd(), runtimeDir);
-  
+  // process.stderr.write, NOT console.error: the lint autofix deletes console
+  // calls, which silently guts this dump (it happened).
+  process.stderr.write(
+    `--- managed state dump for ${session} ---\n` +
+      `panes:\n${paneTable}\n` +
+      `tui frame:\n${frame}\n` +
+      `zaps ls (code ${ls.code}): ${ls.stdout || ls.stderr}\n` +
+      `--- end dump ---\n`,
+  );
 }
 
 /** True while the service still answers — i.e. the session survived. */
