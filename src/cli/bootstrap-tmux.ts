@@ -262,7 +262,11 @@ async function spawnAttached(deps: BootstrapDeps, name: string): Promise<Bootstr
  * exit, otherwise a fast failure (bad config) takes the pane — and with it the
  * exit code and the error text — down with it.
  */
-async function spawnDetached(deps: BootstrapDeps, name: string): Promise<BootstrapResult> {
+async function spawnDetached(
+  deps: BootstrapDeps,
+  name: string,
+  configPath: string,
+): Promise<BootstrapResult> {
   const args = buildCreateArgs({ name, detach: true, env: daemonEnv(), ...deps.size() });
   if ((await deps.runTmux(args, false)) !== 0) {
     deps.io.stderr(`Failed to create managed tmux session ${name}.\n`);
@@ -291,6 +295,20 @@ async function spawnDetached(deps: BootstrapDeps, name: string): Promise<Bootstr
   if (settlement.settled && settlement.exitCode === 0) {
     deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
     return { proceed: false, exitCode: 0 };
+  }
+
+  // A dead pane with an unreadable status is NOT proof of failure: tmux reaps
+  // The pane's process lazily (an unreaped zombie can outlive any wait — seen
+  // Live on 3.5a through 3.7c), so `#{pane_dead_status}` may never materialize.
+  // The daemon is authoritative instead: it only registers the session once the
+  // Inner run got that far, and every pre-session failure (bad config, version
+  // Refusal, conflict) exits without one.
+  if (!settlement.settled && settlement.reason === "unknown-status") {
+    const view = await deps.daemonSession(configPath).catch(() => undefined);
+    if (view) {
+      deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
+      return { proceed: false, exitCode: 0 };
+    }
   }
 
   // Replay what the inner run printed before it died — that text is the only
@@ -441,14 +459,14 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
     case "kill-stale-then-spawn": {
       await killStaleSession(decision.name, deps.tmux);
       return decision.detach
-        ? spawnDetached(deps, decision.name)
+        ? spawnDetached(deps, decision.name, options.configPath)
         : spawnAttached(deps, decision.name);
     }
     case "spawn": {
       return spawnAttached(deps, decision.name);
     }
     case "spawn-detached": {
-      return spawnDetached(deps, decision.name);
+      return spawnDetached(deps, decision.name, options.configPath);
     }
     case "reattach": {
       return reattachManaged({ name: decision.name, tuiPane: decision.tuiPane, deps });

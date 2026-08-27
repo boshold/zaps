@@ -327,6 +327,17 @@ describe("waitForPaneSettled", () => {
     });
   });
 
+  it("rides out the tmux 3.5a race where pane_dead flips before the status lands", async () => {
+    const displayMessage = vi
+      .fn()
+      .mockResolvedValueOnce("1||")
+      .mockResolvedValueOnce("1||")
+      .mockResolvedValue("1|3|");
+    await expect(
+      waitForPaneSettled("%0", { tmux: fakeTmux({ displayMessage }), pollMs: 1 }),
+    ).resolves.toEqual({ settled: true, exitCode: 3 });
+  });
+
   it("never reports success when a dead pane has no readable status", async () => {
     const tmux = fakeTmux({ displayMessage: vi.fn().mockResolvedValue("1||") });
     await expect(waitForPaneSettled("%0", { tmux, pollMs: 1 })).resolves.toEqual({

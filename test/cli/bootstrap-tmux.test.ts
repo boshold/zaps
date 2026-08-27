@@ -350,6 +350,34 @@ describe("ensureTmuxContext — detached create (F4)", () => {
     expect(h.err.join("")).toContain("died before reporting a result");
   });
 
+  it("falls back to the daemon when the dead pane's status never lands", async () => {
+    // Reap-lag zombie: pane dead, status unreadable forever — but the daemon
+    // Registered the session, which only happens when the inner run succeeded.
+    const h = harness({
+      settleTimeoutMs: 5000,
+      daemonSession: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValue({
+        name: "app",
+        tmuxSession: "zaps-app-x",
+        managed: true,
+        tuiPane: "%3",
+      }),
+    });
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1||");
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
+    expect(h.out.join("")).toContain("started (detached, managed tmux)");
+    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+  });
+
+  it("still fails on an unreadable status when the daemon knows nothing", async () => {
+    // Pre-session failures never register a daemon session, so the fallback
+    // Cannot mask them.
+    const h = harness({ settleTimeoutMs: 5000 });
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1||");
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("died before reporting a result");
+    expect(h.deps.tmux.killSession).toHaveBeenCalled();
+  });
+
   it("gives up when tmux cannot create the session", async () => {
     const h = harness();
     h.deps.runTmux = vi.fn(async (args: string[]) => {

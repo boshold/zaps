@@ -233,6 +233,17 @@ const SETTLE_FORMAT = "#{pane_dead}|#{pane_dead_status}|#{pane_dead_signal}";
 const MAX_PROBE_ERRORS = 3;
 
 /**
+ * Consecutive `1||` reads (dead, no status, no signal) tolerated before giving
+ * up. tmux marks the pane dead on pty EOF but reaps the child lazily — the
+ * process can sit as a zombie (parent: the tmux server) from milliseconds to
+ * indefinitely (verified live on 3.5a, 3.6a and 3.7c), and until the reap
+ * `#{pane_dead_status}` is unreadable. Callers must treat `unknown-status` as
+ * "exit code unknowable", not as failure — the bootstrap falls back to asking
+ * the daemon.
+ */
+const MAX_UNKNOWN_STATUS_READS = 20;
+
+/**
  * Poll `#{pane_dead}` until the bootstrap pane's command exits, then report the
  * inner exit code from `#{pane_dead_status}` (the pane must have
  * `remain-on-exit on`, else it vanishes and there is nothing left to read).
@@ -250,6 +261,7 @@ async function waitForPaneSettled(
   const { timeoutMs = 60_000, pollMs = 100, tmux = managedTmux() } = options;
   const deadline = Date.now() + timeoutMs;
   let probeErrors = 0;
+  let unknownStatusReads = 0;
 
   /* eslint-disable no-await-in-loop -- sequential polling is the point */
   while (Date.now() < deadline) {
@@ -274,7 +286,12 @@ async function waitForPaneSettled(
         if (!Number.isNaN(deadSignal)) {
           return { settled: true, exitCode: 128 + deadSignal };
         }
-        return { settled: false, reason: "unknown-status" };
+        unknownStatusReads += 1;
+        if (unknownStatusReads >= MAX_UNKNOWN_STATUS_READS) {
+          return { settled: false, reason: "unknown-status" };
+        }
+      } else {
+        unknownStatusReads = 0;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, pollMs));

@@ -97,7 +97,11 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         // A detach: `remain-on-exit` holds the pane dead at its position.
         // eslint-disable-next-line no-await-in-loop
         await managed(["send-keys", "-t", tuiPane, "C-c"]);
-        process.kill(revived?.pid ?? 0, "SIGKILL");
+        try {
+          process.kill(revived?.pid ?? 0, "SIGKILL");
+        } catch {
+          // ESRCH: the C-c already took the TUI down — which is the goal.
+        }
         // eslint-disable-next-line no-await-in-loop
         const held = await pollUntil(async () => {
           const current = await panes(project?.sessionName ?? "");
