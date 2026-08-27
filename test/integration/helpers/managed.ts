@@ -160,10 +160,17 @@ export async function clients(session: string): Promise<string[]> {
 
 /**
  * Print everything needed to diagnose a dead assertion from a CI log: what the
- * TUI pane shows, the pane table, and what the daemon believes.
+ * TUI pane shows, pane geometry/state, the daemon's view, and its log tail.
  */
-export async function dumpManagedState(session: string, runtimeDir: string): Promise<void> {
-  const frame = await managed(["capture-pane", "-t", `=${session}`, "-p", "-S", "-100"]).catch(
+export async function dumpManagedState(
+  session: string,
+  runtimeDir: string,
+  paneId?: string,
+): Promise<void> {
+  // Pane id when the caller has one; `=name:` (window form) otherwise — bare
+  // `=name` is not a valid capture-pane target on tmux 3.5a.
+  const target = paneId ?? `=${session}:`;
+  const frame = await managed(["capture-pane", "-t", target, "-p", "-S", "-100"]).catch(
     (error: unknown) => `capture failed: ${String(error)}`,
   );
   const paneTable = await managed([
@@ -171,16 +178,34 @@ export async function dumpManagedState(session: string, runtimeDir: string): Pro
     "-t",
     `=${session}`,
     "-F",
-    "#{pane_id}|#{pane_dead}|#{pane_current_command}",
+    "#{pane_id}|dead=#{pane_dead}|#{pane_width}x#{pane_height}|alt=#{alternate_on}|mode=#{pane_in_mode}|#{pane_current_command}",
   ]).catch((error: unknown) => `list-panes failed: ${String(error)}`);
   const ls = await runZaps(["ls", "--json"], process.cwd(), runtimeDir);
+  const logTails: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.name === "daemon.log") {
+        const lines = fs.readFileSync(full, "utf8").split("\n");
+        logTails.push(`${full}:\n${lines.slice(-30).join("\n")}`);
+      }
+    }
+  };
+  try {
+    walk(runtimeDir);
+  } catch (error) {
+    logTails.push(`log walk failed: ${String(error)}`);
+  }
   // Uses process.stderr.write, NOT console.error: the lint autofix deletes
   // Console calls, which silently guts this dump (it happened).
   process.stderr.write(
     `--- managed state dump for ${session} ---\n` +
       `panes:\n${paneTable}\n` +
-      `tui frame:\n${frame}\n` +
+      `tui frame (${target}):\n${frame}\n` +
       `zaps ls (code ${ls.code}): ${ls.stdout || ls.stderr}\n` +
+      `daemon logs:\n${logTails.join("\n") || "(none found)"}\n` +
       `--- end dump ---\n`,
   );
 }

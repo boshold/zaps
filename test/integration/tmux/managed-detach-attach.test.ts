@@ -160,7 +160,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
           return frame.includes("web");
         }, 30_000);
         if (!painted) {
-          await dumpManagedState(session, project.runtimeDir);
+          await dumpManagedState(session, project.runtimeDir, tuiPane);
         }
         expect(painted).toBe(true);
         expect(await clients(session)).toEqual([]);
@@ -240,7 +240,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
             return frame.includes("web");
           }, 30_000);
           if (!qPainted) {
-            await dumpManagedState(session, project.runtimeDir);
+            await dumpManagedState(session, project.runtimeDir, tuiPane);
           }
           expect(qPainted).toBe(true);
           await managed(["send-keys", "-t", tuiPane, "q"]);

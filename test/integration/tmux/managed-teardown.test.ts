@@ -191,7 +191,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
           return frame.includes("web");
         }, 30_000);
         if (!painted) {
-          await dumpManagedState(project.sessionName, project.runtimeDir);
+          await dumpManagedState(project.sessionName, project.runtimeDir, tui);
         }
         expect(painted).toBe(true);
 
