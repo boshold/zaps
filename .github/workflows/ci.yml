@@ -98,6 +98,13 @@ jobs:
           name: dist
           path: dist/
       - run: chmod +x dist/zaps
+      # Managed sessions (auto-tmux) need tmux >= 3.5; ubuntu-latest ships 3.4.
+      - name: Install tmux 3.5a
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libevent-dev libncurses-dev bison
+          curl -fsSL https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz | tar -xz -C /tmp
+          (cd /tmp/tmux-3.5a && ./configure --prefix=/usr/local >/dev/null && make -j"$(nproc)" >/dev/null && sudo make install >/dev/null)
       - run: tmux -V
       - run: docker info
       # Pre-pull compose images so the cold-runner pull doesn't count against the
