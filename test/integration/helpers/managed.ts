@@ -174,8 +174,8 @@ export async function dumpManagedState(session: string, runtimeDir: string): Pro
     "#{pane_id}|#{pane_dead}|#{pane_current_command}",
   ]).catch((error: unknown) => `list-panes failed: ${String(error)}`);
   const ls = await runZaps(["ls", "--json"], process.cwd(), runtimeDir);
-  // process.stderr.write, NOT console.error: the lint autofix deletes console
-  // calls, which silently guts this dump (it happened).
+  // Uses process.stderr.write, NOT console.error: the lint autofix deletes
+  // Console calls, which silently guts this dump (it happened).
   process.stderr.write(
     `--- managed state dump for ${session} ---\n` +
       `panes:\n${paneTable}\n` +
