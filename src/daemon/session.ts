@@ -12,7 +12,7 @@ import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
-import { exactWindowTarget, tmuxFor } from "#src/lib/tmux.js";
+import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -93,6 +93,7 @@ export interface SessionCreateParams {
   config: ResolvedConfig;
   paneMap: PaneMap;
   tmuxSession: string;
+  tmuxWindow: string;
   originPane: string;
   deps: ServiceManagerDeps;
   /** Tmux server socket hosting this session (`null` = the user's default server). */
@@ -110,6 +111,7 @@ export class Session {
   public readonly configPath: string;
   public readonly projectDir: string;
   public readonly tmuxSession: string;
+  public readonly tmuxWindow: string;
   public readonly originPane: string;
   public readonly subscribers = new Set<net.Socket>();
   public readonly createdAt = Date.now();
@@ -183,6 +185,7 @@ export class Session {
     this.config = params.config;
     this.paneMap = params.paneMap;
     this.tmuxSession = params.tmuxSession;
+    this.tmuxWindow = params.tmuxWindow;
     this.originPane = params.originPane;
     this.deps = params.deps;
     this.tmuxSocket = params.tmuxSocket;
@@ -207,10 +210,7 @@ export class Session {
       tmux: this.tmux,
       getLayout: () => this.config.project.layout,
       getPaneMap: () => this.paneMap,
-      // `=name:` — exact session, its current window: every geometry command
-      // The reflow issues is window-scoped, and a bare name would prefix-match
-      // A longer-named session on the same server.
-      getWindowTarget: () => exactWindowTarget(this.tmuxSession),
+      getWindowTarget: () => this.tmuxWindow,
       onPaneInserted: (name, paneId) => {
         this.allocatePaneLog(name, paneId);
         // Lazy panes are created/destroyed after the TUI captured its startup

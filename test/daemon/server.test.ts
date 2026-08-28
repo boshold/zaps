@@ -76,6 +76,7 @@ vi.mock("#src/lib/tmux.js", () => {
     getWindowName: vi.fn(),
     getWindowOption: vi.fn(),
     setWindowOption: vi.fn(),
+    displayMessage: vi.fn(),
     displayPopup: vi.fn(),
     resyncPaneSizes: vi.fn(),
     // LayoutReflow (constructed by Session) uses these too.
@@ -142,6 +143,7 @@ describe("DaemonServer", () => {
     tmux.getWindowName.mockResolvedValue("bash");
     tmux.getWindowOption.mockResolvedValue("on");
     tmux.setWindowOption.mockResolvedValue(undefined);
+    tmux.displayMessage.mockResolvedValue("@1");
     server = new DaemonServer();
   });
 
@@ -192,6 +194,8 @@ describe("DaemonServer", () => {
       originPane: "%0",
     });
     expect(session.id).toBeDefined();
+    expect(session.tmuxWindow).toBe("@1");
+    expect(tmux.displayMessage).toHaveBeenCalledWith("%0", "#{window_id}");
     expect(server.sessionCount).toBe(1);
     expect(server.get(session.id)).toBe(session);
   });
@@ -343,7 +347,10 @@ describe("DaemonServer", () => {
     };
     const s1 = await server.create(params);
     tmux.paneExists.mockResolvedValue(true);
-    await expect(server.create(params)).resolves.toBe(s1);
+    await expect(server.create({ ...params, originPane: "%9" })).resolves.toBe(s1);
+    expect(s1.originPane).toBe("%0");
+    expect(s1.tmuxWindow).toBe("@1");
+    expect(tmux.displayMessage).toHaveBeenCalledTimes(1);
   });
 
   it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {
@@ -358,10 +365,13 @@ describe("DaemonServer", () => {
 
     // The window was closed externally — next create rebuilds with the new pane.
     tmux.paneExists.mockResolvedValue(false);
+    tmux.displayMessage.mockResolvedValueOnce("@9");
     const s2 = await server.create({ ...params, originPane: "%9" });
 
     expect(s2).not.toBe(s1);
     expect(s1.destroyed).toBe(true);
+    expect(s2.originPane).toBe("%9");
+    expect(s2.tmuxWindow).toBe("@9");
     expect(server.sessionCount).toBe(1);
     expect(mockCreateLayout).toHaveBeenCalledTimes(2);
   });

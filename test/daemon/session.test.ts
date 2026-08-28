@@ -86,6 +86,7 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
     } as SessionCreateParams["config"],
     paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "main",
+    tmuxWindow: "@1",
     originPane: "%0",
     deps: {
       capturePane: vi.fn().mockResolvedValue(""),
@@ -846,15 +847,11 @@ describe("Session.reflow — wired with live-getter deps", () => {
     expect(session.reflow).toBe(beforeReflow);
   });
 
-  // Every geometry command the reflow issues is WINDOW-scoped, and tmux matches
-  // Targets exact → prefix → fnmatch: a bare `main` would drive `main-notes`'s
-  // Window on the same server. `=main:` is the only form all four commands
-  // Accept — a bare `=main` makes `display-message` return empty and
-  // `select-layout` fail outright (verified against live tmux).
-  it("targets the session's own window exactly (`=name:`)", async () => {
+  it("targets the stored tmux window", async () => {
     const session = new Session(
       createSessionParams({
         tmuxSession: "zaps-app-a1",
+        tmuxWindow: "@7",
         paneMap: { "@tui": "%0", api: "%1" },
         config: {
           project: {
@@ -882,9 +879,9 @@ describe("Session.reflow — wired with live-getter deps", () => {
 
     // One getter feeds every window-scoped call site (incl. insert/remove's
     // `windowLayout` snapshot), so pinning the geometry path pins them all.
-    expect(tmux.getWindowSize).toHaveBeenCalledWith("=zaps-app-a1:");
-    expect(tmux.paneIndexOrder).toHaveBeenCalledWith("=zaps-app-a1:");
-    expect(tmux.selectLayout).toHaveBeenCalledWith("=zaps-app-a1:", expect.any(String));
+    expect(tmux.getWindowSize).toHaveBeenCalledWith("@7");
+    expect(tmux.paneIndexOrder).toHaveBeenCalledWith("@7");
+    expect(tmux.selectLayout).toHaveBeenCalledWith("@7", expect.any(String));
   });
 });
 

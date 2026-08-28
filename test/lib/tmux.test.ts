@@ -79,6 +79,10 @@ beforeEach(() => {
   mockSpawn.mockReset();
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("exactWindowTarget", () => {
   // Window-scoped commands (`display-message`, `select-layout`, `resize-window`,
   // `set-option`/`show-options`) need `=name:`. Verified against live tmux: a
@@ -371,10 +375,22 @@ describe("showEnv", () => {
 });
 
 describe("currentPaneId", () => {
-  it("returns the pane id", async () => {
+  it("targets the process pane from TMUX_PANE", async () => {
+    vi.stubEnv("TMUX_PANE", "%5");
     mockSpawn.mockReturnValue(createMockProc("%5"));
     const id = await currentPaneId();
     expect(id).toBe("%5");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "-t", "%5", "#{pane_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+  });
+
+  it("falls back to the active pane without TMUX_PANE", async () => {
+    vi.stubEnv("TMUX_PANE", "");
+    mockSpawn.mockReturnValue(createMockProc("%7"));
+    expect(await currentPaneId()).toBe("%7");
     expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -389,6 +405,16 @@ describe("currentSession", () => {
     expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{session_name}"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
+  });
+
+  it("resolves the session from a stable pane target", async () => {
+    mockSpawn.mockReturnValue(createMockProc("my-session"));
+    expect(await currentSession("%5")).toBe("my-session");
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["display-message", "-p", "-t", "%5", "#{session_name}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
   });
 });
 
@@ -673,6 +699,7 @@ describe("tmuxFor", () => {
 
   it("targets the default server (no -L) for a null socket", async () => {
     process.env.ZAPS_TMUX_SOCKET = "ignored";
+    vi.stubEnv("TMUX_PANE", "");
     mockSpawn.mockReturnValue(createMockProc("%0"));
     await tmuxFor(null).currentPaneId();
     expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {

@@ -15,7 +15,9 @@ import type { LayoutReflowDeps, PaneMap } from "#src/lib/tmux-reflow.js";
 import { LayoutReflow, TmuxFailedError } from "#src/lib/tmux-reflow.js";
 import {
   capturePane,
+  displayMessage,
   getWindowSize,
+  newWindow,
   paneIndexOrder,
   sendKeys,
   splitPane,
@@ -169,6 +171,7 @@ function makeSession(
   initialPaneId: string,
   config: ResolvedConfig,
   paneMap: PaneMap,
+  tmuxWindow = initialPaneId,
 ): Session {
   const params: SessionCreateParams = {
     configPath: config.configPath,
@@ -176,6 +179,7 @@ function makeSession(
     config,
     paneMap,
     tmuxSession,
+    tmuxWindow,
     originPane: initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
@@ -433,6 +437,26 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
   afterEach(async () => {
     await session.cleanup();
+  });
+
+  it("inserts a lazy pane in the stored window after another window becomes current", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    };
+    const config = makeConfig(["api"], layout);
+    const paneMap: PaneMap = { "@tui": session.initialPaneId };
+    const tmuxWindow = await displayMessage(session.initialPaneId, "#{window_id}");
+    const otherPane = await newWindow(session.name);
+    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap, tmuxWindow);
+
+    await execFileAsync("tmux", [...tmuxSocketArgs(), "select-window", "-t", otherPane]);
+    await zapsSession.reflow.insertPane("api");
+
+    const originalWindowPanes = await listPaneGeoms(tmuxWindow);
+    const otherWindowPanes = await listPaneGeoms(otherPane);
+    expect(originalWindowPanes.map(({ id }) => id)).toContain(zapsSession.paneMap.api);
+    expect(otherWindowPanes.map(({ id }) => id)).toEqual([otherPane]);
   });
 
   it("printed line in a lazily-inserted pane reaches its LogBuffer + broadcast", async () => {

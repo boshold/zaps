@@ -331,7 +331,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   // Outside tmux we never get here: `upCommand` bootstraps a managed session
   // First and only falls through once `$TMUX` is set.
   const originPane = await currentPaneId();
-  const tmuxSession = await currentSession();
+  const tmuxSession = await currentSession(originPane);
 
   const zapsCommand = resolveCommand();
   const sock = await ensureDaemon(resolveCommandArgv());
