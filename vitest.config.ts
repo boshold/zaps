@@ -3,7 +3,8 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globals: true,
-    exclude: ["test/integration/**", "**/node_modules/**"],
+    // `.direnv/` holds a nix copy of this repo — never glob tests out of it.
+    exclude: ["test/integration/**", "**/node_modules/**", "**/.direnv/**"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary", "json"],

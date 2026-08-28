@@ -1,0 +1,19 @@
+[Script Info]
+ScriptType: v4.00+
+PlayResX: 1600
+PlayResY: 900
+ScaledBorderAndShadow: yes
+WrapStyle: 2
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Keys,JetBrainsMono Nerd Font Mono,24,&H00F4D6CD,&H00F4D6CD,&H002E1E1E,&H802E1E1E,-1,0,0,0,100,100,0,0,3,10,0,2,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:05.50,0:00:09.50,Keys,,0,0,0,,Keys  ↓ ↓  l   Open docs logs
+Dialogue: 0,0:00:09.50,0:00:15.00,Keys,,0,0,0,,Keys  Esc  t  check  Enter   Run task
+Dialogue: 0,0:00:15.00,0:00:21.00,Keys,,0,0,0,,Keys  :  restart docs  Enter   Restart service
+Dialogue: 0,0:00:21.00,0:00:24.50,Keys,,0,0,0,,Key  ?   Open help
+Dialogue: 0,0:00:24.50,0:00:26.20,Keys,,0,0,0,,Key  Esc   Close help
+Dialogue: 0,0:00:26.20,0:00:27.00,Keys,,0,0,0,,Keys  d  y   Shut down session

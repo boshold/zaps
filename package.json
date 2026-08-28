@@ -45,6 +45,7 @@
   },
   "scripts": {
     "dev": "tsx src/cli.tsx",
+    "demo:record": "bash demo/record.sh",
     "build": "tsx scripts/build.ts",
     "build:native": "bun run scripts/build-native.ts",
     "test": "vitest run",

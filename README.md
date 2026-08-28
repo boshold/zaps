@@ -43,6 +43,18 @@
    </p>
 </div>
 
+## Demo
+
+<img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/demo.gif" alt="ZAPS terminal demo" width="900">
+
+The recording is generated from the reproducible [`demo/zaps.tape`](demo/zaps.tape)
+playbook. To regenerate it:
+
+```bash
+direnv allow
+pnpm demo:record
+```
+
 ## Prerequisites
 
 - [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5) — it has to be

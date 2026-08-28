@@ -1,0 +1,3 @@
+# Binary assets — never text-merge or diff these
+*.gif binary -diff
+*.png binary -diff
