@@ -43,6 +43,10 @@
    </p>
 </div>
 
+## Demo
+
+<img src="https://raw.githubusercontent.com/boshold/zaps/main/assets/demo.gif" alt="ZAPS terminal demo" width="900">
+
 ## Prerequisites
 
 - [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5) — it has to be
