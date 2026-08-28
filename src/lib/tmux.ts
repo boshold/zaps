@@ -99,7 +99,13 @@ function createTmux(resolveSocket: () => string | null) {
   }
 
   async function currentPaneId(): Promise<string> {
-    return run(["display-message", "-p", "#{pane_id}"]);
+    const args = ["display-message", "-p"];
+    const inheritedPane = getEnv("TMUX_PANE");
+    if (inheritedPane) {
+      args.push("-t", inheritedPane);
+    }
+    args.push("#{pane_id}");
+    return run(args);
   }
 
   /**
@@ -110,8 +116,13 @@ function createTmux(resolveSocket: () => string | null) {
     return run(["display-message", "-p", "-t", target, format]);
   }
 
-  async function currentSession(): Promise<string> {
-    return run(["display-message", "-p", "#{session_name}"]);
+  async function currentSession(target?: string): Promise<string> {
+    const args = ["display-message", "-p"];
+    if (target) {
+      args.push("-t", target);
+    }
+    args.push("#{session_name}");
+    return run(args);
   }
 
   async function showEnv(session: string, key: string): Promise<string | null> {

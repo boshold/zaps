@@ -77,6 +77,7 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       config,
       paneMap,
       tmuxSession: tmux.name,
+      tmuxWindow: tmux.initialPaneId,
       originPane: tmux.initialPaneId,
       tmuxSocket: testTmuxSocket(),
       managedTmux: false,

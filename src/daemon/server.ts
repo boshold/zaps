@@ -197,6 +197,7 @@ class DaemonServer implements SessionStore {
 
     // Load config
     const config = await loadConfig(params.configPath, params.projectDir);
+    const tmuxWindow = await tmux.displayMessage(params.originPane, "#{window_id}");
 
     // Build pane layout. Boot-skip the pane for any service that is lazy
     // (P04-T02 resolved `lazyPaneByService`) AND won't autostart
@@ -278,6 +279,7 @@ class DaemonServer implements SessionStore {
       config,
       paneMap,
       tmuxSession: params.tmuxSession,
+      tmuxWindow,
       originPane: params.originPane,
       deps,
       tmuxSocket,

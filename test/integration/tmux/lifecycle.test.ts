@@ -279,6 +279,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     config,
     paneMap,
     tmuxSession: testSession.name,
+    tmuxWindow: testSession.initialPaneId,
     originPane: testSession.initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
