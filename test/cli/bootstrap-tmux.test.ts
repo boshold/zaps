@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -316,7 +318,8 @@ describe("ensureTmuxContext — detached create (F4)", () => {
   });
 
   it("forwards the daemon-locating env into the session", async () => {
-    vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1000");
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-bootstrap-runtime-"));
+    vi.stubEnv("XDG_RUNTIME_DIR", runtimeDir);
     vi.stubEnv("ZAPS_SOCKET_PATH", "/tmp/custom.sock");
     const h = harness();
     let forwarded: Record<string, string> = {};
@@ -333,11 +336,15 @@ describe("ensureTmuxContext — detached create (F4)", () => {
       }
       return 0;
     });
-    await run(h, true);
-    expect(forwarded).toMatchObject({
-      XDG_RUNTIME_DIR: "/run/user/1000",
-      ZAPS_SOCKET_PATH: "/tmp/custom.sock",
-    });
+    try {
+      await run(h, true);
+      expect(forwarded).toMatchObject({
+        XDG_RUNTIME_DIR: runtimeDir,
+        ZAPS_SOCKET_PATH: "/tmp/custom.sock",
+      });
+    } finally {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
   });
 
   it("replays the inner output and propagates the exit code on failure", async () => {
