@@ -32,13 +32,13 @@ Flags are appended only when their corresponding option is truthy/set. Compose *
 Every compose invocation (`up`/`ps`/`start`/`stop`/`restart`/`config`) is pinned with `-p <project>` so two checkouts in same-named directories don't collide. The project name resolves by precedence:
 
 1. `docker.projectName`
-2. `ZAPS_COMPOSE_PROJECT` env (read in the daemon process)
+2. `ZAPS_COMPOSE_PROJECT` env from the current ZAPS command
 3. the compose file's top-level `name:`
 4. `zaps-<sanitized-dir>-<hash>` (default — deterministic per absolute cwd)
 
 Switching to a pinned project recreates the containers once; if containers exist under the old unpinned name, ZAPS prints a one-time cleanup warning.
 
-**Tasks don't inherit the pin.** The `-p` project is applied only to the compose commands ZAPS runs for `docker` **services**. A task that shells out to bare `docker compose …` (in `commands` or `run`) uses Compose's own default project, so it won't act on the containers ZAPS started. Pass it explicitly — `docker compose -p "$ZAPS_COMPOSE_PROJECT" …` (set `ZAPS_COMPOSE_PROJECT` where the daemon spawns) — or prefer a logical operation (e.g. `prisma migrate reset`) over `docker compose down -v` in tasks.
+**Tasks don't inherit the pin.** The `-p` project is applied only to the compose commands ZAPS runs for `docker` **services**. A task that shells out to bare `docker compose …` (in `commands` or `run`) uses Compose's own default project, so it won't act on the containers ZAPS started. Pass it explicitly — `docker compose -p "$ZAPS_COMPOSE_PROJECT" …` (set `ZAPS_COMPOSE_PROJECT` before running the command) — or prefer a logical operation (e.g. `prisma migrate reset`) over `docker compose down -v` in tasks.
 
 ## Auto-Command
 

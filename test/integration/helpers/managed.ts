@@ -125,7 +125,7 @@ export async function createProject(configBody: string): Promise<Project> {
   return {
     dir: realDir,
     runtimeDir,
-    sessionName: managedSessionName(path.basename(realDir), sessionId(configPath)),
+    sessionName: managedSessionName(path.basename(realDir), sessionId(configPath, realDir)),
   };
 }
 

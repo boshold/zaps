@@ -8,6 +8,7 @@ import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
   CliError,
   DAEMON_NOT_RUNNING,
+  findSessionByDir,
   formatTable,
   parsePositiveInt,
   resolveCommand,
@@ -23,15 +24,15 @@ import { isCodingAgent, resolveFormat, sessionRows, writeData } from "./cli/outp
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
-import { loadConfig } from "./config/loader.js";
+import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
 import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
-import { sessionId } from "./daemon/session.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
+import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
 import { installResizeReset } from "./lib/screen-reset.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
@@ -39,6 +40,8 @@ import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.
 declare const __VERSION__: string;
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
+
+consumeEnvironmentSnapshot();
 
 const VERSION = `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`;
 
@@ -327,6 +330,9 @@ async function upFlow(detach?: boolean): Promise<void> {
   }
 
   const invokeDir = process.cwd();
+  const loaded = await loadProjectContext(configPath, invokeDir, captureEnvironment()).catch(
+    (error: unknown) => renderCliError(error),
+  );
 
   // Outside tmux we never get here: `upCommand` bootstraps a managed session
   // First and only falls through once `$TMUX` is set.
@@ -339,6 +345,7 @@ async function upFlow(detach?: boolean): Promise<void> {
   const res = await ipcRequest(sock, "session.create", {
     configPath,
     projectDir: invokeDir,
+    resolvedProjectDir: loaded.config.projectDir,
     tmuxSession,
     originPane,
     tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
@@ -403,7 +410,10 @@ async function bootstrapTmux(
     process.stderr.write("No config found. Run `zaps init` to create one.\n");
     process.exit(1);
   }
-  return ensureTmuxContext({ configPath, projectDir: process.cwd(), detach });
+  const loaded = await loadProjectContext(configPath, process.cwd(), captureEnvironment()).catch(
+    (error: unknown) => renderCliError(error),
+  );
+  return ensureTmuxContext({ configPath, projectDir: loaded.config.projectDir, detach });
 }
 
 // --- Smart default: attach if running, else up ---
@@ -429,10 +439,9 @@ const upCommand = command(
         const sessions = res.result as SessionInfo[];
         try {
           const target = resolveTargetSession(sessions, sessionOpt);
-          const configPath = discoverConfig(process.cwd());
-          if (configPath) {
-            const cwdId = sessionId(configPath);
-            if (target.id !== cwdId) {
+          const current = findSessionByDir(sessions, process.cwd());
+          if (current) {
+            if (target.id !== current.id) {
               process.stderr.write(
                 `Session "${target.name}" is from a different project. Use \`zaps attach -s ${sessionOpt}\` instead.\n`,
               );
@@ -467,8 +476,7 @@ const upCommand = command(
         const res = await ipcRequest(sock, "session.list");
         if (!res.error) {
           const sessions = res.result as SessionInfo[];
-          const id = sessionId(configPath);
-          const match = sessions.find((s) => s.id === id);
+          const match = findSessionByDir(sessions, process.cwd());
           if (match) {
             await runTui({ sessionId: match.id, socketPath: sock });
             return;
@@ -499,6 +507,7 @@ const downCommand = command(
       listSessions: async (sock) => ipcRequest(sock, "session.list"),
       destroy: async (sock, id) => ipcRequest(sock, "session.destroy", null, 30_000, id),
       resolveProjectSessionId: () => resolveSessionId().id,
+      resolveProjectSession: (sessions) => findSessionByDir(sessions, process.cwd()),
       stdout: (text) => {
         process.stdout.write(text);
       },
@@ -970,7 +979,11 @@ const configCommand = command(
       return;
     }
 
-    const config = await loadConfig(configPath).catch((error: unknown) => renderCliError(error));
+    const { config } = await loadProjectContext(
+      configPath,
+      process.cwd(),
+      captureEnvironment(),
+    ).catch((error: unknown) => renderCliError(error));
 
     const format = resolveFormat(opts);
     if (format !== "text") {

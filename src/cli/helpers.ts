@@ -172,11 +172,14 @@ export function resolveListedSessionId(sessions: SessionInfo[], sessionArg?: str
   if (sessionArg) {
     return resolveTargetSession(sessions, sessionArg).id;
   }
-  const resolved = resolveSessionId().id;
-  if (!sessions.some((s) => s.id === resolved)) {
+  const legacyId = resolveSessionId().id;
+  const resolved =
+    findSessionByDir(sessions, process.cwd()) ??
+    sessions.find((session) => session.id === legacyId);
+  if (!resolved) {
     throw new CliError("No running zaps session for this project.");
   }
-  return resolved;
+  return resolved.id;
 }
 
 export function formatTable(rows: string[][]): string {
@@ -211,16 +214,20 @@ export async function withDaemon<T>(
       // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
       return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
     }
-    const resolved = resolveSessionId().id;
     const res = await ipcRequest(sock, "session.list");
     if (res.error) {
       throw new CliError(`Error: ${res.error}`);
     }
     // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-    if (!(res.result as { id: string }[]).some((s) => s.id === resolved)) {
+    const sessions = res.result as SessionInfo[];
+    const legacyId = resolveSessionId().id;
+    const match =
+      findSessionByDir(sessions, process.cwd()) ??
+      sessions.find((session) => session.id === legacyId);
+    if (!match) {
       throw new CliError("No running zaps session for this project.");
     }
-    return resolved;
+    return match.id;
   })();
 
   const ipc: SessionIpc = {
@@ -239,6 +246,7 @@ export interface DownDeps {
   listSessions: (sock: string) => Promise<IpcResponse>;
   destroy: (sock: string, id: string) => Promise<IpcResponse>;
   resolveProjectSessionId: () => string;
+  resolveProjectSession?: (sessions: SessionInfo[]) => SessionInfo | undefined;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
 }
@@ -267,7 +275,8 @@ export async function runDown(deps: DownDeps): Promise<number> {
   try {
     target = deps.sessionArg
       ? resolveTargetSession(sessions, deps.sessionArg)
-      : sessions.find((s) => s.id === deps.resolveProjectSessionId());
+      : (deps.resolveProjectSession?.(sessions) ??
+        sessions.find((s) => s.id === deps.resolveProjectSessionId()));
   } catch (error) {
     if (error instanceof CliError) {
       deps.stderr(`${error.message}\n`);

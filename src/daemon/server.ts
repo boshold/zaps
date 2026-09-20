@@ -1,13 +1,17 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import { promisify } from "node:util";
 
-import { computeBootSkip, loadConfig } from "#src/config/loader.js";
+import { computeBootSkip } from "#src/config/loader.js";
+import { loadProjectContext } from "#src/config/project-context.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
+import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
+import { shellEscape } from "#src/lib/service/env.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { tmuxFor } from "#src/lib/tmux.js";
@@ -15,14 +19,41 @@ import { tmuxFor } from "#src/lib/tmux.js";
 import { DetachedRegistry } from "./detached-registry.js";
 import { daemonHandlers } from "./handlers/daemon.js";
 import { sessionHandlers } from "./handlers/session.js";
+import { daemonDir } from "./lifecycle.js";
 import type { SessionCreateParams } from "./session.js";
 import { Session, sessionId } from "./session.js";
 
 const execFileAsync = promisify(execFile);
 
+function writeEnvironmentFile(env: Record<string, string>): string {
+  const filePath = `${daemonDir()}/env-${randomUUID()}`;
+  const lines = Object.entries(env)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))
+    .map(([key, value]) => `export ${key}=${shellEscape(value)}`);
+  fs.writeFileSync(filePath, `${lines.join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+  return filePath;
+}
+
+const CONTEXT_MUTATING_METHODS = new Set([
+  "session.reload",
+  "services.start",
+  "services.stop",
+  "services.restart",
+  "services.rebuild",
+  "services.startAll",
+  "services.stopAll",
+  "services.restartAll",
+  "tasks.run",
+  "tasks.runInPane",
+]);
+
 interface CreateParams {
   configPath: string;
+  /** Directory where zaps was invoked. */
   projectDir: string;
+  /** Project root resolved by the caller. */
+  resolvedProjectDir?: string;
+  shellEnv?: Record<string, string>;
   tmuxSession: string;
   originPane: string;
   /** Tmux socket hosting the session; omitted/null = the user's default server. */
@@ -149,7 +180,7 @@ class DaemonServer implements SessionStore {
   }
 
   public async create(params: CreateParams): Promise<Session> {
-    const id = sessionId(params.configPath);
+    const id = sessionId(params.configPath, params.resolvedProjectDir ?? params.projectDir);
 
     // Collapse concurrent creates for the same id onto one in-flight build so a
     // Single config load / layout / startAll runs and no loser leaks panes (D3).
@@ -195,8 +226,16 @@ class DaemonServer implements SessionStore {
     const tmuxSocket = params.tmuxSocket ?? null;
     const tmux = tmuxFor(tmuxSocket);
 
-    // Load config
-    const config = await loadConfig(params.configPath, params.projectDir);
+    const loaded = await loadProjectContext(
+      params.configPath,
+      params.projectDir,
+      params.shellEnv ?? captureEnvironment(),
+    );
+    const { config } = loaded;
+    const resolvedId = sessionId(params.configPath, config.projectDir);
+    if (params.resolvedProjectDir !== undefined && resolvedId !== id) {
+      throw new Error("Resolved project directory does not match the request context");
+    }
     const tmuxWindow = await tmux.displayMessage(params.originPane, "#{window_id}");
 
     // Build pane layout. Boot-skip the pane for any service that is lazy
@@ -241,7 +280,10 @@ class DaemonServer implements SessionStore {
       setWindowOption: tmux.setWindowOption,
       displayPopup: tmux.displayPopup,
       exec: async (cmd: string, args: string[], cwd?: string) => {
-        await execFileAsync(cmd, args, cwd ? { cwd } : {});
+        await execFileAsync(cmd, args, {
+          ...(cwd ? { cwd } : {}),
+          env: captureEnvironment(),
+        });
       },
       preflightPorts: checkPortPreflight,
       storeExecInfo: (service: string, info: ExecInfo) => {
@@ -249,6 +291,15 @@ class DaemonServer implements SessionStore {
       },
       sessionId: id,
       zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+      environment: () => ({ ...(ref.session?.env ?? loaded.env) }),
+      environmentFile: writeEnvironmentFile,
+      removeEnvironmentFile: (filePath: string) => {
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          /* Already consumed or unavailable. */
+        }
+      },
       // Reflow hooks late-bind to the session (same ref pattern as
       // `storeExecInfo`). They always invoke `session.reflowInsert/Remove`,
       // Which wrap `withOpLock` around the LIVE-getter `Session.reflow`. After
@@ -284,6 +335,8 @@ class DaemonServer implements SessionStore {
       deps,
       tmuxSocket,
       managedTmux: params.managedTmux ?? false,
+      shellEnv: params.shellEnv,
+      env: loaded.env,
     };
 
     const session = new Session(sessionParams, manager);
@@ -295,8 +348,12 @@ class DaemonServer implements SessionStore {
 
     // Start services in background — TUI connects and sees them starting.
     // Tracked so reload/destroy can cooperatively abort and await it (A5).
-    session.startPromise = session.startAll().catch(() => {
-      /* Errors surfaced via stateChange */
+    session.startPromise = session.runWithContext(async () => {
+      try {
+        await session.startAll();
+      } catch {
+        /* Errors surfaced via stateChange */
+      }
     });
 
     return session;
@@ -343,6 +400,9 @@ class DaemonServer implements SessionStore {
     const dHandler = daemonHandlers[req.method];
     if (dHandler) {
       try {
+        if (req.method === "session.create" && !req.context) {
+          return ipcErr(req.id, "request context required; restart zaps with the current CLI");
+        }
         return await dHandler(req, this);
       } catch (error) {
         return ipcErr(req.id, error instanceof Error ? error.message : String(error));
@@ -355,8 +415,18 @@ class DaemonServer implements SessionStore {
       if (!req.session) {
         return ipcErr(req.id, `Session required for method: ${req.method}`);
       }
+      const session = this.get(req.session);
+      if (!session) {
+        return ipcErr(req.id, "Unknown session");
+      }
       try {
-        return await sHandler(req, this, socket);
+        if (CONTEXT_MUTATING_METHODS.has(req.method)) {
+          if (!req.context) {
+            return ipcErr(req.id, "request context required; restart zaps with the current CLI");
+          }
+          session.updateContext(parseRequestContext(req.context).env);
+        }
+        return await session.runWithContext(async () => sHandler(req, this, socket));
       } catch (error) {
         return ipcErr(req.id, error instanceof Error ? error.message : String(error));
       }

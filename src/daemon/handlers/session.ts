@@ -500,7 +500,11 @@ export const sessionHandlers: Record<
     }
     // Return only what the wrapper needs to spawn; keep the entry (taskKey/
     // TaskName) until exit so the run can be completed then.
-    return ipcOk(req.id, { command: info.command, cwd: info.cwd, env: info.env });
+    return ipcOk(req.id, {
+      command: info.command,
+      cwd: info.cwd,
+      env: { ...session.env, ...info.env },
+    });
   },
 
   async "exec-task.line"(req, store) {
@@ -555,7 +559,7 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, `No exec info for service: ${service}`);
     }
     session.execInfo.delete(service);
-    return ipcOk(req.id, info);
+    return ipcOk(req.id, { ...info, env: { ...session.env, ...info.env } });
   },
 
   async "exec-service.exited"(req, store) {

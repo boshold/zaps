@@ -53,6 +53,8 @@ describe("ipcRequest", () => {
     const written = mockSocket.write.mock.calls[0][0] as string;
     const req = JSON.parse(written.replace("\n", ""));
     expect(req.method).toBe("daemon.ping");
+    expect(req.context.cwd).toBe(process.cwd());
+    expect(req.context.env).toMatchObject({ PATH: process.env.PATH });
 
     // Simulate response
     const response = `${JSON.stringify({ id: req.id, result: "pong" })}\n`;

@@ -47,9 +47,9 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
     delete process.env.ZAPS_COMMAND;
   });
 
-  it("raw: true service shows inline env in pane", async () => {
+  it("raw: true service receives env without the wrapper", async () => {
     const port = await getFreePort();
-    const cmd = `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port},()=>console.log('ready on port ${port}'))"`;
+    const cmd = `node -e "require('http').createServer((_,r)=>{r.writeHead(200);r.end('ok')}).listen(${port},()=>console.log('ready '+process.env.RAW_VAR))"`;
     const configPath = path.join(tmpDir, ".zaps.mjs");
     fs.writeFileSync(
       configPath,
@@ -85,8 +85,7 @@ describe.skipIf(!hasTmux())("raw mode and crash detection", () => {
     const paneId = (res.result as { paneMap: Record<string, string> }).paneMap.svc;
     const output = await capturePane(paneId, 50);
 
-    // Raw mode: inline env IS visible in the pane
-    expect(output).toContain("RAW_VAR=");
+    expect(output).toContain("ready visible");
     // Should NOT show exec-service wrapper
     expect(output).not.toContain("exec-service");
   });

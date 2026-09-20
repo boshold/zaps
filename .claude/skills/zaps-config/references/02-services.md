@@ -17,7 +17,7 @@
 | `env`           | `EnvConfig`                                       | —           | Environment variables                                                                        |
 | `flags`         | `ServiceFlags`                                    | —           | `{ start?: boolean, open?: boolean }`                                                        |
 | `url`           | `string \| false \| (ctx) => string`              | auto-detect | URL for the service                                                                          |
-| `raw`           | `boolean`                                         | `false`     | Bypass wrapper — show env vars inline in pane                                                |
+| `raw`           | `boolean`                                         | `false`     | Bypass the service wrapper                                                                   |
 | `restart`       | `{ maxRetries?, backoff? }`                       | —           | Restart policy with exponential backoff                                                      |
 | `onBeforeStart` | `() => void \| Promise<void>`                     | —           | Hook: before the service command is sent                                                     |
 | `onReady`       | `() => void \| Promise<void>`                     | —           | Hook: service reached ready state                                                            |

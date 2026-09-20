@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
-import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
+import { daemonDir, isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
@@ -19,6 +19,12 @@ import {
   tmuxAvailable,
   waitForPaneSettled,
 } from "#src/lib/managed-tmux.js";
+import {
+  ENVIRONMENT_SNAPSHOT_VARIABLE,
+  captureEnvironment,
+  removeEnvironmentSnapshot,
+  writeEnvironmentSnapshot,
+} from "#src/lib/request-context.js";
 import { defaultTmux } from "#src/lib/tmux-default.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
@@ -57,7 +63,10 @@ interface BootstrapDeps {
   /** Run `tmux <args>`; `inherit` hands the current TTY to the child. */
   runTmux: (args: string[], inherit: boolean) => Promise<number>;
   /** This project's live daemon session, or undefined (daemon down / none). */
-  daemonSession: (configPath: string) => Promise<DaemonSessionView | undefined>;
+  daemonSession: (
+    configPath: string,
+    projectDir?: string,
+  ) => Promise<DaemonSessionView | undefined>;
   /** Name of the tmux session this process runs in (only asked for inside tmux). */
   currentTmuxSession: () => Promise<string | undefined>;
   /** How to invoke zaps inside the managed pane, as argv (never a joined string). */
@@ -90,7 +99,10 @@ async function spawnTmux(args: string[], inherit: boolean): Promise<number> {
 }
 
 /** Ask the daemon (if up) for this project's session — F6/F9 need it first. */
-async function daemonSessionFor(configPath: string): Promise<DaemonSessionView | undefined> {
+async function daemonSessionFor(
+  configPath: string,
+  projectDir = process.cwd(),
+): Promise<DaemonSessionView | undefined> {
   if (!isDaemonRunning()) {
     return undefined;
   }
@@ -100,8 +112,9 @@ async function daemonSessionFor(configPath: string): Promise<DaemonSessionView |
   }
   // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
   const sessions = res.result as SessionInfo[];
-  const id = sessionId(configPath);
-  const match = sessions.find((s) => s.id === id);
+  const id = sessionId(configPath, projectDir);
+  const legacyId = sessionId(configPath);
+  const match = sessions.find((s) => s.id === id || s.id === legacyId);
   if (!match) {
     return undefined;
   }
@@ -151,20 +164,26 @@ function defaultDeps(): BootstrapDeps {
 }
 
 /**
- * Env the managed session must carry beyond the two markers: whatever locates
- * the daemon. The outer zaps decided F6/F9 against *its* daemon, so the inner
- * one has to reach the same instance — a tmux server started long ago (or by
- * another shell) would otherwise hand it a different environment.
+ * Pass the current environment through a private one-time file. Forwarding all
+ * values as tmux `-e` arguments exceeds tmux's command-size limit in large shells.
  */
-function daemonEnv(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const key of ["ZAPS_SOCKET_PATH", "XDG_RUNTIME_DIR"]) {
-    const value = getEnv(key);
-    if (value) {
-      env[key] = value;
-    }
-  }
-  return env;
+function managedEnvironment(): { env: Record<string, string>; snapshotPath: string } {
+  const env = captureEnvironment();
+  Reflect.deleteProperty(env, "TMUX");
+  Reflect.deleteProperty(env, "TMUX_PANE");
+  Reflect.deleteProperty(env, "ZAPS_TMUX_SOCKET");
+  Reflect.deleteProperty(env, "ZAPS_MANAGED_TMUX");
+  Reflect.deleteProperty(env, ENVIRONMENT_SNAPSHOT_VARIABLE);
+  const snapshotPath = writeEnvironmentSnapshot(daemonDir(), env);
+  const routingEnv = Object.fromEntries(
+    ["XDG_RUNTIME_DIR", "ZAPS_SOCKET_PATH"]
+      .map((key) => [key, env[key]] as const)
+      .filter((entry): entry is readonly [string, string] => entry[1] !== undefined),
+  );
+  return {
+    env: { ...routingEnv, [ENVIRONMENT_SNAPSHOT_VARIABLE]: snapshotPath },
+    snapshotPath,
+  };
 }
 
 /** First pane of `name` on the managed socket — the bootstrap (TUI) pane. */
@@ -238,18 +257,23 @@ async function applyOptionsWhenVisible(deps: BootstrapDeps, name: string): Promi
  * The outer exit code mirrors the tmux client (per 50_api).
  */
 async function spawnAttached(deps: BootstrapDeps, name: string): Promise<BootstrapResult> {
+  const environment = managedEnvironment();
   const args = buildCreateArgs({
     name,
     zapsArgv: [...deps.zapsArgv(), "up"],
-    env: daemonEnv(),
+    env: environment.env,
   });
-  const attached = deps.runTmux(args, true);
-  const options = applyOptionsWhenVisible(deps, name);
+  try {
+    const attached = deps.runTmux(args, true);
+    const options = applyOptionsWhenVisible(deps, name);
 
-  const exitCode = await attached;
-  await options;
-  await reportDetached(deps, name);
-  return { proceed: false, exitCode };
+    const exitCode = await attached;
+    await options;
+    await reportDetached(deps, name);
+    return { proceed: false, exitCode };
+  } finally {
+    removeEnvironmentSnapshot(environment.snapshotPath);
+  }
 }
 
 /**
@@ -267,8 +291,10 @@ async function spawnDetached(
   name: string,
   configPath: string,
 ): Promise<BootstrapResult> {
-  const args = buildCreateArgs({ name, detach: true, env: daemonEnv(), ...deps.size() });
+  const environment = managedEnvironment();
+  const args = buildCreateArgs({ name, detach: true, env: environment.env, ...deps.size() });
   if ((await deps.runTmux(args, false)) !== 0) {
+    removeEnvironmentSnapshot(environment.snapshotPath);
     deps.io.stderr(`Failed to create managed tmux session ${name}.\n`);
     return { proceed: false, exitCode: 1 };
   }
@@ -276,6 +302,7 @@ async function spawnDetached(
   const paneId = await bootstrapPaneId(deps, name);
   await applyManagedOptions(deps, name, paneId);
   if (!paneId) {
+    removeEnvironmentSnapshot(environment.snapshotPath);
     deps.io.stderr(`Managed tmux session ${name} vanished before it could start.\n`);
     await killStaleSession(name, deps.tmux);
     return { proceed: false, exitCode: 1 };
@@ -283,6 +310,7 @@ async function spawnDetached(
 
   const zapsArgv = [...deps.zapsArgv(), "up", "-d"];
   if ((await deps.runTmux(buildRespawnArgs(paneId, zapsArgv, { kill: true }), false)) !== 0) {
+    removeEnvironmentSnapshot(environment.snapshotPath);
     deps.io.stderr(`Failed to start zaps in managed tmux session ${name}.\n`);
     await killStaleSession(name, deps.tmux);
     return { proceed: false, exitCode: 1 };
@@ -292,6 +320,7 @@ async function spawnDetached(
     timeoutMs: deps.settleTimeoutMs,
     tmux: deps.tmux,
   });
+  removeEnvironmentSnapshot(environment.snapshotPath);
   if (settlement.settled && settlement.exitCode === 0) {
     deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
     return { proceed: false, exitCode: 0 };
@@ -406,7 +435,7 @@ async function reattachManaged(options: {
 async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<BootstrapResult> {
   const deps: BootstrapDeps = { ...defaultDeps(), ...options.deps };
   const tmuxEnv = getEnv("TMUX");
-  const daemonSession = await deps.daemonSession(options.configPath);
+  const daemonSession = await deps.daemonSession(options.configPath, options.projectDir);
   // Only needed to tell "inside the project's own managed session" apart from
   // "inside some other tmux" — so only asked for when both can be true.
   const currentTmuxSession =
@@ -417,7 +446,7 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
   // What makes stale detection (F9) work at all.
   const managedName = managedSessionName(
     path.basename(options.projectDir),
-    sessionId(options.configPath),
+    sessionId(options.configPath, options.projectDir),
   );
 
   // Both probes cost a subprocess, so only run them where the decision uses

@@ -108,6 +108,10 @@ describe("sessionId", () => {
   it("produces different IDs for different paths", () => {
     expect(sessionId("/a")).not.toBe(sessionId("/b"));
   });
+
+  it("includes the resolved project root", () => {
+    expect(sessionId("/shared/.zaps.mts", "/a")).not.toBe(sessionId("/shared/.zaps.mts", "/b"));
+  });
 });
 
 describe("Session", () => {
