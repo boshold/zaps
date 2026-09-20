@@ -1,5 +1,7 @@
 import net from "node:net";
 
+import { captureRequestContext } from "#src/lib/request-context.js";
+
 import type { DaemonEvent, IpcMessage, IpcRequest, IpcResponse } from "./protocol.js";
 import { isDaemonEvent, isIpcEvent, isIpcResponse } from "./protocol.js";
 
@@ -60,6 +62,7 @@ export async function ipcRequest(
   const req: IpcRequest = {
     id,
     method,
+    context: captureRequestContext(),
     ...(params !== null && { params }),
     ...(session && { session }),
   };
@@ -117,7 +120,13 @@ export async function ipcStream(
   session?: string,
 ): Promise<IpcResponse> {
   const id = generateId();
-  const req: IpcRequest = { id, method, params, ...(session && { session }) };
+  const req: IpcRequest = {
+    id,
+    method,
+    params,
+    context: captureRequestContext(),
+    ...(session && { session }),
+  };
 
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(socketPath);
@@ -223,6 +232,7 @@ export function ipcSubscribe(
       method: "subscribe",
       session,
       params: { events },
+      context: captureRequestContext(),
     };
     socket.write(`${JSON.stringify(req)}\n`);
     resolveReady?.();
@@ -277,12 +287,18 @@ export function ipcSubscribe(
       if (!connected) {
         return;
       }
-      const req: IpcRequest = { id: generateId(), method, session, params };
+      const req: IpcRequest = {
+        id: generateId(),
+        method,
+        session,
+        params,
+        context: captureRequestContext(),
+      };
       socket.write(`${JSON.stringify(req)}\n`);
     },
     async request(method: string, params?: unknown, timeoutMs = 30_000): Promise<IpcResponse> {
       const id = generateId();
-      const req: IpcRequest = { id, method, session, params };
+      const req: IpcRequest = { id, method, session, params, context: captureRequestContext() };
       return new Promise((resolve, reject) => {
         if (!connected) {
           reject(new Error("Not connected"));

@@ -131,11 +131,20 @@ zaps up -d    # Session zaps-<name>-<id> started (detached, managed tmux). zaps 
 zaps attach   # open the dashboard later
 ```
 
-Services run inside the session ZAPS created, so they see that session's
-environment rather than a copy of your current shell. ZAPS forwards what it needs
-(its socket path and runtime dir); if a service depends on a variable you export
-per-shell, set it in the service's `env` in `.zaps.mts` instead of relying on
-inheritance — the background tmux server may be older than your shell.
+Each ZAPS command sends its current directory and shell environment to the daemon.
+Services started by that command use the same environment even when the daemon or
+managed tmux server started from another project.
+
+ZAPS also loads `.env` from the resolved project directory. Precedence is:
+
+1. Project `.env`
+2. Current shell environment
+3. Service or task `env`
+
+The later source wins. A later start, stop, restart, task, or reload command updates
+the stored environment for that session. Already running processes keep their old
+environment until they restart. The daemon keeps separate context for each project
+and never changes its own working directory.
 
 **Seeing where a session lives**
 
@@ -411,6 +420,11 @@ Options:
 `ConfigError` when the config loads — there's no `?? cli.fatal()` to write. See
 [Error Model](#error-model).
 
+The resolved directory also identifies the daemon session. One shared config can
+therefore run several project directories at the same time. Project `cwd` cannot
+depend on a value that only exists in that project's `.env`, because ZAPS must know
+the project directory before it can load the file.
+
 ### Node Built-ins
 
 The `Library` object includes a `node` namespace with common Node.js modules (`path`, `fs`, `process`, `url`, `os`, `child_process`) so configs don't need raw `import` statements:
@@ -566,7 +580,7 @@ isn't interruptible.
 | `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
 | `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                                |
 | `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
-| `raw`           | `boolean`                                   | `false` | Bypass wrapper — show env vars inline in pane                                                             |
+| `raw`           | `boolean`                                   | `false` | Bypass the service wrapper                                                                                |
 | `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                                     |
 | `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                                           |
 | `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                                       |
@@ -775,7 +789,7 @@ checkouts in same-named directories (e.g. `…/foo/backend` and `…/bar/backend
 can't be mistaken for each other. The project name is resolved by precedence:
 
 1. `docker.projectName` (this config field)
-2. `ZAPS_COMPOSE_PROJECT` env var (read in the daemon process — set it where the daemon spawns)
+2. `ZAPS_COMPOSE_PROJECT` env var from the current ZAPS command
 3. the compose file's top-level `name:`
 4. `zaps-<sanitized-dir-name>-<hash>` (default)
 

@@ -1,11 +1,18 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import type net from "node:net";
+import path from "node:path";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
-import { computeBootSkip, loadConfig } from "#src/config/loader.js";
+import { computeBootSkip } from "#src/config/loader.js";
+import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import {
+  captureEnvironment,
+  resolveEnvironment,
+  runWithEnvironment,
+} from "#src/lib/request-context.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
@@ -100,16 +107,25 @@ export interface SessionCreateParams {
   tmuxSocket: string | null;
   /** True when zaps spawned and owns the tmux session (teardown kills it). */
   managedTmux: boolean;
+  /** Shell environment forwarded by the CLI that created the session. */
+  shellEnv?: Record<string, string>;
+  /** Project .env merged with shellEnv. */
+  env?: Record<string, string>;
 }
 
-export function sessionId(configPath: string): string {
-  return createHash("sha256").update(configPath).digest("hex").slice(0, 12);
+export function sessionId(configPath: string, projectDir?: string): string {
+  const hash = createHash("sha256").update(path.resolve(configPath));
+  if (projectDir !== undefined) {
+    hash.update("\0").update(path.resolve(projectDir));
+  }
+  return hash.digest("hex").slice(0, 12);
 }
 
 export class Session {
   public readonly id: string;
   public readonly configPath: string;
   public readonly projectDir: string;
+  public readonly invokeDir: string;
   public readonly tmuxSession: string;
   public readonly tmuxWindow: string;
   public readonly originPane: string;
@@ -169,6 +185,8 @@ export class Session {
   public configLoadedAt: number;
   /** Layout focus target — returned by `session.create` only (never attach) (E14). */
   public focusPane = "";
+  public shellEnv: Record<string, string>;
+  public env: Record<string, string>;
   private reloading = false;
   /** Subscriber-gated config-staleness poll; null when no subscribers (A4). */
   private staleTimer: ReturnType<typeof setInterval> | null = null;
@@ -178,10 +196,13 @@ export class Session {
   private opChain: Promise<void> = Promise.resolve();
 
   public constructor(params: SessionCreateParams, manager: ServiceManager) {
-    this.id = sessionId(params.configPath);
+    this.id = sessionId(params.configPath, params.config.projectDir);
     this.name = params.config.project.name ?? "unnamed";
     this.configPath = params.configPath;
-    this.projectDir = params.projectDir;
+    this.projectDir = params.config.projectDir;
+    this.invokeDir = params.projectDir;
+    this.shellEnv = params.shellEnv ?? captureEnvironment();
+    this.env = params.env ?? resolveEnvironment(this.projectDir, this.shellEnv);
     this.config = params.config;
     this.paneMap = params.paneMap;
     this.tmuxSession = params.tmuxSession;
@@ -233,6 +254,17 @@ export class Session {
     });
 
     this.wireManagerEvents(manager);
+  }
+
+  public updateContext(shellEnv: Record<string, string>): void {
+    const nextShellEnv = { ...shellEnv };
+    const nextEnv = resolveEnvironment(this.projectDir, nextShellEnv);
+    this.shellEnv = nextShellEnv;
+    this.env = nextEnv;
+  }
+
+  public runWithContext<T>(action: () => T): T {
+    return runWithEnvironment({ ...this.env }, action);
   }
 
   /**
@@ -353,13 +385,15 @@ export class Session {
    * Start all services and begin log monitoring.
    */
   public async startAll(): Promise<void> {
-    await this.manager.startAll();
+    await this.runWithContext(async () => {
+      await this.manager.startAll();
 
-    // One monitor per unique pane, keyed by pane id; the monitor's listener fans
-    // New lines out to every member service mapped to that pane (D2).
-    for (const paneId of this.paneMembers.keys()) {
-      this.logMonitor.start(paneId, paneId);
-    }
+      // One monitor per unique pane, keyed by pane id; the monitor's listener fans
+      // New lines out to every member service mapped to that pane (D2).
+      for (const paneId of this.paneMembers.keys()) {
+        this.logMonitor.start(paneId, paneId);
+      }
+    });
   }
 
   /**
@@ -393,7 +427,7 @@ export class Session {
    * Reload config, recreate layout, and restart services. Validate-then-swap: an
    * invalid config never tears down the running session (A1).
    */
-  public async reload(): Promise<void> {
+  public async reload(shellEnv = this.shellEnv): Promise<void> {
     if (this.destroyed) {
       throw new Error("session destroyed");
     }
@@ -406,7 +440,7 @@ export class Session {
         if (this.destroyed) {
           throw new Error("session destroyed");
         }
-        await this._reload();
+        await this._reload(shellEnv);
       });
     } finally {
       this.reloading = false;
@@ -437,14 +471,18 @@ export class Session {
     }
   }
 
-  private async _reload(): Promise<void> {
+  private async _reload(shellEnv: Record<string, string>): Promise<void> {
     // 1. Load + validate the new config FIRST. No teardown yet — on failure this
     // Throws verbatim and the running session is left fully intact (A1). The old
     // Session is alive throughout the load, so cli.warn/info/success notices
     // Broadcast to the attached TUI as toasts.
-    const newConfig = await loadConfig(this.configPath, this.projectDir, (notice) => {
+    const loaded = await loadProjectContext(this.configPath, this.invokeDir, shellEnv, (notice) => {
       this.broadcast({ session: this.id, event: "config.notice", data: notice });
     });
+    const newConfig = loaded.config;
+    if (newConfig.projectDir !== this.projectDir) {
+      throw new Error("Project cwd changed. Run zaps down, then zaps up.");
+    }
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
@@ -477,6 +515,9 @@ export class Session {
 
     // 7. Swap every reference atomically (single synchronous block).
     this.config = newConfig;
+    if (this.shellEnv === shellEnv) {
+      this.env = loaded.env;
+    }
     this.configLoadedAt = newConfigLoadedAt;
     // Fresh load clears staleness — re-arm so the next edit re-broadcasts (A4).
     this.staleNotified = false;
@@ -498,9 +539,12 @@ export class Session {
     });
 
     // 9. Start services as a tracked promise.
-    // eslint-disable-next-line promise/prefer-await-to-then -- tracked background start
-    this.startPromise = this.startAll().catch(() => {
-      /* Errors surfaced via stateChange */
+    this.startPromise = this.runWithContext(async () => {
+      try {
+        await this.startAll();
+      } catch {
+        /* Errors surfaced via stateChange */
+      }
     });
   }
 

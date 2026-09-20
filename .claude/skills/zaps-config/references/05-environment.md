@@ -1,5 +1,20 @@
 # Environment Variables — EnvConfig & ServiceContext
 
+## Project and shell environment
+
+ZAPS loads `.env` from the resolved project directory and forwards the environment
+of each CLI call to the daemon. Precedence is:
+
+1. Project `.env`
+2. Current shell environment
+3. Service or task `env`
+
+The later source wins. Values are available through `process.env` while the config
+is evaluated and are passed to services and tasks. A later mutating command updates
+the session baseline. Running processes keep their old environment until restarted.
+
+The project `cwd` cannot depend on a value that exists only in its own `.env`.
+
 ## EnvConfig Type
 
 `env` accepts a static record or a dynamic function:
@@ -78,13 +93,15 @@ mirrored `ctx.url()`).
 
 By default, env vars are passed to the service process via an internal wrapper — they are **not visible** in tmux pane scrollback. This prevents accidental credential leaks during screen shares.
 
-With `raw: true`, env vars are prepended as inline shell variables (visible in pane):
+With `raw: true`, ZAPS writes the merged environment to a private temporary file.
+The pane command reads and removes that file before it starts the service. Values
+aren't printed in pane history.
 
 ```sh
-NODE_ENV='development' PORT='3000' npm run dev
+env -i sh -c 'load private env; exec service command'
 ```
 
-Values are shell-escaped with single quotes. Internal single quotes are escaped as `'\''`.
+Values are shell-escaped before they are written.
 
 ## Static Env
 

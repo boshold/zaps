@@ -1,10 +1,12 @@
 import type { ConfigNotice } from "#src/config/types.js";
+import type { RequestContext } from "#src/lib/request-context.js";
 
 export interface IpcRequest {
   id: string;
   method: string;
   session?: string;
   params?: unknown;
+  context?: RequestContext;
 }
 
 /** Payload of the `config.notice` daemon event (cli.warn/info/success). */

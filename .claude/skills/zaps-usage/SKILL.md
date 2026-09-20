@@ -146,6 +146,13 @@ zaps --help # see all functions
 
 ## Behavior Notes
 
+- Each command sends its cwd and shell environment to the central daemon. ZAPS also
+  loads `.env` from the resolved project directory. Shell values override `.env`,
+  and service or task `env` overrides both. Running processes need a restart to see
+  later environment changes.
+- Sessions are keyed by config path and resolved project directory. A shared config
+  can run several project directories at once.
+
 - **Detached services** (`detached: true`) and detached sessions (`zaps up -d`) run
   pane-less — there is no terminal to scroll. Read their output with
   `zaps logs <svc>` (`-f` to stream). Lifecycle (`start`/`stop`/`restart`) works normally.

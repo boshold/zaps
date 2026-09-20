@@ -3,6 +3,7 @@ import type { SessionStore } from "#src/daemon/server.js";
 import { runShutdownHook } from "#src/daemon/shutdown.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
 
 /** A tmux socket name is a non-empty, non-blank string (used verbatim for `-L`). */
 function isSocketName(value: unknown): value is string {
@@ -67,6 +68,7 @@ export const daemonHandlers: Record<
     const params = req.params as {
       configPath: string;
       projectDir: string;
+      resolvedProjectDir?: string;
       tmuxSession: string;
       originPane: string;
       tmuxSocket?: string | null;
@@ -75,6 +77,18 @@ export const daemonHandlers: Record<
 
     if (!params?.configPath) {
       return ipcErr(req.id, "configPath required");
+    }
+    const context = (() => {
+      try {
+        return req.context
+          ? parseRequestContext(req.context)
+          : { cwd: params.projectDir, env: captureEnvironment() };
+      } catch {
+        return null;
+      }
+    })();
+    if (!context) {
+      return ipcErr(req.id, "invalid request context");
     }
 
     // A socket is either absent/null (default server) or a non-empty name — an
@@ -91,7 +105,13 @@ export const daemonHandlers: Record<
     }
 
     try {
-      const session = await store.create({ ...params, tmuxSocket, managedTmux });
+      const session = await store.create({
+        ...params,
+        projectDir: params.projectDir || context.cwd,
+        shellEnv: context.env,
+        tmuxSocket,
+        managedTmux,
+      });
       return ipcOk(req.id, {
         id: session.id,
         name: session.name,
@@ -115,7 +135,12 @@ export const daemonHandlers: Record<
     if (!session) {
       return ipcErr(req.id, `Unknown session: ${sessionId}`);
     }
-    await store.destroy(sessionId);
+    if (req.context) {
+      session.updateContext(parseRequestContext(req.context).env);
+    }
+    await (req.context
+      ? session.runWithContext(async () => store.destroy(sessionId))
+      : store.destroy(sessionId));
     return ipcOk(req.id, { destroyed: sessionId });
   },
 };

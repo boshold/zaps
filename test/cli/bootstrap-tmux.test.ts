@@ -1,4 +1,7 @@
+import fs from "node:fs";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ensureTmuxContext } from "../../src/cli/bootstrap-tmux.js";
 import type { BootstrapDeps } from "../../src/cli/bootstrap-tmux.js";
@@ -316,10 +319,25 @@ describe("ensureTmuxContext — detached create (F4)", () => {
     vi.stubEnv("XDG_RUNTIME_DIR", "/run/user/1000");
     vi.stubEnv("ZAPS_SOCKET_PATH", "/tmp/custom.sock");
     const h = harness();
+    let forwarded: Record<string, string> = {};
+    h.deps.runTmux = vi.fn(async (args: string[]) => {
+      h.tmuxCalls.push(args);
+      if (args[2] === "new-session") {
+        const entry = args.find((arg) => arg.startsWith("ZAPS_ENVIRONMENT_SNAPSHOT="));
+        const filePath = entry?.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length);
+        if (filePath) {
+          forwarded = z
+            .record(z.string(), z.string())
+            .parse(JSON.parse(fs.readFileSync(filePath, "utf8")));
+        }
+      }
+      return 0;
+    });
     await run(h, true);
-    const create = callFor(h, "new-session");
-    expect(create).toContain("XDG_RUNTIME_DIR=/run/user/1000");
-    expect(create).toContain("ZAPS_SOCKET_PATH=/tmp/custom.sock");
+    expect(forwarded).toMatchObject({
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      ZAPS_SOCKET_PATH: "/tmp/custom.sock",
+    });
   });
 
   it("replays the inner output and propagates the exit code on failure", async () => {

@@ -14,13 +14,14 @@ import {
 } from "#src/lib/docker.js";
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
+import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 
 import { DetachedRunner } from "./detached.js";
 import type { SpawnFn } from "./detached.js";
-import { buildServiceContext, formatEnvForShell, resolveEnv } from "./env.js";
+import { buildServiceContext, formatEnvForShell, resolveEnv, shellEscape } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { waitForReady } from "./ready.js";
 import { canTransition, createServiceStatus, transition } from "./state.js";
@@ -703,7 +704,10 @@ export class ServiceManager extends EventEmitter {
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
     // Detached children inherit the daemon env plus the service's resolved env
     // (pane services get this additively via a shell prefix).
-    const env: NodeJS.ProcessEnv = { ...process.env, ...resolveEnv(serviceConfig.env, ctx) };
+    const env: NodeJS.ProcessEnv = {
+      ...captureEnvironment(),
+      ...resolveEnv(serviceConfig.env, ctx),
+    };
     const generation = this.monitorGenerations.get(name) ?? 0;
 
     const pid = this.detachedRunner.start({ service: name, command, cwd, env, generation });
@@ -856,7 +860,9 @@ export class ServiceManager extends EventEmitter {
       this.config.projectDir,
       this.config.project.services,
     );
-    const env = resolveEnv(serviceConfig.env, ctx);
+    const serviceEnv = resolveEnv(serviceConfig.env, ctx);
+    const requestEnv = this.deps.environment ? captureEnvironment() : {};
+    const env = { ...requestEnv, ...serviceEnv };
     const resolvedCommand = resolveCommand(serviceConfig, ctx);
     const cwd = serviceConfig.cwd ?? this.config.projectDir;
 
@@ -867,14 +873,22 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (serviceConfig.raw) {
-      // Raw mode: current inline env approach
+      const envFile = this.deps.environmentFile?.(env);
       const envPrefix = formatEnvForShell(env);
-      const cmdWithEnv = envPrefix ? `${envPrefix} ${resolvedCommand}` : resolvedCommand;
-      const command = `cd ${JSON.stringify(cwd)} && ${cmdWithEnv}`;
-      await this.deps.sendKeys(paneTarget, command);
+      const command = envFile
+        ? `cd ${JSON.stringify(cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} sh -c ${shellEscape(resolvedCommand)}`
+        : `cd ${JSON.stringify(cwd)} && ${envPrefix ? `${envPrefix} ` : ""}${resolvedCommand}`;
+      try {
+        await this.deps.sendKeys(paneTarget, command);
+      } catch (error) {
+        if (envFile) {
+          this.deps.removeEnvironmentFile?.(envFile);
+        }
+        throw error;
+      }
     } else {
       // Wrapper mode: store exec info, send wrapper command
-      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env });
+      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env: serviceEnv });
       await this.deps.sendKeys(
         paneTarget,
         `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
@@ -1498,6 +1512,21 @@ export class ServiceManager extends EventEmitter {
     config: ServiceConfig,
     status: ServiceStatus,
   ): Promise<void> {
+    const env = this.deps.environment?.();
+    if (env) {
+      await runWithEnvironment(env, async () =>
+        this.handleCrashWithEnvironment(name, config, status),
+      );
+      return;
+    }
+    await this.handleCrashWithEnvironment(name, config, status);
+  }
+
+  private async handleCrashWithEnvironment(
+    name: string,
+    config: ServiceConfig,
+    status: ServiceStatus,
+  ): Promise<void> {
     const restartConfig = config.restart;
     if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
       const gen = this.monitorGenerations.get(name) ?? 0;
@@ -1596,6 +1625,12 @@ export interface ServiceManagerDeps {
   storeExecInfo: (service: string, info: ExecInfo) => void;
   sessionId: string;
   zapsCommand: string;
+  /** Latest request-derived environment for this session. */
+  environment?: () => Record<string, string>;
+  /** Write a private, short-lived shell env file for raw pane commands. */
+  environmentFile?: (env: Record<string, string>) => string;
+  /** Remove an env file when the pane command could not be sent. */
+  removeEnvironmentFile?: (filePath: string) => void;
   /**
    * Lazy-pane reflow hooks (P04-T04). Both run under the SESSION op-lock so they
    * Serialize against each other AND against `_reload` (no half-applied geometry

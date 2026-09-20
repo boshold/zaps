@@ -111,7 +111,7 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
 
       const data = res.result as { id: string; name: string; paneMap: Record<string, string> };
       createdSessionId = data.id;
-      expect(data.id).toBe(sessionId(configPath));
+      expect(data.id).toBe(sessionId(configPath, tmpDir));
       expect(data.name).toBe("test-daemon");
       expect(data.paneMap["@tui"]).toBe(tmux.initialPaneId);
       expect(data.paneMap.web).toBeDefined();
