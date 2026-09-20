@@ -50,6 +50,25 @@ describe("loadProjectContext", () => {
     });
   });
 
+  it("loads invoke-dir .env before config validation", async () => {
+    const dir = project();
+    const configPath = path.join(dir, ".zaps.mts");
+    fs.writeFileSync(
+      configPath,
+      `export function config({ define }) {
+        return define({
+          services: { app: { start: "true", ready: { port: Number(process.env.PORT) } } },
+        });
+      }`,
+      "utf8",
+    );
+    fs.writeFileSync(path.join(dir, ".env"), "PORT=4321\n", "utf8");
+
+    const loaded = await loadProjectContext(configPath, dir, {});
+
+    expect(loaded.config.project.services.app.ready).toEqual({ port: 4321 });
+  });
+
   it("rejects cwd that depends on its own .env", async () => {
     const dir = project();
     const other = path.join(dir, "other");

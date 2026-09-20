@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 
 import { resolveEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
@@ -7,9 +6,17 @@ import { createStderrSink } from "./helpers/cli.js";
 import { loadConfig } from "./loader.js";
 import type { ConfigNotice, NoticeSink, ResolvedConfig } from "./types.js";
 
-export interface ResolvedProjectContext {
+interface ResolvedProjectContext {
   config: ResolvedConfig;
   env: Record<string, string>;
+}
+
+function environmentsEqual(left: Record<string, string>, right: Record<string, string>): boolean {
+  const leftEntries = Object.entries(left);
+  return (
+    leftEntries.length === Object.keys(right).length &&
+    leftEntries.every(([key, value]) => right[key] === value)
+  );
 }
 
 export async function loadProjectContext(
@@ -19,17 +26,18 @@ export async function loadProjectContext(
   onNotice?: NoticeSink,
 ): Promise<ResolvedProjectContext> {
   const notices: ConfigNotice[] = [];
-  const probe = await runWithEnvironment(shellEnv, async () =>
+  const invokeEnv = resolveEnvironment(invokeDir, shellEnv);
+  const probe = await runWithEnvironment(invokeEnv, async () =>
     loadConfig(configPath, invokeDir, (notice) => notices.push(notice)),
   );
-  if (typeof fs.existsSync !== "function" || !fs.existsSync(path.join(probe.projectDir, ".env"))) {
+  const env = resolveEnvironment(probe.projectDir, shellEnv);
+  if (environmentsEqual(invokeEnv, env)) {
     const sink = onNotice ?? createStderrSink();
     for (const notice of notices) {
       sink(notice);
     }
-    return { config: probe, env: { ...shellEnv } };
+    return { config: probe, env };
   }
-  const env = resolveEnvironment(probe.projectDir, shellEnv);
   const config = await runWithEnvironment(env, async () =>
     loadConfig(configPath, invokeDir, onNotice),
   );
@@ -41,3 +49,5 @@ export async function loadProjectContext(
   }
   return { config, env };
 }
+
+export type { ResolvedProjectContext };
