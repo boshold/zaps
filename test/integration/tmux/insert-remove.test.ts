@@ -256,6 +256,48 @@ describe.skipIf(!hasTmux())("LayoutReflow.insertPane — real tmux", () => {
     expect(after[1].pid).not.toBe(webPid);
   });
 
+  it("inserts beside a one-column pane after the window shrinks", async () => {
+    const web = await splitPane(session.initialPaneId, "h");
+    await execFileAsync("tmux", [
+      ...tmuxSocketArgs(),
+      "resize-window",
+      "-t",
+      session.name,
+      "-x",
+      "54",
+    ]);
+    await execFileAsync("tmux", [
+      ...tmuxSocketArgs(),
+      "resize-pane",
+      "-t",
+      session.initialPaneId,
+      "-x",
+      "1",
+    ]);
+    const before = await listPaneGeoms(session.name);
+    expect(before[0].rect.width).toBe(1);
+
+    const paneMap: PaneMap = { "@tui": session.initialPaneId, web };
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+    const reflow = makeReflow(layout, paneMap, session.name);
+
+    await reflow.insertPane("api");
+
+    const after = await listPaneGeoms(session.name);
+    const { width, height } = await getWindowSize(session.name);
+    const expected = computeRects(layout, width, height);
+    expect(after.map((pane) => pane.rect)).toEqual([
+      expected.get("@tui"),
+      expected.get("api"),
+      expected.get("web"),
+    ]);
+    expect(after[0].pid).toBe(before[0].pid);
+    expect(after[2].pid).toBe(before[1].pid);
+  });
+
   it("middle-insert uses ZERO swap-pane calls (adjacency split path)", async () => {
     const web = await splitPane(session.initialPaneId, "h");
     await waitFor(
