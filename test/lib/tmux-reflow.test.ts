@@ -325,7 +325,7 @@ describe("LayoutReflow.insertPane — zero-swap adjacency split", () => {
       { index: 2, id: "%3" },
     ]);
     tmux.splitPane
-      .mockRejectedValueOnce(new Error("size or position no space for a new pane"))
+      .mockRejectedValueOnce(new Error("no space for new pane"))
       .mockResolvedValueOnce("%99");
     const { reflow } = makeReflow(layout, paneMap, tmux);
 

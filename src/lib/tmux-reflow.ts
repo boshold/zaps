@@ -207,9 +207,7 @@ function leafParentDirection(tree: LayoutNode, name: string): "h" | "v" | undefi
 }
 
 function isPaneSpaceError(error: unknown): error is Error {
-  return (
-    error instanceof Error && error.message.includes("size or position no space for a new pane")
-  );
+  return error instanceof Error && /\bno space for (?:a )?new pane\b/u.test(error.message);
 }
 
 /** Per-call options. `resyncFallback` is off by default (the no-resync fast path). */
