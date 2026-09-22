@@ -313,6 +313,52 @@ describe("LayoutReflow.insertPane — zero-swap adjacency split", () => {
     expect(tmux.selectPane).not.toHaveBeenCalled();
   });
 
+  it("uses another pane when the adjacent pane is too narrow to split", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1", web: "%3" };
+    const tmux = makeFakeTmux(["%1", "%3", "%99"], { width: 54, height: 30 });
+    tmux.paneIndexOrder.mockResolvedValueOnce([
+      { index: 1, id: "%1" },
+      { index: 2, id: "%3" },
+    ]);
+    tmux.splitPane
+      .mockRejectedValueOnce(new Error("no space for new pane"))
+      .mockResolvedValueOnce("%99");
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await reflow.insertPane("api");
+
+    expect(tmux.splitPane).toHaveBeenNthCalledWith(1, "%1", "h", {
+      detached: true,
+      before: false,
+    });
+    expect(tmux.splitPane).toHaveBeenNthCalledWith(2, "%3", "h", { detached: true });
+    expect(tmux.swapPanes).toHaveBeenCalledWith("%3", "%99");
+    expect(paneMap.api).toBe("%99");
+    expect(tmux.selectLayout).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the original space error when no pane can split", async () => {
+    const layout: LayoutNode = {
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }, { pane: "web" }],
+    };
+    const paneMap: PaneMap = { "@tui": "%1", web: "%3" };
+    const tmux = makeFakeTmux(["%1", "%3"]);
+    const spaceError = new Error("size or position no space for a new pane");
+    tmux.splitPane.mockRejectedValue(spaceError);
+    const { reflow } = makeReflow(layout, paneMap, tmux);
+
+    await expect(reflow.insertPane("api")).rejects.toMatchObject({ cause: spaceError });
+
+    expect(tmux.splitPane).toHaveBeenCalledTimes(2);
+    expect(paneMap.api).toBeUndefined();
+    expect(tmux.selectLayout).toHaveBeenCalledWith("@0", "prior-layout-string");
+  });
+
   it("uses successor + before:true when inserting at the first position", async () => {
     const layout: LayoutNode = {
       direction: "columns",

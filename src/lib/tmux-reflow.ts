@@ -206,6 +206,10 @@ function leafParentDirection(tree: LayoutNode, name: string): "h" | "v" | undefi
   return undefined;
 }
 
+function isPaneSpaceError(error: unknown): error is Error {
+  return error instanceof Error && /\bno space for (?:a )?new pane\b/u.test(error.message);
+}
+
 /** Per-call options. `resyncFallback` is off by default (the no-resync fast path). */
 interface ApplyGeometryOptions {
   /**
@@ -300,6 +304,36 @@ class LayoutReflow {
     return new TmuxFailedError(phase, message, error);
   }
 
+  private async splitForInsert(
+    target: string,
+    anchorPaneId: string,
+    direction: "h" | "v",
+    before: boolean,
+  ): Promise<string> {
+    try {
+      return await this.tmux.splitPane(anchorPaneId, direction, { detached: true, before });
+    } catch (error) {
+      if (!isPaneSpaceError(error)) {
+        throw error;
+      }
+      const paneOrder = await this.tmux.paneIndexOrder(target);
+      for (const { id } of paneOrder) {
+        if (id === anchorPaneId) {
+          continue;
+        }
+        try {
+          // eslint-disable-next-line no-await-in-loop -- try alternate panes in spatial order
+          return await this.tmux.splitPane(id, direction, { detached: true });
+        } catch (candidateError) {
+          if (!isPaneSpaceError(candidateError)) {
+            throw candidateError;
+          }
+        }
+      }
+      throw error;
+    }
+  }
+
   /**
    * Drive the window to the geometry implied by `visibleNames` — the set of pane
    * names (incl. `@tui`) that should currently own a tmux pane. Returns when
@@ -372,10 +406,10 @@ class LayoutReflow {
 
   /**
    * Create the tmux pane for a currently pane-less service at its declared
-   * position. Zero-swap adjacency split — verified in `20_architecture.md`
-   * Smoothness: pick a neighbor leaf in the FILTERED target tree (predecessor
-   * preferred), split off it with `-d` so focus doesn't move, then snap exact
-   * geometry with `applyGeometry`.
+   * position. Prefer a zero-swap adjacency split: pick a neighbor leaf in the
+   * filtered target tree (predecessor preferred), split off it with `-d` so
+   * focus doesn't move, then snap exact geometry with `applyGeometry`. If the
+   * neighbor is too narrow to split, try other panes and let reflow reorder.
    *
    * The `-d` flag is critical: a plain `split-window` makes the new pane active
    * (verified) and subsequent `select-layout`/`swap-pane` keep that activation
@@ -454,10 +488,12 @@ class LayoutReflow {
 
     let newPaneId: string | undefined = undefined;
     try {
-      newPaneId = await this.tmux.splitPane(anchorPaneId, direction, {
-        detached: true,
-        before: anchor.mode === "before",
-      });
+      newPaneId = await this.splitForInsert(
+        target,
+        anchorPaneId,
+        direction,
+        anchor.mode === "before",
+      );
 
       // Mutate paneMap THEN fire the hook so the session sees a consistent view
       // (paneMap already contains the new id when it allocates the log buffer).
