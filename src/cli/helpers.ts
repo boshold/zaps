@@ -273,7 +273,6 @@ export async function withDaemon<T>(
 }
 
 export interface DownDeps {
-  daemonRunning: () => boolean;
   socket: () => string;
   sessionArg?: string;
   listSessions: (sock: string) => Promise<IpcResponse>;
@@ -292,12 +291,17 @@ export interface DownDeps {
  * (E7).
  */
 export async function runDown(deps: DownDeps): Promise<number> {
-  if (!deps.daemonRunning()) {
-    deps.stderr(`${DAEMON_NOT_RUNNING}\n`);
+  const sock = deps.socket();
+  const res = await deps.listSessions(sock).catch((error: unknown) => {
+    const connectionError = daemonConnectionError(error) ?? error;
+    deps.stderr(
+      `${connectionError instanceof Error ? connectionError.message : String(connectionError)}\n`,
+    );
+    return null;
+  });
+  if (res === null) {
     return 1;
   }
-  const sock = deps.socket();
-  const res = await deps.listSessions(sock);
   if (res.error) {
     deps.stderr(`Error: ${res.error}\n`);
     return 1;

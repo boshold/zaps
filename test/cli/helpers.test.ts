@@ -51,12 +51,7 @@ describe("CliError", () => {
 });
 
 describe("daemonConnectionError", () => {
-  it("tells sandboxed agents to retry outside the sandbox", () => {
-    const error = Object.assign(new Error("denied"), { code: "EPERM", syscall: "connect" });
-    expect(daemonConnectionError(error)?.message).toContain("rerun outside the sandbox");
-  });
-
-  it("does not classify unrelated permission errors as daemon socket errors", () => {
+  it("does not attribute unrelated EPERM errors to the socket", () => {
     const error = Object.assign(new Error("denied"), { code: "EPERM", syscall: "open" });
     expect(daemonConnectionError(error)).toBeNull();
   });
@@ -318,6 +313,17 @@ describe("withDaemon", () => {
     await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
+  it("reports denied socket access without assuming a sandbox", async () => {
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockRejectedValueOnce(
+      Object.assign(new Error("denied"), { code: "EPERM", syscall: "connect" }),
+    );
+
+    await expect(withDaemon(async () => "result")).rejects.toThrow(
+      "Cannot access zaps daemon socket (EPERM). Check permissions; if sandboxed, rerun outside the sandbox.",
+    );
+  });
+
   it("resolves session from daemon with sessionArg", async () => {
     const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
     vi.mocked(isDaemonRunning).mockReturnValue(true);
@@ -448,7 +454,6 @@ describe("runDown", () => {
     const err: string[] = [];
     const destroy = vi.fn(over.destroy ?? (async () => ({ id: "d1" })));
     const deps: DownDeps = {
-      daemonRunning: over.daemonRunning ?? (() => true),
       socket: over.socket ?? (() => "/tmp/sock"),
       sessionArg: over.sessionArg,
       listSessions: over.listSessions ?? (async () => ({ id: "l1", result: sessions })),
@@ -461,9 +466,23 @@ describe("runDown", () => {
   }
 
   it("returns 1 with the accurate error when the daemon is not running", async () => {
-    const { deps, err } = makeDeps({ daemonRunning: () => false });
+    const { deps, err } = makeDeps({
+      listSessions: async () => {
+        throw Object.assign(new Error("missing"), { code: "ENOENT", syscall: "connect" });
+      },
+    });
     expect(await runDown(deps)).toBe(1);
     expect(err.join("")).toContain(DAEMON_NOT_RUNNING);
+  });
+
+  it("reports denied socket access", async () => {
+    const { deps, err } = makeDeps({
+      listSessions: async () => {
+        throw Object.assign(new Error("denied"), { code: "EACCES", syscall: "connect" });
+      },
+    });
+    expect(await runDown(deps)).toBe(1);
+    expect(err.join("")).toContain("Cannot access zaps daemon socket (EACCES)");
   });
 
   it("returns 1 when session.list errors", async () => {

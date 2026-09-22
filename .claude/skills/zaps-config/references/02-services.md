@@ -366,11 +366,7 @@ export function config({ define, service }: Library) {
         {
           direction: "rows",
           size: "40",
-          children: [
-            { pane: "database" },
-            { pane: "mail" },
-            { pane: "database-ui" },
-          ],
+          children: [{ pane: "database" }, { pane: "mail" }, { pane: "database-ui" }],
         },
       ],
     },
