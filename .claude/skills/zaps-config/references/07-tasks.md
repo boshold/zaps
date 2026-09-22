@@ -1,5 +1,50 @@
 # Tasks — TaskConfig
 
+## Recommended Development Tasks
+
+Define common checks as manual tasks. Use clear keys and `pnpm` commands in pnpm projects:
+
+```ts
+tasks: {
+  setup: {
+    name: "Install dependencies",
+    commands: "pnpm install",
+  },
+  migrate: {
+    name: "Run migrations",
+    commands: "pnpm prisma migrate dev",
+    shortcut: "m",
+  },
+  seed: {
+    name: "Seed database",
+    commands: "pnpm prisma db seed",
+    dependsOn: ["migrate"],
+    shortcut: "s",
+  },
+  lint: {
+    name: "Lint",
+    commands: "pnpm lint",
+    shortcut: "l",
+    popup: true,
+  },
+  typecheck: {
+    name: "Typecheck",
+    commands: "pnpm typecheck",
+    shortcut: "t",
+    popup: true,
+  },
+  test: {
+    name: "Test",
+    commands: "pnpm test",
+    popup: true,
+  },
+}
+```
+
+Keep these manual unless the project requires an automatic step. A project `onBeforeStart` hook is suitable for required setup because a failure aborts project startup. A database `onReady` hook can run a migration after readiness, but per-service hook failures are logged without failing the service lifecycle.
+
+Give database tasks the same dynamic database environment as the app when they need it. See the complete development setup in the services reference.
+
 ## Options
 
 | Field         | Type                                             | Default | Description                             |

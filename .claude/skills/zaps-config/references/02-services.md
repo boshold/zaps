@@ -133,6 +133,8 @@ flags: {
 }
 ```
 
+Do not set `open: true` by default. Keep `url` for TUI access and enable browser opening only when requested.
+
 ## URL Resolution
 
 | Value             | Behavior                           |
@@ -235,36 +237,152 @@ services: {
 - Unavailable services: no pane, `dependsOn`/`restartWith` refs silently dropped, layout auto-collapses
 - Predicate timeout: 5 seconds
 
-## Full Example
+### Recommended optional tool pattern
+
+Use `optional` when the tool may be unavailable. Add `flags.start: false` when it should start only on request. A terminal database client does not own the database port, so use output readiness or omit readiness instead of checking the database port.
 
 ```ts
-services: {
-  web: {
-    start: "npm run dev",
-    cwd: "./packages/web",
-    ready: { port: 3000 },
-    url: "http://localhost:3000",
-    flags: { open: true },
-    restart: { maxRetries: 3, backoff: 1000 },
-    onReady: () => console.log("Web ready"),
-  },
-
-  api: {
-    start: "cargo watch -x run",
-    ready: { port: 8080 },
-    dependsOn: ["db"],
-    env: { RUST_LOG: "debug" },
-  },
-
-  docs: {
-    start: "npm run docs:dev",
-    ready: { port: 5173 },
-    flags: { start: false, open: true },
-  },
-
-  worker: {
-    run: "node scripts/seed.js",
-    detached: true,
-  },
+"database-ui": {
+  optional: true,
+  flags: { start: false },
+  start: "rainfrog --url postgres://dev:dev@localhost:5432/app",
+  dependsOn: ["database"],
+  restartWith: ["database"],
+  ready: { output: /query <alt\+2>|\[R\] refresh/ },
+  url: false,
 }
 ```
+
+`restartWith` only reacts when a dependency restarts. For an optional mail service that changes another service's environment when it starts or stops, use `onReady` and `onStop`; see the hooks reference and the complete example below.
+
+## Complete Development Setup
+
+Use this as a pattern, then replace commands, health endpoints, and Compose service names with project values. The names and credentials are placeholders.
+
+```ts
+import type { Library, ServiceContext } from "@bosdev/zaps";
+
+export function config({ define, service }: Library) {
+  let mailEnabled = false;
+
+  function appEnv(ctx: ServiceContext) {
+    return {
+      DATABASE_URL: ctx.url("database", {
+        protocol: "postgres",
+        auth: "dev:dev",
+        path: "/app",
+      }),
+      SMTP_HOST: mailEnabled ? "localhost" : undefined,
+      SMTP_PORT: mailEnabled ? "1025" : undefined,
+    };
+  }
+
+  async function restartAppForMail(enabled: boolean) {
+    mailEnabled = enabled;
+    if (service.isRunning("app")) {
+      await service.restart("app");
+    }
+  }
+
+  return define({
+    services: {
+      database: {
+        docker: { service: "postgres", file: "docker-compose.yml" },
+      },
+      app: {
+        start: "pnpm dev",
+        ready: { http: "/health" },
+        dependsOn: ["database"],
+        restartWith: ["database"],
+        env: appEnv,
+        url: "http://localhost:3000",
+      },
+      "database-ui": {
+        optional: true,
+        flags: { start: false },
+        start: "rainfrog --url postgres://dev:dev@localhost:5432/app",
+        ready: { output: /query <alt\+2>|\[R\] refresh/ },
+        dependsOn: ["database"],
+        restartWith: ["database"],
+        url: false,
+      },
+      mail: {
+        optional: (ctx) => ctx.hasBinary("docker"),
+        flags: { start: false },
+        docker: { service: "mailpit", file: "docker-compose.yml" },
+        ready: { http: "http://localhost:8025/" },
+        url: "http://localhost:8025",
+        onReady: () => restartAppForMail(true),
+        onStop: () => restartAppForMail(false),
+      },
+    },
+    tasks: {
+      setup: {
+        name: "Install dependencies",
+        commands: "pnpm install",
+      },
+      migrate: {
+        name: "Run migrations",
+        commands: "pnpm prisma migrate dev",
+        env: appEnv,
+        shortcut: "m",
+      },
+      seed: {
+        name: "Seed database",
+        commands: "pnpm prisma db seed",
+        dependsOn: ["migrate"],
+        env: appEnv,
+        shortcut: "s",
+      },
+      lint: {
+        name: "Lint",
+        commands: "pnpm lint",
+        shortcut: "l",
+        popup: true,
+      },
+      typecheck: {
+        name: "Typecheck",
+        commands: "pnpm typecheck",
+        shortcut: "t",
+        popup: true,
+      },
+      test: {
+        name: "Test",
+        commands: "pnpm test",
+        popup: true,
+      },
+    },
+    layout: {
+      direction: "columns",
+      children: [
+        {
+          direction: "rows",
+          size: "60",
+          children: [
+            { pane: "@tui", size: "60", focus: true },
+            { pane: "app", size: "40" },
+          ],
+        },
+        {
+          direction: "rows",
+          size: "40",
+          children: [
+            { pane: "database" },
+            { pane: "mail" },
+            { pane: "database-ui" },
+          ],
+        },
+      ],
+    },
+  });
+}
+```
+
+The patterns solve different problems:
+
+- `optional: true` checks whether the first command binary exists. Use the predicate form for Docker-only services.
+- `flags.start: false` keeps available tools stopped until requested. Their lazy panes appear when started.
+- `restartWith` follows dependency restarts. Every listed service must also be in `dependsOn`.
+- Mail changes app configuration without becoming a hard app dependency. Its hooks update config state and restart the app only when the app is running.
+- `url` adds an address to the TUI. Nothing opens a browser automatically.
+- Tasks remain manual. A project `onBeforeStart` failure aborts startup. Per-service hook failures are logged without aborting service lifecycle.

@@ -1,6 +1,43 @@
 import { encode } from "@toon-format/toon";
+import { z } from "zod";
 
 type OutputFormat = "text" | "json" | "toon";
+
+const primeAgentProjectSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  projectDir: z.string(),
+  configPath: z.string().optional(),
+});
+
+const primeAgentServicesSchema = z.array(
+  z.object({
+    name: z.string(),
+    state: z.string(),
+    ports: z.array(z.number()),
+    url: z.string().optional(),
+  }),
+);
+
+const primeAgentTasksSchema = z.array(
+  z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+  }),
+);
+
+const AGENT_COMMANDS = [
+  "zaps ps",
+  "zaps start [service...]",
+  "zaps stop [service...]",
+  "zaps restart [service...]",
+  "zaps inspect <service>",
+  "zaps logs [service] [--tail <n>|-f]",
+  "zaps tasks",
+  "zaps run <task>",
+  "zaps reload",
+] as const;
 
 const AGENT_ENV_VARS = [
   "CLAUDECODE", // Claude Code
@@ -65,5 +102,37 @@ function writeData(data: unknown, format: OutputFormat): void {
   }
 }
 
-export { isCodingAgent, resolveFormat, sessionLocation, sessionRows, writeData };
+function primeAgentPrompt(
+  projectInput: unknown,
+  servicesInput: unknown,
+  tasksInput: unknown,
+): string {
+  const project = primeAgentProjectSchema.parse(projectInput);
+  const services = primeAgentServicesSchema.parse(servicesInput);
+  const tasks = primeAgentTasksSchema.parse(tasksInput);
+  const data = {
+    activeProject: {
+      name: project.name,
+      sessionId: project.id,
+      folderPath: project.projectDir,
+      configPath: project.configPath ?? "",
+    },
+    services: services.map((service) => ({
+      name: service.name,
+      state: service.state,
+      ports: service.ports.join(","),
+      url: service.url ?? "",
+    })),
+    tasks: tasks.map((task) => ({
+      key: task.key,
+      description: task.description ?? task.name,
+    })),
+    commands: AGENT_COMMANDS,
+  };
+  const prompt =
+    "ZAPS manages this project's development services and tasks. Use the exact keys and only the listed commands. Keep command output concise; session and daemon lifecycle are user-managed.\n\nAlways run every ZAPS command outside the sandbox.";
+  return `${prompt}\n\n\`\`\`toon\n${encode(data)}\n\`\`\`\n`;
+}
+
+export { isCodingAgent, primeAgentPrompt, resolveFormat, sessionLocation, sessionRows, writeData };
 export type { OutputFormat, SessionRowData as SessionRow };

@@ -1264,7 +1264,9 @@ ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (
 
 ### Agent Priming
 
-Use `zaps prime-agent` to get a concise TOON overview of all services (with runtime state and ports) and tasks. Useful for bootstrapping an AI agent's context about the current project.
+Use `zaps prime-agent` to get one short agent instruction followed by a fenced TOON overview of the active project (name, session ID, folder, config), every service (state, ports, URL), every task, and the commands agents may run. The instruction tells agents to always run ZAPS commands outside the sandbox. Session and daemon lifecycle commands are intentionally omitted.
+
+If daemon socket access is denied in a sandbox, the command tells the agent to rerun outside the sandbox. A stopped daemon is reported separately as `Daemon not running.`
 
 ### Claude Code Skills
 

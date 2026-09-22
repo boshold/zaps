@@ -28,6 +28,7 @@ import type { DownDeps, SessionInfo } from "../../src/cli/helpers.js";
 import {
   CliError,
   DAEMON_NOT_RUNNING,
+  daemonConnectionError,
   formatTable,
   parsePositiveInt,
   resolveCommand,
@@ -46,6 +47,18 @@ describe("CliError", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.name).toBe("CliError");
     expect(err.message).toBe("test");
+  });
+});
+
+describe("daemonConnectionError", () => {
+  it("tells sandboxed agents to retry outside the sandbox", () => {
+    const error = Object.assign(new Error("denied"), { code: "EPERM", syscall: "connect" });
+    expect(daemonConnectionError(error)?.message).toContain("rerun outside the sandbox");
+  });
+
+  it("does not classify unrelated permission errors as daemon socket errors", () => {
+    const error = Object.assign(new Error("denied"), { code: "EPERM", syscall: "open" });
+    expect(daemonConnectionError(error)).toBeNull();
   });
 });
 
@@ -288,15 +301,19 @@ describe("withDaemon", () => {
   });
 
   it("throws the accurate daemon-not-running error when no daemon and no sessionArg", async () => {
-    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
-    vi.mocked(isDaemonRunning).mockReturnValue(false);
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockRejectedValueOnce(
+      Object.assign(new Error("missing"), { code: "ENOENT", syscall: "connect" }),
+    );
 
     await expect(withDaemon(async () => "result")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
 
   it("throws the accurate daemon-not-running error when no daemon and sessionArg provided", async () => {
-    const { isDaemonRunning } = await import("../../src/daemon/lifecycle.js");
-    vi.mocked(isDaemonRunning).mockReturnValue(false);
+    const { ipcRequest } = await import("../../src/lib/ipc/client.js");
+    vi.mocked(ipcRequest).mockRejectedValueOnce(
+      Object.assign(new Error("refused"), { code: "ECONNREFUSED", syscall: "connect" }),
+    );
 
     await expect(withDaemon(async () => "result", "sess")).rejects.toThrow(DAEMON_NOT_RUNNING);
   });
@@ -322,6 +339,7 @@ describe("withDaemon", () => {
 
     const result = await withDaemon(async (ipc) => {
       expect(ipc.sessionId).toBe("abc123");
+      expect(ipc.session.name).toBe("project-a");
       return "daemon-result";
     }, "abc123");
     expect(result).toBe("daemon-result");
@@ -361,6 +379,7 @@ describe("withDaemon", () => {
 
     const result = await withDaemon(async (ipc) => {
       expect(ipc.sessionId).toBe("session-/my/.zaps.mts");
+      expect(ipc.session.projectDir).toBe("/my");
       return "ok";
     });
     expect(result).toBe("ok");
