@@ -11,6 +11,7 @@ import {
   findSessionByDir,
   formatTable,
   parsePositiveInt,
+  requestDaemon,
   resolveCommand,
   resolveCommandArgv,
   resolveListedSessionId,
@@ -501,10 +502,9 @@ const downCommand = command(
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("down", parsed._, 0);
     const code = await runDown({
-      daemonRunning: isDaemonRunning,
       socket: socketPath,
       sessionArg: globalSession(),
-      listSessions: async (sock) => ipcRequest(sock, "session.list"),
+      listSessions: async (sock) => requestDaemon(sock, "session.list"),
       destroy: async (sock, id) => ipcRequest(sock, "session.destroy", null, 30_000, id),
       resolveProjectSessionId: () => resolveSessionId().id,
       resolveProjectSession: (sessions) => findSessionByDir(sessions, process.cwd()),
@@ -630,18 +630,20 @@ const lsCommand = command(
     const opts = parsed.flags;
     const format = resolveFormat(opts);
     const sock = socketPath();
-    // No daemon → no sessions can exist; report it (E7) and emit an empty list
-    // For machine formats. Informational, so exit 0 (nothing errored).
-    if (!isDaemonRunning()) {
-      if (format !== "text") {
-        writeData([] as SessionInfo[], format);
-        return;
+    const res = await requestDaemon(sock, "session.list").catch((error: unknown) => {
+      if (error instanceof CliError && error.message === DAEMON_NOT_RUNNING) {
+        if (format !== "text") {
+          writeData([] as SessionInfo[], format);
+        } else {
+          process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
+        }
+        return null;
       }
-      process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
+      return renderCliError(error);
+    });
+    if (res === null) {
       return;
     }
-
-    const res = await ipcRequest(sock, "session.list");
     if (res.error) {
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
@@ -893,17 +895,12 @@ const eventsCommand = command(
     const opts = parsed.flags;
     const sock = socketPath();
 
-    if (!isDaemonRunning()) {
-      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
-      process.exit(1);
-    }
-
     // Validate the resolved session against session.list up front (E8) — the
     // No-`-s` path resolves a pure config hash, so without this check `events`
     // Would subscribe to a nonexistent session and hang forever.
     const id = await (async () => {
       try {
-        const res = await ipcRequest(sock, "session.list");
+        const res = await requestDaemon(sock, "session.list");
         if (res.error) {
           throw new CliError(`Error: ${res.error}`);
         }
@@ -1184,12 +1181,9 @@ const attachCommand = command(
     rejectExcessArgs("attach", parsed._, 0);
 
     const sock = socketPath();
-    if (!isDaemonRunning()) {
-      process.stderr.write(`${DAEMON_NOT_RUNNING}\n`);
-      process.exit(1);
-    }
-
-    const res = await ipcRequest(sock, "session.list");
+    const res = await requestDaemon(sock, "session.list").catch((error: unknown) =>
+      renderCliError(error),
+    );
     if (res.error) {
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
@@ -1426,16 +1420,21 @@ const daemonStatusCommand = command(
     rejectExcessArgs("status", parsed._, 0);
     const opts = parsed.flags;
     const format = resolveFormat(opts);
-    if (!isDaemonRunning()) {
-      if (format !== "text") {
-        writeData({ running: false }, format);
-      } else {
-        process.stdout.write("Daemon not running.\n");
+    const sock = socketPath();
+    const res = await requestDaemon(sock, "daemon.status").catch((error: unknown) => {
+      if (error instanceof CliError && error.message === DAEMON_NOT_RUNNING) {
+        if (format !== "text") {
+          writeData({ running: false }, format);
+        } else {
+          process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
+        }
+        return null;
       }
+      return renderCliError(error);
+    });
+    if (res === null) {
       return;
     }
-    const sock = socketPath();
-    const res = await ipcRequest(sock, "daemon.status");
     if (res.error) {
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
@@ -1462,12 +1461,10 @@ const daemonPingCommand = command(
   async (parsed) => {
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("ping", parsed._, 0);
-    if (!isDaemonRunning()) {
-      process.stderr.write("Daemon not running.\n");
-      process.exit(1);
-    }
     const sock = socketPath();
-    const res = await ipcRequest(sock, "daemon.ping");
+    const res = await requestDaemon(sock, "daemon.ping").catch((error: unknown) =>
+      renderCliError(error),
+    );
     if (res.error) {
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);

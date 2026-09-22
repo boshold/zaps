@@ -1,7 +1,7 @@
 import path from "node:path";
 
 import { discoverConfig } from "#src/config/discovery.js";
-import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
+import { socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcStream } from "#src/lib/ipc/client.js";
@@ -18,6 +18,38 @@ export class CliError extends Error {
   public constructor(message: string) {
     super(message);
     this.name = "CliError";
+  }
+}
+
+export function daemonConnectionError(error: unknown): CliError | null {
+  if (!(error instanceof Error) || !("code" in error) || !("syscall" in error)) {
+    return null;
+  }
+  if (error.syscall !== "connect") {
+    return null;
+  }
+  if (error.code === "EPERM" || error.code === "EACCES") {
+    return new CliError(
+      `Cannot access zaps daemon socket (${error.code}). Check permissions; if sandboxed, rerun outside the sandbox.`,
+    );
+  }
+  if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+    return new CliError(DAEMON_NOT_RUNNING);
+  }
+  return null;
+}
+
+export async function requestDaemon(
+  sock: string,
+  method: string,
+  params?: unknown,
+  timeout?: number,
+  session?: string,
+): Promise<IpcResponse> {
+  try {
+    return await ipcRequest(sock, method, params, timeout, session);
+  } catch (error) {
+    throw daemonConnectionError(error) ?? error;
   }
 }
 
@@ -201,20 +233,17 @@ export async function withDaemon<T>(
   sessionArg?: string,
 ): Promise<T> {
   const sock = socketPath();
-  if (!isDaemonRunning()) {
-    throw new CliError(DAEMON_NOT_RUNNING);
-  }
 
   const id = await (async () => {
     if (sessionArg) {
-      const res = await ipcRequest(sock, "session.list");
+      const res = await requestDaemon(sock, "session.list");
       if (res.error) {
         throw new CliError(`Error: ${res.error}`);
       }
       // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
       return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
     }
-    const res = await ipcRequest(sock, "session.list");
+    const res = await requestDaemon(sock, "session.list");
     if (res.error) {
       throw new CliError(`Error: ${res.error}`);
     }
@@ -232,7 +261,7 @@ export async function withDaemon<T>(
 
   const ipc: SessionIpc = {
     sessionId: id,
-    request: async (method, params?) => ipcRequest(sock, method, params, 30_000, id),
+    request: async (method, params?) => requestDaemon(sock, method, params, 30_000, id),
     stream: async (method, params, onEvent) =>
       ipcStream(sock, method, params, onEvent, 120_000, id),
   };
@@ -240,7 +269,6 @@ export async function withDaemon<T>(
 }
 
 export interface DownDeps {
-  daemonRunning: () => boolean;
   socket: () => string;
   sessionArg?: string;
   listSessions: (sock: string) => Promise<IpcResponse>;
@@ -259,12 +287,17 @@ export interface DownDeps {
  * (E7).
  */
 export async function runDown(deps: DownDeps): Promise<number> {
-  if (!deps.daemonRunning()) {
-    deps.stderr(`${DAEMON_NOT_RUNNING}\n`);
+  const sock = deps.socket();
+  const res = await deps.listSessions(sock).catch((error: unknown) => {
+    const connectionError = daemonConnectionError(error) ?? error;
+    deps.stderr(
+      `${connectionError instanceof Error ? connectionError.message : String(connectionError)}\n`,
+    );
+    return null;
+  });
+  if (res === null) {
     return 1;
   }
-  const sock = deps.socket();
-  const res = await deps.listSessions(sock);
   if (res.error) {
     deps.stderr(`Error: ${res.error}\n`);
     return 1;
