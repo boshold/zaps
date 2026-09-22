@@ -66,7 +66,9 @@ When no `layout` is specified, ZAPS auto-generates:
 - Each non-detached service gets its own **vertical split pane in the `@tui` window** (split off the `@tui` pane via `split-window -v`)
 - Focus defaults to `@tui`
 
-## Example — Nested Layout
+## Recommended Layout
+
+For a new custom layout, place `@tui` at the top left and focus it. Give the left column 60% of the terminal and give `@tui` 60% of that column's height. Put the main app below it and supporting services in the right column.
 
 ```ts
 layout: {
@@ -74,13 +76,21 @@ layout: {
   children: [
     {
       direction: "rows",
-      size: "70",
+      size: "60",
       children: [
-        { pane: "server", size: "50" },
-        { pane: "watcher", size: "50" },
+        { pane: "@tui", size: "60", focus: true },
+        { pane: "app", size: "40" },
       ],
     },
-    { pane: "@tui", size: "30", focus: true },
+    {
+      direction: "rows",
+      size: "40",
+      children: [
+        { pane: "database" },
+        { pane: "mail" },
+        { pane: "database-ui" },
+      ],
+    },
   ],
 }
 ```
@@ -88,11 +98,13 @@ layout: {
 Result:
 
 ```
-┌──────────────┬──────┐
-│   server     │      │
-│──────────────│ @tui │
-│   watcher    │      │
-└──────────────┴──────┘
+┌──────────────────┬────────────┐
+│      @tui        │  database  │
+│                  │────────────│
+│──────────────────│    mail    │
+│       app        │────────────│
+│                  │database-ui │
+└──────────────────┴────────────┘
 ```
 
-Outer split is `columns` (left/right). Left column splits into `rows` (top/bottom) with `server` and `watcher`. Right column is `@tui` at 30% width.
+Optional or unavailable services are removed from the layout and the remaining panes reflow. Non-autostart services use lazy panes by default, so their pane appears when started and disappears after an explicit stop.

@@ -345,6 +345,7 @@ describe("withDaemon", () => {
 
     const result = await withDaemon(async (ipc) => {
       expect(ipc.sessionId).toBe("abc123");
+      expect(ipc.session.name).toBe("project-a");
       return "daemon-result";
     }, "abc123");
     expect(result).toBe("daemon-result");
@@ -384,6 +385,7 @@ describe("withDaemon", () => {
 
     const result = await withDaemon(async (ipc) => {
       expect(ipc.sessionId).toBe("session-/my/.zaps.mts");
+      expect(ipc.session.projectDir).toBe("/my");
       return "ok";
     });
     expect(result).toBe("ok");

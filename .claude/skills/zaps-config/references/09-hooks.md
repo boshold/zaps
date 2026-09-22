@@ -75,7 +75,7 @@ The `Library` object destructured in `config()` provides runtime actions usable 
 | `browser` | `open(url)`       | Open a URL in the default browser |
 
 ```ts
-export function config({ define, task, browser }: Library) {
+export function config({ define, task }: Library) {
   return define({
     services: {
       db: {
@@ -83,7 +83,7 @@ export function config({ define, task, browser }: Library) {
         onReady: () => task.run("migrate"),
       },
       api: {
-        start: "npm run dev:api",
+        start: "pnpm dev:api",
         ready: { port: 3001 },
         dependsOn: ["db"],
       },
@@ -91,12 +91,11 @@ export function config({ define, task, browser }: Library) {
     tasks: {
       migrate: { name: "Run migrations", commands: "prisma migrate deploy" },
     },
-    hooks: {
-      onStart: () => browser.open("http://localhost:3000"),
-    },
   });
 }
 ```
+
+Keep browser opening opt-in. An explicit service `url` is enough to show the address in the TUI. Use `flags.open: true` or `browser.open()` only when requested.
 
 ## onOutput Monitoring Details
 
@@ -108,7 +107,7 @@ export function config({ define, task, browser }: Library) {
 ```ts
 services: {
   api: {
-    start: "npm run dev",
+    start: "pnpm dev",
     onOutput: (line) => {
       if (line.includes("compiled successfully")) {
         console.log("Build complete");
@@ -120,50 +119,52 @@ services: {
 
 ## Error Handling
 
-- Hook errors are caught and logged as `lastError` on the service status
-- Hook errors **do not** fail the service start/stop lifecycle
-- The service continues operating normally even if a hook throws
+- Project hook errors propagate. An `onBeforeStart` failure aborts project startup.
+- Per-service hook errors are caught and logged as `lastError` on the service status.
+- Per-service hook errors do not fail the service start or stop lifecycle.
 
-## Cross-Service Orchestration Example
+## Optional Mail Service Restart Pattern
 
 ```ts
-export function config({ define, task, service, browser }: Library) {
+export function config({ define, service }: Library) {
+  let mailEnabled = false;
+
+  async function restartAppForMail(enabled: boolean) {
+    mailEnabled = enabled;
+    if (service.isRunning("app")) {
+      await service.restart("app");
+    }
+  }
+
   return define({
     services: {
-      db: {
-        docker: { service: "postgres" },
-        ready: { port: 5432 },
-        onReady: () => task.run("migrate"),
-      },
-      api: {
-        start: "npm run dev:api",
-        ready: { port: 3001 },
-        dependsOn: ["db"],
-        onOutput: (line) => {
-          if (line.includes("schema changed")) {
-            void service.restart("web");
-          }
-        },
-      },
-      web: {
-        start: "npm run dev",
+      app: {
+        start: "pnpm dev",
         ready: { port: 3000 },
-        dependsOn: ["api"],
+        env: () => ({
+          SMTP_ENABLED: mailEnabled ? "true" : "false",
+        }),
       },
-    },
-    tasks: {
-      migrate: { name: "Run migrations", commands: "prisma migrate deploy" },
-    },
-    hooks: {
-      onStart: () => browser.open("http://localhost:3000"),
+      mail: {
+        optional: (ctx) => ctx.hasBinary("docker"),
+        flags: { start: false },
+        docker: { service: "mailpit" },
+        ready: { http: "http://localhost:8025/" },
+        url: "http://localhost:8025",
+        onReady: () => restartAppForMail(true),
+        onStop: () => restartAppForMail(false),
+      },
     },
   });
 }
 ```
 
+Use hooks for a manually started service that changes another running service's environment. Use `restartWith` for dependency restarts instead.
+
 ## Gotchas
 
 - **`task.*` and `service.*` only work in hooks** — calling them at config definition time throws `"not available outside of service hooks"`
-- **Hook errors don't fail lifecycle** — errors are logged but the service continues starting/stopping normally
+- **Project hook errors propagate** — use project `onBeforeStart` for required setup that must abort startup
+- **Per-service hook errors don't fail lifecycle** — errors are logged but the service continues starting or stopping
 - **onOutput is not real-time** — it polls every 1s via tmux pane capture, not a direct stream
-- **`browser.open` works anytime** — unlike `task.*`/`service.*`, it doesn't require runtime context
+- **`browser.open` works anytime** — unlike `task.*`/`service.*`, it doesn't require runtime context; keep it opt-in

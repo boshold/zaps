@@ -57,6 +57,7 @@ export interface SessionInfo {
   id: string;
   name: string;
   projectDir: string;
+  configPath?: string;
   /**
    * Tmux session hosting the panes — powers the `zaps ls` location column.
    * Optional at runtime: a daemon from an older release omits it, and the CLI
@@ -71,6 +72,7 @@ export interface SessionInfo {
 
 export interface SessionIpc {
   readonly sessionId: string;
+  readonly session: SessionInfo;
   request(method: string, params?: unknown): Promise<IpcResponse>;
   stream(
     method: string,
@@ -234,14 +236,14 @@ export async function withDaemon<T>(
 ): Promise<T> {
   const sock = socketPath();
 
-  const id = await (async () => {
+  const targetSession = await (async () => {
     if (sessionArg) {
       const res = await requestDaemon(sock, "session.list");
       if (res.error) {
         throw new CliError(`Error: ${res.error}`);
       }
       // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-      return resolveTargetSession(res.result as SessionInfo[], sessionArg).id;
+      return resolveTargetSession(res.result as SessionInfo[], sessionArg);
     }
     const res = await requestDaemon(sock, "session.list");
     if (res.error) {
@@ -256,11 +258,13 @@ export async function withDaemon<T>(
     if (!match) {
       throw new CliError("No running zaps session for this project.");
     }
-    return match.id;
+    return match;
   })();
+  const { id } = targetSession;
 
   const ipc: SessionIpc = {
     sessionId: id,
+    session: targetSession,
     request: async (method, params?) => requestDaemon(sock, method, params, 30_000, id),
     stream: async (method, params, onEvent) =>
       ipcStream(sock, method, params, onEvent, 120_000, id),

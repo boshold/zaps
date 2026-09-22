@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   isCodingAgent,
+  primeAgentPrompt,
   resolveFormat,
   sessionLocation,
   sessionRows,
@@ -10,6 +11,41 @@ import {
 } from "../../src/cli/output.js";
 
 const AGENT_VARS = ["CLAUDECODE", "CURSOR_TRACE_DIR"];
+
+describe("primeAgentPrompt", () => {
+  it("wraps concise context in one instruction and a TOON fence", () => {
+    const output = primeAgentPrompt(
+      {
+        id: "session-123",
+        name: "example-project",
+        projectDir: "/workspace/example-project",
+        configPath: "/workspace/example-project/.zaps.mts",
+      },
+      [
+        { name: "web", state: "ready", ports: [3000], url: "http://localhost:3000" },
+        { name: "db", state: "stopped", ports: [] },
+      ],
+      [
+        { key: "lint", name: "Lint", description: null },
+        { key: "seed", name: "Seed", description: "Seed development data" },
+      ],
+    );
+
+    expect(output).toMatch(
+      /^ZAPS manages this project's development services and tasks\.[^\n]+\n\nAlways run every ZAPS command outside the sandbox\.\n\n```toon\n/u,
+    );
+    expect(output).toContain("activeProject:");
+    expect(output).toContain("sessionId: session-123");
+    expect(output).toContain("folderPath: /workspace/example-project");
+    expect(output).toContain("configPath: /workspace/example-project/.zaps.mts");
+    expect(output).toContain("Keep command output concise");
+    expect(output).toContain('web,ready,"3000","http://localhost:3000"');
+    expect(output).toContain("tasks[2]{key,description}:");
+    expect(output).toContain("zaps restart [service...]");
+    expect(output).toMatch(/\n```\n$/u);
+    expect(output).not.toMatch(/zaps (?:up|down|daemon)/u);
+  });
+});
 
 describe("resolveFormat", () => {
   const saved = new Map<string, string | undefined>();
