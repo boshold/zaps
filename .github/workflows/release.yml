@@ -1,23 +1,51 @@
 name: Release
 
+# Shared release flow, see https://github.com/boshold/gh-actions#releasing: full CI, then
+# release-tag.yml writes the next version into package.json, pushes the release commit and tag and
+# creates the GitHub release. The jobs below build from that tag and publish. The npm job has to
+# stay in this file: the npm trusted publisher is bound to release.yml.
+
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Tag to release (e.g. v0.1.0)"
-        required: true
+      bump:
+        description: Version part to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      dry-run:
+        description: Test and build, but push, publish and release nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  artifact-metadata: write
+  contents: read
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      full: true
+
+  release:
+    needs: ci
+    uses: boshold/gh-actions/.github/workflows/release-tag.yml@main
+    permissions:
+      contents: write
+    with:
+      bump: ${{ inputs.bump }}
+      dry-run: ${{ inputs.dry-run }}
+
   build:
     name: Build ${{ matrix.name }}
+    needs: release
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -32,6 +60,9 @@ jobs:
             name: zaps-darwin-arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A dry run pushes no tag, so it builds the tested commit.
+          ref: ${{ inputs.dry-run && github.sha || needs.release.outputs.tag }}
       - uses: pnpm/setup@5d160c5bc68a09337ad0d5654e237e03253b5879 # v1.0.0
         with:
           install: false
@@ -42,10 +73,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version-file: ".bun-version"
-      - name: Resolve version from tag
-        run: echo "ZAPS_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - name: Resolve the release version
+        run: echo "ZAPS_VERSION=$VERSION" >> "$GITHUB_ENV"
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          VERSION: ${{ needs.release.outputs.version }}
       - run: pnpm install --frozen-lockfile
       - run: bun run scripts/build-native.ts --target=${{ matrix.target }}
       - run: mv dist/zaps dist/${{ matrix.name }}
@@ -58,9 +89,16 @@ jobs:
   npm:
     name: Publish to npm
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release, build]
+    permissions:
+      contents: read
+      id-token: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # A dry run pushes no tag, so it builds the tested commit.
+          ref: ${{ inputs.dry-run && github.sha || needs.release.outputs.tag }}
       - uses: pnpm/setup@5d160c5bc68a09337ad0d5654e237e03253b5879 # v1.0.0
         with:
           install: false
@@ -74,15 +112,17 @@ jobs:
         with:
           path: artifacts/
           merge-multiple: true
-      - name: Resolve version from tag
-        run: echo "ZAPS_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+      - name: Resolve the release version
+        run: echo "ZAPS_VERSION=$VERSION" >> "$GITHUB_ENV"
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          VERSION: ${{ needs.release.outputs.version }}
       - run: pnpm install --frozen-lockfile
       # Build before prepare-npm-platform-packages mutates package.json (which
       # would otherwise trip pnpm's lockfile check).
       - run: pnpm build
-      - name: Set package version to tag
+      # A no-op on the release commit, which already carries the version; a dry run builds the
+      # tested commit and needs it to preview the right version.
+      - name: Set package version
         run: npm version "$ZAPS_VERSION" --no-git-tag-version --allow-same-version
       - name: Prepare platform packages
         run: node_modules/.bin/tsx scripts/prepare-npm-platform-packages.ts
@@ -90,15 +130,19 @@ jobs:
       # OIDC instead of a token. Each package needs a Trusted Publisher on npm
       # (repo boshold/zaps, workflow release.yml). Idempotent: skip versions
       # already on the registry so a partial-failure re-run can complete.
+      # A dry run only packs: `npm publish --dry-run` without provenance needs no OIDC token.
       - name: Publish platform packages
         env:
           NODE_AUTH_TOKEN: ""
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           for dir in npm-platforms/*/; do
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
-            if npm view "$name@$version" version >/dev/null 2>&1; then
+            if [ -n "$(npm view "$name@$version" version 2>/dev/null || true)" ]; then
               echo "$name@$version already published — skipping"
+            elif [ "$DRY_RUN" = "true" ]; then
+              (cd "$dir" && npm publish --access public --dry-run)
             else
               (cd "$dir" && npm publish --access public --provenance)
             fi
@@ -106,10 +150,13 @@ jobs:
       - name: Publish main package
         env:
           NODE_AUTH_TOKEN: ""
+          DRY_RUN: ${{ inputs.dry-run }}
         run: |
           version=$(node -p "require('./package.json').version")
-          if npm view "@bosdev/zaps@$version" version >/dev/null 2>&1; then
+          if [ -n "$(npm view "@bosdev/zaps@$version" version 2>/dev/null || true)" ]; then
             echo "@bosdev/zaps@$version already published — skipping"
+          elif [ "$DRY_RUN" = "true" ]; then
+            npm publish --access public --dry-run
           else
             npm publish --access public --provenance
           fi
@@ -118,6 +165,7 @@ jobs:
       # (https://github.com/orgs/boshold/artifacts) via the Artifact Metadata API.
       # Best-effort: a failure here must never break a release.
       - name: Register npm storage records
+        if: ${{ !inputs.dry-run }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -154,22 +202,25 @@ jobs:
             [ "$http" = "200" ] || { echo "  response:"; cat /tmp/sr-resp.json 2>/dev/null; echo " (non-fatal)"; }
           done
 
-  release:
-    name: Release
+  assets:
+    name: Attach binaries
     runs-on: ubuntu-latest
-    needs: build
+    needs: [release, build]
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts/
           merge-multiple: true
       - run: chmod +x artifacts/*
       - name: Generate checksums
-        run: (cd artifacts && sha256sum * > ../SHA256SUMS)
-      - env:
+        run: (cd artifacts && sha256sum -- * > ../SHA256SUMS)
+      # release-tag.yml already created the release with its notes.
+      - name: Attach to the release
+        if: ${{ !inputs.dry-run }}
+        env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
-          gh release create "$TAG" artifacts/* SHA256SUMS --generate-notes
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$TAG" artifacts/* SHA256SUMS --clobber
