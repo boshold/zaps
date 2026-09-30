@@ -53,6 +53,15 @@ Coverage has a global gate of 85% (lines/functions/statements/branches).
 See [`CLAUDE.md`](./CLAUDE.md) for an overview of the core layers (CLI, daemon,
 service manager, TUI, config, MCP) and key patterns.
 
+## Releasing
+
+Maintainers release from the Actions tab: **Release → Run workflow** on `main`, pick
+`patch`, `minor` or `major`. The run tests everything, writes the next version
+into `package.json`, pushes a `chore(release): vX.Y.Z` commit with its tag,
+publishes `@bosdev/zaps` and the platform packages to npm and attaches the
+binaries and `SHA256SUMS` to the GitHub release. `dry-run` builds and packs
+without pushing or publishing. Don't push version tags or edit the version by hand.
+
 ## Reporting issues
 
 Use the [issue tracker](https://github.com/boshold/zaps/issues). For security

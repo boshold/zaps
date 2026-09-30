@@ -5,10 +5,19 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The release runs this workflow with full: true before it publishes.
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: false
+        description: Also run the suites that are too slow for every pull request
 
+# github.workflow is the caller's name under workflow_call, so a release and a push to main
+# do not cancel each other.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 permissions:
   contents: read
