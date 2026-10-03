@@ -40,6 +40,7 @@ Other commands:
 - `zaps sentra issues --since 1h` groups records by fingerprint, last seen first.
 - `zaps sentra clear` deletes the session's records before a clean run. `--service <s>` and `--before <time>` narrow it.
 - `zaps ps` shows `ERRORS` per service: errors since that service last started.
+- MCP clients get the same data from the `sentra_errors`, `sentra_issues` and `sentra_show` tools (same filters; list tools end with `hasMore`). They never start the daemon.
 - `zaps sentra live --service web` streams new errors until Ctrl-C. Only for a user-visible pane; agents should poll `errors --from` instead.
 
 Notes:

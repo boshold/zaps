@@ -1397,8 +1397,9 @@ session and start the daemon if needed, so you can still read errors after
 `zaps down`. `live` needs a running session and never starts the daemon. When the
 daemon goes away it prints `sentra: waiting for daemon…` once and reconnects every 2 s.
 
-`zaps ps` adds an `ERRORS` column (errors since the service last started, `-` when
-not opted in), and `zaps prime-agent` adds a `sentra` block. Both only appear when
+`zaps ps` shows an `ERRORS` column (errors since the service last started, `-` when
+not opted in) only when Sentra is enabled. `zaps prime-agent` always adds a `sentra`
+block (`status: disabled` when off) and lists the `zaps sentra` commands only when
 Sentra is enabled.
 
 To stream errors in a pane, add a service:
@@ -1412,8 +1413,8 @@ To stream errors in a pane, add a service:
 Records live in `$XDG_STATE_HOME/zaps/sentra.db` (fallback
 `~/.local/state/zaps/sentra.db`), shared by all projects and filtered by session.
 The chosen port is kept in `sentra.json` next to it. Sentra deletes a session's data
-after 30 days without new records, and noise (spans, transactions, logs) after
-7 days. `zaps sentra clear` deletes the current session's records right away. Events
+after 30 days without new records, and spans, transactions, logs and other
+non-error records after 7 days. `zaps sentra clear` deletes the current session's records right away. Events
 sent while no daemon runs are lost.
 
 ## AI Integration
