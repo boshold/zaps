@@ -7,6 +7,7 @@ import { sanitizeSegment, sentraEnabledFor, sentraTemplateFor } from "#src/lib/s
 import { clearSession, listErrors, listIssues, showById } from "#src/lib/sentra/query.js";
 import type { SentraQuerySource } from "#src/lib/sentra/query.js";
 import {
+  SENTRA_DISABLED_ERROR,
   clearParamsSchema,
   errorsParamsSchema,
   issuesParamsSchema,
@@ -18,8 +19,7 @@ import { SentraQueryError, parseTimeInput } from "#src/lib/sentra/time.js";
 
 type Handler = (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>;
 
-const DISABLED_MESSAGE =
-  'sentra_disabled: Sentra is not enabled for this project. Add a "sentra" block to the ZAPS config.';
+const DISABLED_MESSAGE = SENTRA_DISABLED_ERROR;
 
 /** `null` when the session is not running (the enabled check is skipped then). */
 function sessionEnabled(store: SessionStore, sessionId: string): boolean | null {

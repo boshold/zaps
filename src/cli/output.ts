@@ -184,7 +184,7 @@ function primeAgentPrompt(
       state: service.state,
       ports: service.ports.join(","),
       url: service.url ?? "",
-      errors: typeof service.errorCount === "number" ? service.errorCount : "",
+      errors: sentraEnabled && typeof service.errorCount === "number" ? service.errorCount : "",
     })),
     tasks: tasks.map((task) => ({
       key: task.key,

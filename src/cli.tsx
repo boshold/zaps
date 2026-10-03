@@ -1501,6 +1501,7 @@ const daemonGroupCommand = command({
 
 async function runSentraGroup(rawArgv: string[]): Promise<void> {
   const typedArgv = process.argv.slice(2);
+  const retryTimers = new Set<ReturnType<typeof setTimeout>>();
   const argv = consumeLeadingSessionFlag(rawArgv);
   process.exitCode = await runSentraCli(argv, {
     request: createAutoStartRequest({
@@ -1515,6 +1516,36 @@ async function runSentraGroup(rawArgv: string[]): Promise<void> {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
     sessionArg: globalSession(),
+    live: {
+      subscribe: (sessionId, handlers) =>
+        ipcSubscribe(
+          socketPath(),
+          sessionId,
+          ["sentra.item", "sentra.failed"],
+          handlers.onEvent,
+          handlers.onEnd,
+          handlers.onEnd,
+          handlers.onSubscribed,
+        ),
+      listSessions: async () => requestDaemon(socketPath(), "session.list"),
+      sleep: async (ms) =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            retryTimers.delete(timer);
+            resolve();
+          }, ms);
+          retryTimers.add(timer);
+        }),
+      waitForStop: async () =>
+        new Promise((resolve) => {
+          process.once("SIGINT", () => {
+            for (const timer of retryTimers) {
+              clearTimeout(timer);
+            }
+            resolve();
+          });
+        }),
+    },
   });
 }
 

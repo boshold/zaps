@@ -123,7 +123,7 @@ describe("primeAgentPrompt — sentra", () => {
         folderPath: /p
         configPath: /p/.zaps.mts
       services[2]{name,state,ports,url,errors}:
-        web,ready,"3000","",2
+        web,ready,"3000","",""
         db,ready,"","",""
       tasks[1]{key,description}:
         lint,Lint

@@ -196,6 +196,8 @@ export function ipcSubscribe(
   onEvent: (event: DaemonEvent) => void,
   onClose?: () => void,
   onError?: (error: string) => void,
+  /** Successful subscribe ack. */
+  onSubscribed?: () => void,
 ): IpcSubscription {
   const socket = net.createConnection(socketPath);
   let connected = false;
@@ -263,6 +265,8 @@ export function ipcSubscribe(
       // Ack for "Unknown session") — surface it instead of dropping it (E8).
       if (msg.error !== undefined) {
         onError?.(msg.error);
+      } else if (msg.id === subscribeId) {
+        onSubscribed?.();
       }
     }),
   );

@@ -2,6 +2,8 @@ import { cli, command } from "cleye";
 import type { z } from "zod";
 
 import { CliError, DAEMON_NOT_RUNNING } from "#src/cli/helpers.js";
+import { runLive } from "#src/cli/sentra-live.js";
+import type { LiveDeps } from "#src/cli/sentra-live.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
 import {
   buildNextCommand,
@@ -47,6 +49,8 @@ interface SentraCliDeps {
   stderr(text: string): void;
   /** Root-level `-s` hoisted before the `sentra` group. */
   sessionArg?: string;
+  /** Streaming for `live`; omitted where streaming is unsupported. */
+  live?: LiveDeps;
 }
 
 interface SentraFlags {
@@ -69,7 +73,7 @@ interface SentraFlags {
   before?: string;
 }
 
-type SentraCommandName = "errors" | "issues" | "show" | "clear";
+type SentraCommandName = "errors" | "issues" | "show" | "clear" | "live";
 
 function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
   return values && values.length > 0 ? values : undefined;
@@ -284,6 +288,33 @@ async function runClear(deps: SentraCliDeps, flags: SentraFlags): Promise<number
   return 0;
 }
 
+async function runLiveCommand(deps: SentraCliDeps, flags: SentraFlags): Promise<number> {
+  const filter = {
+    service: nonEmpty(flags.service),
+    kind: nonEmpty(parseKinds(flags.kind)),
+    level: nonEmpty(flags.level?.map((value) => parseLevel(value, "level"))),
+    minLevel: flags.minLevel === undefined ? undefined : parseLevel(flags.minLevel, "min-level"),
+    q: flags.query,
+  };
+  if (!deps.live) {
+    deps.stderr("Error: live streaming is not available here.\n");
+    return 1;
+  }
+  return runLive(
+    {
+      request: async (method, params) => deps.request(method, params),
+      cwd: () => deps.cwd(),
+      configSessionId: async () => deps.configSessionId(),
+      stdout: (text) => deps.stdout(text),
+      stderr: (text) => deps.stderr(text),
+      sessionArg: flags.session ?? deps.sessionArg,
+      json: isJson(flags, deps),
+      live: deps.live,
+    },
+    filter,
+  );
+}
+
 /** Runs one subcommand; returns the exit code. Usage errors → 2, runtime errors → 1. */
 async function runSentraCommand(
   name: SentraCommandName,
@@ -300,6 +331,9 @@ async function runSentraCommand(
     }
     if (name === "show") {
       return await runShow(deps, flags, id);
+    }
+    if (name === "live") {
+      return await runLiveCommand(deps, flags);
     }
     return await runClear(deps, flags);
   } catch (error) {
@@ -440,6 +474,27 @@ function sentraCommands(deps: SentraCliDeps, settle: (pending: Promise<number>) 
       },
       (parsed) => {
         settle(runSentraCommand("clear", parsed.flags, deps));
+      },
+    ),
+    command(
+      {
+        name: "live",
+        flags: {
+          ...sessionFlag,
+          ...serviceFlag,
+          ...levelFlags,
+          kind: {
+            type: String,
+            placeholder: "<k[,k]>",
+            description: "Kinds (default error,message with --min-level warning)",
+          },
+          ...qFlag,
+          ...jsonFlag,
+        },
+        help: { description: "Stream new records until Ctrl-C (needs a running session)" },
+      },
+      (parsed) => {
+        settle(runSentraCommand("live", parsed.flags, deps));
       },
     ),
   ];

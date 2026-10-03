@@ -3,14 +3,15 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import { requestDaemon } from "#src/cli/helpers.js";
 import { createAutoStartRequest, runSentraCli } from "#src/cli/sentra.js";
 import type { SentraCliDeps } from "#src/cli/sentra.js";
 import { DaemonServer } from "#src/daemon/server.js";
-import { ipcRequest } from "#src/lib/ipc/client.js";
+import { ipcRequest, ipcSubscribe } from "#src/lib/ipc/client.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
-import { errorsResultSchema } from "#src/lib/sentra/schemas.js";
+import { errorRowSchema, errorsResultSchema } from "#src/lib/sentra/schemas.js";
 import type { ErrorRow } from "#src/lib/sentra/schemas.js";
 import { computeProjectSessionId } from "#src/lib/sentra/session-id.js";
 
@@ -78,6 +79,26 @@ describe.skipIf(!hasTmux())("sentra end-to-end with @sentry/node", () => {
     server.stop();
     await server.sentra.close();
     fs.rmSync(socketPath, { force: true });
+  }
+
+  async function createSession(): Promise<string> {
+    const created = await ipcRequest(socketPath, "session.create", {
+      configPath: writeSentraConfig(projectDir),
+      projectDir,
+      tmuxSession: tmux.name,
+      originPane: tmux.initialPaneId,
+      tmuxSocket: testTmuxSocket(),
+    });
+    expect(created.error).toBeUndefined();
+    return z.object({ id: z.string() }).parse(created.result).id;
+  }
+
+  async function errorCount(sessionId: string): Promise<number | null | undefined> {
+    const res = await ipcRequest(socketPath, "services.list", undefined, 5000, sessionId);
+    const list = z
+      .array(z.object({ name: z.string(), errorCount: z.number().nullable().optional() }))
+      .parse(res.result);
+    return list.find((service) => service.name === SERVICE)?.errorCount;
   }
 
   function cliDeps(argv: string[], out: string[], err: string[]): SentraCliDeps {
@@ -166,5 +187,99 @@ describe.skipIf(!hasTmux())("sentra end-to-end with @sentry/node", () => {
     const after = await errorsJson(["--since", "5m"]);
     expect(after.map((r) => r.id)).toEqual([row.id]);
     expect(daemon).not.toBeNull();
+  });
+
+  it("counts errors since start and streams them live across a daemon restart", async () => {
+    const sessionId = await createSession();
+    await waitFor(
+      async () => errorCount(sessionId),
+      (count) => count === 1,
+      15_000,
+      250,
+    );
+
+    const out: string[] = [];
+    const err: string[] = [];
+    let stop: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      stop = resolve;
+    });
+    const deps: SentraCliDeps = {
+      ...cliDeps(["sentra", "live", "--json"], out, err),
+      live: {
+        subscribe: (id, handlers) =>
+          ipcSubscribe(
+            socketPath,
+            id,
+            [],
+            handlers.onEvent,
+            handlers.onEnd,
+            handlers.onEnd,
+            handlers.onSubscribed,
+          ),
+        listSessions: async () => ipcRequest(socketPath, "session.list"),
+        sleep: async (ms) =>
+          new Promise((resolve) => {
+            setTimeout(resolve, ms);
+          }),
+        waitForStop: async () => stopped,
+      },
+    };
+    const live = runSentraCli(["live", "--json"], deps);
+    const rows = () =>
+      out
+        .join("")
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => errorRowSchema.parse(JSON.parse(line)));
+
+    await waitFor(
+      async () => daemon?.list()[0]?.subscribers.size ?? 0,
+      (size) => size > 0,
+      5000,
+      50,
+    );
+    const restarted = await ipcRequest(
+      socketPath,
+      "services.restart",
+      { name: SERVICE },
+      30_000,
+      sessionId,
+    );
+    expect(restarted.error).toBeUndefined();
+    await waitFor(
+      async () => rows().length,
+      (count) => count === 1,
+      15_000,
+      100,
+    );
+    expect(rows()[0]).toMatchObject({ service: SERVICE, kind: "error" });
+    await waitFor(
+      async () => errorCount(sessionId),
+      (count) => count === 1,
+      5000,
+      100,
+    );
+
+    await stopDaemon();
+    await waitFor(
+      async () => err.join(""),
+      (text) => text.includes("sentra: waiting for daemon…"),
+      5000,
+      50,
+    );
+    await startDaemon();
+    await createSession();
+    await waitFor(
+      async () => rows().length,
+      (count) => count === 2,
+      20_000,
+      100,
+    );
+    expect(err.join("")).toBe("sentra: waiting for daemon…\n");
+
+    stop();
+    expect(await live).toBe(0);
   });
 });

@@ -127,4 +127,10 @@ export type ShowResult = z.infer<typeof showResultSchema>;
 export type ClearResult = z.infer<typeof clearResultSchema>;
 export type StatusResult = z.infer<typeof statusResultSchema>;
 
+export const SENTRA_DISABLED_ERROR =
+  'sentra_disabled: Sentra is not enabled for this project. Add a "sentra" block to the ZAPS config.';
+
+export const liveItemEventSchema = z.object({ row: errorRowSchema, line: z.string() });
+export const liveFailedEventSchema = z.object({ error: z.string() });
+
 export { DEFAULT_LIMIT, MAX_LIMIT, itemKindSchema, levelSchema, sessionIdSchema };

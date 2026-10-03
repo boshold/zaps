@@ -1,14 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CliError } from "#src/cli/helpers.js";
+import { matchesLive, withLiveDefaults } from "#src/cli/sentra-live.js";
+import type { LiveDeps, LiveHandlers } from "#src/cli/sentra-live.js";
 import {
   createAutoStartRequest,
   resolveSessionFor,
   runSentraCli,
   runSentraCommand,
 } from "#src/cli/sentra.js";
-import type { SentraCliDeps } from "#src/cli/sentra.js";
-import type { IpcResponse } from "#src/lib/ipc/protocol.js";
+import type { SentraCliDeps, SentraFlags } from "#src/cli/sentra.js";
+import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
 import type { ErrorRow } from "#src/lib/sentra/schemas.js";
 
 const RUNNING = { id: "aaaaaaaaaaaa", name: "proj", projectDir: "/work/proj" };
@@ -417,5 +419,202 @@ describe("createAutoStartRequest", () => {
     });
     await expect(twice("m")).rejects.toThrow("Daemon not running.");
     expect(ensureDaemon).toHaveBeenCalledOnce();
+  });
+});
+
+function fakeHandlers(): LiveHandlers {
+  return { onEvent: () => undefined, onSubscribed: () => undefined, onEnd: () => undefined };
+}
+
+describe("zaps sentra live", () => {
+  const STATUS = {
+    enabled: true,
+    state: "running",
+    port: 4100,
+    dbPath: "/s.db",
+    reason: null,
+    services: ["web"],
+  };
+
+  interface FakeSub {
+    sessionId: string;
+    handlers: LiveHandlers;
+    closed: boolean;
+  }
+
+  function fakeLive() {
+    const subs: FakeSub[] = [];
+    const sleeps: (() => void)[] = [];
+    let stop: () => void = () => undefined;
+    const stopped = new Promise<void>((resolve) => {
+      stop = resolve;
+    });
+    const live: LiveDeps = {
+      subscribe: vi.fn((sessionId: string, handlers: LiveHandlers) => {
+        const sub: FakeSub = { sessionId, handlers, closed: false };
+        subs.push(sub);
+        return {
+          close: () => {
+            sub.closed = true;
+          },
+        };
+      }),
+      listSessions: vi.fn(async () => ({ id: "1", result: [RUNNING] })),
+      sleep: vi.fn(
+        async (_ms: number) =>
+          new Promise<void>((resolve) => {
+            sleeps.push(resolve);
+          }),
+      ),
+      waitForStop: async () => stopped,
+    };
+    return { live, subs, sleeps, stop: () => stop() };
+  }
+
+  function item(row: Partial<ErrorRow>, line = "LINE"): DaemonEvent {
+    return { session: RUNNING.id, event: "sentra.item", data: { row: { ...ROW, ...row }, line } };
+  }
+
+  function start(flags: SentraFlags = {}, status: unknown = STATUS) {
+    const fake = fakeLive();
+    const ctx = setup({ "sentra.status": ok(status) }, { live: fake.live });
+    const done = runSentraCommand("live", flags, ctx.deps);
+    return { ...fake, ...ctx, done };
+  }
+
+  it("prints matching lines with default filters and exits 0 on Ctrl-C", async () => {
+    const run = start();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    expect(run.subs[0]?.sessionId).toBe(RUNNING.id);
+    const { onEvent, onSubscribed } = run.subs[0]?.handlers ?? fakeHandlers();
+    onSubscribed();
+    onEvent(item({ title: "boom" }, "14:02:11 web error boom"));
+    onEvent(item({ kind: "message", level: "warning" }, "warn line"));
+    onEvent(item({ kind: "message", level: "info" }, "info line"));
+    onEvent(item({ kind: "log", level: "error" }, "log line"));
+    onEvent({ session: RUNNING.id, event: "sentra.item", data: { row: { id: 1 } } });
+    onEvent({ session: RUNNING.id, event: "service.stateChange", data: {} });
+    onEvent({ session: RUNNING.id, event: "sentra.failed", data: { error: "bad gzip" } });
+
+    run.stop();
+    expect(await run.done).toBe(0);
+    expect(run.out()).toBe("14:02:11 web error boom\nwarn line\n");
+    expect(run.err()).toBe("sentra: failed envelope: bad gzip\n");
+    expect(run.subs[0]?.closed).toBe(true);
+  });
+
+  it("applies --service, --kind, --level and --q on the client", async () => {
+    const run = start({ service: ["api"], kind: "log", level: ["info"], query: "DISK" });
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    const { onEvent } = run.subs[0]?.handlers ?? fakeHandlers();
+    onEvent(item({ service: "api", kind: "log", level: "info", title: "disk full" }, "match"));
+    onEvent(item({ service: "web", kind: "log", level: "info", title: "disk full" }, "svc"));
+    onEvent(item({ service: "api", kind: "log", level: "error", title: "disk full" }, "lvl"));
+    onEvent(item({ service: "api", kind: "log", level: "info", title: "cpu" }, "q"));
+    onEvent(item({ service: "api", kind: "error", level: "info", title: "disk" }, "kind"));
+    run.stop();
+    await run.done;
+    expect(run.out()).toBe("match\n");
+  });
+
+  it("writes rows as NDJSON with --json", async () => {
+    const run = start({ json: true });
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    run.subs[0]?.handlers.onEvent(item({}));
+    run.subs[0]?.handlers.onEvent(item({ id: "second" }));
+    run.stop();
+    await run.done;
+    expect(run.out()).toBe(`${JSON.stringify(ROW)}\n${JSON.stringify({ ...ROW, id: "second" })}\n`);
+  });
+
+  it("reconnects every 2 s, re-resolves the session and warns once per outage", async () => {
+    const run = start();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    run.subs[0]?.handlers.onSubscribed();
+    run.subs[0]?.handlers.onEnd();
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(1));
+    expect(run.live.sleep).toHaveBeenCalledWith(2000);
+    expect(run.err()).toBe("sentra: waiting for daemon…\n");
+
+    vi.mocked(run.live.listSessions).mockResolvedValueOnce({ id: "1", error: "boom" });
+    run.sleeps[0]?.();
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(2));
+    expect(run.subs).toHaveLength(1);
+
+    const moved = { ...RUNNING, id: "dddddddddddd" };
+    vi.mocked(run.live.listSessions).mockResolvedValue({ id: "1", result: [moved] });
+    run.sleeps[1]?.();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(2));
+    expect(run.subs[1]?.sessionId).toBe(moved.id);
+    run.subs[1]?.handlers.onEnd();
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(3));
+    expect(run.err()).toBe("sentra: waiting for daemon…\n");
+
+    run.sleeps[2]?.();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(3));
+    run.subs[2]?.handlers.onSubscribed();
+    run.subs[2]?.handlers.onEnd();
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(4));
+    expect(run.err()).toBe("sentra: waiting for daemon…\nsentra: waiting for daemon…\n");
+
+    run.stop();
+    expect(await run.done).toBe(0);
+  });
+
+  it("exits 1 when disabled, unavailable or not running", async () => {
+    const disabled = start({}, { ...STATUS, enabled: false, state: "disabled" });
+    expect(await disabled.done).toBe(1);
+    expect(disabled.err()).toContain("Sentra is not enabled for this project");
+
+    const unavailable = start({}, { ...STATUS, state: "unavailable", reason: "port bind failed" });
+    expect(await unavailable.done).toBe(1);
+    expect(unavailable.err()).toBe("Error: Sentra is unavailable: port bind failed\n");
+
+    const stopped = start({}, { ...STATUS, enabled: null });
+    expect(await stopped.done).toBe(1);
+    expect(stopped.err()).toBe("Error: No running zaps session for this project.\n");
+    expect(stopped.subs).toHaveLength(0);
+  });
+
+  it("exits 1 on status errors and without streaming support", async () => {
+    const fake = fakeLive();
+    const old = setup({}, { live: fake.live });
+    expect(await runSentraCommand("live", {}, old.deps)).toBe(1);
+    expect(old.err()).toContain("older than the CLI");
+
+    const none = setup({ "sentra.status": ok(STATUS) });
+    expect(await runSentraCommand("live", {}, none.deps)).toBe(1);
+    expect(none.err()).toBe("Error: live streaming is not available here.\n");
+  });
+
+  it("parses live flags through the sentra CLI", async () => {
+    const fake = fakeLive();
+    const ctx = setup({ "sentra.status": ok(STATUS) }, { live: fake.live });
+    const done = runSentraCli(["live", "--service", "web", "--q", "BOOM", "--json"], ctx.deps);
+    await vi.waitFor(() => expect(fake.subs).toHaveLength(1));
+    fake.subs[0]?.handlers.onEvent(item({ title: "boom here" }));
+    fake.subs[0]?.handlers.onEvent(item({ title: "other" }));
+    fake.stop();
+    expect(await done).toBe(0);
+    expect(ctx.out()).toBe(`${JSON.stringify({ ...ROW, title: "boom here" })}\n`);
+  });
+
+  it("rejects invalid filters with exit 2", async () => {
+    const run = start({ kind: "nope" });
+    expect(await run.done).toBe(2);
+    expect(run.subs).toHaveLength(0);
+  });
+});
+
+describe("withLiveDefaults / matchesLive", () => {
+  it("defaults only without kind/level flags", () => {
+    expect(withLiveDefaults({})).toEqual({ kind: ["error", "message"], minLevel: "warning" });
+    expect(withLiveDefaults({ minLevel: "error" })).toEqual({ minLevel: "error" });
+  });
+
+  it("drops level-less rows under a level filter", () => {
+    expect(matchesLive({ ...ROW, level: null }, { minLevel: "debug" })).toBe(false);
+    expect(matchesLive({ ...ROW, level: null }, { level: ["error"] })).toBe(false);
+    expect(matchesLive({ ...ROW, level: null }, {})).toBe(true);
   });
 });

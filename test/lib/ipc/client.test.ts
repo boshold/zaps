@@ -513,6 +513,20 @@ describe("ipcSubscribe", () => {
     expect(onError).toHaveBeenCalledWith("Unknown session");
   });
 
+  it("invokes onSubscribed on a successful subscribe ack only", () => {
+    const onSubscribed = vi.fn();
+    ipcSubscribe("/test.sock", "s1", [], vi.fn(), undefined, undefined, onSubscribed);
+    mockSocket.emit("connect");
+    const subReq = JSON.parse((mockSocket.write.mock.calls[0][0] as string).replace("\n", ""));
+    mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: "other", result: {} })}\n`));
+    expect(onSubscribed).not.toHaveBeenCalled();
+    mockSocket.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ id: subReq.id, result: { subscribed: true } })}\n`),
+    );
+    expect(onSubscribed).toHaveBeenCalledOnce();
+  });
+
   it("rejects a pending request when the socket closes (E5)", async () => {
     const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
     mockSocket.emit("connect");
