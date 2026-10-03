@@ -47,17 +47,18 @@ Give database tasks the same dynamic database environment as the app when they n
 
 ## Options
 
-| Field         | Type                                             | Default | Description                             |
-| ------------- | ------------------------------------------------ | ------- | --------------------------------------- |
-| `name`        | `string`                                         | —       | Display name shown in TUI               |
-| `description` | `string`                                         | —       | Optional description                    |
-| `commands`    | `Command \| Command[]`                           | —       | Shell command(s) to execute             |
-| `run`         | `(ctx: TaskRunContext) => Promise<void>`         | —       | Programmatic task function              |
-| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run commands in a tmux popup            |
-| `shortcut`    | `string`                                         | —       | Single key to trigger the task from TUI |
-| `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first      |
-| `cwd`         | `string`                                         | —       | Working directory for the task          |
-| `env`         | `EnvConfig`                                      | —       | Environment variables                   |
+| Field         | Type                                             | Default | Description                                  |
+| ------------- | ------------------------------------------------ | ------- | -------------------------------------------- |
+| `name`        | `string`                                         | —       | Display name shown in TUI                    |
+| `description` | `string`                                         | —       | Optional description                         |
+| `commands`    | `Command \| Command[]`                           | —       | Shell command(s) to execute                  |
+| `run`         | `(ctx: TaskRunContext) => Promise<void>`         | —       | Programmatic task function                   |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run commands in a tmux popup                 |
+| `shortcut`    | `string`                                         | —       | Single key to trigger the task from TUI      |
+| `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first           |
+| `cwd`         | `string`                                         | —       | Working directory for the task               |
+| `env`         | `EnvConfig`                                      | —       | Environment variables                        |
+| `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Inject a Sentry DSN ([Sentra](11-sentra.md)) |
 
 **Required**: Every task must have exactly one of `commands` or `run` — not both.
 

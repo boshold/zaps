@@ -24,6 +24,7 @@
 | `onStop`        | `() => void \| Promise<void>`                     | —           | Hook: service stopped                                                                        |
 | `onOutput`      | `(line: string) => void \| Promise<void>`         | —           | Hook: new output line from tmux pane                                                         |
 | `optional`      | `boolean \| (ctx) => boolean \| Promise<boolean>` | —           | Mark service as optional (skip if unavailable); the function form gets `ctx.hasBinary(name)` |
+| `sentra`        | `boolean \| { env: Record<string, string> }`      | —           | Inject a Sentry DSN so ZAPS collects the app's errors (see [Sentra](11-sentra.md))           |
 
 **Required**: Every service must have at least one of `start`, `run`, or `docker`.
 
