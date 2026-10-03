@@ -1,3 +1,4 @@
+import { sentraHandlers } from "#src/daemon/handlers/sentra.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import { runShutdownHook } from "#src/daemon/shutdown.js";
@@ -14,6 +15,8 @@ export const daemonHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>
 > = {
+  ...sentraHandlers,
+
   async "daemon.ping"(req) {
     return ipcOk(req.id, "pong");
   },
