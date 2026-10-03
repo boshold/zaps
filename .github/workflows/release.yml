@@ -14,6 +14,7 @@ permissions:
   id-token: write
   attestations: write
   artifact-metadata: write
+  packages: read # @boshold/* from GitHub Packages
 
 jobs:
   build:
@@ -47,6 +48,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
       - run: bun run scripts/build-native.ts --target=${{ matrix.target }}
       - run: mv dist/zaps dist/${{ matrix.name }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -79,6 +82,8 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
       # Build before prepare-npm-platform-packages mutates package.json (which
       # would otherwise trip pnpm's lockfile check).
       - run: pnpm build
