@@ -8,6 +8,10 @@ minimumReleaseAge: 4320 # minutes (3 days)
 minimumReleaseAgeExclude:
   - "@boshold/sentra-core" # own package
 
+# sentra-core optional driver; node:sqlite is used instead (Bun aborts on the addon).
+ignoredOptionalDependencies:
+  - better-sqlite3
+
 # Fail install if a package's provenance/trusted-publisher evidence weakens
 # vs an earlier release (stolen-token republish pattern).
 trustPolicy: no-downgrade
