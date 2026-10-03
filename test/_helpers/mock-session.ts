@@ -4,6 +4,7 @@ import { LogBuffer } from "../../src/daemon/log-buffer.js";
 import type { SessionStore } from "../../src/daemon/server.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
+import { SentraHost } from "../../src/lib/sentra/host.js";
 import type { PaneRunInfo } from "../../src/lib/task/run-in-pane.js";
 import { tmuxFor } from "../../src/lib/tmux.js";
 import type { TmuxHandle } from "../../src/lib/tmux.js";
@@ -157,5 +158,6 @@ export function createMockStore(sessions: MockSession[] = []): SessionStore {
       [...sessionMap.values()].find((s) => s.projectDir === dir) as unknown as Session | undefined,
     create: vi.fn().mockImplementation(async () => sessions[0]),
     destroy: vi.fn().mockResolvedValue(undefined),
+    sentra: new SentraHost(),
   };
 }

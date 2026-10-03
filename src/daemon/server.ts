@@ -11,6 +11,8 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
+import { sanitizeSegment } from "#src/lib/sentra/config.js";
+import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
@@ -68,6 +70,14 @@ interface SessionStore {
   getByProjectDir(dir: string): Session | undefined;
   create(params: CreateParams): Promise<Session>;
   destroy(id: string): Promise<void>;
+  /** Daemon-wide Sentra host (one per daemon, started lazily). */
+  readonly sentra: SentraHost;
+}
+
+interface DaemonServerOptions {
+  sentraHost?: SentraHost;
+  /** Daemon log line writer. */
+  log?: (msg: string) => void;
 }
 
 /**
@@ -103,6 +113,13 @@ class DaemonServer implements SessionStore {
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
+  public readonly sentra: SentraHost;
+  private readonly log?: (msg: string) => void;
+
+  public constructor(options: DaemonServerOptions = {}) {
+    this.sentra = options.sentraHost ?? new SentraHost({ logger: options.log });
+    this.log = options.log;
+  }
 
   public async start(socketPath: string): Promise<void> {
     try {
@@ -317,6 +334,13 @@ class DaemonServer implements SessionStore {
           throw new Error("reflowRemove: session not yet wired");
         }
         await ref.session.reflowRemove(name);
+      },
+      sentra: {
+        host: this.sentra,
+        project: sanitizeSegment(config.project.name),
+        session: id,
+        projectDir: config.projectDir,
+        log: this.log,
       },
     };
 

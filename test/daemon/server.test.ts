@@ -117,6 +117,7 @@ vi.mock("#src/lib/service/manager.js", () => {
 });
 
 const { DaemonServer } = await import("../../src/daemon/server.js");
+const { SentraHost } = await import("../../src/lib/sentra/host.js");
 
 describe("DaemonServer", () => {
   let server: InstanceType<typeof DaemonServer>;
@@ -184,6 +185,38 @@ describe("DaemonServer", () => {
       originPane: "%0",
     });
     expect(server.getByProjectDir("/test")).toBe(session);
+  });
+
+  it("passes the shared sentra host and session scope into manager deps", async () => {
+    const sentraHost = new SentraHost();
+    const log = vi.fn();
+    const scoped = new DaemonServer({ sentraHost, log });
+    mockLoadConfig.mockResolvedValueOnce({
+      project: { name: "my app/v2", services: { api: { start: "npm dev" } } },
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+    } as never);
+
+    const session = await scoped.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+
+    expect(scoped.sentra).toBe(sentraHost);
+    expect(session.deps.sentra).toEqual({
+      host: sentraHost,
+      project: "my-app-v2",
+      session: session.id,
+      projectDir: "/test",
+      log,
+    });
+    scoped.stop();
+  });
+
+  it("creates a default sentra host when none is passed", () => {
+    expect(server.sentra).toBeInstanceOf(SentraHost);
   });
 
   it("creates session and stores it", async () => {

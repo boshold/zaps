@@ -15,6 +15,7 @@ import {
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
+import { resolveSentraEnv, sanitizeSegment, sentraTemplateFor } from "#src/lib/sentra/config.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 import type { DisplayPopupOptions } from "#src/lib/tmux.js";
@@ -244,6 +245,8 @@ export class ServiceManager extends EventEmitter {
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
   private readonly legacyWarned = new Set<string>();
+  private sentraSourceRootAdded = false;
+  private readonly sentraDockerWarned = new Set<string>();
   private readonly originalWindowTitle: Promise<string>;
   private readonly originalAutoRename: Promise<string | null>;
   // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
@@ -645,6 +648,7 @@ export class ServiceManager extends EventEmitter {
 
     // Transition: stopped/error/restarting -> starting
     status.state = transition(status.state, "starting");
+    status.startedAt = Date.now();
     this.emit("stateChange", name, status);
 
     // Fire per-service onBeforeStart hook
@@ -669,10 +673,12 @@ export class ServiceManager extends EventEmitter {
       throw new Error(conflict);
     }
 
+    const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
+
     if (serviceConfig.detached) {
-      await this.startDetachedService(name, serviceConfig, status, controller);
+      await this.startDetachedService(name, serviceConfig, status, controller, sentraEnv);
     } else {
-      await this.sendStartCommand(name, serviceConfig, paneTarget);
+      await this.sendStartCommand(name, serviceConfig, paneTarget, sentraEnv);
       await this.finishStart(name, serviceConfig, status, controller, {
         readyTarget: paneTarget,
         readyDeps: buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
@@ -685,6 +691,48 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * Sentra env for an opted-in service (`{}` otherwise). Never fails the start:
+   * an unavailable host only logs a warning.
+   */
+  private async resolveServiceSentraEnv(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+  ): Promise<Record<string, string>> {
+    const { sentra } = this.deps;
+    const template = sentraTemplateFor(this.config.project.sentra, serviceConfig.sentra);
+    if (!sentra || !template) {
+      delete status.sentra;
+      return {};
+    }
+    const log = sentra.log ?? ((msg: string) => process.stderr.write(`${msg}\n`));
+    status.sentra = false;
+    if ((await sentra.host.ensureStarted()) === null) {
+      log(
+        `sentra: ${name} starts without Sentra env (${sentra.host.status().reason ?? "unavailable"})`,
+      );
+      return {};
+    }
+    if (!this.sentraSourceRootAdded) {
+      sentra.host.addSourceRoot(sentra.projectDir);
+      this.sentraSourceRootAdded = true;
+    }
+    if (serviceConfig.docker && !this.sentraDockerWarned.has(name)) {
+      this.sentraDockerWarned.add(name);
+      log(
+        `sentra: ${name} is a docker service; 127.0.0.1 in the DSN is not reachable from inside containers`,
+      );
+    }
+    const dsn = sentra.host.getDsn({
+      project: sentra.project,
+      session: sentra.session,
+      service: sanitizeSegment(name),
+    });
+    status.sentra = true;
+    return resolveSentraEnv(template, dsn);
+  }
+
+  /**
    * Spawn a `detached: true` service pane-less and wait for it to become ready.
    * Ready/port detection are PID-based (no pane); `ready.output` reads the
    * runner's buffered child output instead of a pane capture (E4).
@@ -694,6 +742,7 @@ export class ServiceManager extends EventEmitter {
     serviceConfig: ServiceConfig,
     status: ServiceStatus,
     controller: AbortController,
+    sentraEnv: Record<string, string>,
   ): Promise<void> {
     const ctx = buildServiceContext(
       this.statuses,
@@ -706,6 +755,7 @@ export class ServiceManager extends EventEmitter {
     // (pane services get this additively via a shell prefix).
     const env: NodeJS.ProcessEnv = {
       ...captureEnvironment(),
+      ...sentraEnv,
       ...resolveEnv(serviceConfig.env, ctx),
     };
     const generation = this.monitorGenerations.get(name) ?? 0;
@@ -831,6 +881,7 @@ export class ServiceManager extends EventEmitter {
     name: string,
     serviceConfig: ServiceConfig,
     paneTarget: string,
+    sentraEnv: Record<string, string>,
   ): Promise<void> {
     const combined = serviceConfig._combined;
 
@@ -860,7 +911,8 @@ export class ServiceManager extends EventEmitter {
       this.config.projectDir,
       this.config.project.services,
     );
-    const serviceEnv = resolveEnv(serviceConfig.env, ctx);
+    // Precedence (low → high): request env < Sentra env < service env.
+    const serviceEnv = { ...sentraEnv, ...resolveEnv(serviceConfig.env, ctx) };
     const requestEnv = this.deps.environment ? captureEnvironment() : {};
     const env = { ...requestEnv, ...serviceEnv };
     const resolvedCommand = resolveCommand(serviceConfig, ctx);
@@ -1641,6 +1693,27 @@ export interface ServiceManagerDeps {
    */
   reflowInsert: (name: string) => Promise<void>;
   reflowRemove: (name: string) => Promise<void>;
+  /** Sentra env injection; omitted = never injected. */
+  sentra?: ServiceSentraDeps;
+}
+
+/** Subset of `SentraHost` the manager needs. */
+export interface SentraHostLike {
+  ensureStarted(): Promise<object | null>;
+  getDsn(scope: { project: string; session: string; service: string }): string;
+  addSourceRoot(dir: string): void;
+  status(): { reason: string | null };
+}
+
+export interface ServiceSentraDeps {
+  host: SentraHostLike;
+  /** Sanitized session name. */
+  project: string;
+  /** Session id. */
+  session: string;
+  projectDir: string;
+  /** Daemon log; defaults to stderr (which the daemon redirects to its log). */
+  log?: (msg: string) => void;
 }
 
 export { diffOutput };

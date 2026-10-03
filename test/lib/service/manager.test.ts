@@ -3,7 +3,8 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
-import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
+import { runWithEnvironment } from "../../../src/lib/request-context.js";
+import type { SentraHostLike, ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 
@@ -3602,5 +3603,271 @@ describe("lazy-pane lifecycle", () => {
     expect(deps.reflowInsert).not.toHaveBeenCalled();
     expect(deps.reflowRemove).not.toHaveBeenCalled();
     expect(paneMap.worker).toBe("%worker");
+  });
+});
+
+// =============================================================================
+// Sentra env injection + startedAt
+// =============================================================================
+
+const SENTRA_BLOCK = { enabled: true, env: { SENTRY_DSN: "{dsn}", SHARED: "sentra:{dsn}" } };
+
+function fakeSentra(available = true) {
+  const host = {
+    ensureStarted: vi
+      .fn<SentraHostLike["ensureStarted"]>()
+      .mockResolvedValue(available ? {} : null),
+    getDsn: vi.fn<SentraHostLike["getDsn"]>(
+      ({ project, session, service }) =>
+        `http://sentra@127.0.0.1:9000/${project}/${session}/${service}/1`,
+    ),
+    addSourceRoot: vi.fn<SentraHostLike["addSourceRoot"]>(),
+    status: vi
+      .fn<SentraHostLike["status"]>()
+      .mockReturnValue({ reason: available ? null : "port bind failed" }),
+  };
+  return {
+    host,
+    project: "proj",
+    session: "sess123",
+    projectDir: "/test",
+    log: vi.fn<(msg: string) => void>(),
+  };
+}
+
+function sentraConfig(
+  services: Record<string, ServiceConfig>,
+  block: ResolvedConfig["project"]["sentra"] = SENTRA_BLOCK,
+): ResolvedConfig {
+  const config = makeConfig(services);
+  config.project.sentra = block;
+  return config;
+}
+
+const DSN_WEB = "http://sentra@127.0.0.1:9000/proj/sess123/web/1";
+
+describe("sentra env injection", () => {
+  it("injects the DSN in wrapper mode with service env winning on conflicts", async () => {
+    const config = sentraConfig({
+      web: { start: "pnpm dev", sentra: true, env: { SHARED: "service" } },
+    });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const sentra = fakeSentra();
+    deps.sentra = sentra;
+
+    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const promise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(sentra.host.getDsn).toHaveBeenCalledWith({
+      project: "proj",
+      session: "sess123",
+      service: "web",
+    });
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "web",
+      expect.objectContaining({ env: { SENTRY_DSN: DSN_WEB, SHARED: "service" } }),
+    );
+    expect(mgr.getStatus("web").sentra).toBe(true);
+    expect(sentra.host.addSourceRoot).toHaveBeenCalledWith("/test");
+  });
+
+  it("orders request env < sentra env < service env in raw mode", async () => {
+    const config = sentraConfig({
+      web: { start: "pnpm dev", raw: true, sentra: true, env: { SHARED: "service" } },
+    });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.environment = () => ({});
+    deps.sentra = fakeSentra();
+
+    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const promise = runWithEnvironment(
+      { SENTRY_DSN: "request", REQ: "1", SHARED: "request" },
+      async () => mgr.startService("web"),
+    );
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%web",
+      `cd "/test" && SENTRY_DSN='${DSN_WEB}' REQ='1' SHARED='service' pnpm dev`,
+    );
+  });
+
+  it("injects the DSN into detached services", async () => {
+    vi.spyOn(process, "kill").mockImplementation(() => true);
+    const config = sentraConfig({
+      worker: { start: "node w.js", detached: true, sentra: { env: { DSN: "{dsn}" } } },
+    });
+    const deps = createMockDeps();
+    const spawnEnvs: NodeJS.ProcessEnv[] = [];
+    deps.detachedSpawn = ((_file: string, _argv: string[], opts: { env: NodeJS.ProcessEnv }) => {
+      spawnEnvs.push(opts.env);
+      return new FakeDetachedChild(7000);
+    }) as unknown as ServiceManagerDeps["detachedSpawn"];
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.sentra = fakeSentra();
+
+    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    await mgr.startService("worker");
+
+    expect(spawnEnvs[0]?.DSN).toBe("http://sentra@127.0.0.1:9000/proj/sess123/worker/1");
+    expect(spawnEnvs[0]?.SENTRY_DSN).not.toBe(DSN_WEB);
+    expect(mgr.getStatus("worker").sentra).toBe(true);
+  });
+
+  it("starts without sentra env and logs when the host is unavailable", async () => {
+    const config = sentraConfig({ web: { start: "pnpm dev", sentra: true } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const sentra = fakeSentra(false);
+    deps.sentra = sentra;
+
+    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const promise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(mgr.getStatus("web").state).toBe("ready");
+    expect(mgr.getStatus("web").sentra).toBe(false);
+    expect(deps.storeExecInfo).toHaveBeenCalledWith("web", expect.objectContaining({ env: {} }));
+    expect(sentra.host.getDsn).not.toHaveBeenCalled();
+    expect(sentra.log).toHaveBeenCalledWith(
+      "sentra: web starts without Sentra env (port bind failed)",
+    );
+  });
+
+  it("does nothing for projects without a sentra block", async () => {
+    const config = makeConfig({ web: { start: "pnpm dev", sentra: true, env: { A: "1" } } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const sentra = fakeSentra();
+    deps.sentra = sentra;
+
+    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const promise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(sentra.host.ensureStarted).not.toHaveBeenCalled();
+    expect(mgr.getStatus("web").sentra).toBeUndefined();
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "web",
+      expect.objectContaining({ env: { A: "1" } }),
+    );
+  });
+
+  it("skips services that are not opted in and managers without sentra deps", async () => {
+    const config = sentraConfig({ db: { start: "pg" }, web: { start: "pnpm dev", sentra: true } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const sentra = fakeSentra();
+    deps.sentra = sentra;
+
+    const mgr = new ServiceManager(config, makePaneMap(["db", "web"]), deps, "test-session");
+    const promise = mgr.startService("db");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+    expect(sentra.host.ensureStarted).not.toHaveBeenCalled();
+
+    const plainDeps = createMockDeps();
+    plainDeps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const plain = new ServiceManager(config, makePaneMap(["web"]), plainDeps, "test-session");
+    const plainStart = plain.startService("web");
+    await vi.advanceTimersByTimeAsync(2000);
+    await plainStart;
+    expect(plain.getStatus("web").sentra).toBeUndefined();
+  });
+
+  it("adds the source root once and warns once per docker service", async () => {
+    const config = sentraConfig({
+      web: { start: "pnpm dev", sentra: true },
+      db: { docker: { service: "db" }, sentra: true, url: false },
+    });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    const sentra = fakeSentra();
+    deps.sentra = sentra;
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const containerSpy = vi.spyOn(dockerModule, "getContainerInfo").mockResolvedValue({
+      state: "running",
+      health: "",
+      ports: [5432],
+      ids: [],
+    });
+
+    const mgr = new ServiceManager(config, makePaneMap(["web", "db"]), deps, "test-session");
+    for (const name of ["web", "db"]) {
+      const promise = mgr.startService(name);
+      await vi.advanceTimersByTimeAsync(2000);
+      await promise;
+    }
+    const restart = mgr.restartService("db");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+
+    containerSpy.mockRestore();
+
+    expect(sentra.host.addSourceRoot).toHaveBeenCalledTimes(1);
+    const dockerWarnings = sentra.log.mock.calls.filter(([msg]) =>
+      msg.includes("db is a docker service"),
+    );
+    expect(dockerWarnings).toEqual([
+      [
+        "sentra: db is a docker service; 127.0.0.1 in the DSN is not reachable from inside containers",
+      ],
+    ]);
+  });
+});
+
+describe("startedAt", () => {
+  it("is set on start and refreshed on restart", async () => {
+    const config = makeConfig({ svc: { start: "start-svc" } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    vi.setSystemTime(1_000_000);
+
+    const mgr = new ServiceManager(config, makePaneMap(["svc"]), deps, "test-session");
+    expect(mgr.getStatus("svc").startedAt).toBeUndefined();
+    const start = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await start;
+    expect(mgr.getStatus("svc").startedAt).toBe(1_000_000);
+
+    const before = Date.now();
+    const restart = mgr.restartService("svc");
+    await vi.advanceTimersByTimeAsync(10_000);
+    await restart;
+    expect(mgr.getStatus("svc").startedAt).toBeGreaterThanOrEqual(before);
+    expect(mgr.getStatus("svc").startedAt).toBeGreaterThan(1_000_000);
+  });
+
+  it("is refreshed on crash retry", async () => {
+    const config = makeConfig({
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+    });
+    const deps = createMockDeps();
+    let running = true;
+    deps.sendKeys = vi.fn(async () => {
+      running = true;
+    });
+    deps.getDescendantPids = vi.fn(async () => (running ? [1000, 2000] : [1000]));
+
+    const mgr = new ServiceManager(config, makePaneMap(["svc"]), deps, "test-session");
+    const start = mgr.startService("svc");
+    await vi.advanceTimersByTimeAsync(2000);
+    await start;
+    const firstStart = mgr.getStatus("svc").startedAt;
+
+    running = false;
+    await vi.advanceTimersByTimeAsync(2500);
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(mgr.getStatus("svc").retryCount).toBe(1);
+    expect(mgr.getStatus("svc").startedAt).toBeGreaterThan(firstStart ?? Infinity);
   });
 });
