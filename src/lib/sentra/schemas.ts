@@ -28,9 +28,9 @@ export const statusParamsSchema = z.object({ sessionId: sessionIdSchema });
 
 export const errorsParamsSchema = z.object({
   sessionId: sessionIdSchema,
-  service: z.array(z.string()).optional(),
-  kind: z.array(itemKindSchema).optional(),
-  level: z.array(levelSchema).optional(),
+  service: z.array(z.string()).min(1).optional(),
+  kind: z.array(itemKindSchema).min(1).optional(),
+  level: z.array(levelSchema).min(1).optional(),
   minLevel: levelSchema.optional(),
   q: z.string().optional(),
   release: z.string().optional(),
@@ -42,8 +42,8 @@ export const errorsParamsSchema = z.object({
 
 export const issuesParamsSchema = z.object({
   sessionId: sessionIdSchema,
-  service: z.array(z.string()).optional(),
-  level: z.array(levelSchema).optional(),
+  service: z.array(z.string()).min(1).optional(),
+  level: z.array(levelSchema).min(1).optional(),
   minLevel: levelSchema.optional(),
   q: z.string().optional(),
   ...timeShape,
@@ -57,7 +57,7 @@ export const showParamsSchema = z.object({
 
 export const clearParamsSchema = z.object({
   sessionId: sessionIdSchema,
-  service: z.array(z.string()).optional(),
+  service: z.array(z.string()).min(1).optional(),
   to: timeValueSchema.optional(),
 });
 

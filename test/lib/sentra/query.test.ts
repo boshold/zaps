@@ -81,6 +81,15 @@ describe("listErrors", () => {
     expect(result.errors.map((row) => row.title)).toEqual(["info msg"]);
   });
 
+  it("treats empty kind/level arrays as not given", async () => {
+    await ingestEvent(sentra, { message: "info msg", level: "info" });
+    await ingestEvent(sentra, { message: "bad msg", level: "error" });
+
+    const result = await listErrors(sentra, { sessionId: SESSION_A, kind: [], level: [] });
+
+    expect(result.errors.map((row) => row.title)).toEqual(["bad msg"]);
+  });
+
   it("keeps the kind default when only a level flag is given", async () => {
     await ingestEvent(sentra, { message: "warn msg", level: "warning" });
     await ingestEvent(sentra, { message: "info msg", level: "info" });

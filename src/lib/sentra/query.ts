@@ -142,13 +142,14 @@ export function toIssueRow(issue: Issue): IssueRow {
 }
 
 export function buildItemFilter(params: ErrorsParams, now = Date.now()): ItemFilter {
-  const noLevelFlags =
-    params.kind === undefined && params.level === undefined && params.minLevel === undefined;
+  const kind = nonEmpty(params.kind);
+  const level = nonEmpty(params.level);
+  const noLevelFlags = kind === undefined && level === undefined && params.minLevel === undefined;
   return {
     session: params.sessionId,
     service: nonEmpty(params.service),
-    kind: nonEmpty(params.kind) ?? ["error", "message"],
-    level: nonEmpty(params.level),
+    kind: kind ?? ["error", "message"],
+    level,
     minLevel: params.minLevel ?? (noLevelFlags ? "error" : undefined),
     q: params.q,
     release: params.release,
