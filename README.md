@@ -199,11 +199,11 @@ If tmux isn't installed at all, ZAPS says so instead of starting:
 
 ### Query
 
-| Command                  | Description                                    |
-| ------------------------ | ---------------------------------------------- |
-| `zaps ps`                | List services with state, ports, URL. `--json` |
-| `zaps ls`                | List active sessions. `--json`                 |
-| `zaps inspect <service>` | Show service details. `--json`                 |
+| Command                  | Description                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `zaps ps`                | List services with state, ports, URL; `ERRORS` (Sentra errors since start) when Sentra is enabled. `--json` |
+| `zaps ls`                | List active sessions. `--json`                                                                              |
+| `zaps inspect <service>` | Show service details. `--json`                                                                              |
 
 ### Tasks & Logs
 

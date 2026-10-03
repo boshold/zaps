@@ -713,3 +713,113 @@ describe("CLI — buildDeps", () => {
     }
   });
 });
+
+describe("CLI — ps command", () => {
+  const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+  const tsxImport = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
+  const cliEntry = path.join(repoRoot, "src/cli.tsx");
+  const CLI_TIMEOUT = 60_000;
+  const SESSION_ID = "aaaaaaaaaaaa";
+  const SERVICES = [
+    { name: "web", state: "ready", ports: [3000], retryCount: 0, sentra: true, errorCount: 1 },
+    { name: "db", state: "ready", ports: [], retryCount: 0, errorCount: null },
+  ];
+
+  let dir = "";
+  let server: import("node:net").Server;
+  let sentraEnabled = true;
+
+  beforeEach(async () => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "zaps-ps-")));
+    fs.writeFileSync(path.join(dir, ".zaps.mts"), "export default {};\n");
+    const net = await import("node:net");
+    server = net.createServer((socket) => {
+      socket.on("data", (chunk) => {
+        const req: { id: string; method: string } = JSON.parse(chunk.toString().split("\n")[0]);
+        const results: Record<string, unknown> = {
+          "session.list": [{ id: SESSION_ID, name: "proj", projectDir: dir }],
+          "services.list": SERVICES,
+          "sentra.status": {
+            enabled: sentraEnabled,
+            state: sentraEnabled ? "running" : "disabled",
+            port: null,
+            dbPath: "/x.db",
+            reason: null,
+            services: [],
+          },
+        };
+        socket.end(`${JSON.stringify({ id: req.id, result: results[req.method] })}\n`);
+      });
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(path.join(dir, "d.sock"), resolve);
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function runPs(args: string[] = []): Promise<string> {
+    const { spawn } =
+      await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const child = spawn(process.execPath, ["--import", tsxImport, cliEntry, "ps", ...args], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        CLAUDECODE: undefined,
+        CURSOR_TRACE_DIR: undefined,
+        ZAPS_FORMAT: undefined,
+        ZAPS_SOCKET_PATH: path.join(dir, "d.sock"),
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const code = await new Promise<number | null>((resolve) => {
+      child.on("close", resolve);
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    return stdout;
+  }
+
+  it(
+    "appends the ERRORS column when Sentra is enabled",
+    async () => {
+      const out = await runPs();
+      const lines = out.split("\n").map((line) => line.trimEnd());
+      expect(lines[0]).toMatch(/^NAME\s+STATE\s+PORTS\s+URL\s+ERRORS$/);
+      expect(lines[1]).toMatch(/^web\s+ready\s+3000\s+-\s+1$/);
+      expect(lines[2]).toMatch(/^db\s+ready\s+-\s+-\s+-$/);
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "omits the ERRORS column when Sentra is disabled",
+    async () => {
+      sentraEnabled = false;
+      const out = await runPs();
+      sentraEnabled = true;
+      expect(out).not.toContain("ERRORS");
+      expect(out.split("\n")[0]).toMatch(/^NAME\s+STATE\s+PORTS\s+URL$/);
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "prints the raw services.list result as JSON",
+    async () => {
+      expect(JSON.parse(await runPs(["--json"]))).toEqual(SERVICES);
+    },
+    CLI_TIMEOUT,
+  );
+});

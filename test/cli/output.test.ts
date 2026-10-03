@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   isCodingAgent,
+  parseServiceList,
   primeAgentPrompt,
   resolveFormat,
+  sentraColumnEnabled,
+  serviceRows,
   sessionLocation,
   sessionRows,
   writeData,
@@ -237,5 +240,56 @@ describe("sessionRows", () => {
       ["a1", "app", "/app", "zaps-app-a1 (managed)"],
       ["b2", "api", "/api", "work"],
     ]);
+  });
+});
+
+describe("serviceRows", () => {
+  const services = parseServiceList([
+    {
+      name: "web",
+      state: "ready",
+      ports: [3000, 3001],
+      url: "http://x",
+      sentra: true,
+      errorCount: 2,
+    },
+    { name: "db", state: "stopped", ports: [], errorCount: null },
+  ]);
+
+  it("adds ERRORS with counts and dashes when enabled", () => {
+    expect(serviceRows(services, true)).toEqual([
+      ["NAME", "STATE", "PORTS", "URL", "ERRORS"],
+      ["web", "ready", "3000,3001", "http://x", "2"],
+      ["db", "stopped", "-", "-", "-"],
+    ]);
+  });
+
+  it("has no ERRORS column when disabled", () => {
+    expect(serviceRows(services, false)).toEqual([
+      ["NAME", "STATE", "PORTS", "URL"],
+      ["web", "ready", "3000,3001", "http://x"],
+      ["db", "stopped", "-", "-"],
+    ]);
+  });
+
+  it("rejects malformed entries", () => {
+    expect(() => parseServiceList([{ name: "web" }])).toThrow();
+  });
+});
+
+describe("sentraColumnEnabled", () => {
+  const status = { state: "running", port: 1, dbPath: "/x", reason: null, services: [] };
+  const plain = parseServiceList([{ name: "db", state: "ready", ports: [] }]);
+  const optedIn = parseServiceList([{ name: "web", state: "ready", ports: [], sentra: false }]);
+
+  it("follows sentra.status enabled", () => {
+    expect(sentraColumnEnabled({ ...status, enabled: true }, plain)).toBe(true);
+    expect(sentraColumnEnabled({ ...status, enabled: false }, optedIn)).toBe(false);
+    expect(sentraColumnEnabled({ ...status, enabled: null }, optedIn)).toBe(false);
+  });
+
+  it("falls back to opted-in services without a usable status", () => {
+    expect(sentraColumnEnabled(undefined, optedIn)).toBe(true);
+    expect(sentraColumnEnabled(undefined, plain)).toBe(false);
   });
 });

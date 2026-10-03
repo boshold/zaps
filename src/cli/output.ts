@@ -1,6 +1,8 @@
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
 
+import { statusResultSchema } from "#src/lib/sentra/schemas.js";
+
 type OutputFormat = "text" | "json" | "toon";
 
 const primeAgentProjectSchema = z.object({
@@ -10,14 +12,46 @@ const primeAgentProjectSchema = z.object({
   configPath: z.string().optional(),
 });
 
-const primeAgentServicesSchema = z.array(
+const serviceListSchema = z.array(
   z.object({
     name: z.string(),
     state: z.string(),
     ports: z.array(z.number()),
     url: z.string().optional(),
+    sentra: z.boolean().optional(),
+    errorCount: z.number().nullable().optional(),
+    startedAt: z.number().optional(),
   }),
 );
+
+type ServiceListEntry = z.infer<typeof serviceListSchema>[number];
+
+function parseServiceList(input: unknown): ServiceListEntry[] {
+  return serviceListSchema.parse(input);
+}
+
+/** From a `sentra.status` result; falls back to opted-in flags when it is unusable (older daemon). */
+function sentraColumnEnabled(status: unknown, services: ServiceListEntry[]): boolean {
+  const parsed = statusResultSchema.safeParse(status);
+  if (parsed.success) {
+    return parsed.data.enabled === true;
+  }
+  return services.some((service) => service.sentra !== undefined);
+}
+
+/** `zaps ps` table; `ERRORS` only when Sentra is enabled for the project. */
+function serviceRows(services: ServiceListEntry[], sentraEnabled: boolean): string[][] {
+  const header = ["NAME", "STATE", "PORTS", "URL"];
+  const rows = [sentraEnabled ? [...header, "ERRORS"] : header];
+  for (const service of services) {
+    const row = [service.name, service.state, service.ports.join(",") || "-", service.url ?? "-"];
+    if (sentraEnabled) {
+      row.push(typeof service.errorCount === "number" ? String(service.errorCount) : "-");
+    }
+    rows.push(row);
+  }
+  return rows;
+}
 
 const primeAgentTasksSchema = z.array(
   z.object({
@@ -108,7 +142,7 @@ function primeAgentPrompt(
   tasksInput: unknown,
 ): string {
   const project = primeAgentProjectSchema.parse(projectInput);
-  const services = primeAgentServicesSchema.parse(servicesInput);
+  const services = parseServiceList(servicesInput);
   const tasks = primeAgentTasksSchema.parse(tasksInput);
   const data = {
     activeProject: {
@@ -134,5 +168,15 @@ function primeAgentPrompt(
   return `${prompt}\n\n\`\`\`toon\n${encode(data)}\n\`\`\`\n`;
 }
 
-export { isCodingAgent, primeAgentPrompt, resolveFormat, sessionLocation, sessionRows, writeData };
-export type { OutputFormat, SessionRowData as SessionRow };
+export {
+  isCodingAgent,
+  parseServiceList,
+  primeAgentPrompt,
+  resolveFormat,
+  sentraColumnEnabled,
+  serviceRows,
+  sessionLocation,
+  sessionRows,
+  writeData,
+};
+export type { OutputFormat, ServiceListEntry, SessionRowData as SessionRow };

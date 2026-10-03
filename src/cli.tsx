@@ -23,8 +23,11 @@ import {
 } from "./cli/helpers.js";
 import {
   isCodingAgent,
+  parseServiceList,
   primeAgentPrompt,
   resolveFormat,
+  sentraColumnEnabled,
+  serviceRows,
   sessionRows,
   writeData,
 } from "./cli/output.js";
@@ -601,21 +604,14 @@ const psCommand = command(
           writeData(res.result, format);
           return;
         }
-        const statuses = res.result as {
-          name: string;
-          state: string;
-          ports: number[];
-          url?: string;
-        }[];
+        const statuses = parseServiceList(res.result);
         if (statuses.length === 0) {
           process.stdout.write("No services configured.\n");
           return;
         }
-        const rows = [["NAME", "STATE", "PORTS", "URL"]];
-        for (const s of statuses) {
-          rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
-        }
-        process.stdout.write(`${formatTable(rows)}\n`);
+        const status = await ipc.request("sentra.status", { sessionId: ipc.sessionId });
+        const sentraEnabled = sentraColumnEnabled(status.result, statuses);
+        process.stdout.write(`${formatTable(serviceRows(statuses, sentraEnabled))}\n`);
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
