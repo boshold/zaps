@@ -1527,7 +1527,7 @@ async function runSentraGroup(rawArgv: string[]): Promise<void> {
           handlers.onEnd,
           handlers.onSubscribed,
         ),
-      listSessions: async () => requestDaemon(socketPath(), "session.list"),
+      request: async (method, params) => requestDaemon(socketPath(), method, params, 30_000),
       sleep: async (ms) =>
         new Promise((resolve) => {
           const timer = setTimeout(() => {

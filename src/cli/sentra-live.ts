@@ -36,16 +36,14 @@ interface LiveHandlers {
 
 interface LiveDeps {
   subscribe(sessionId: string, handlers: LiveHandlers): LiveSubscription;
-  /** `session.list` without auto-starting the daemon. */
-  listSessions(): Promise<IpcResponse>;
+  /** IPC that never auto-starts the daemon: live needs a running session. */
+  request(method: string, params?: unknown): Promise<IpcResponse>;
   sleep(ms: number): Promise<void>;
   /** Installs the Ctrl-C handler; resolves on Ctrl-C. */
   waitForStop(): Promise<void>;
 }
 
 interface LiveContext {
-  /** Auto-starting IPC for the one-time status check. */
-  request(method: string, params?: unknown): Promise<IpcResponse>;
   cwd(): string;
   configSessionId(): string | Promise<string>;
   stdout(text: string): void;
@@ -55,12 +53,15 @@ interface LiveContext {
   live: LiveDeps;
 }
 
-/** No kind/level flags → `--kind error,message --min-level warning`. */
+/** Per flag, like `buildItemFilter`: kind defaults alone; min-level only without any kind/level flag. */
 function withLiveDefaults(filter: LiveFilter): LiveFilter {
-  if (filter.kind === undefined && filter.level === undefined && filter.minLevel === undefined) {
-    return { ...filter, kind: ["error", "message"], minLevel: "warning" };
-  }
-  return filter;
+  const noLevelFlags =
+    filter.kind === undefined && filter.level === undefined && filter.minLevel === undefined;
+  return {
+    ...filter,
+    kind: filter.kind ?? ["error", "message"],
+    minLevel: filter.minLevel ?? (noLevelFlags ? "warning" : undefined),
+  };
 }
 
 function matchesLive(row: ErrorRow, filter: LiveFilter): boolean {
@@ -111,13 +112,13 @@ async function resolveLiveSession(ctx: LiveContext, sessions: unknown): Promise<
 
 /** Checks once that the session runs and Sentra is usable; returns the session id or an exit code. */
 async function checkStart(ctx: LiveContext): Promise<{ sessionId: string } | { code: number }> {
-  const list = await ctx.request("session.list");
+  const list = await ctx.live.request("session.list");
   if (list.error) {
     ctx.stderr(`Error: ${list.error}\n`);
     return { code: 1 };
   }
   const sessionId = await resolveLiveSession(ctx, list.result);
-  const res = await ctx.request("sentra.status", { sessionId });
+  const res = await ctx.live.request("sentra.status", { sessionId });
   if (res.error) {
     ctx.stderr(`Error: ${describeSentraError(res.error).message}\n`);
     return { code: 1 };
@@ -158,7 +159,7 @@ async function runLive(ctx: LiveContext, filterInput: LiveFilter): Promise<numbe
     if (sessionId === null) {
       try {
         // oxlint-disable-next-line no-await-in-loop -- retries are sequential
-        const list = await live.listSessions();
+        const list = await live.request("session.list");
         // oxlint-disable-next-line no-await-in-loop -- retries are sequential
         sessionId = list.error ? null : await resolveLiveSession(ctx, list.result);
       } catch {

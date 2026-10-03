@@ -217,7 +217,7 @@ describe.skipIf(!hasTmux())("sentra end-to-end with @sentry/node", () => {
             handlers.onEnd,
             handlers.onSubscribed,
           ),
-        listSessions: async () => ipcRequest(socketPath, "session.list"),
+        request: async (method, params) => ipcRequest(socketPath, method, params),
         sleep: async (ms) =>
           new Promise((resolve) => {
             setTimeout(resolve, ms);

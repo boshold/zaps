@@ -459,7 +459,7 @@ describe("zaps sentra live", () => {
           },
         };
       }),
-      listSessions: vi.fn(async () => ({ id: "1", result: [RUNNING] })),
+      request: vi.fn<LiveDeps["request"]>(),
       sleep: vi.fn(
         async (_ms: number) =>
           new Promise<void>((resolve) => {
@@ -475,11 +475,19 @@ describe("zaps sentra live", () => {
     return { session: RUNNING.id, event: "sentra.item", data: { row: { ...ROW, ...row }, line } };
   }
 
-  function start(flags: SentraFlags = {}, status: unknown = STATUS) {
+  /** Live IPC answers from `handlers`; the auto-starting `deps.request` must stay unused. */
+  function liveSetup(handlers: Record<string, Handler>) {
     const fake = fakeLive();
-    const ctx = setup({ "sentra.status": ok(status) }, { live: fake.live });
+    const autoStart = vi.fn<SentraCliDeps["request"]>();
+    const ctx = setup(handlers, { live: fake.live, request: autoStart });
+    vi.mocked(fake.live.request).mockImplementation(ctx.request);
+    return { ...fake, ...ctx, autoStart };
+  }
+
+  function start(flags: SentraFlags = {}, status: unknown = STATUS) {
+    const ctx = liveSetup({ "sentra.status": ok(status) });
     const done = runSentraCommand("live", flags, ctx.deps);
-    return { ...fake, ...ctx, done };
+    return { ...ctx, done };
   }
 
   it("prints matching lines with default filters and exits 0 on Ctrl-C", async () => {
@@ -498,6 +506,7 @@ describe("zaps sentra live", () => {
 
     run.stop();
     expect(await run.done).toBe(0);
+    expect(run.autoStart).not.toHaveBeenCalled();
     expect(run.out()).toBe("14:02:11 web error boom\nwarn line\n");
     expect(run.err()).toBe("sentra: failed envelope: bad gzip\n");
     expect(run.subs[0]?.closed).toBe(true);
@@ -515,6 +524,19 @@ describe("zaps sentra live", () => {
     run.stop();
     await run.done;
     expect(run.out()).toBe("match\n");
+  });
+
+  it("keeps the kind default with only --min-level", async () => {
+    const run = start({ minLevel: "error" });
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    const { onEvent } = run.subs[0]?.handlers ?? fakeHandlers();
+    onEvent(item({ kind: "error", level: "error" }, "error"));
+    onEvent(item({ kind: "message", level: "fatal" }, "fatal message"));
+    onEvent(item({ kind: "message", level: "warning" }, "warning"));
+    onEvent(item({ kind: "log", level: "error" }, "log"));
+    run.stop();
+    await run.done;
+    expect(run.out()).toBe("error\nfatal message\n");
   });
 
   it("writes rows as NDJSON with --json", async () => {
@@ -536,13 +558,13 @@ describe("zaps sentra live", () => {
     expect(run.live.sleep).toHaveBeenCalledWith(2000);
     expect(run.err()).toBe("sentra: waiting for daemon…\n");
 
-    vi.mocked(run.live.listSessions).mockResolvedValueOnce({ id: "1", error: "boom" });
+    vi.mocked(run.live.request).mockResolvedValueOnce({ id: "1", error: "boom" });
     run.sleeps[0]?.();
     await vi.waitFor(() => expect(run.sleeps).toHaveLength(2));
     expect(run.subs).toHaveLength(1);
 
     const moved = { ...RUNNING, id: "dddddddddddd" };
-    vi.mocked(run.live.listSessions).mockResolvedValue({ id: "1", result: [moved] });
+    vi.mocked(run.live.request).mockResolvedValue({ id: "1", result: [moved] });
     run.sleeps[1]?.();
     await vi.waitFor(() => expect(run.subs).toHaveLength(2));
     expect(run.subs[1]?.sessionId).toBe(moved.id);
@@ -577,8 +599,7 @@ describe("zaps sentra live", () => {
   });
 
   it("exits 1 on status errors and without streaming support", async () => {
-    const fake = fakeLive();
-    const old = setup({}, { live: fake.live });
+    const old = liveSetup({});
     expect(await runSentraCommand("live", {}, old.deps)).toBe(1);
     expect(old.err()).toContain("older than the CLI");
 
@@ -588,15 +609,22 @@ describe("zaps sentra live", () => {
   });
 
   it("parses live flags through the sentra CLI", async () => {
-    const fake = fakeLive();
-    const ctx = setup({ "sentra.status": ok(STATUS) }, { live: fake.live });
+    const ctx = liveSetup({ "sentra.status": ok(STATUS) });
     const done = runSentraCli(["live", "--service", "web", "--q", "BOOM", "--json"], ctx.deps);
-    await vi.waitFor(() => expect(fake.subs).toHaveLength(1));
-    fake.subs[0]?.handlers.onEvent(item({ title: "boom here" }));
-    fake.subs[0]?.handlers.onEvent(item({ title: "other" }));
-    fake.stop();
+    await vi.waitFor(() => expect(ctx.subs).toHaveLength(1));
+    ctx.subs[0]?.handlers.onEvent(item({ title: "boom here" }));
+    ctx.subs[0]?.handlers.onEvent(item({ title: "other" }));
+    ctx.stop();
     expect(await done).toBe(0);
     expect(ctx.out()).toBe(`${JSON.stringify({ ...ROW, title: "boom here" })}\n`);
+  });
+
+  it("exits 1 without starting a daemon that is not running", async () => {
+    const ctx = liveSetup({});
+    vi.mocked(ctx.live.request).mockRejectedValue(new CliError("Daemon not running."));
+    expect(await runSentraCommand("live", {}, ctx.deps)).toBe(1);
+    expect(ctx.err()).toBe("Error: Daemon not running.\n");
+    expect(ctx.autoStart).not.toHaveBeenCalled();
   });
 
   it("rejects invalid filters with exit 2", async () => {
@@ -609,7 +637,16 @@ describe("zaps sentra live", () => {
 describe("withLiveDefaults / matchesLive", () => {
   it("defaults only without kind/level flags", () => {
     expect(withLiveDefaults({})).toEqual({ kind: ["error", "message"], minLevel: "warning" });
-    expect(withLiveDefaults({ minLevel: "error" })).toEqual({ minLevel: "error" });
+    expect(withLiveDefaults({ minLevel: "error" })).toEqual({
+      kind: ["error", "message"],
+      minLevel: "error",
+    });
+    expect(withLiveDefaults({ level: ["info"] })).toEqual({
+      kind: ["error", "message"],
+      level: ["info"],
+      minLevel: undefined,
+    });
+    expect(withLiveDefaults({ kind: ["log"] })).toEqual({ kind: ["log"], minLevel: undefined });
   });
 
   it("drops level-less rows under a level filter", () => {

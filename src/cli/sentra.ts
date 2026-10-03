@@ -302,7 +302,6 @@ async function runLiveCommand(deps: SentraCliDeps, flags: SentraFlags): Promise<
   }
   return runLive(
     {
-      request: async (method, params) => deps.request(method, params),
       cwd: () => deps.cwd(),
       configSessionId: async () => deps.configSessionId(),
       stdout: (text) => deps.stdout(text),
