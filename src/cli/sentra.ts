@@ -1,8 +1,7 @@
 import { cli, command } from "cleye";
-import { z } from "zod";
+import type { z } from "zod";
 
-import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
-import type { SessionInfo } from "#src/cli/helpers.js";
+import { CliError, DAEMON_NOT_RUNNING } from "#src/cli/helpers.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
 import {
   buildNextCommand,
@@ -21,16 +20,11 @@ import {
   showResultSchema,
 } from "#src/lib/sentra/schemas.js";
 import type { ErrorsParams, IssuesParams } from "#src/lib/sentra/schemas.js";
+import { describeSentraError, resolveSentraSessionId } from "#src/lib/sentra/session-id.js";
 import { parseTimeInput, resolveTimeWindow } from "#src/lib/sentra/time.js";
 
 const LEVEL_LIST = levelSchema.options.join(", ");
 const KIND_LIST = itemKindSchema.options.join(", ");
-const SESSION_ID = /^[0-9a-f]{12}$/;
-const OLD_DAEMON = "This daemon is older than the CLI. Run `zaps daemon stop` and start again.";
-
-const sessionListSchema = z.array(
-  z.object({ id: z.string(), name: z.string(), projectDir: z.string() }),
-);
 
 /** Invalid flags; exit 2. */
 class SentraUsageError extends Error {
@@ -170,8 +164,7 @@ function clearFilters(flags: SentraFlags): { service?: string[]; to?: string | n
   }
 }
 
-/** Running session for `-s`/cwd, else (stopped) the raw 12-hex `-s` or the cwd config id. */
-async function resolveSentraSessionId(
+async function resolveSessionFor(
   deps: SentraCliDeps,
   sessionArg: string | undefined,
 ): Promise<string> {
@@ -179,34 +172,12 @@ async function resolveSentraSessionId(
   if (res.error) {
     throw new CliError(`Error: ${res.error}`);
   }
-  const sessions: SessionInfo[] = sessionListSchema.parse(res.result);
-  if (sessionArg) {
-    if (SESSION_ID.test(sessionArg) && !sessions.some((s) => s.id.startsWith(sessionArg))) {
-      return sessionArg;
-    }
-    return resolveTargetSession(sessions, sessionArg).id;
-  }
-  return findSessionByDir(sessions, deps.cwd())?.id ?? deps.configSessionId();
-}
-
-/** Maps a daemon error string to the CLI message and exit code. */
-function describeIpcError(error: string): { message: string; code: number } {
-  if (error.startsWith("Unknown method: sentra.")) {
-    return { message: OLD_DAEMON, code: 1 };
-  }
-  const match =
-    /^(?<prefix>sentra_disabled|sentra_unavailable|invalid_filter|not_found): (?<message>[\s\S]*)$/.exec(
-      error,
-    );
-  const prefix = match?.groups?.prefix;
-  const message = match?.groups?.message;
-  if (prefix === undefined || message === undefined) {
-    return { message: error, code: 1 };
-  }
-  if (prefix === "sentra_unavailable") {
-    return { message: `Sentra is unavailable: ${message}`, code: 1 };
-  }
-  return { message, code: prefix === "invalid_filter" ? 2 : 1 };
+  return resolveSentraSessionId({
+    sessions: res.result,
+    sessionArg,
+    cwd: deps.cwd(),
+    configSessionId: () => deps.configSessionId(),
+  });
 }
 
 function isJson(flags: SentraFlags, deps: SentraCliDeps): boolean {
@@ -224,7 +195,7 @@ async function call(
 ): Promise<{ ok: true; result: unknown } | { ok: false; code: number }> {
   const res = await deps.request(method, params);
   if (res.error) {
-    const { message, code } = describeIpcError(res.error);
+    const { message, code } = describeSentraError(res.error);
     deps.stderr(`Error: ${message}\n`);
     return { ok: false, code };
   }
@@ -233,7 +204,7 @@ async function call(
 
 async function runErrors(deps: SentraCliDeps, flags: SentraFlags): Promise<number> {
   const filters = errorsFilters(flags);
-  const sessionId = await resolveSentraSessionId(deps, flags.session ?? deps.sessionArg);
+  const sessionId = await resolveSessionFor(deps, flags.session ?? deps.sessionArg);
   const res = await call(deps, "sentra.errors", { sessionId, ...filters });
   if (!res.ok) {
     return res.code;
@@ -252,7 +223,7 @@ async function runErrors(deps: SentraCliDeps, flags: SentraFlags): Promise<numbe
 
 async function runIssues(deps: SentraCliDeps, flags: SentraFlags): Promise<number> {
   const filters = issuesFilters(flags);
-  const sessionId = await resolveSentraSessionId(deps, flags.session ?? deps.sessionArg);
+  const sessionId = await resolveSessionFor(deps, flags.session ?? deps.sessionArg);
   const res = await call(deps, "sentra.issues", { sessionId, ...filters });
   if (!res.ok) {
     return res.code;
@@ -277,7 +248,7 @@ async function runShow(
   if (id === undefined || id === "") {
     throw new SentraUsageError("Missing <id>. Usage: zaps sentra show <id>");
   }
-  const sessionId = await resolveSentraSessionId(deps, flags.session ?? deps.sessionArg);
+  const sessionId = await resolveSessionFor(deps, flags.session ?? deps.sessionArg);
   const res = await call(deps, "sentra.show", { sessionId, id });
   if (!res.ok) {
     return res.code;
@@ -299,7 +270,7 @@ async function runShow(
 
 async function runClear(deps: SentraCliDeps, flags: SentraFlags): Promise<number> {
   const filters = clearFilters(flags);
-  const sessionId = await resolveSentraSessionId(deps, flags.session ?? deps.sessionArg);
+  const sessionId = await resolveSessionFor(deps, flags.session ?? deps.sessionArg);
   const res = await call(deps, "sentra.clear", { sessionId, ...filters });
   if (!res.ok) {
     return res.code;
@@ -474,6 +445,27 @@ function sentraCommands(deps: SentraCliDeps, settle: (pending: Promise<number>) 
   ];
 }
 
+interface AutoStartDeps {
+  request(sock: string, method: string, params?: unknown): Promise<IpcResponse>;
+  socket(): string;
+  /** Starts the daemon; resolves with its socket. */
+  ensureDaemon(): Promise<string>;
+}
+
+/** IPC that starts the daemon and retries once when it is not running. */
+function createAutoStartRequest(deps: AutoStartDeps): SentraCliDeps["request"] {
+  return async (method, params) => {
+    try {
+      return await deps.request(deps.socket(), method, params);
+    } catch (error) {
+      if (!(error instanceof CliError) || error.message !== DAEMON_NOT_RUNNING) {
+        throw error;
+      }
+      return deps.request(await deps.ensureDaemon(), method, params);
+    }
+  };
+}
+
 /** Type-flag only accepts one-letter names as `-x`; the spec spells `--q`. */
 function normalizeArgv(argv: string[]): string[] {
   return argv.map((arg) => {
@@ -512,5 +504,5 @@ async function runSentraCli(argv: string[], deps: SentraCliDeps): Promise<number
   return pending ?? Promise.resolve(1);
 }
 
-export { resolveSentraSessionId, runSentraCli, runSentraCommand };
-export type { SentraCliDeps, SentraFlags };
+export { createAutoStartRequest, resolveSessionFor, runSentraCli, runSentraCommand };
+export type { AutoStartDeps, SentraCliDeps, SentraFlags };

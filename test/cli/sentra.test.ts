@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CliError } from "#src/cli/helpers.js";
-import { resolveSentraSessionId, runSentraCli, runSentraCommand } from "#src/cli/sentra.js";
+import {
+  createAutoStartRequest,
+  resolveSessionFor,
+  runSentraCli,
+  runSentraCommand,
+} from "#src/cli/sentra.js";
 import type { SentraCliDeps } from "#src/cli/sentra.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
 import type { ErrorRow } from "#src/lib/sentra/schemas.js";
@@ -57,22 +62,22 @@ const fail =
   (error: string): Handler =>
   () => ({ id: "1", error });
 
-describe("resolveSentraSessionId", () => {
+describe("resolveSessionFor", () => {
   it("uses the running session of the cwd", async () => {
     const { deps } = setup();
-    expect(await resolveSentraSessionId(deps, undefined)).toBe(RUNNING.id);
+    expect(await resolveSessionFor(deps, undefined)).toBe(RUNNING.id);
   });
 
   it("falls back to the cwd config id when nothing runs there", async () => {
     const { deps } = setup({}, { cwd: () => "/elsewhere" });
-    expect(await resolveSentraSessionId(deps, undefined)).toBe("cccccccccccc");
+    expect(await resolveSessionFor(deps, undefined)).toBe("cccccccccccc");
   });
 
   it("resolves -s by name or prefix, and accepts a stopped 12-hex id", async () => {
     const { deps } = setup();
-    expect(await resolveSentraSessionId(deps, "other")).toBe(OTHER.id);
-    expect(await resolveSentraSessionId(deps, "dddddddddddd")).toBe("dddddddddddd");
-    await expect(resolveSentraSessionId(deps, "nope")).rejects.toThrow("Session not found: nope");
+    expect(await resolveSessionFor(deps, "other")).toBe(OTHER.id);
+    expect(await resolveSessionFor(deps, "dddddddddddd")).toBe("dddddddddddd");
+    await expect(resolveSessionFor(deps, "nope")).rejects.toThrow("Session not found: nope");
   });
 
   it("propagates config and list errors", async () => {
@@ -85,11 +90,11 @@ describe("resolveSentraSessionId", () => {
         },
       },
     );
-    await expect(resolveSentraSessionId(noConfig.deps, undefined)).rejects.toThrow(
+    await expect(resolveSessionFor(noConfig.deps, undefined)).rejects.toThrow(
       "No .zaps.mts config found",
     );
     const broken = setup({}, { request: async () => ({ id: "1", error: "boom" }) });
-    await expect(resolveSentraSessionId(broken.deps, undefined)).rejects.toThrow("Error: boom");
+    await expect(resolveSessionFor(broken.deps, undefined)).rejects.toThrow("Error: boom");
   });
 });
 
@@ -375,5 +380,42 @@ describe("zaps sentra group", () => {
     const t = setup();
     expect(await runSentraCli(["bogus"], t.deps)).toBe(1);
     expect(t.err()).toBe("error: unknown command 'bogus'\n");
+  });
+});
+
+describe("createAutoStartRequest", () => {
+  it("starts the daemon and retries once when it is not running", async () => {
+    const request = vi
+      .fn<(sock: string, method: string, params?: unknown) => Promise<IpcResponse>>()
+      .mockRejectedValueOnce(new CliError("Daemon not running."))
+      .mockResolvedValueOnce({ id: "1", result: "ok" });
+    const ensureDaemon = vi.fn(async () => "/new.sock");
+    const send = createAutoStartRequest({ request, socket: () => "/old.sock", ensureDaemon });
+
+    await expect(send("sentra.errors", { a: 1 })).resolves.toEqual({ id: "1", result: "ok" });
+    expect(ensureDaemon).toHaveBeenCalledOnce();
+    expect(request.mock.calls).toEqual([
+      ["/old.sock", "sentra.errors", { a: 1 }],
+      ["/new.sock", "sentra.errors", { a: 1 }],
+    ]);
+  });
+
+  it("does not retry other errors or a second failure", async () => {
+    const ensureDaemon = vi.fn(async () => "/new.sock");
+    const other = createAutoStartRequest({
+      request: async () => Promise.reject(new Error("EACCES")),
+      socket: () => "/s",
+      ensureDaemon,
+    });
+    await expect(other("m")).rejects.toThrow("EACCES");
+    expect(ensureDaemon).not.toHaveBeenCalled();
+
+    const twice = createAutoStartRequest({
+      request: async () => Promise.reject(new CliError("Daemon not running.")),
+      socket: () => "/s",
+      ensureDaemon,
+    });
+    await expect(twice("m")).rejects.toThrow("Daemon not running.");
+    expect(ensureDaemon).toHaveBeenCalledOnce();
   });
 });

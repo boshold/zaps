@@ -28,7 +28,7 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
-import { runSentraCli } from "./cli/sentra.js";
+import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
@@ -1495,24 +1495,15 @@ const daemonGroupCommand = command({
   help: { description: "Daemon management" },
 });
 
-/** Retries once after starting the daemon when it is not running. */
-async function requestDaemonAutoStart(method: string, params?: unknown) {
-  try {
-    return await requestDaemon(socketPath(), method, params, 30_000);
-  } catch (error) {
-    if (!(error instanceof CliError) || error.message !== DAEMON_NOT_RUNNING) {
-      throw error;
-    }
-    const sock = await ensureDaemon(resolveCommandArgv());
-    return requestDaemon(sock, method, params, 30_000);
-  }
-}
-
 async function runSentraGroup(rawArgv: string[]): Promise<void> {
   const typedArgv = process.argv.slice(2);
   const argv = consumeLeadingSessionFlag(rawArgv);
   process.exitCode = await runSentraCli(argv, {
-    request: requestDaemonAutoStart,
+    request: createAutoStartRequest({
+      request: async (sock, method, params) => requestDaemon(sock, method, params, 30_000),
+      socket: socketPath,
+      ensureDaemon: async () => ensureDaemon(resolveCommandArgv()),
+    }),
     cwd: () => process.cwd(),
     configSessionId: () => resolveSessionId().id,
     argv: typedArgv,

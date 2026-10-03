@@ -1,12 +1,28 @@
 /* eslint-disable no-unsafe-type-assertion -- IPC boundary */
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import type { SessionInfo } from "#src/cli/helpers.js";
-import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
+import {
+  CliError,
+  findSessionByDir,
+  resolveSessionId,
+  resolveTargetSession,
+} from "#src/cli/helpers.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import { renderErrors, renderIssues, renderShow } from "#src/lib/sentra/render.js";
+import {
+  MAX_LIMIT,
+  errorsResultSchema,
+  issuesResultSchema,
+  itemKindSchema,
+  levelSchema,
+  showResultSchema,
+} from "#src/lib/sentra/schemas.js";
+import { describeSentraError, resolveSentraSessionId } from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 function classifyDaemonError(error: unknown): Error {
@@ -17,6 +33,33 @@ function classifyDaemonError(error: unknown): Error {
     });
   }
   return error instanceof Error ? error : new Error(String(error));
+}
+
+const TIME_WINDOW_HINT =
+  "Use `from` = ISO timestamp taken before reproducing/testing. Then only errors of that run show up.";
+
+const sentraTimeShape = {
+  from: z
+    .string()
+    .optional()
+    .describe("Start: ISO 8601, epoch ms, or duration like 10m (now minus)"),
+  to: z.string().optional().describe("End: ISO 8601, epoch ms, or duration"),
+  since: z.string().optional().describe("Relative start, e.g. 10m (not with from)"),
+};
+
+const sentraPageShape = {
+  limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe("Max rows (default 20)"),
+  skip: z.number().int().min(0).optional().describe("Rows to skip (default 0)"),
+};
+
+function textResult(text: string, isError = false): CallToolResult {
+  return isError
+    ? { content: [{ type: "text", text }], isError }
+    : { content: [{ type: "text", text }] };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function startMcpServer(socketPath: string, sessionArg?: string): Promise<void> {
@@ -70,6 +113,48 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
       throw new Error(res.error);
     }
     return res.result;
+  }
+
+  /** Running session, `-s` verbatim, or the cwd config id (stopped session). */
+  async function resolveSentraSession(): Promise<string> {
+    let listRes: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
+    try {
+      listRes = await ipcRequest(socketPath, "session.list", undefined, 30_000);
+    } catch (error) {
+      throw classifyDaemonError(error);
+    }
+    if (listRes.error) {
+      throw new Error(listRes.error);
+    }
+    return resolveSentraSessionId({
+      sessions: listRes.result,
+      sessionArg,
+      cwd: process.cwd(),
+      configSessionId: () => resolveSessionId().id,
+    });
+  }
+
+  /** Daemon-level `sentra.*` call; errors become `isError` results with CLI messages. */
+  async function sentraTool(
+    method: string,
+    params: Record<string, unknown>,
+    render: (result: unknown) => string,
+  ): Promise<CallToolResult> {
+    try {
+      const sessionId = await resolveSentraSession();
+      let res: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
+      try {
+        res = await ipcRequest(socketPath, method, { ...params, sessionId }, 30_000);
+      } catch (error) {
+        throw classifyDaemonError(error);
+      }
+      if (res.error) {
+        return textResult(describeSentraError(res.error).message, true);
+      }
+      return textResult(render(res.result));
+    } catch (error) {
+      return textResult(errorMessage(error), true);
+    }
   }
 
   // --- Tools ---
@@ -278,6 +363,60 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
         isError: !result.success,
       };
     },
+  );
+
+  server.registerTool(
+    "sentra_errors",
+    {
+      description: `List runtime error events (Sentry SDKs) of this project's session, newest first. TOON rows: id, receivedAt, service, kind, level, title, location, issueId; plus hasMore. Defaults: kind error,message and min level error (level default dropped when kind/level/minLevel given). ${TIME_WINDOW_HINT} Page with skip.`,
+      inputSchema: {
+        service: z.array(z.string()).min(1).optional().describe("Services"),
+        ...sentraTimeShape,
+        level: z.array(levelSchema).min(1).optional().describe("Exact levels"),
+        minLevel: levelSchema.optional().describe("Minimum level"),
+        kind: z.array(itemKindSchema).min(1).optional().describe("Record kinds"),
+        q: z.string().optional().describe("Case-insensitive title substring"),
+        ...sentraPageShape,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.errors", args, (result) => {
+        const parsed = errorsResultSchema.parse(result);
+        return `${renderErrors(parsed, null)}\nhasMore: ${parsed.hasMore}`;
+      }),
+  );
+
+  server.registerTool(
+    "sentra_issues",
+    {
+      description: `List grouped runtime errors (issues) of this project's session, last seen first; time filters apply to lastSeen. TOON rows: id, shortId, services, level, title, culprit, count, firstSeen, lastSeen; plus hasMore. ${TIME_WINDOW_HINT}`,
+      inputSchema: {
+        service: z.array(z.string()).min(1).optional().describe("Services"),
+        ...sentraTimeShape,
+        minLevel: levelSchema.optional().describe("Minimum level"),
+        q: z.string().optional().describe("Case-insensitive title substring"),
+        ...sentraPageShape,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.issues", args, (result) => {
+        const parsed = issuesResultSchema.parse(result);
+        return `${renderIssues(parsed, null)}\nhasMore: ${parsed.hasMore}`;
+      }),
+  );
+
+  server.registerTool(
+    "sentra_show",
+    {
+      description:
+        "Show one runtime error record, issue, or Sentry event id (32 hex) as Markdown: title, level, service, mapped stack with source context, breadcrumbs, request, tags.",
+      inputSchema: { id: z.string().min(1).describe("Record id, issue id, or event id") },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.show", args, (result) => renderShow(showResultSchema.parse(result))),
   );
 
   // --- Resources: live log streaming ---
