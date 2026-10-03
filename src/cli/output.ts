@@ -73,6 +73,31 @@ const AGENT_COMMANDS = [
   "zaps reload",
 ] as const;
 
+const SENTRA_AGENT_COMMANDS = [
+  "zaps sentra errors [--service <s>] [--from <iso>] [--to <iso>] [--since 10m]",
+  "zaps sentra issues [--service <s>]",
+  "zaps sentra show <id>",
+] as const;
+
+const SENTRA_AGENT_SENTENCE =
+  "Runtime app errors from Sentry SDKs are collected by ZAPS; check them with `zaps sentra errors --from <iso>` after reproducing or testing.";
+
+interface PrimeAgentSentra {
+  status: "running" | "stopped" | "unavailable" | "disabled";
+  services: string[];
+  reason?: string;
+}
+
+/** Unusable status (older daemon, error) counts as disabled. */
+function primeAgentSentra(statusInput: unknown): PrimeAgentSentra {
+  const parsed = statusResultSchema.safeParse(statusInput);
+  if (!parsed.success || parsed.data.state === "disabled" || parsed.data.enabled === false) {
+    return { status: "disabled", services: [] };
+  }
+  const { state, services, reason } = parsed.data;
+  return reason === null ? { status: state, services } : { status: state, services, reason };
+}
+
 const AGENT_ENV_VARS = [
   "CLAUDECODE", // Claude Code
   "CURSOR_TRACE_DIR", // Cursor IDE
@@ -140,10 +165,13 @@ function primeAgentPrompt(
   projectInput: unknown,
   servicesInput: unknown,
   tasksInput: unknown,
+  sentraStatusInput?: unknown,
 ): string {
   const project = primeAgentProjectSchema.parse(projectInput);
   const services = parseServiceList(servicesInput);
   const tasks = primeAgentTasksSchema.parse(tasksInput);
+  const sentra = primeAgentSentra(sentraStatusInput);
+  const sentraEnabled = sentra.status !== "disabled";
   const data = {
     activeProject: {
       name: project.name,
@@ -156,15 +184,18 @@ function primeAgentPrompt(
       state: service.state,
       ports: service.ports.join(","),
       url: service.url ?? "",
+      errors: typeof service.errorCount === "number" ? service.errorCount : "",
     })),
     tasks: tasks.map((task) => ({
       key: task.key,
       description: task.description ?? task.name,
     })),
-    commands: AGENT_COMMANDS,
+    sentra,
+    commands: sentraEnabled ? [...AGENT_COMMANDS, ...SENTRA_AGENT_COMMANDS] : AGENT_COMMANDS,
   };
-  const prompt =
-    "ZAPS manages this project's development services and tasks. Use the exact keys and only the listed commands. Keep command output concise; session and daemon lifecycle are user-managed.\n\nAlways run every ZAPS command outside the sandbox.";
+  const intro =
+    "ZAPS manages this project's development services and tasks. Use the exact keys and only the listed commands. Keep command output concise; session and daemon lifecycle are user-managed.";
+  const prompt = `${sentraEnabled ? `${intro} ${SENTRA_AGENT_SENTENCE}` : intro}\n\nAlways run every ZAPS command outside the sandbox.`;
   return `${prompt}\n\n\`\`\`toon\n${encode(data)}\n\`\`\`\n`;
 }
 

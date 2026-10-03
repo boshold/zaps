@@ -730,6 +730,7 @@ describe("CLI — ps command", () => {
   let sentraEnabled = true;
 
   beforeEach(async () => {
+    sentraEnabled = true;
     dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "zaps-ps-")));
     fs.writeFileSync(path.join(dir, ".zaps.mts"), "export default {};\n");
     const net = await import("node:net");
@@ -808,7 +809,6 @@ describe("CLI — ps command", () => {
     async () => {
       sentraEnabled = false;
       const out = await runPs();
-      sentraEnabled = true;
       expect(out).not.toContain("ERRORS");
       expect(out.split("\n")[0]).toMatch(/^NAME\s+STATE\s+PORTS\s+URL$/);
     },

@@ -50,6 +50,99 @@ describe("primeAgentPrompt", () => {
   });
 });
 
+describe("primeAgentPrompt — sentra", () => {
+  const project = {
+    id: "aaaaaaaaaaaa",
+    name: "proj",
+    projectDir: "/p",
+    configPath: "/p/.zaps.mts",
+  };
+  const services = [
+    { name: "web", state: "ready", ports: [3000], sentra: true, errorCount: 2 },
+    { name: "db", state: "ready", ports: [], errorCount: null },
+  ];
+  const tasks = [{ key: "lint", name: "Lint", description: null }];
+  const status = {
+    enabled: true,
+    state: "running",
+    port: 4100,
+    dbPath: "/s.db",
+    reason: null,
+    services: ["web"],
+  };
+
+  it("adds the sentra block, error counts, commands and hint when enabled", () => {
+    expect(primeAgentPrompt(project, services, tasks, status)).toMatchInlineSnapshot(`
+      "ZAPS manages this project's development services and tasks. Use the exact keys and only the listed commands. Keep command output concise; session and daemon lifecycle are user-managed. Runtime app errors from Sentry SDKs are collected by ZAPS; check them with \`zaps sentra errors --from <iso>\` after reproducing or testing.
+
+      Always run every ZAPS command outside the sandbox.
+
+      \`\`\`toon
+      activeProject:
+        name: proj
+        sessionId: aaaaaaaaaaaa
+        folderPath: /p
+        configPath: /p/.zaps.mts
+      services[2]{name,state,ports,url,errors}:
+        web,ready,"3000","",2
+        db,ready,"","",""
+      tasks[1]{key,description}:
+        lint,Lint
+      sentra:
+        status: running
+        services[1]: web
+      commands[12]: zaps ps,"zaps start [service...]","zaps stop [service...]","zaps restart [service...]",zaps inspect <service>,"zaps logs [service] [--tail <n>|-f]",zaps tasks,zaps run <task>,zaps reload,"zaps sentra errors [--service <s>] [--from <iso>] [--to <iso>] [--since 10m]","zaps sentra issues [--service <s>]",zaps sentra show <id>
+      \`\`\`
+      "
+    `);
+  });
+
+  it("includes the reason when unavailable", () => {
+    const output = primeAgentPrompt(project, services, tasks, {
+      ...status,
+      state: "unavailable",
+      reason: "port bind failed",
+    });
+    expect(output).toContain("status: unavailable");
+    expect(output).toContain("reason: port bind failed");
+    expect(output).toContain("zaps sentra errors");
+  });
+
+  it("reports disabled without sentra commands or hint", () => {
+    expect(
+      primeAgentPrompt(project, services, tasks, { ...status, enabled: false, state: "disabled" }),
+    ).toMatchInlineSnapshot(`
+      "ZAPS manages this project's development services and tasks. Use the exact keys and only the listed commands. Keep command output concise; session and daemon lifecycle are user-managed.
+
+      Always run every ZAPS command outside the sandbox.
+
+      \`\`\`toon
+      activeProject:
+        name: proj
+        sessionId: aaaaaaaaaaaa
+        folderPath: /p
+        configPath: /p/.zaps.mts
+      services[2]{name,state,ports,url,errors}:
+        web,ready,"3000","",2
+        db,ready,"","",""
+      tasks[1]{key,description}:
+        lint,Lint
+      sentra:
+        status: disabled
+        services: []
+      commands[9]: zaps ps,"zaps start [service...]","zaps stop [service...]","zaps restart [service...]",zaps inspect <service>,"zaps logs [service] [--tail <n>|-f]",zaps tasks,zaps run <task>,zaps reload
+      \`\`\`
+      "
+    `);
+  });
+
+  it("treats an unusable status (older daemon) as disabled", () => {
+    const output = primeAgentPrompt(project, services, tasks, undefined);
+    expect(output).toContain("status: disabled");
+    expect(output).not.toContain("zaps sentra");
+  });
+});
+
 describe("resolveFormat", () => {
   const saved = new Map<string, string | undefined>();
 

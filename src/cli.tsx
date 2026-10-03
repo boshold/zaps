@@ -594,12 +594,17 @@ const psCommand = command(
     const opts = parsed.flags;
     try {
       await withDaemon(async (ipc) => {
-        const res = await ipc.request("services.list");
+        const format = resolveFormat(opts);
+        const [res, status] = await Promise.all([
+          ipc.request("services.list"),
+          format === "text"
+            ? ipc.request("sentra.status", { sessionId: ipc.sessionId })
+            : Promise.resolve(null),
+        ]);
         if (res.error) {
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        const format = resolveFormat(opts);
         if (format !== "text") {
           writeData(res.result, format);
           return;
@@ -609,8 +614,7 @@ const psCommand = command(
           process.stdout.write("No services configured.\n");
           return;
         }
-        const status = await ipc.request("sentra.status", { sessionId: ipc.sessionId });
-        const sentraEnabled = sentraColumnEnabled(status.result, statuses);
+        const sentraEnabled = sentraColumnEnabled(status?.result, statuses);
         process.stdout.write(`${formatTable(serviceRows(statuses, sentraEnabled))}\n`);
       }, globalSession());
     } catch (error) {
@@ -1051,9 +1055,10 @@ const primeAgentCommand = command(
     rejectExcessArgs("prime-agent", parsed._, 0);
     try {
       await withDaemon(async (ipc) => {
-        const [svcRes, taskRes] = await Promise.all([
+        const [svcRes, taskRes, sentraRes] = await Promise.all([
           ipc.request("services.list"),
           ipc.request("tasks.list"),
+          ipc.request("sentra.status", { sessionId: ipc.sessionId }),
         ]);
         if (svcRes.error) {
           process.stderr.write(`Error: ${svcRes.error}\n`);
@@ -1064,7 +1069,9 @@ const primeAgentCommand = command(
           process.exit(1);
         }
 
-        process.stdout.write(primeAgentPrompt(ipc.session, svcRes.result, taskRes.result));
+        process.stdout.write(
+          primeAgentPrompt(ipc.session, svcRes.result, taskRes.result, sentraRes.result),
+        );
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
