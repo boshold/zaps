@@ -5,6 +5,7 @@ import {
   buildSentraEnv,
   resolveSentraEnv,
   sanitizeSegment,
+  sentraEnabledFor,
   sentraEnvFor,
   sentraLog,
   sentraTemplateFor,
@@ -17,6 +18,27 @@ const project: SentraConfig = {
   env: { SENTRY_DSN: "{dsn}", SENTRY_ENABLED: "true" },
 };
 const own = { env: { DSN: "{dsn}" } };
+
+describe("sentraEnabledFor", () => {
+  const env = { SENTRY_DSN: "{dsn}" };
+
+  it("is on with a project block unless enabled is false", () => {
+    expect(sentraEnabledFor({ sentra: { env }, services: {} })).toBe(true);
+    expect(
+      sentraEnabledFor({ sentra: { enabled: false, env }, services: { a: { sentra: { env } } } }),
+    ).toBe(false);
+  });
+
+  it("is on without a block when a service or task brings its own env", () => {
+    expect(sentraEnabledFor({ services: { a: { sentra: { env } } } })).toBe(true);
+    expect(sentraEnabledFor({ services: {}, tasks: { t: { sentra: { env } } } })).toBe(true);
+  });
+
+  it("is off without a block and without own-env targets", () => {
+    expect(sentraEnabledFor({ services: { a: { sentra: true }, b: {} }, tasks: {} })).toBe(false);
+    expect(sentraEnabledFor({ services: {} })).toBe(false);
+  });
+});
 
 describe("sentraTemplateFor", () => {
   it.each([undefined, false])("returns null for target %j", (target) => {

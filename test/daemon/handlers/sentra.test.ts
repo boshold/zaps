@@ -68,6 +68,17 @@ function runningSession(sentra?: { enabled?: boolean; env: Record<string, string
   });
 }
 
+function sessionWith(project: {
+  services: Record<string, unknown>;
+  tasks?: Record<string, unknown>;
+}): MockSession {
+  const base = createMockSession({ id: SESSION_A });
+  return createMockSession({
+    id: SESSION_A,
+    config: { ...base.config, project: { name: "proj", ...project } },
+  });
+}
+
 let nextId = 0;
 async function call(
   store: SessionStore,
@@ -139,11 +150,37 @@ describe("sentra handlers", () => {
       expect(host.status().state).toBe("stopped");
     });
 
-    it("treats a missing sentra block as disabled", async () => {
-      const res = await call(storeWith([runningSession()]), "sentra.status", {
-        sessionId: SESSION_A,
+    it("treats no block and no { env } targets as disabled", async () => {
+      const session = sessionWith({
+        services: { web: { start: "pnpm dev", sentra: true }, db: { start: "pg" } },
       });
+      const res = await call(storeWith([session]), "sentra.status", { sessionId: SESSION_A });
       expect(res.result).toMatchObject({ enabled: false, state: "disabled" });
+    });
+
+    it("treats a service { env } target without a project block as enabled", async () => {
+      await seeded();
+      const session = sessionWith({
+        services: { api: { start: "pnpm api", sentra: { env: { SENTRY_DSN: "{dsn}" } } } },
+      });
+      const store = storeWith([session]);
+
+      const status = await call(store, "sentra.status", { sessionId: SESSION_A });
+      const errors = await call(store, "sentra.errors", { sessionId: SESSION_A });
+
+      expect(status.result).toMatchObject({ enabled: true, state: "running", services: ["api"] });
+      expect(errorsResultSchema.parse(errors.result).errors).toHaveLength(1);
+    });
+
+    it("treats a task-only { env } target as enabled", async () => {
+      const session = sessionWith({
+        services: { db: { start: "pg" } },
+        tasks: { e2e: { name: "E2E", commands: "pnpm e2e", sentra: { env: { DSN: "{dsn}" } } } },
+      });
+
+      const res = await call(storeWith([session]), "sentra.status", { sessionId: SESSION_A });
+
+      expect(res.result).toMatchObject({ enabled: true, state: "running", services: [] });
     });
 
     it("skips the enabled check for a stopped session", async () => {

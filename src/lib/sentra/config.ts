@@ -3,6 +3,12 @@ import type { SentraConfig, SentraTarget } from "#src/config/types.js";
 const DSN_PLACEHOLDER = "{dsn}";
 const SEGMENT_MAX_LENGTH = 64;
 
+interface SentraTargets {
+  sentra?: SentraConfig;
+  services: Record<string, { sentra?: SentraTarget }>;
+  tasks?: Record<string, { sentra?: SentraTarget }>;
+}
+
 /** Subset of `SentraHost` the injection points need. */
 export interface SentraHostLike {
   ensureStarted(): Promise<object | null>;
@@ -39,6 +45,18 @@ export function sentraTemplateFor(
     return project ? project.env : null;
   }
   return target.env;
+}
+
+/** Sentra is on with a project block, or when any service/task brings its own `{ env }`. */
+export function sentraEnabledFor(project: SentraTargets): boolean {
+  if (project.sentra?.enabled === false) {
+    return false;
+  }
+  if (project.sentra !== undefined) {
+    return true;
+  }
+  const targets = [...Object.values(project.services), ...Object.values(project.tasks ?? {})];
+  return targets.some((target) => sentraTemplateFor(project.sentra, target.sentra) !== null);
 }
 
 export function resolveSentraEnv(
