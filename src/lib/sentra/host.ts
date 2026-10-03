@@ -50,7 +50,7 @@ async function listen(server: Server, port: number): Promise<number> {
   });
 }
 
- async function closeServer(server: Server): Promise<void> {
+async function closeServer(server: Server): Promise<void> {
   return new Promise((resolve) => {
     server.close(() => resolve());
     server.closeAllConnections();
@@ -238,7 +238,7 @@ export class SentraHost {
         sentra.addSourceRoot(dir);
       }
       this.instance = sentra;
-      this.listener = toNodeListener( async (request) => sentra.handle(request));
+      this.listener = toNodeListener(async (request) => sentra.handle(request));
       this.state = "running";
       this.reason = null;
       this.failedAt = null;
