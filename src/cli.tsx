@@ -28,6 +28,7 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { runSentraCli } from "./cli/sentra.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
@@ -1494,6 +1495,40 @@ const daemonGroupCommand = command({
   help: { description: "Daemon management" },
 });
 
+/** Retries once after starting the daemon when it is not running. */
+async function requestDaemonAutoStart(method: string, params?: unknown) {
+  try {
+    return await requestDaemon(socketPath(), method, params, 30_000);
+  } catch (error) {
+    if (!(error instanceof CliError) || error.message !== DAEMON_NOT_RUNNING) {
+      throw error;
+    }
+    const sock = await ensureDaemon(resolveCommandArgv());
+    return requestDaemon(sock, method, params, 30_000);
+  }
+}
+
+async function runSentraGroup(rawArgv: string[]): Promise<void> {
+  const typedArgv = process.argv.slice(2);
+  const argv = consumeLeadingSessionFlag(rawArgv);
+  process.exitCode = await runSentraCli(argv, {
+    request: requestDaemonAutoStart,
+    cwd: () => process.cwd(),
+    configSessionId: () => resolveSessionId().id,
+    argv: typedArgv,
+    env: process.env,
+    stdout: (text) => process.stdout.write(text),
+    stderr: (text) => process.stderr.write(text),
+    sessionArg: globalSession(),
+  });
+}
+
+/** Listed in root help only; dispatch is intercepted in `runRootCli`. */
+const sentraGroupCommand = command({
+  name: "sentra",
+  help: { description: "Runtime errors collected from Sentry SDKs" },
+});
+
 const mcpCommand = command(
   {
     name: "mcp",
@@ -1540,6 +1575,7 @@ const rootCommands: Command[] = [
   execServiceCommand,
   execTaskCommand,
   daemonGroupCommand,
+  sentraGroupCommand,
   mcpCommand,
 ];
 
@@ -1555,6 +1591,10 @@ function hiddenCommandNames(): Set<string> {
 function runRootCli(argv: string[]): void {
   if (argv[0] === "daemon") {
     runDaemonCli(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "sentra") {
+    void runSentraGroup(argv.slice(1));
     return;
   }
   void cli(
