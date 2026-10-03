@@ -71,6 +71,7 @@
   },
   "devDependencies": {
     "@boshold/sentra-core": "^0.1.0",
+    "@sentry/node": "^11.1.0",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.2",
