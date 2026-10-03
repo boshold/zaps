@@ -288,8 +288,29 @@ function warnReservedTaskShortcuts(project: ProjectConfig): void {
   }
 }
 
+/** `sentra: true` reuses the project template, so it needs the top-level block. */
+function validateSentraTargets(project: ProjectConfig): void {
+  if (project.sentra) {
+    return;
+  }
+  const targets = [
+    ...Object.entries(project.services).map(
+      ([name, svc]) => [`services.${name}`, svc.sentra] as const,
+    ),
+    ...Object.entries(project.tasks ?? {}).map(
+      ([key, task]) => [`tasks.${key}`, task.sentra] as const,
+    ),
+  ];
+  for (const [field, sentra] of targets) {
+    if (sentra === true) {
+      throw new Error(`${field}.sentra requires a top-level "sentra" block`);
+    }
+  }
+}
+
 function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
   validateServiceDeps(project);
+  validateSentraTargets(project);
   warnNonAutostartDeps(project);
   warnReservedTaskShortcuts(project);
   validateDetachedGroups(project);

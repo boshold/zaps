@@ -90,6 +90,17 @@ export interface ServiceFlags {
   open?: boolean;
 }
 
+// === Sentra ===
+/** Project-level Sentra block. `{dsn}` in any `env` value is replaced by the per-target DSN. */
+export interface SentraConfig {
+  /** Default `true`. */
+  enabled?: boolean;
+  env: Record<string, string>;
+}
+
+/** `true` = project `env` template; `{ env }` = own template replacing it. */
+export type SentraTarget = boolean | { env: Record<string, string> };
+
 // === Service ===
 export interface ServiceConfig {
   start?: Command;
@@ -112,6 +123,7 @@ export interface ServiceConfig {
   url?: string | false | ((ctx: ServiceContext) => string);
   cwd?: string;
   raw?: boolean;
+  sentra?: SentraTarget;
   restart?: { maxRetries?: number; backoff?: number };
   onBeforeStart?: () => void | Promise<void>;
   onReady?: () => void | Promise<void>;
@@ -154,6 +166,7 @@ export interface TaskConfig {
   dependsOn?: string[];
   env?: EnvConfig;
   shortcut?: string;
+  sentra?: SentraTarget;
 }
 
 // === Layout ===
@@ -219,6 +232,7 @@ export interface ProjectConfig {
   tasks?: Record<string, TaskConfig>;
   layout?: LayoutNode;
   hooks?: HooksConfig;
+  sentra?: SentraConfig;
   ui?: UiConfig;
 }
 
