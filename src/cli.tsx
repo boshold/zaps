@@ -1625,8 +1625,23 @@ const helpCommand = command(
 );
 rootCommands.push(helpCommand);
 
-if (process.argv.length === 2) {
-  process.argv.push("up");
+// Internal: build smoke check for the bundled Sentra core (see scripts/sentra-smoke.ts).
+async function runSentraSmokeCheck(): Promise<void> {
+  try {
+    const { runSentraSmoke } = await import("./lib/sentra/smoke.js");
+    process.stdout.write(`driver=${await runSentraSmoke()}\n`);
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`${String(error)}\n`);
+    process.exit(1);
+  }
 }
 
-runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
+if (process.env.ZAPS_SENTRA_SMOKE === "1") {
+  void runSentraSmokeCheck();
+} else {
+  if (process.argv.length === 2) {
+    process.argv.push("up");
+  }
+  runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
+}

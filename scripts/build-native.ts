@@ -116,6 +116,8 @@ const result = await Bun.build({
   outdir: "./dist",
   naming: "cli.js",
   plugins: [tlaFixPlugin, babelAssetPlugin],
+  // Optional sentra-core driver; keep it out so Bun uses node:sqlite.
+  external: ["better-sqlite3"],
   define: {
     __VERSION__: JSON.stringify(version),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
@@ -148,6 +150,9 @@ const compileArgs = [
   "dist/cli.js",
   "--compile",
   "--bytecode",
+  // The compile step re-resolves the bundle.
+  "--external",
+  "better-sqlite3",
   "--outfile",
   "dist/zaps",
 ];

@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "esbuild";
 import { build } from "esbuild";
@@ -13,6 +14,17 @@ const externalNativeBabel: Plugin = {
     pluginBuild.onResolve({ filter: /native-babel(?:\.js)?$/ }, () => ({
       path: "./native-babel.js",
       external: true,
+    }));
+  },
+};
+
+// `@bosdev/zaps` ships on npmjs, so GitHub Packages deps (`@boshold/*`) are
+// Inlined; everything else stays external via `packages: "external"`.
+const bundleBoshold: Plugin = {
+  name: "bundle-boshold",
+  setup(pluginBuild) {
+    pluginBuild.onResolve({ filter: /^@boshold\// }, (args) => ({
+      path: fileURLToPath(import.meta.resolve(args.path)),
     }));
   },
 };
@@ -42,7 +54,7 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
-  plugins: [externalNativeBabel],
+  plugins: [externalNativeBabel, bundleBoshold],
   define: {
     __VERSION__: JSON.stringify(resolveVersion()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
