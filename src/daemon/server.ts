@@ -12,6 +12,7 @@ import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
 import { sanitizeSegment } from "#src/lib/sentra/config.js";
+import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
@@ -72,6 +73,8 @@ interface SessionStore {
   destroy(id: string): Promise<void>;
   /** Daemon-wide Sentra host (one per daemon, started lazily). */
   readonly sentra: SentraHost;
+  /** Per-session error counts and live `sentra.*` broadcast. */
+  readonly sentraCounter: ErrorCounter;
 }
 
 interface DaemonServerOptions {
@@ -114,10 +117,12 @@ class DaemonServer implements SessionStore {
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
   public readonly sentra: SentraHost;
+  public readonly sentraCounter: ErrorCounter;
   private readonly log?: (msg: string) => void;
 
   public constructor(options: DaemonServerOptions = {}) {
     this.sentra = options.sentraHost ?? new SentraHost({ logger: options.log });
+    this.sentraCounter = new ErrorCounter(this.sentra);
     this.log = options.log;
   }
 
@@ -341,6 +346,14 @@ class DaemonServer implements SessionStore {
         session: id,
         projectDir: config.projectDir,
         log: this.log,
+        onServiceStart: (service: string, startedAt: number) => {
+          this.sentraCounter.reset(id, service, startedAt);
+          try {
+            this.sentraCounter.attach(id, (event) => ref.session?.broadcast(event));
+          } catch (error) {
+            this.log?.(`sentra: cannot subscribe session ${id}: ${String(error)}`);
+          }
+        },
       },
     };
 
@@ -390,6 +403,7 @@ class DaemonServer implements SessionStore {
     }
 
     await session.destroy();
+    this.sentraCounter.detach(id);
 
     // Kill non-origin, non-TUI panes
     for (const paneId of Object.values(session.paneMap)) {

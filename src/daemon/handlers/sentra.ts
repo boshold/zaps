@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { SessionStore } from "#src/daemon/server.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
-import { sentraEnabledFor, sentraTemplateFor } from "#src/lib/sentra/config.js";
+import { sanitizeSegment, sentraEnabledFor, sentraTemplateFor } from "#src/lib/sentra/config.js";
 import { clearSession, listErrors, listIssues, showById } from "#src/lib/sentra/query.js";
 import type { SentraQuerySource } from "#src/lib/sentra/query.js";
 import {
@@ -64,7 +64,7 @@ function parseParams<T>(
 /** Parses params, checks enabled, starts Sentra lazily, then runs `run`. */
 function queryHandler<T extends { sessionId: string }>(
   schema: z.ZodType<T>,
-  run: (sentra: SentraQuerySource, params: T) => Promise<unknown>,
+  run: (sentra: SentraQuerySource, params: T, store: SessionStore) => Promise<unknown>,
 ): Handler {
   return async (req, store) => {
     const parsed = parseParams(schema, req);
@@ -80,7 +80,7 @@ function queryHandler<T extends { sessionId: string }>(
       return ipcErr(req.id, `sentra_unavailable: ${reason}`);
     }
     try {
-      return ipcOk(req.id, await run(sentra, parsed.data));
+      return ipcOk(req.id, await run(sentra, parsed.data, store));
     } catch (error) {
       return ipcErr(req.id, errorText(error));
     }
@@ -115,5 +115,9 @@ export const sentraHandlers: Record<string, Handler> = {
   "sentra.show": queryHandler(showParamsSchema, async (sentra, params) =>
     showById(sentra, params.sessionId, params.id),
   ),
-  "sentra.clear": queryHandler(clearParamsSchema, clearSession),
+  "sentra.clear": queryHandler(clearParamsSchema, async (sentra, params, store) => {
+    const result = await clearSession(sentra, params);
+    store.sentraCounter.clear(params.sessionId, params.service?.map(sanitizeSegment));
+    return result;
+  }),
 };

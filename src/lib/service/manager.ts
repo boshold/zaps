@@ -15,7 +15,12 @@ import {
 import { openInBrowser } from "#src/lib/open.js";
 import { probePort } from "#src/lib/probe.js";
 import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
-import { buildSentraEnv, sentraLog, sentraTemplateFor } from "#src/lib/sentra/config.js";
+import {
+  buildSentraEnv,
+  sanitizeSegment,
+  sentraLog,
+  sentraTemplateFor,
+} from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
@@ -709,6 +714,9 @@ export class ServiceManager extends EventEmitter {
     }
     const env = await buildSentraEnv(sentra, template, name);
     status.sentra = env !== null;
+    if (env) {
+      sentra.onServiceStart?.(sanitizeSegment(name), status.startedAt ?? Date.now());
+    }
     if (env && serviceConfig.docker && !this.sentraDockerWarned.has(name)) {
       this.sentraDockerWarned.add(name);
       sentraLog(

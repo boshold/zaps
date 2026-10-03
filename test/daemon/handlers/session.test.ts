@@ -199,6 +199,29 @@ describe("session handlers", () => {
       expect(session.manager.getAllStatuses).toHaveBeenCalled();
       expect(res.error).toBeUndefined();
     });
+
+    it("adds errorCount from the sentra counter", async () => {
+      const session = createMockSession();
+      session.manager.getAllStatuses.mockReturnValue([
+        { name: "web", state: "ready", ports: [], retryCount: 0, sentra: true, startedAt: 5 },
+        { name: "fresh", state: "ready", ports: [], retryCount: 0, sentra: true },
+        { name: "down", state: "ready", ports: [], retryCount: 0, sentra: false },
+        { name: "db", state: "ready", ports: [], retryCount: 0 },
+      ]);
+      const store = createMockStore([session]);
+      store.sentraCounter.reset(session.id, "web", 5);
+      const req: IpcRequest = { id: "r7b", method: "services.list", session: session.id };
+      const res = await sessionHandlers["services.list"](req, store, createMockSocket() as never);
+      expect(res.result).toEqual([
+        expect.objectContaining({ name: "web", sentra: true, startedAt: 5, errorCount: 0 }),
+        expect.objectContaining({ name: "fresh", errorCount: 0 }),
+        expect.objectContaining({ name: "down", errorCount: null }),
+        expect.objectContaining({ name: "db", errorCount: null }),
+      ]);
+      expect(session.manager.getAllStatuses.mock.results[0]?.value[0]).not.toHaveProperty(
+        "errorCount",
+      );
+    });
   });
 
   describe("services.details", () => {

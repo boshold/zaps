@@ -10,6 +10,7 @@ import { daemonHandlers } from "#src/daemon/handlers/daemon.js";
 import { sentraHandlers } from "#src/daemon/handlers/sentra.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import {
   errorsResultSchema,
@@ -46,7 +47,7 @@ afterEach(async () => {
 });
 
 function storeWith(sessions: MockSession[] = []): SessionStore {
-  return { ...createMockStore(sessions), sentra: host };
+  return { ...createMockStore(sessions), sentra: host, sentraCounter: new ErrorCounter(host) };
 }
 
 function runningSession(sentra?: { enabled?: boolean; env: Record<string, string> }): MockSession {
@@ -302,6 +303,21 @@ describe("sentra handlers", () => {
       expect(res.result).toEqual({ itemsDeleted: 1 });
       const left = await sentra.query.listItems({ session: SESSION_B });
       expect(left.items).toHaveLength(1);
+    });
+
+    it("zeroes the matching error counters", async () => {
+      const sentra = await seeded();
+      const store = storeWith();
+      const since = Date.now() - 60_000;
+      store.sentraCounter.reset(SESSION_A, "web", since);
+      store.sentraCounter.reset(SESSION_A, "api", since);
+      store.sentraCounter.attach(SESSION_A, () => undefined);
+      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "a" } });
+      await ingestEvent(sentra, { service: "api", error: { type: "Error", value: "b" } });
+
+      await call(store, "sentra.clear", { sessionId: SESSION_A, service: ["web"] });
+      expect(store.sentraCounter.get(SESSION_A, "web")).toBe(0);
+      expect(store.sentraCounter.get(SESSION_A, "api")).toBe(1);
     });
   });
 

@@ -214,7 +214,53 @@ describe("DaemonServer", () => {
       session: session.id,
       projectDir: "/test",
       log,
+      onServiceStart: expect.any(Function),
     });
+    scoped.stop();
+  });
+
+  it("wires service starts into the error counter and detaches on destroy", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    const attach = vi.spyOn(server.sentraCounter, "attach").mockImplementation((_id, broadcast) => {
+      broadcast({ session: session.id, event: "sentra.item", data: null });
+    });
+    const broadcast = vi.spyOn(session, "broadcast");
+    const detach = vi.spyOn(server.sentraCounter, "detach");
+
+    session.deps.sentra?.onServiceStart?.("api", 1234);
+
+    expect(attach).toHaveBeenCalledWith(session.id, expect.any(Function));
+    expect(broadcast).toHaveBeenCalledWith({
+      session: session.id,
+      event: "sentra.item",
+      data: null,
+    });
+    expect(server.sentraCounter.get(session.id, "api")).toBe(0);
+
+    await server.destroy(session.id);
+    expect(detach).toHaveBeenCalledWith(session.id);
+    expect(server.sentraCounter.get(session.id, "api")).toBeNull();
+  });
+
+  it("keeps the counter entry when subscribing fails", async () => {
+    const log = vi.fn();
+    const scoped = new DaemonServer({ log });
+    const session = await scoped.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+
+    session.deps.sentra?.onServiceStart?.("api", 1234);
+
+    expect(scoped.sentraCounter.get(session.id, "api")).toBe(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("cannot subscribe session"));
     scoped.stop();
   });
 

@@ -3650,6 +3650,36 @@ describe("sentra env injection", () => {
     expect(sentra.host.addSourceRoot).toHaveBeenCalledWith("/test");
   });
 
+  it("reports every Sentra-enabled start with its sanitized scope and startedAt", async () => {
+    const config = sentraConfig({ "web app": { start: "pnpm dev", sentra: true } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const onServiceStart = vi.fn<(service: string, startedAt: number) => void>();
+    deps.sentra = { ...fakeSentra(), onServiceStart };
+
+    const mgr = new ServiceManager(config, makePaneMap(["web app"]), deps, "test-session");
+    const promise = mgr.startService("web app");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(onServiceStart).toHaveBeenCalledWith("web-app", mgr.getStatus("web app").startedAt);
+  });
+
+  it("does not report starts without Sentra env", async () => {
+    const config = sentraConfig({ web: { start: "pnpm dev", sentra: true } });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    const onServiceStart = vi.fn<(service: string, startedAt: number) => void>();
+    deps.sentra = { ...fakeSentra(false), onServiceStart };
+
+    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const promise = mgr.startService("web");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+
+    expect(onServiceStart).not.toHaveBeenCalled();
+  });
+
   it("orders request env < sentra env < service env in raw mode", async () => {
     const config = sentraConfig({
       web: { start: "pnpm dev", raw: true, sentra: true, env: { SHARED: "service" } },

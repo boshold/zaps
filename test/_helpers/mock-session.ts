@@ -8,6 +8,7 @@ import type { SessionStore } from "../../src/daemon/server.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
 import type { SentraDeps } from "../../src/lib/sentra/config.js";
+import { ErrorCounter } from "../../src/lib/sentra/counter.js";
 import { SentraHost } from "../../src/lib/sentra/host.js";
 import type { PaneRunInfo } from "../../src/lib/task/run-in-pane.js";
 import { tmuxFor } from "../../src/lib/tmux.js";
@@ -158,6 +159,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
 
 export function createMockStore(sessions: MockSession[] = []): SessionStore {
   const sessionMap = new Map(sessions.map((s) => [s.id, s]));
+  const host = new SentraHost({ dbPath: ":memory:", portStatePath: MOCK_PORT_STATE_PATH });
   return {
     list: () => [...sessionMap.values()] as unknown as Session[],
     get: (id: string) => sessionMap.get(id) as unknown as Session | undefined,
@@ -165,6 +167,7 @@ export function createMockStore(sessions: MockSession[] = []): SessionStore {
       [...sessionMap.values()].find((s) => s.projectDir === dir) as unknown as Session | undefined,
     create: vi.fn().mockImplementation(async () => sessions[0]),
     destroy: vi.fn().mockResolvedValue(undefined),
-    sentra: new SentraHost({ dbPath: ":memory:", portStatePath: MOCK_PORT_STATE_PATH }),
+    sentra: host,
+    sentraCounter: new ErrorCounter(host),
   };
 }

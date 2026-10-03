@@ -7,7 +7,7 @@ import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
-import { sentraEnvFor } from "#src/lib/sentra/config.js";
+import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
@@ -94,6 +94,14 @@ async function runPopupTaskNonInteractive(
   }
 }
 
+/** Copy, so the manager's live status never carries a stale count. */
+function withErrorCount(
+  status: ServiceStatus,
+  errorCount: number | null,
+): ServiceStatus & { errorCount: number | null } {
+  return { ...status, errorCount };
+}
+
 export const sessionHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore, socket: Socket) => Promise<IpcResponse>
@@ -150,7 +158,17 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    return ipcOk(req.id, session.manager.getAllStatuses());
+    const statuses = session.manager
+      .getAllStatuses()
+      .map((status) =>
+        withErrorCount(
+          status,
+          status.sentra
+            ? (store.sentraCounter.get(session.id, sanitizeSegment(status.name)) ?? 0)
+            : null,
+        ),
+      );
+    return ipcOk(req.id, statuses);
   },
 
   async "services.details"(req, store) {
