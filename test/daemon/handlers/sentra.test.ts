@@ -319,6 +319,20 @@ describe("sentra handlers", () => {
       expect(store.sentraCounter.get(SESSION_A, "web")).toBe(0);
       expect(store.sentraCounter.get(SESSION_A, "api")).toBe(1);
     });
+
+    it("keeps counters when `to` lies in the past and clears them when it is now or later", async () => {
+      const sentra = await seeded();
+      const store = storeWith();
+      store.sentraCounter.reset(SESSION_A, "web", Date.now() - 60_000);
+      store.sentraCounter.attach(SESSION_A, () => undefined);
+      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "a" } });
+
+      await call(store, "sentra.clear", { sessionId: SESSION_A, to: "1h" });
+      expect(store.sentraCounter.get(SESSION_A, "web")).toBe(1);
+
+      await call(store, "sentra.clear", { sessionId: SESSION_A, to: Date.now() + 60_000 });
+      expect(store.sentraCounter.get(SESSION_A, "web")).toBe(0);
+    });
   });
 
   it("returns non-query errors as plain messages", async () => {

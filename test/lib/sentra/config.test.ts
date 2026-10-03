@@ -120,6 +120,14 @@ describe("buildSentraEnv", () => {
     });
   });
 
+  it("reports a built env via onEnvBuilt only on success", async () => {
+    const onEnvBuilt = vi.fn();
+    await buildSentraEnv({ ...fakeSentra(false), onEnvBuilt }, { DSN: "{dsn}" }, "web");
+    expect(onEnvBuilt).not.toHaveBeenCalled();
+    await buildSentraEnv({ ...fakeSentra(), onEnvBuilt }, { DSN: "{dsn}" }, "web");
+    expect(onEnvBuilt).toHaveBeenCalledOnce();
+  });
+
   it("returns null and logs when the host is unavailable", async () => {
     const deps = fakeSentra(false);
     expect(await buildSentraEnv(deps, { DSN: "{dsn}" }, "web")).toBeNull();

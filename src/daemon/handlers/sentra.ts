@@ -14,7 +14,7 @@ import {
   statusParamsSchema,
 } from "#src/lib/sentra/schemas.js";
 import type { StatusResult } from "#src/lib/sentra/schemas.js";
-import { SentraQueryError } from "#src/lib/sentra/time.js";
+import { SentraQueryError, parseTimeInput } from "#src/lib/sentra/time.js";
 
 type Handler = (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>;
 
@@ -38,6 +38,16 @@ function optedInServices(store: SessionStore, sessionId: string): string[] {
   return Object.entries(project.services)
     .filter(([, service]) => sentraTemplateFor(project.sentra, service.sentra) !== null)
     .map(([name]) => name);
+}
+
+/** Records newer than an earlier `to` survive, so counters stay as they are then. */
+function clearsUpToNow(to: string | number | undefined): boolean {
+  if (to === undefined) {
+    return true;
+  }
+  const now = Date.now();
+  const bound = parseTimeInput(to, "before", now);
+  return (typeof bound === "number" ? bound : Date.parse(bound)) >= now;
 }
 
 function errorText(error: unknown): string {
@@ -117,7 +127,9 @@ export const sentraHandlers: Record<string, Handler> = {
   ),
   "sentra.clear": queryHandler(clearParamsSchema, async (sentra, params, store) => {
     const result = await clearSession(sentra, params);
-    store.sentraCounter.clear(params.sessionId, params.service?.map(sanitizeSegment));
+    if (clearsUpToNow(params.to)) {
+      store.sentraCounter.clear(params.sessionId, params.service?.map(sanitizeSegment));
+    }
     return result;
   }),
 };

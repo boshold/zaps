@@ -118,6 +118,7 @@ vi.mock("#src/lib/service/manager.js", () => {
 
 const { DaemonServer } = await import("../../src/daemon/server.js");
 const { SentraHost } = await import("../../src/lib/sentra/host.js");
+const { sentraEnvFor } = await import("../../src/lib/sentra/config.js");
 
 describe("DaemonServer", () => {
   let server: InstanceType<typeof DaemonServer>;
@@ -214,12 +215,13 @@ describe("DaemonServer", () => {
       session: session.id,
       projectDir: "/test",
       log,
+      onEnvBuilt: expect.any(Function),
       onServiceStart: expect.any(Function),
     });
     scoped.stop();
   });
 
-  it("wires service starts into the error counter and detaches on destroy", async () => {
+  it("wires env builds and service starts into the error counter, detaches on destroy", async () => {
     const session = await server.create({
       configPath: "/test/.zaps.mts",
       projectDir: "/test",
@@ -233,6 +235,8 @@ describe("DaemonServer", () => {
     const detach = vi.spyOn(server.sentraCounter, "detach");
 
     session.deps.sentra?.onServiceStart?.("api", 1234);
+    expect(attach).not.toHaveBeenCalled();
+    session.deps.sentra?.onEnvBuilt?.();
 
     expect(attach).toHaveBeenCalledWith(session.id, expect.any(Function));
     expect(broadcast).toHaveBeenCalledWith({
@@ -247,7 +251,61 @@ describe("DaemonServer", () => {
     expect(server.sentraCounter.get(session.id, "api")).toBeNull();
   });
 
-  it("keeps the counter entry when subscribing fails", async () => {
+  it("attaches for task-only Sentra configs and broadcasts their records", async () => {
+    mockLoadConfig.mockResolvedValueOnce({
+      project: {
+        name: "test",
+        services: { api: { start: "npm dev" } },
+        tasks: { e2e: { name: "E2E", commands: "pnpm e2e", sentra: { env: { DSN: "{dsn}" } } } },
+      },
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+    } as never);
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    vi.spyOn(server.sentra, "ensureStarted").mockResolvedValue({} as never);
+    vi.spyOn(server.sentra, "getDsn").mockReturnValue("http://sentra@127.0.0.1:1/p/s/e2e/1");
+    vi.spyOn(server.sentra, "addSourceRoot").mockImplementation(() => undefined);
+    const subscribe = vi.spyOn(server.sentra, "subscribe").mockImplementation((_filter, fn) => {
+      fn({ type: "envelope.failed", error: "boom", envelope: {} as never });
+      return () => undefined;
+    });
+    const broadcast = vi.spyOn(session, "broadcast");
+
+    const env = await sentraEnvFor(
+      session.deps.sentra,
+      undefined,
+      { env: { DSN: "{dsn}" } },
+      "e2e",
+    );
+
+    expect(env).toEqual({ DSN: "http://sentra@127.0.0.1:1/p/s/e2e/1" });
+    expect(subscribe).toHaveBeenCalledWith({ session: session.id }, expect.any(Function));
+    expect(broadcast).toHaveBeenCalledWith({
+      session: session.id,
+      event: "sentra.failed",
+      data: { error: "boom" },
+    });
+  });
+
+  it("detaches even when session teardown throws", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    vi.spyOn(session, "destroy").mockRejectedValue(new Error("teardown failed"));
+    const detach = vi.spyOn(server.sentraCounter, "detach");
+    await expect(server.destroy(session.id)).rejects.toThrow("teardown failed");
+    expect(detach).toHaveBeenCalledWith(session.id);
+  });
+
+  it("logs when subscribing fails", async () => {
     const log = vi.fn();
     const scoped = new DaemonServer({ log });
     const session = await scoped.create({
@@ -257,9 +315,8 @@ describe("DaemonServer", () => {
       originPane: "%0",
     });
 
-    session.deps.sentra?.onServiceStart?.("api", 1234);
+    session.deps.sentra?.onEnvBuilt?.();
 
-    expect(scoped.sentraCounter.get(session.id, "api")).toBe(0);
     expect(log).toHaveBeenCalledWith(expect.stringContaining("cannot subscribe session"));
     scoped.stop();
   });

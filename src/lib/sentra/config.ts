@@ -27,6 +27,8 @@ export interface SentraDeps {
   projectDir: string;
   /** Daemon log; defaults to stderr (which the daemon redirects to its log). */
   log?: (msg: string) => void;
+  /** Called whenever a service or task got Sentra env. */
+  onEnvBuilt?: () => void;
   /** Called on every service start that got Sentra env; `service` is the scope segment. */
   onServiceStart?: (service: string, startedAt: number) => void;
 }
@@ -107,6 +109,7 @@ export async function buildSentraEnv(
     return null;
   }
   deps.host.addSourceRoot(deps.projectDir);
+  deps.onEnvBuilt?.();
   const dsn = deps.host.getDsn({
     project: deps.project,
     session: deps.session,

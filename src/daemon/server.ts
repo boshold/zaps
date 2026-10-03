@@ -346,13 +346,15 @@ class DaemonServer implements SessionStore {
         session: id,
         projectDir: config.projectDir,
         log: this.log,
-        onServiceStart: (service: string, startedAt: number) => {
-          this.sentraCounter.reset(id, service, startedAt);
+        onEnvBuilt: () => {
           try {
             this.sentraCounter.attach(id, (event) => ref.session?.broadcast(event));
           } catch (error) {
             this.log?.(`sentra: cannot subscribe session ${id}: ${String(error)}`);
           }
+        },
+        onServiceStart: (service: string, startedAt: number) => {
+          this.sentraCounter.reset(id, service, startedAt);
         },
       },
     };
@@ -402,8 +404,11 @@ class DaemonServer implements SessionStore {
       return;
     }
 
-    await session.destroy();
-    this.sentraCounter.detach(id);
+    try {
+      await session.destroy();
+    } finally {
+      this.sentraCounter.detach(id);
+    }
 
     // Kill non-origin, non-TUI panes
     for (const paneId of Object.values(session.paneMap)) {
