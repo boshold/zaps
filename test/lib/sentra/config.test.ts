@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { SentraConfig } from "#src/config/types.js";
-import { resolveSentraEnv, sanitizeSegment, sentraTemplateFor } from "#src/lib/sentra/config.js";
+import {
+  buildSentraEnv,
+  resolveSentraEnv,
+  sanitizeSegment,
+  sentraEnvFor,
+  sentraLog,
+  sentraTemplateFor,
+} from "#src/lib/sentra/config.js";
+
+import { fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sentra.js";
 
 const project: SentraConfig = {
   enabled: true,
@@ -72,5 +81,63 @@ describe("sanitizeSegment", () => {
 
   it("trims to 64 chars", () => {
     expect(sanitizeSegment("x".repeat(100))).toBe("x".repeat(64));
+  });
+});
+
+describe("buildSentraEnv", () => {
+  it("starts the host, registers the source root and resolves the template", async () => {
+    const deps = fakeSentra();
+    expect(await buildSentraEnv(deps, { DSN: "{dsn}" }, "my web")).toEqual({
+      DSN: fakeSentraDsn("my-web"),
+    });
+    expect(deps.host.addSourceRoot).toHaveBeenCalledWith("/test");
+    expect(deps.host.getDsn).toHaveBeenCalledWith({
+      project: "proj",
+      session: "sess123",
+      service: "my-web",
+    });
+  });
+
+  it("returns null and logs when the host is unavailable", async () => {
+    const deps = fakeSentra(false);
+    expect(await buildSentraEnv(deps, { DSN: "{dsn}" }, "web")).toBeNull();
+    expect(deps.log).toHaveBeenCalledWith(
+      "sentra: web starts without Sentra env (port bind failed)",
+    );
+    expect(deps.host.getDsn).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a generic reason", async () => {
+    const deps = fakeSentra(false);
+    deps.host.status.mockReturnValue({ reason: null });
+    await buildSentraEnv(deps, { DSN: "{dsn}" }, "web");
+    expect(deps.log).toHaveBeenCalledWith("sentra: web starts without Sentra env (unavailable)");
+  });
+});
+
+describe("sentraEnvFor", () => {
+  it("returns {} without deps or template", async () => {
+    expect(await sentraEnvFor(undefined, project, true, "web")).toEqual({});
+    expect(await sentraEnvFor(fakeSentra(), undefined, true, "web")).toEqual({});
+  });
+
+  it("returns {} when the host is unavailable", async () => {
+    expect(await sentraEnvFor(fakeSentra(false), project, true, "web")).toEqual({});
+  });
+
+  it("resolves the env for an opted-in target", async () => {
+    expect(await sentraEnvFor(fakeSentra(), undefined, own, "web")).toEqual({
+      DSN: fakeSentraDsn("web"),
+    });
+  });
+});
+
+describe("sentraLog", () => {
+  it("falls back to stderr without a logger", () => {
+    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const { log: _log, ...deps } = fakeSentra();
+    sentraLog(deps, "hello");
+    expect(write).toHaveBeenCalledWith("hello\n");
+    write.mockRestore();
   });
 });

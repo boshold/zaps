@@ -23,6 +23,7 @@ import { execCommand, execCommandWithResult } from "../../../src/lib/exec.js";
 import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
 import { displayPopup } from "../../../src/lib/tmux.js";
+import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sentra.js";
 
 const mockExecCommand = vi.mocked(execCommand);
 const mockExecCommandWithResult = vi.mocked(execCommandWithResult);
@@ -377,5 +378,76 @@ describe("runTaskWithDeps", () => {
     await runTaskWithDeps("build", deps, visited, results);
 
     expect(results.get("build")).toBe("success");
+  });
+});
+
+describe("runTaskWithDeps sentra", () => {
+  it("injects the DSN below the task env with the task key as segment", async () => {
+    const sentra = fakeSentra();
+    const deps = makeDeps(
+      { "e2e tests": { name: "E2E", commands: "pnpm e2e", sentra: true, env: { SHARED: "task" } } },
+      { sentra, sentraConfig: SENTRA_BLOCK },
+    );
+
+    expect(await runTaskWithDeps("e2e tests", deps, new Set(), new Map())).toBe(true);
+
+    expect(sentra.host.getDsn).toHaveBeenCalledWith(
+      expect.objectContaining({ service: "e2e-tests" }),
+    );
+    expect(mockExecCommand).toHaveBeenCalledWith(
+      "pnpm e2e",
+      expect.objectContaining({
+        env: { SENTRY_DSN: fakeSentraDsn("e2e-tests"), SHARED: "task" },
+      }),
+    );
+  });
+
+  it("passes the DSN to run() tasks via exec", async () => {
+    mockExecCommandWithResult.mockClear();
+    const deps = makeDeps(
+      {
+        e2e: {
+          name: "E2E",
+          sentra: { env: { DSN: "{dsn}" } },
+          run: async (ctx: TaskRunContext) => {
+            await ctx.exec("node e2e.js");
+          },
+        },
+      },
+      { sentra: fakeSentra() },
+    );
+
+    await runTaskWithDeps("e2e", deps, new Set(), new Map());
+
+    expect(mockExecCommandWithResult).toHaveBeenCalledWith(
+      "node e2e.js",
+      expect.objectContaining({ env: { DSN: fakeSentraDsn("e2e") } }),
+    );
+  });
+
+  it("runs without sentra env when the host is unavailable", async () => {
+    const deps = makeDeps(
+      { e2e: { name: "E2E", commands: "pnpm e2e", sentra: true } },
+      { sentra: fakeSentra(false), sentraConfig: SENTRA_BLOCK },
+    );
+
+    expect(await runTaskWithDeps("e2e", deps, new Set(), new Map())).toBe(true);
+    expect(mockExecCommand).toHaveBeenCalledWith(
+      "pnpm e2e",
+      expect.not.objectContaining({ env: expect.anything() }),
+    );
+  });
+
+  it("ignores sentra without deps", async () => {
+    const deps = makeDeps(
+      { e2e: { name: "E2E", commands: "pnpm e2e", sentra: true } },
+      { sentraConfig: SENTRA_BLOCK },
+    );
+
+    expect(await runTaskWithDeps("e2e", deps, new Set(), new Map())).toBe(true);
+    expect(mockExecCommand).toHaveBeenCalledWith(
+      "pnpm e2e",
+      expect.not.objectContaining({ env: expect.anything() }),
+    );
   });
 });

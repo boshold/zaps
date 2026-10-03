@@ -4,9 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
-import type { SentraHostLike, ServiceManagerDeps } from "../../../src/lib/service/manager.js";
+import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
+import { SENTRA_BLOCK, fakeSentra } from "../../_helpers/fake-sentra.js";
 
 vi.mock("../../../src/lib/probe.js", async (importActual) => ({
   ...(await importActual<typeof import("../../../src/lib/probe.js")>()),
@@ -3610,31 +3611,6 @@ describe("lazy-pane lifecycle", () => {
 // Sentra env injection + startedAt
 // =============================================================================
 
-const SENTRA_BLOCK = { enabled: true, env: { SENTRY_DSN: "{dsn}", SHARED: "sentra:{dsn}" } };
-
-function fakeSentra(available = true) {
-  const host = {
-    ensureStarted: vi
-      .fn<SentraHostLike["ensureStarted"]>()
-      .mockResolvedValue(available ? {} : null),
-    getDsn: vi.fn<SentraHostLike["getDsn"]>(
-      ({ project, session, service }) =>
-        `http://sentra@127.0.0.1:9000/${project}/${session}/${service}/1`,
-    ),
-    addSourceRoot: vi.fn<SentraHostLike["addSourceRoot"]>(),
-    status: vi
-      .fn<SentraHostLike["status"]>()
-      .mockReturnValue({ reason: available ? null : "port bind failed" }),
-  };
-  return {
-    host,
-    project: "proj",
-    session: "sess123",
-    projectDir: "/test",
-    log: vi.fn<(msg: string) => void>(),
-  };
-}
-
 function sentraConfig(
   services: Record<string, ServiceConfig>,
   block: ResolvedConfig["project"]["sentra"] = SENTRA_BLOCK,
@@ -3782,7 +3758,7 @@ describe("sentra env injection", () => {
     expect(plain.getStatus("web").sentra).toBeUndefined();
   });
 
-  it("adds the source root once and warns once per docker service", async () => {
+  it("adds the project source root and warns once per docker service", async () => {
     const config = sentraConfig({
       web: { start: "pnpm dev", sentra: true },
       db: { docker: { service: "db" }, sentra: true, url: false },
@@ -3812,7 +3788,7 @@ describe("sentra env injection", () => {
 
     containerSpy.mockRestore();
 
-    expect(sentra.host.addSourceRoot).toHaveBeenCalledTimes(1);
+    expect(new Set(sentra.host.addSourceRoot.mock.calls.flat())).toEqual(new Set(["/test"]));
     const dockerWarnings = sentra.log.mock.calls.filter(([msg]) =>
       msg.includes("db is a docker service"),
     );

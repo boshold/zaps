@@ -3,6 +3,26 @@ import type { SentraConfig, SentraTarget } from "#src/config/types.js";
 const DSN_PLACEHOLDER = "{dsn}";
 const SEGMENT_MAX_LENGTH = 64;
 
+/** Subset of `SentraHost` the injection points need. */
+export interface SentraHostLike {
+  ensureStarted(): Promise<object | null>;
+  getDsn(scope: { project: string; session: string; service: string }): string;
+  addSourceRoot(dir: string): void;
+  status(): { reason: string | null };
+}
+
+/** Per-session Sentra wiring passed to services and tasks. */
+export interface SentraDeps {
+  host: SentraHostLike;
+  /** Sanitized session name. */
+  project: string;
+  /** Session id. */
+  session: string;
+  projectDir: string;
+  /** Daemon log; defaults to stderr (which the daemon redirects to its log). */
+  log?: (msg: string) => void;
+}
+
 /**
  * Env template for a service/task, or `null` when it is not opted in.
  * `enabled: false` disables every target; `{ env }` replaces the project
@@ -40,4 +60,51 @@ export function sanitizeSegment(value: string): string {
     return "default";
   }
   return segment;
+}
+
+export function sentraLog(deps: SentraDeps, msg: string): void {
+  if (deps.log) {
+    deps.log(msg);
+    return;
+  }
+  process.stderr.write(`${msg}\n`);
+}
+
+/**
+ * Starts the host if needed and resolves `template` for one service/task.
+ * `null` when the host is unavailable (logged; callers run without Sentra env).
+ */
+export async function buildSentraEnv(
+  deps: SentraDeps,
+  template: Record<string, string>,
+  name: string,
+): Promise<Record<string, string> | null> {
+  if ((await deps.host.ensureStarted()) === null) {
+    sentraLog(
+      deps,
+      `sentra: ${name} starts without Sentra env (${deps.host.status().reason ?? "unavailable"})`,
+    );
+    return null;
+  }
+  deps.host.addSourceRoot(deps.projectDir);
+  const dsn = deps.host.getDsn({
+    project: deps.project,
+    session: deps.session,
+    service: sanitizeSegment(name),
+  });
+  return resolveSentraEnv(template, dsn);
+}
+
+/** Sentra env for a service/task target; `{}` when not opted in or unavailable. */
+export async function sentraEnvFor(
+  deps: SentraDeps | undefined,
+  project: SentraConfig | undefined,
+  target: SentraTarget | undefined,
+  name: string,
+): Promise<Record<string, string>> {
+  const template = sentraTemplateFor(project, target);
+  if (!deps || !template) {
+    return {};
+  }
+  return (await buildSentraEnv(deps, template, name)) ?? {};
 }

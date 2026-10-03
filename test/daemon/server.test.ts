@@ -188,7 +188,10 @@ describe("DaemonServer", () => {
   });
 
   it("passes the shared sentra host and session scope into manager deps", async () => {
-    const sentraHost = new SentraHost();
+    const sentraHost = new SentraHost({
+      dbPath: ":memory:",
+      portStatePath: "/nonexistent/sentra.json",
+    });
     const log = vi.fn();
     const scoped = new DaemonServer({ sentraHost, log });
     mockLoadConfig.mockResolvedValueOnce({

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
+import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sentra.js";
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
@@ -1353,6 +1354,99 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["logs.snapshot"](req, store, socket as never);
       expect(res.error).toContain("Unknown service");
+    });
+  });
+
+  describe("task sentra env", () => {
+    function sentraSession(available = true) {
+      const sentra = fakeSentra(available);
+      const session = createMockSession({
+        deps: { zapsCommand: "zaps", sessionId: "abc123", sentra },
+      });
+      session.config.project.sentra = SENTRA_BLOCK;
+      session.config.project.tasks = {
+        e2e: { name: "E2E", commands: "pnpm e2e", sentra: true },
+        lint: { name: "Lint", popup: true, commands: ["eslint ."], sentra: true },
+      };
+      return { session, sentra };
+    }
+
+    async function runInPane(session: ReturnType<typeof createMockSession>) {
+      const res = await sessionHandlers["tasks.runInPane"](
+        { id: "s1", method: "tasks.runInPane", session: session.id, params: { key: "e2e" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      const { runId } = res.result as { runId: string };
+      return session.paneRunInfo.get(runId);
+    }
+
+    it("injects the DSN into pane runs below the task env", async () => {
+      const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
+        resolveEnv: ReturnType<typeof vi.fn>;
+      };
+      resolveEnv.mockReturnValueOnce({ SHARED: "task" });
+      const { session, sentra } = sentraSession();
+
+      const info = await runInPane(session);
+
+      expect(sentra.host.getDsn).toHaveBeenCalledWith(expect.objectContaining({ service: "e2e" }));
+      expect(info?.env).toEqual({ SENTRY_DSN: fakeSentraDsn("e2e"), SHARED: "task" });
+    });
+
+    it("runs pane tasks without sentra env when the host is unavailable", async () => {
+      const { session, sentra } = sentraSession(false);
+
+      const info = await runInPane(session);
+
+      expect(info?.env).not.toHaveProperty("SENTRY_DSN");
+      expect(sentra.log).toHaveBeenCalledWith(
+        "sentra: e2e starts without Sentra env (port bind failed)",
+      );
+    });
+
+    it("injects the DSN into non-interactive popup runs", async () => {
+      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
+        execCommand: ReturnType<typeof vi.fn>;
+      };
+      execCommand.mockResolvedValue(undefined);
+      const { session } = sentraSession();
+
+      await sessionHandlers["tasks.run"](
+        { id: "s2", method: "tasks.run", session: session.id, params: { key: "lint" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+
+      expect(execCommand).toHaveBeenCalledWith(
+        "eslint .",
+        expect.objectContaining({
+          env: expect.objectContaining({
+            SENTRY_DSN: fakeSentraDsn("lint"),
+            SHARED: `sentra:${fakeSentraDsn("lint")}`,
+          }),
+        }),
+      );
+    });
+
+    it("passes sentra deps and config to background task runs", async () => {
+      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
+        runTaskWithDeps: ReturnType<typeof vi.fn>;
+      };
+      const { session, sentra } = sentraSession();
+
+      await sessionHandlers["tasks.run"](
+        { id: "s3", method: "tasks.run", session: session.id, params: { key: "e2e" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+
+      expect(runTaskWithDeps).toHaveBeenCalledWith(
+        "e2e",
+        expect.objectContaining({ sentra, sentraConfig: SENTRA_BLOCK }),
+        expect.any(Set),
+        expect.any(Map),
+      );
     });
   });
 });
