@@ -32,13 +32,12 @@ export function sentraPortStatePath(): string {
 }
 
 /** Last bound port, or `null` when the file is missing or invalid. */
-export function readPortState(): number | null {
-  const parsed = portStateSchema.safeParse(readJson(sentraPortStatePath()));
+export function readPortState(file = sentraPortStatePath()): number | null {
+  const parsed = portStateSchema.safeParse(readJson(file));
   return parsed.success ? parsed.data.port : null;
 }
 
-export function writePortState(port: number): void {
-  const file = sentraPortStatePath();
+export function writePortState(port: number, file = sentraPortStatePath()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(portStateSchema.parse({ port }))}\n`);
 }
