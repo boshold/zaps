@@ -5,6 +5,8 @@
 # detected and yanked within hours.
 # On upgrade to pnpm 11: add minimumReleaseAgeStrict: true (v11-only setting).
 minimumReleaseAge: 4320 # minutes (3 days)
+minimumReleaseAgeExclude:
+  - "@boshold/sentra-core" # own package
 
 # Fail install if a package's provenance/trusted-publisher evidence weakens
 # vs an earlier release (stolen-token republish pattern).

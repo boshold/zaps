@@ -56,7 +56,7 @@
 
 ## Install
 
-### npm (Node >= 22)
+### npm (Node >= 22.15)
 
 ```bash
 npm install -g @bosdev/zaps
@@ -1392,6 +1392,19 @@ tmux -L zaps kill-session -t =zaps-my-app-a1b2c3d4e5f6
   ```
   Dependency "db" not ready
   ```
+
+## Contributing
+
+`@boshold/sentra-core` is installed from GitHub Packages, which needs a token even
+for reads. Create a GitHub PAT with `read:packages` and export it before installing:
+
+```bash
+export NODE_AUTH_TOKEN=<pat>
+pnpm install
+```
+
+A token for `//npm.pkg.github.com/` in `~/.npmrc` also works. The published
+`@bosdev/zaps` package bundles sentra-core, so users need no token.
 
 ## License
 
