@@ -5,12 +5,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import type { SessionInfo } from "#src/cli/helpers.js";
-import {
-  CliError,
-  findSessionByDir,
-  resolveSessionId,
-  resolveTargetSession,
-} from "#src/cli/helpers.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { renderErrors, renderIssues, renderShow } from "#src/lib/sentra/render.js";
@@ -22,7 +17,11 @@ import {
   levelSchema,
   showResultSchema,
 } from "#src/lib/sentra/schemas.js";
-import { describeSentraError, resolveSentraSessionId } from "#src/lib/sentra/session-id.js";
+import {
+  computeProjectSessionId,
+  describeSentraError,
+  resolveSentraSessionId,
+} from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 function classifyDaemonError(error: unknown): Error {
@@ -126,11 +125,11 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
     if (listRes.error) {
       throw new Error(listRes.error);
     }
-    return resolveSentraSessionId({
+    return await resolveSentraSessionId({
       sessions: listRes.result,
       sessionArg,
       cwd: process.cwd(),
-      configSessionId: () => resolveSessionId().id,
+      configSessionId: async () => computeProjectSessionId(process.cwd()),
     });
   }
 

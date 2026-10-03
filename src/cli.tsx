@@ -42,6 +42,7 @@ import type { IpcSubscription } from "./lib/ipc/client.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
 import { installResizeReset } from "./lib/screen-reset.js";
+import { computeProjectSessionId } from "./lib/sentra/session-id.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
@@ -1505,7 +1506,7 @@ async function runSentraGroup(rawArgv: string[]): Promise<void> {
       ensureDaemon: async () => ensureDaemon(resolveCommandArgv()),
     }),
     cwd: () => process.cwd(),
-    configSessionId: () => resolveSessionId().id,
+    configSessionId: async () => computeProjectSessionId(process.cwd()),
     argv: typedArgv,
     env: process.env,
     stdout: (text) => process.stdout.write(text),

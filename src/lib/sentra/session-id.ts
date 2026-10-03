@@ -1,7 +1,11 @@
 import { z } from "zod";
 
-import { findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
 import type { SessionInfo } from "#src/cli/helpers.js";
+import { discoverConfig } from "#src/config/discovery.js";
+import { loadProjectContext } from "#src/config/project-context.js";
+import { sessionId } from "#src/daemon/session.js";
+import { captureEnvironment } from "#src/lib/request-context.js";
 
 const SESSION_ID = /^[0-9a-f]{12}$/;
 const OLD_DAEMON = "This daemon is older than the CLI. Run `zaps daemon stop` and start again.";
@@ -16,14 +20,14 @@ interface SentraSessionInput {
   sessionArg?: string;
   cwd: string;
   /** Id computed from the cwd config; throws without config. */
-  configSessionId: () => string;
+  configSessionId: () => string | Promise<string>;
 }
 
 /**
  * Running session for `sessionArg`/cwd; else a raw 12-hex `sessionArg` (stopped
  * session) or the cwd config id.
  */
-function resolveSentraSessionId(input: SentraSessionInput): string {
+async function resolveSentraSessionId(input: SentraSessionInput): Promise<string> {
   const sessions: SessionInfo[] = sessionListSchema.parse(input.sessions);
   const { sessionArg } = input;
   if (sessionArg) {
@@ -33,6 +37,21 @@ function resolveSentraSessionId(input: SentraSessionInput): string {
     return resolveTargetSession(sessions, sessionArg).id;
   }
   return findSessionByDir(sessions, input.cwd)?.id ?? input.configSessionId();
+}
+
+/**
+ * The id `zaps up` would mint in `cwd`: hash of config path + resolved project
+ * dir, so it needs the config loaded (its `cwd` option moves the project dir).
+ */
+async function computeProjectSessionId(cwd: string): Promise<string> {
+  const configPath = discoverConfig(cwd);
+  if (!configPath) {
+    throw new CliError("No .zaps.mts config found. Run `zaps init` to create one.");
+  }
+  const loaded = await loadProjectContext(configPath, cwd, captureEnvironment(), () => {
+    /* Notices belong to `zaps up` */
+  });
+  return sessionId(configPath, loaded.config.projectDir);
 }
 
 /** Maps a daemon error string to the user message and CLI exit code. */
@@ -55,5 +74,5 @@ function describeSentraError(error: string): { message: string; code: number } {
   return { message, code: prefix === "invalid_filter" ? 2 : 1 };
 }
 
-export { describeSentraError, resolveSentraSessionId };
+export { computeProjectSessionId, describeSentraError, resolveSentraSessionId };
 export type { SentraSessionInput };

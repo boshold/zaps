@@ -819,13 +819,18 @@ describe("startMcpServer", () => {
     it("falls back to the cwd config id when no session runs", async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-mcp-sentra-"));
       const configPath = path.join(dir, ".zaps.mts");
-      fs.writeFileSync(configPath, "export default {};\n");
+      fs.writeFileSync(
+        configPath,
+        'export function config({ define }) {\n  return define({ name: "x", services: { web: { start: "true" } } });\n}\n',
+      );
       vi.spyOn(process, "cwd").mockReturnValue(dir);
       setSessionList({ id: "L", result: [] });
       setMethodResult({ id: "r1", result: { errors: [], hasMore: false } });
       try {
         await registeredTools.get("sentra_errors")!.cb({});
-        expect(sentraCall("sentra.errors")?.[2]).toEqual({ sessionId: sessionId(configPath) });
+        expect(sentraCall("sentra.errors")?.[2]).toEqual({
+          sessionId: sessionId(configPath, dir),
+        });
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }

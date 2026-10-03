@@ -39,7 +39,7 @@ interface SentraCliDeps {
   request(method: string, params?: unknown): Promise<IpcResponse>;
   cwd(): string;
   /** Session id computed from the cwd config; throws `CliError` without config. */
-  configSessionId(): string;
+  configSessionId(): string | Promise<string>;
   /** User argv as typed (without the binary), for the `next:` hint. */
   argv: string[];
   env: Record<string, string | undefined>;
@@ -172,11 +172,11 @@ async function resolveSessionFor(
   if (res.error) {
     throw new CliError(`Error: ${res.error}`);
   }
-  return resolveSentraSessionId({
+  return await resolveSentraSessionId({
     sessions: res.result,
     sessionArg,
     cwd: deps.cwd(),
-    configSessionId: () => deps.configSessionId(),
+    configSessionId: async () => deps.configSessionId(),
   });
 }
 
