@@ -839,6 +839,26 @@ describe("startMcpServer", () => {
       });
     });
 
+    it.each(["EPERM", "EACCES"])(
+      "reports socket %s as a permission error without auto-start",
+      async (code) => {
+        mockIpcRequest.mockRejectedValue(
+          Object.assign(new Error(`connect ${code}`), { code, syscall: "connect" }),
+        );
+        const res = await registeredTools.get("sentra_errors")!.cb({});
+        expect(res).toEqual({
+          content: [
+            {
+              type: "text",
+              text: `Cannot access zaps daemon socket (${code}). Check permissions; if sandboxed, rerun outside the sandbox.`,
+            },
+          ],
+          isError: true,
+        });
+        expect(mockEnsureDaemon).not.toHaveBeenCalled();
+      },
+    );
+
     it("leaves the other tools without auto-start", async () => {
       daemonDown();
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(

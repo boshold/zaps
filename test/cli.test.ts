@@ -735,8 +735,14 @@ describe("CLI — ps command", () => {
     fs.writeFileSync(path.join(dir, ".zaps.mts"), "export default {};\n");
     const net = await import("node:net");
     server = net.createServer((socket) => {
+      let buffer = "";
       socket.on("data", (chunk) => {
-        const req: { id: string; method: string } = JSON.parse(chunk.toString().split("\n")[0]);
+        buffer += chunk.toString();
+        const newline = buffer.indexOf("\n");
+        if (newline === -1) {
+          return;
+        }
+        const req: { id: string; method: string } = JSON.parse(buffer.slice(0, newline));
         const results: Record<string, unknown> = {
           "session.list": [{ id: SESSION_ID, name: "proj", projectDir: dir }],
           "services.list": SERVICES,
