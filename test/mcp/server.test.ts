@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionId } from "../../src/daemon/session.js";
+import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
 
 // --- IPC mocks (same pattern as daemon-client tests) ---
 
@@ -95,6 +96,11 @@ let listResponse: unknown;
 let methodResponder: () => Promise<unknown>;
 
 const mockEnsureDaemon = vi.fn<() => Promise<string>>();
+
+function subscribeHandlers(): SubscribeHandlers {
+  const [call] = mockIpcSubscribe.mock.calls;
+  return call[3];
+}
 
 function setSessionList(result: unknown): void {
   listResponse = result;
@@ -629,22 +635,19 @@ describe("startMcpServer", () => {
     });
 
     it("ipcSubscribe log.lines event triggers sendResourceUpdated", () => {
-      expect(mockIpcSubscribe).toHaveBeenCalledWith(
-        SOCK,
-        SESSION,
-        ["log.lines"],
-        expect.any(Function),
-      );
+      expect(mockIpcSubscribe).toHaveBeenCalledWith(SOCK, SESSION, ["log.lines"], {
+        onEvent: expect.any(Function),
+      });
 
-      const eventHandler = mockIpcSubscribe.mock.calls[0][3] as (event: unknown) => void;
-      eventHandler({ event: "log.lines", data: { service: "api" } });
+      const eventHandler = subscribeHandlers().onEvent;
+      eventHandler({ session: SESSION, event: "log.lines", data: { service: "api" } });
 
       expect(mockSendResourceUpdated).toHaveBeenCalledWith({ uri: "zaps://logs/api" });
     });
 
     it("ipcSubscribe ignores non-log.lines events", () => {
-      const eventHandler = mockIpcSubscribe.mock.calls[0][3] as (event: unknown) => void;
-      eventHandler({ event: "service.stateChange", data: { name: "api" } });
+      const eventHandler = subscribeHandlers().onEvent;
+      eventHandler({ session: SESSION, event: "service.stateChange", data: { name: "api" } });
 
       expect(mockSendResourceUpdated).not.toHaveBeenCalled();
     });

@@ -583,6 +583,24 @@ describe("zaps sentra live", () => {
     expect(await run.done).toBe(0);
   });
 
+  it("ignores a second end and late callbacks of a finished subscription", async () => {
+    const run = start();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(1));
+    run.subs[0]?.handlers.onEnd();
+    run.subs[0]?.handlers.onEnd();
+    run.subs[0]?.handlers.onSubscribed();
+    run.subs[0]?.handlers.onEvent(item({}));
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(1));
+    expect(run.out()).toBe("");
+    run.sleeps[0]?.();
+    await vi.waitFor(() => expect(run.subs).toHaveLength(2));
+    run.subs[1]?.handlers.onEnd();
+    await vi.waitFor(() => expect(run.sleeps).toHaveLength(2));
+    expect(run.err()).toBe("sentra: waiting for daemon…\n");
+    run.stop();
+    expect(await run.done).toBe(0);
+  });
+
   it("exits 1 when disabled, unavailable or not running", async () => {
     const disabled = start({}, { ...STATUS, enabled: false, state: "disabled" });
     expect(await disabled.done).toBe(1);

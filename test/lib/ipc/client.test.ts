@@ -327,7 +327,7 @@ describe("ipcSubscribe", () => {
 
   it("subscribes and receives daemon events", () => {
     const onEvent = vi.fn();
-    const sub = ipcSubscribe("/test.sock", "sess1", ["log.*"], onEvent);
+    const sub = ipcSubscribe("/test.sock", "sess1", ["log.*"], { onEvent });
 
     mockSocket.emit("connect");
 
@@ -351,7 +351,7 @@ describe("ipcSubscribe", () => {
 
   it("calls onClose when socket closes", () => {
     const onClose = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], vi.fn(), onClose);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn(), onClose });
 
     mockSocket.emit("connect");
     mockSocket.emit("close");
@@ -361,14 +361,14 @@ describe("ipcSubscribe", () => {
 
   it("calls onClose on error", () => {
     const onClose = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], vi.fn(), onClose);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn(), onClose });
 
     mockSocket.emit("error", new Error("ENOENT"));
     expect(onClose).toHaveBeenCalled();
   });
 
   it("connected getter reflects state", () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     expect(sub.connected).toBe(false);
 
     mockSocket.emit("connect");
@@ -381,20 +381,20 @@ describe("ipcSubscribe", () => {
   });
 
   it("send is no-op when disconnected", () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     sub.send("test"); // Should not throw
     expect(mockSocket.write).not.toHaveBeenCalled();
     sub.close();
   });
 
   it("request rejects when disconnected", async () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     await expect(sub.request("test")).rejects.toThrow("Not connected");
     sub.close();
   });
 
   it("request resolves on matching response", async () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.list");
@@ -417,7 +417,7 @@ describe("ipcSubscribe", () => {
 
   it("handles malformed JSON gracefully", () => {
     const onEvent = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], onEvent);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent });
     mockSocket.emit("connect");
 
     // Should not throw
@@ -427,7 +427,7 @@ describe("ipcSubscribe", () => {
 
   it("request times out after 30s", async () => {
     vi.useFakeTimers();
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.list");
@@ -440,7 +440,7 @@ describe("ipcSubscribe", () => {
   });
 
   it("send works when connected", () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
     sub.send("session.detach");
     // Subscribe request + send = 2 writes
@@ -450,20 +450,20 @@ describe("ipcSubscribe", () => {
 
   it("close event without onClose callback does not throw", () => {
     // IpcSubscribe called without onClose
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
     mockSocket.emit("close"); // Should not throw
     sub.close();
   });
 
   it("error event without onClose callback does not throw", () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("error", new Error("oops")); // Should not throw
     sub.close();
   });
 
   it("request skips empty lines in response data", async () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.list");
@@ -484,7 +484,7 @@ describe("ipcSubscribe", () => {
 
   it("skips empty lines in subscription data", () => {
     const onEvent = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], onEvent);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent });
     mockSocket.emit("connect");
 
     // Empty line + daemon event
@@ -500,7 +500,7 @@ describe("ipcSubscribe", () => {
 
   it("invokes onError on a daemon error-ack (E8)", () => {
     const onError = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], vi.fn(), undefined, onError);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn(), onError });
     mockSocket.emit("connect");
 
     // The daemon replies to the subscribe request with an error ack.
@@ -515,7 +515,7 @@ describe("ipcSubscribe", () => {
 
   it("invokes onSubscribed on a successful subscribe ack only", () => {
     const onSubscribed = vi.fn();
-    ipcSubscribe("/test.sock", "s1", [], vi.fn(), undefined, undefined, onSubscribed);
+    ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn(), onSubscribed });
     mockSocket.emit("connect");
     const subReq = JSON.parse((mockSocket.write.mock.calls[0][0] as string).replace("\n", ""));
     mockSocket.emit("data", Buffer.from(`${JSON.stringify({ id: "other", result: {} })}\n`));
@@ -528,7 +528,7 @@ describe("ipcSubscribe", () => {
   });
 
   it("rejects a pending request when the socket closes (E5)", async () => {
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.list");
@@ -539,7 +539,7 @@ describe("ipcSubscribe", () => {
 
   it("demuxes a request response while events stream on the same socket (E5)", async () => {
     const onEvent = vi.fn();
-    const sub = ipcSubscribe("/test.sock", "s1", [], onEvent);
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.list");
@@ -563,7 +563,7 @@ describe("ipcSubscribe", () => {
 
   it("request with timeoutMs=0 has no wall-clock timeout (inactivity-bounded use)", async () => {
     vi.useFakeTimers();
-    const sub = ipcSubscribe("/test.sock", "s1", [], vi.fn());
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent: vi.fn() });
     mockSocket.emit("connect");
 
     const reqPromise = sub.request("services.startAll", undefined, 0);

@@ -208,15 +208,12 @@ describe.skipIf(!hasTmux())("sentra end-to-end with @sentry/node", () => {
       ...cliDeps(["sentra", "live", "--json"], out, err),
       live: {
         subscribe: (id, handlers) =>
-          ipcSubscribe(
-            socketPath,
-            id,
-            [],
-            handlers.onEvent,
-            handlers.onEnd,
-            handlers.onEnd,
-            handlers.onSubscribed,
-          ),
+          ipcSubscribe(socketPath, id, [], {
+            onEvent: handlers.onEvent,
+            onClose: handlers.onEnd,
+            onError: handlers.onEnd,
+            onSubscribed: handlers.onSubscribed,
+          }),
         request: async (method, params) => ipcRequest(socketPath, method, params),
         sleep: async (ms) =>
           new Promise((resolve) => {

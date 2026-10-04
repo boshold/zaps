@@ -308,20 +308,17 @@ async function runDetachedStartAll(sock: string, sid: string, sessionName: strin
       finish(() => resolve());
     };
 
-    ctl.sub = ipcSubscribe(
-      sock,
-      sid,
-      ["service.stateChange", "log.lines"],
-      () => {
+    ctl.sub = ipcSubscribe(sock, sid, ["service.stateChange", "log.lines"], {
+      onEvent: () => {
         arm();
       },
-      () => {
+      onClose: () => {
         finish(() => reject(new CliError("error: daemon connection closed")));
       },
-      (err) => {
+      onError: (err) => {
         finish(() => reject(new CliError(`Error starting services: ${err}`)));
       },
-    );
+    });
     arm();
     void drive().catch((error: unknown) => {
       finish(() => reject(error instanceof Error ? error : new Error(String(error))));
@@ -806,11 +803,8 @@ const logsCommand = command(
         // Follow mode: subscribe to log events
         const sock = socketPath();
         let userClosed = false;
-        const sub = ipcSubscribe(
-          sock,
-          ipc.sessionId,
-          ["log.lines"],
-          (event: DaemonEvent) => {
+        const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], {
+          onEvent: (event: DaemonEvent) => {
             const data = event.data as { service: string; lines: string[] };
             if (targetServices.includes(data.service)) {
               for (const line of data.lines) {
@@ -818,14 +812,14 @@ const logsCommand = command(
               }
             }
           },
-          () => {
+          onClose: () => {
             // Q5: the daemon closed the socket — no reconnect; report and exit 1.
             if (!userClosed) {
               process.stderr.write("error: daemon connection closed\n");
               process.exit(1);
             }
           },
-        );
+        });
 
         // Wait for ctrl+c
         await new Promise<void>((resolve) => {
@@ -925,29 +919,26 @@ const eventsCommand = command(
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
     let userClosed = false;
-    const sub = ipcSubscribe(
-      sock,
-      id,
-      [],
-      (event: DaemonEvent) => {
+    const sub = ipcSubscribe(sock, id, [], {
+      onEvent: (event: DaemonEvent) => {
         if (filterRe && !filterRe.test(event.event)) {
           return;
         }
         process.stdout.write(`${JSON.stringify(event)}\n`);
       },
-      () => {
+      onClose: () => {
         // Q5: the daemon closed the socket — no reconnect; report and exit 1.
         if (!userClosed) {
           process.stderr.write("error: daemon connection closed\n");
           process.exit(1);
         }
       },
-      (reason: string) => {
+      onError: (reason: string) => {
         // E8: surface a subscribe error-ack that slipped past the session.list pre-check.
         process.stderr.write(`error: ${reason}\n`);
         process.exit(1);
       },
-    );
+    });
 
     await new Promise<void>((resolve) => {
       process.on("SIGINT", () => {
@@ -1518,15 +1509,12 @@ async function runSentraGroup(rawArgv: string[]): Promise<void> {
     sessionArg: globalSession(),
     live: {
       subscribe: (sessionId, handlers) =>
-        ipcSubscribe(
-          socketPath(),
-          sessionId,
-          ["sentra.item", "sentra.failed"],
-          handlers.onEvent,
-          handlers.onEnd,
-          handlers.onEnd,
-          handlers.onSubscribed,
-        ),
+        ipcSubscribe(socketPath(), sessionId, ["sentra.item", "sentra.failed"], {
+          onEvent: handlers.onEvent,
+          onClose: handlers.onEnd,
+          onError: handlers.onEnd,
+          onSubscribed: handlers.onSubscribed,
+        }),
       request: async (method, params) => requestDaemon(socketPath(), method, params, 30_000),
       sleep: async (ms) =>
         new Promise((resolve) => {

@@ -464,12 +464,14 @@ async function startMcpServer(
   // Simply unavailable until the server is restarted.
   const subscriptionSessionId = await resolveSession().catch(() => "");
   if (subscriptionSessionId) {
-    ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], (event: DaemonEvent) => {
-      if (event.event === "log.lines") {
-        const data = event.data as { service: string };
-        // eslint-disable-next-line no-void -- Fire-and-forget notification
-        void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
-      }
+    ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], {
+      onEvent: (event: DaemonEvent) => {
+        if (event.event === "log.lines") {
+          const data = event.data as { service: string };
+          // eslint-disable-next-line no-void -- Fire-and-forget notification
+          void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
+        }
+      },
     });
   }
 

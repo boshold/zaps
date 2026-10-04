@@ -168,17 +168,27 @@ async function runLive(ctx: LiveContext, filterInput: LiveFilter): Promise<numbe
     }
     if (sessionId !== null) {
       const target = sessionId;
-      const holder: { subscription?: LiveSubscription } = {};
+      const holder: { subscription?: LiveSubscription; ended: boolean } = { ended: false };
       // oxlint-disable-next-line no-await-in-loop -- one subscription at a time
       await Promise.race([
         stop,
         new Promise<void>((resolve) => {
           holder.subscription = live.subscribe(target, {
-            onEvent: (event) => handleEvent(ctx, filter, event),
-            onSubscribed: () => {
-              waiting = false;
+            onEvent: (event) => {
+              if (!holder.ended) {
+                handleEvent(ctx, filter, event);
+              }
             },
-            onEnd: resolve,
+            onSubscribed: () => {
+              if (!holder.ended) {
+                waiting = false;
+              }
+            },
+            // Close and error-ack can both fire; only the first counts.
+            onEnd: () => {
+              holder.ended = true;
+              resolve();
+            },
           });
         }),
       ]);

@@ -193,11 +193,7 @@ export function ipcSubscribe(
   socketPath: string,
   session: string,
   events: string[],
-  onEvent: (event: DaemonEvent) => void,
-  onClose?: () => void,
-  onError?: (error: string) => void,
-  /** Successful subscribe ack. */
-  onSubscribed?: () => void,
+  { onEvent, onClose, onError, onSubscribed }: SubscribeHandlers,
 ): IpcSubscription {
   const socket = net.createConnection(socketPath);
   let connected = false;
@@ -326,6 +322,16 @@ export function ipcSubscribe(
       return connected;
     },
   };
+}
+
+export interface SubscribeHandlers {
+  onEvent: (event: DaemonEvent) => void;
+  /** Socket closed or errored. */
+  onClose?: () => void;
+  /** Daemon error-ack for the subscribe (e.g. unknown session). */
+  onError?: (error: string) => void;
+  /** Successful subscribe ack. */
+  onSubscribed?: () => void;
 }
 
 export interface IpcSubscription {
