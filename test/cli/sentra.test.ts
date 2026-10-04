@@ -526,6 +526,12 @@ describe("zaps sentra live", () => {
     expect(run.out()).toBe("match\n");
   });
 
+  it("rejects kinds the daemon does not stream", async () => {
+    const t = setup();
+    expect(await runSentraCli(["live", "--kind", "transaction"], t.deps)).toBe(2);
+    expect(t.err()).toContain('Invalid --kind "transaction". Use one of: error, message, log.');
+  });
+
   it("keeps the kind default with only --min-level", async () => {
     const run = start({ minLevel: "error" });
     await vi.waitFor(() => expect(run.subs).toHaveLength(1));

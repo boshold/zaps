@@ -8,6 +8,8 @@ const DEFAULT_LIMIT = 20;
 const sessionIdSchema = z.string().regex(/^[0-9a-f]{12}$/, "sessionId must be 12 hex chars");
 const levelSchema = z.enum(LEVELS);
 const itemKindSchema = z.enum(ITEM_KINDS);
+/** Kinds the daemon broadcasts live; spans and transactions stay out to keep socket traffic small. */
+const liveKindSchema = z.enum(["error", "message", "log"]);
 
 function isRecord(value: unknown): boolean {
   return typeof value === "object" && value !== null;
@@ -133,4 +135,4 @@ export const SENTRA_DISABLED_ERROR =
 export const liveItemEventSchema = z.object({ row: errorRowSchema, line: z.string() });
 export const liveFailedEventSchema = z.object({ error: z.string() });
 
-export { DEFAULT_LIMIT, MAX_LIMIT, itemKindSchema, levelSchema, sessionIdSchema };
+export { DEFAULT_LIMIT, MAX_LIMIT, itemKindSchema, levelSchema, liveKindSchema, sessionIdSchema };

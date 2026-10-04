@@ -19,6 +19,7 @@ import {
   issuesResultSchema,
   itemKindSchema,
   levelSchema,
+  liveKindSchema,
   showResultSchema,
 } from "#src/lib/sentra/schemas.js";
 import type { ErrorsParams, IssuesParams } from "#src/lib/sentra/schemas.js";
@@ -26,7 +27,6 @@ import { describeSentraError, resolveSentraSessionId } from "#src/lib/sentra/ses
 import { parseTimeInput, resolveTimeWindow } from "#src/lib/sentra/time.js";
 
 const LEVEL_LIST = levelSchema.options.join(", ");
-const KIND_LIST = itemKindSchema.options.join(", ");
 
 /** Invalid flags; exit 2. */
 class SentraUsageError extends Error {
@@ -87,7 +87,10 @@ function parseLevel(value: string, flag: string): z.infer<typeof levelSchema> {
   return parsed.data;
 }
 
-function parseKinds(value: string | undefined): z.infer<typeof itemKindSchema>[] | undefined {
+function parseKinds<T extends string>(
+  value: string | undefined,
+  schema: z.ZodEnum<{ [K in T]: K }>,
+): T[] | undefined {
   if (value === undefined) {
     return undefined;
   }
@@ -96,9 +99,11 @@ function parseKinds(value: string | undefined): z.infer<typeof itemKindSchema>[]
     .map((part) => part.trim())
     .filter((part) => part !== "")
     .map((part) => {
-      const parsed = itemKindSchema.safeParse(part);
+      const parsed = schema.safeParse(part);
       if (!parsed.success) {
-        throw new SentraUsageError(`Invalid --kind "${part}". Use one of: ${KIND_LIST}.`);
+        throw new SentraUsageError(
+          `Invalid --kind "${part}". Use one of: ${schema.options.join(", ")}.`,
+        );
       }
       return parsed.data;
     });
@@ -134,7 +139,7 @@ function paging(flags: SentraFlags) {
 function errorsFilters(flags: SentraFlags): Omit<ErrorsParams, "sessionId"> {
   return {
     service: nonEmpty(flags.service),
-    kind: nonEmpty(parseKinds(flags.kind)),
+    kind: nonEmpty(parseKinds(flags.kind, itemKindSchema)),
     level: nonEmpty(flags.level?.map((value) => parseLevel(value, "level"))),
     minLevel: flags.minLevel === undefined ? undefined : parseLevel(flags.minLevel, "min-level"),
     q: flags.query,
@@ -291,7 +296,7 @@ async function runClear(deps: SentraCliDeps, flags: SentraFlags): Promise<number
 async function runLiveCommand(deps: SentraCliDeps, flags: SentraFlags): Promise<number> {
   const filter = {
     service: nonEmpty(flags.service),
-    kind: nonEmpty(parseKinds(flags.kind)),
+    kind: nonEmpty(parseKinds(flags.kind, liveKindSchema)),
     level: nonEmpty(flags.level?.map((value) => parseLevel(value, "level"))),
     minLevel: flags.minLevel === undefined ? undefined : parseLevel(flags.minLevel, "min-level"),
     q: flags.query,
