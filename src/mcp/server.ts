@@ -5,7 +5,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import type { SessionInfo } from "#src/cli/helpers.js";
-import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
+import {
+  CliError,
+  findSessionByDir,
+  requestDaemon,
+  resolveCommandArgv,
+  resolveTargetSession,
+} from "#src/cli/helpers.js";
+import { createAutoStartRequest } from "#src/cli/sentra.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { renderErrors, renderIssues, renderShow } from "#src/lib/sentra/render.js";
@@ -61,7 +68,21 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function startMcpServer(socketPath: string, sessionArg?: string): Promise<void> {
+interface McpServerOptions {
+  /** Starts the daemon for the sentra tools; resolves with its socket. */
+  ensureDaemon?: () => Promise<string>;
+}
+
+async function defaultEnsureDaemon(): Promise<string> {
+  const { ensureDaemon } = await import("#src/daemon/index.js");
+  return ensureDaemon(resolveCommandArgv());
+}
+
+async function startMcpServer(
+  socketPath: string,
+  sessionArg?: string,
+  options: McpServerOptions = {},
+): Promise<void> {
   const server = new McpServer(
     { name: "zaps", version: "0.1.0" },
     { capabilities: { resources: { subscribe: true, listChanged: true } } },
@@ -114,14 +135,16 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
     return res.result;
   }
 
+  /** Like the CLI: starts the daemon once when it is not running, so stopped sessions stay readable. */
+  const sentraRequest = createAutoStartRequest({
+    request: async (sock, method, params) => requestDaemon(sock, method, params, 30_000),
+    socket: () => socketPath,
+    ensureDaemon: options.ensureDaemon ?? defaultEnsureDaemon,
+  });
+
   /** Running session, `-s` verbatim, or the cwd config id (stopped session). */
   async function resolveSentraSession(): Promise<string> {
-    let listRes: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
-    try {
-      listRes = await ipcRequest(socketPath, "session.list", undefined, 30_000);
-    } catch (error) {
-      throw classifyDaemonError(error);
-    }
+    const listRes = await sentraRequest("session.list");
     if (listRes.error) {
       throw new Error(listRes.error);
     }
@@ -141,12 +164,7 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
   ): Promise<CallToolResult> {
     try {
       const sessionId = await resolveSentraSession();
-      let res: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
-      try {
-        res = await ipcRequest(socketPath, method, { ...params, sessionId }, 30_000);
-      } catch (error) {
-        throw classifyDaemonError(error);
-      }
+      const res = await sentraRequest(method, { ...params, sessionId });
       if (res.error) {
         return textResult(describeSentraError(res.error).message, true);
       }

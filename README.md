@@ -1477,8 +1477,9 @@ zaps mcp --session my-app  # target specific session
 | `sentra_show`          | Show a record or issue (Markdown)    |
 
 The `sentra_*` tools take the same filters as `zaps sentra errors|issues|show`. List
-tools end with `hasMore: true|false`. Unlike the CLI, MCP tools never start the
-daemon.
+tools end with `hasMore: true|false`. Like the CLI query commands, they start the
+daemon when it is not running, so errors of a stopped session stay readable. The other
+MCP tools need a running session.
 
 #### Resources
 

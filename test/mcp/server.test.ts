@@ -94,6 +94,8 @@ const SESSION = "sess1";
 let listResponse: unknown;
 let methodResponder: () => Promise<unknown>;
 
+const mockEnsureDaemon = vi.fn<() => Promise<string>>();
+
 function setSessionList(result: unknown): void {
   listResponse = result;
 }
@@ -113,6 +115,7 @@ describe("startMcpServer", () => {
     mockIpcSubscribe.mockReset();
     mockConnect.mockClear();
     mockSendResourceUpdated.mockClear();
+    mockEnsureDaemon.mockReset();
     mcpServerCtorArgs = [];
     registeredTools.clear();
     registeredResources.clear();
@@ -123,7 +126,7 @@ describe("startMcpServer", () => {
       method === "session.list" ? listResponse : methodResponder(),
     );
 
-    await startMcpServer(SOCK);
+    await startMcpServer(SOCK, undefined, { ensureDaemon: mockEnsureDaemon });
   });
 
   afterEach(() => {
@@ -748,6 +751,7 @@ describe("startMcpServer", () => {
         "sentra.errors",
         { since: "10m", limit: 1, sessionId: SESSION },
         30_000,
+        undefined,
       ]);
     });
 
@@ -787,18 +791,57 @@ describe("startMcpServer", () => {
       expect(res).toEqual({ content: [{ type: "text", text }], isError: true });
     });
 
-    it("reports a stopped daemon as isError", async () => {
-      setMethodError(Object.assign(new Error("connect"), { code: "ECONNREFUSED" }));
+    const refused = () =>
+      Object.assign(new Error("connect ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+      });
+
+    function daemonDown(): { up: () => void } {
+      let running = false;
+      mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) => {
+        if (!running) {
+          throw refused();
+        }
+        return method === "session.list" ? listResponse : methodResponder();
+      });
+      return {
+        up: () => {
+          running = true;
+        },
+      };
+    }
+
+    it("starts a stopped daemon once and returns the result", async () => {
+      const daemon = daemonDown();
+      mockEnsureDaemon.mockImplementation(async () => {
+        daemon.up();
+        return SOCK;
+      });
+      setMethodResult({ id: "r1", result: { errors: [ROW], hasMore: false } });
       const res = await registeredTools.get("sentra_errors")!.cb({});
+      expect(mockEnsureDaemon).toHaveBeenCalledOnce();
+      expect(JSON.stringify(res)).toContain("TypeError: boom");
+      expect(res).not.toHaveProperty("isError");
+      expect(sentraCall("sentra.errors")?.[2]).toEqual({ sessionId: SESSION });
+    });
+
+    it("reports a failed daemon start as isError", async () => {
+      daemonDown();
+      mockEnsureDaemon.mockRejectedValue(new Error("Daemon failed to start. See daemon.log"));
+      const res = await registeredTools.get("sentra_show")!.cb({ id: "x" });
       expect(res).toEqual({
-        content: [
-          {
-            type: "text",
-            text: "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
-          },
-        ],
+        content: [{ type: "text", text: "Daemon failed to start. See daemon.log" }],
         isError: true,
       });
+    });
+
+    it("leaves the other tools without auto-start", async () => {
+      daemonDown();
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running",
+      );
+      expect(mockEnsureDaemon).not.toHaveBeenCalled();
     });
 
     it("reports list failures and connection errors as isError", async () => {
