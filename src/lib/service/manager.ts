@@ -708,7 +708,8 @@ export class ServiceManager extends EventEmitter {
   ): Promise<Record<string, string>> {
     const { sentra } = this.deps;
     const template = sentraTemplateFor(this.config.project.sentra, serviceConfig.sentra);
-    if (!sentra || !template) {
+    const receivesEnv = serviceConfig._combined?.isOwner !== false;
+    if (!sentra || !template || !receivesEnv) {
       delete status.sentra;
       return {};
     }
@@ -717,8 +718,7 @@ export class ServiceManager extends EventEmitter {
     if (env) {
       sentra.onServiceStart?.(sanitizeSegment(name), status.startedAt ?? Date.now());
     }
-    const passesEnv = serviceConfig._combined?.isOwner !== false;
-    if (env && serviceConfig.docker && passesEnv && !this.sentraDockerWarned.has(name)) {
+    if (env && serviceConfig.docker && !this.sentraDockerWarned.has(name)) {
       this.sentraDockerWarned.add(name);
       sentraLog(
         sentra,

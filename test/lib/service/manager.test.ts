@@ -3788,7 +3788,7 @@ describe("sentra env injection", () => {
     expect(plain.getStatus("web").sentra).toBeUndefined();
   });
 
-  it("skips the docker warning for combined non-owners (no env reaches them)", async () => {
+  it("leaves combined non-owners out of Sentra (no env reaches them)", async () => {
     const config = sentraConfig({
       postgres: {
         docker: { service: "postgres" },
@@ -3821,7 +3821,8 @@ describe("sentra env injection", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
     containerSpy.mockRestore();
-    expect(sentra.host.getDsn).toHaveBeenCalled();
+    expect(sentra.host.getDsn).not.toHaveBeenCalled();
+    expect(mgr.getStatus("redis").sentra).toBeUndefined();
     expect(sentra.log.mock.calls.filter(([msg]) => msg.includes("docker service"))).toEqual([]);
   });
 
