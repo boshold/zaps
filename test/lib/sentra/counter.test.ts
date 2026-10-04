@@ -116,7 +116,7 @@ describe("ErrorCounter", () => {
     const calls: string[] = [];
     const count = async (service: string, since: number) => {
       calls.push(`${service}@${since}`);
-      return since / 1000;
+      return new Set(Array.from({ length: since / 1000 }, (_, index) => `${service}${index}`));
     };
 
     await counter.recount(SESSION_A, ["web"], count);
@@ -128,6 +128,30 @@ describe("ErrorCounter", () => {
     expect(counter.get(SESSION_A, "api")).toBe(2);
     expect(counter.get(SESSION_B, "web")).toBe(0);
   });
+
+  it.each([
+    ["missing from", false],
+    ["already in", true],
+  ])(
+    "counts an error arriving during a recount once when it is %s the snapshot",
+    async (_, inSnapshot) => {
+      attachA();
+      counter.reset(SESSION_A, "web", Date.now() - 1000);
+      let release: (ids: Set<string>) => void = () => undefined;
+      const snapshot = new Promise<Set<string>>((resolve) => {
+        release = resolve;
+      });
+
+      const recount = counter.recount(SESSION_A, undefined, async () => snapshot);
+      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "late" } });
+      const page = await sentra.query.listItems({ session: SESSION_A });
+      const [late] = page.items;
+      release(new Set(inSnapshot && late ? ["old", late.id] : ["old"]));
+      await recount;
+
+      expect(counter.get(SESSION_A, "web")).toBe(2);
+    },
+  );
 
   it("broadcasts sentra.item with an ErrorRow and the live line", async () => {
     attachA();

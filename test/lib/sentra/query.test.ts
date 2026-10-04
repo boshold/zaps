@@ -6,7 +6,7 @@ import {
   MAX_WALK,
   SentraQueryError,
   clearSession,
-  countErrorsSince,
+  errorIdsSince,
   itemLocation,
   listErrors,
   listIssues,
@@ -377,7 +377,7 @@ describe("showById", () => {
   });
 });
 
-describe("countErrorsSince", () => {
+describe("errorIdsSince", () => {
   it("counts error and fatal errors and messages of the service since the given time", async () => {
     smallPages(sentra);
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -391,7 +391,8 @@ describe("countErrorsSince", () => {
     await ingestEvent(sentra, { service: "api", error: { type: "Error", value: "api" } });
     await ingestEvent(sentra, { session: SESSION_B, service: "web", message: "b" });
 
-    expect(await countErrorsSince(sentra, SESSION_A, "web", since)).toBe(4);
+    const ids = await errorIdsSince(sentra, SESSION_A, "web", since);
+    expect(ids.size).toBe(4);
   });
 });
 

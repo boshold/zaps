@@ -6,7 +6,7 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment, sentraEnabledFor, sentraTemplateFor } from "#src/lib/sentra/config.js";
 import {
   clearSession,
-  countErrorsSince,
+  errorIdsSince,
   listErrors,
   listIssues,
   showById,
@@ -127,7 +127,7 @@ export const sentraHandlers: Record<string, Handler> = {
     await store.sentraCounter.recount(
       params.sessionId,
       params.service?.map(sanitizeSegment),
-      async (service, since) => countErrorsSince(sentra, params.sessionId, service, since),
+      async (service, since) => errorIdsSince(sentra, params.sessionId, service, since),
     );
     return result;
   }),

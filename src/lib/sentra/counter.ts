@@ -15,6 +15,8 @@ interface SubscribeSource {
 interface CounterEntry {
   since: number;
   count: number;
+  /** Ids counted live while a recount runs, merged into its snapshot. */
+  pending: Set<string> | null;
 }
 
 function entryKey(sessionId: string, service: string): string {
@@ -62,7 +64,7 @@ export class ErrorCounter {
   }
 
   public reset(sessionId: string, service: string, since: number): void {
-    this.entries.set(entryKey(sessionId, service), { since, count: 0 });
+    this.entries.set(entryKey(sessionId, service), { since, count: 0, pending: null });
   }
 
   /** `null` when the service never started with Sentra in this daemon. */
@@ -73,11 +75,12 @@ export class ErrorCounter {
   /**
    * Re-reads matching counters after a clear, which may delete only part of the
    * counted errors. All of the session's services when `services` is empty.
+   * Errors arriving meanwhile are merged by id, so each one counts once.
    */
   public async recount(
     sessionId: string,
     services: string[] | undefined,
-    count: (service: string, since: number) => Promise<number>,
+    errorIds: (service: string, since: number) => Promise<Set<string>>,
   ): Promise<void> {
     const prefix = entryKey(sessionId, "");
     const wanted = services && services.length > 0 ? new Set(services) : null;
@@ -86,7 +89,19 @@ export class ErrorCounter {
       .map(([key, entry]) => ({ entry, service: key.slice(prefix.length) }))
       .filter(({ service }) => wanted === null || wanted.has(service))
       .map(async ({ entry, service }) => {
-        entry.count = await count(service, entry.since);
+        const pending = entry.pending ?? new Set<string>();
+        entry.pending = pending;
+        try {
+          const ids = await errorIds(service, entry.since);
+          for (const id of pending) {
+            ids.add(id);
+          }
+          entry.count = ids.size;
+        } finally {
+          if (entry.pending === pending) {
+            entry.pending = null;
+          }
+        }
       });
     await Promise.all(updates);
   }
@@ -100,6 +115,7 @@ export class ErrorCounter {
     const entry = this.entries.get(entryKey(sessionId, item.scope.service));
     if (entry && isCountedError(item) && Date.parse(item.receivedAt) >= entry.since) {
       entry.count += 1;
+      entry.pending?.add(item.id);
     }
     if (liveKindSchema.safeParse(item.kind).success) {
       const row = toErrorRow(item, itemLocation(item));

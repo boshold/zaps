@@ -233,13 +233,13 @@ export async function showById(
   });
 }
 
-/** What `ErrorCounter` counts for one service, received at or after `since`. */
-export async function countErrorsSince(
+/** Ids of what `ErrorCounter` counts for one service, received at or after `since`. */
+export async function errorIdsSince(
   sentra: SentraQuerySource,
   sessionId: string,
   service: string,
   since: number,
-): Promise<number> {
+): Promise<Set<string>> {
   const filter: ItemFilter = {
     session: sessionId,
     service,
@@ -247,15 +247,17 @@ export async function countErrorsSince(
     level: ["error", "fatal"],
     from: since,
   };
-  let count = 0;
+  const ids = new Set<string>();
   let cursor: string | undefined = undefined;
   do {
     // oxlint-disable-next-line no-await-in-loop -- cursors are sequential
     const page = await sentra.query.listItems(filter, { limit: MAX_LIMIT, cursor });
-    count += page.items.length;
+    for (const item of page.items) {
+      ids.add(item.id);
+    }
     cursor = page.nextCursor ?? undefined;
   } while (cursor !== undefined);
-  return count;
+  return ids;
 }
 
 export async function clearSession(
