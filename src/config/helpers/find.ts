@@ -22,35 +22,35 @@ function resolveBoundary(stopAt: FindUpOptions["stopAt"], configDir: string): st
  * else the filesystem root. On not-found it throws `ConfigError` (`notFound`)
  * — it never returns null, so it assigns directly to the `cwd` field.
  */
-export function createFindHelpers(): FindHelpers {
-  const up =
-    (filename: string, opts: FindUpOptions = {}): CwdResolver =>
-    (ctx: CwdContext): string => {
-      const boundary = resolveBoundary(opts.stopAt, ctx.configDir);
-      let dir = path.resolve(ctx.invokeDir);
+function up(filename: string, opts: FindUpOptions = {}): CwdResolver {
+  return (ctx: CwdContext): string => {
+    const boundary = resolveBoundary(opts.stopAt, ctx.configDir);
+    let dir = path.resolve(ctx.invokeDir);
 
-      for (let depth = 0; depth < MAX_WALK_DEPTH; depth += 1) {
-        if (fs.existsSync(path.join(dir, filename))) {
-          return dir;
-        }
-        if (boundary !== null && dir === boundary) {
-          break;
-        }
-        const parent = path.dirname(dir);
-        if (parent === dir) {
-          break;
-        }
-        dir = parent;
+    for (let depth = 0; depth < MAX_WALK_DEPTH; depth += 1) {
+      if (fs.existsSync(path.join(dir, filename))) {
+        return dir;
       }
+      if (boundary !== null && dir === boundary) {
+        break;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) {
+        break;
+      }
+      dir = parent;
+    }
 
-      throw new ConfigError(
-        opts.orFatal ?? `${filename} not found walking up from ${ctx.invokeDir}`,
-        {
-          kind: "notFound",
-          field: "cwd",
-        },
-      );
-    };
+    throw new ConfigError(
+      opts.orFatal ?? `${filename} not found walking up from ${ctx.invokeDir}`,
+      {
+        kind: "notFound",
+        field: "cwd",
+      },
+    );
+  };
+}
 
+export function createFindHelpers(): FindHelpers {
   return { up };
 }
