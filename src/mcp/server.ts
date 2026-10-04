@@ -469,10 +469,10 @@ async function startMcpServer(
   if (subscriptionSessionId) {
     ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], {
       onEvent: (event: DaemonEvent) => {
-        const data = logLinesDataSchema.safeParse(event.data);
-        if (event.event === "log.lines" && data.success) {
+        const logLines = logLinesDataSchema.safeParse(event.data);
+        if (event.event === "log.lines" && logLines.success) {
           // eslint-disable-next-line no-void -- Fire-and-forget notification
-          void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.data.service}` });
+          void server.server.sendResourceUpdated({ uri: `zaps://logs/${logLines.data.service}` });
         }
       },
     });
