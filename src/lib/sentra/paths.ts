@@ -37,7 +37,10 @@ export function readPortState(file = sentraPortStatePath()): number | null {
   return parsed.success ? parsed.data.port : null;
 }
 
+/** Atomic (tmp file + rename), so a concurrent reader never sees a partial file. */
 export function writePortState(port: number, file = sentraPortStatePath()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(portStateSchema.parse({ port }))}\n`);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(portStateSchema.parse({ port }))}\n`);
+  fs.renameSync(tmp, file);
 }

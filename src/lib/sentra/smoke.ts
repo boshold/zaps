@@ -11,9 +11,11 @@ export async function runSentraSmoke(): Promise<string | null> {
     const sentra = await createSentra({
       storage: sqliteStorage({ path: path.join(dir, "smoke.db") }),
     });
-    const { driver } = sentra.info().storage;
-    await sentra.close();
-    return driver;
+    try {
+      return sentra.info().storage.driver;
+    } finally {
+      await sentra.close();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -122,13 +122,13 @@ export class SentraHost {
   /** Starts once; concurrent callers share the attempt. `null` while unavailable. */
   public async ensureStarted(): Promise<Sentra | null> {
     if (this.instance) {
-      return Promise.resolve(this.instance);
+      return this.instance;
     }
     if (this.starting) {
       return this.starting;
     }
     if (this.failedAt !== null && this.now() - this.failedAt < RETRY_AFTER_MS) {
-      return Promise.resolve(null);
+      return null;
     }
     this.starting = this.startOnce();
     return this.starting;

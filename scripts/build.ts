@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 import type { Plugin } from "esbuild";
 import { build } from "esbuild";
@@ -18,13 +18,15 @@ const externalNativeBabel: Plugin = {
   },
 };
 
-// `@bosdev/zaps` ships on npmjs, so GitHub Packages deps (`@boshold/*`) are
-// Inlined; everything else stays external via `packages: "external"`.
+/**
+ * `@bosdev/zaps` ships on npmjs, so GitHub Packages deps (`@boshold/*`) are bundled.
+ * Resolved from the importer; `pluginBuild.resolve` would return them as external.
+ */
 const bundleBoshold: Plugin = {
   name: "bundle-boshold",
   setup(pluginBuild) {
     pluginBuild.onResolve({ filter: /^@boshold\// }, (args) => ({
-      path: fileURLToPath(import.meta.resolve(args.path)),
+      path: createRequire(args.importer).resolve(args.path),
     }));
   },
 };

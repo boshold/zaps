@@ -1,11 +1,11 @@
 import { z } from "zod";
 
-import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
-import type { SessionInfo } from "#src/cli/helpers.js";
 import { discoverConfig } from "#src/config/discovery.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import { sessionId } from "#src/daemon/session.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
+import type { SessionInfo } from "#src/lib/session/resolve.js";
 
 const SESSION_ID = /^[0-9a-f]{12}$/;
 const OLD_DAEMON = "This daemon is older than the CLI. Run `zaps daemon stop` and start again.";

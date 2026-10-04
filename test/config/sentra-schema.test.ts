@@ -40,6 +40,9 @@ describe("sentraEnvSchema", () => {
     expect(messages(result)).toContain(
       `sentra.env key '${key}' must match ^[A-Za-z_][A-Za-z0-9_]*$`,
     );
+    expect(result.error?.issues.find((issue) => issue.message.includes("key"))?.path).toEqual([
+      key,
+    ]);
   });
 
   it.each(["_DSN", "sentry_dsn", "A1"])("accepts key %j", (key) => {

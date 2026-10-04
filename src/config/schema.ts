@@ -95,6 +95,7 @@ const sentraEnvSchema = z.record(z.string(), z.string()).superRefine((env, ctx) 
         code: "custom",
         message: `sentra.env key '${key}' must match ${ENV_KEY_PATTERN.source}`,
         input: key,
+        path: [key],
       });
     }
   }

@@ -4,14 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import type { SessionInfo } from "#src/cli/helpers.js";
-import {
-  CliError,
-  findSessionByDir,
-  requestDaemon,
-  resolveCommandArgv,
-  resolveTargetSession,
-} from "#src/cli/helpers.js";
+import { requestDaemon, resolveCommandArgv } from "#src/cli/helpers.js";
 import { createAutoStartRequest } from "#src/cli/sentra.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
@@ -30,6 +23,8 @@ import {
   resolveSentraSessionId,
 } from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
+import type { SessionInfo } from "#src/lib/session/resolve.js";
 
 function classifyDaemonError(error: unknown): Error {
   const { code } = error as NodeJS.ErrnoException;

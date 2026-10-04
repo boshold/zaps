@@ -56,6 +56,7 @@ describe("port state", () => {
     writePortState(43_210);
     expect(readPortState()).toBe(43_210);
     expect(JSON.parse(fs.readFileSync(sentraPortStatePath(), "utf8"))).toEqual({ port: 43_210 });
+    expect(fs.readdirSync(path.dirname(sentraPortStatePath()))).toEqual(["sentra.json"]);
   });
 
   it("returns null for invalid JSON", () => {
