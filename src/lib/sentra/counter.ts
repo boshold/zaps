@@ -25,8 +25,8 @@ function entryKey(sessionId: string, service: string): string {
 /** Same rule as the `zaps sentra errors` default filter. */
 export function isCountedError(item: Pick<Item, "kind" | "level">): boolean {
   return (
-    item.kind === "error" ||
-    (item.kind === "message" && (item.level === "error" || item.level === "fatal"))
+    (item.kind === "error" || item.kind === "message") &&
+    (item.level === "error" || item.level === "fatal")
   );
 }
 

@@ -30,13 +30,13 @@ function parseServiceList(input: unknown): ServiceListEntry[] {
   return serviceListSchema.parse(input);
 }
 
-/** From a `sentra.status` result; falls back to opted-in flags when it is unusable (older daemon). */
+/** From a `sentra.status` result; falls back to services with Sentra env when it is unusable. */
 function sentraColumnEnabled(status: unknown, services: ServiceListEntry[]): boolean {
   const parsed = statusResultSchema.safeParse(status);
   if (parsed.success) {
     return parsed.data.enabled === true;
   }
-  return services.some((service) => service.sentra !== undefined);
+  return services.some((service) => service.sentra === true);
 }
 
 /** `zaps ps` table; `ERRORS` only when Sentra is enabled for the project. */

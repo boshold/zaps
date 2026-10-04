@@ -216,7 +216,7 @@ describe("session handlers", () => {
         expect.objectContaining({ name: "web", sentra: true, startedAt: 5, errorCount: 0 }),
         expect.objectContaining({ name: "fresh", errorCount: 0 }),
         expect.objectContaining({ name: "down", errorCount: null }),
-        expect.objectContaining({ name: "db", errorCount: null }),
+        expect.objectContaining({ name: "db", sentra: false, errorCount: null }),
       ]);
       expect(session.manager.getAllStatuses.mock.results[0]?.value[0]).not.toHaveProperty(
         "errorCount",

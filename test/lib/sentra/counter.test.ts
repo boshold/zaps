@@ -26,13 +26,16 @@ function attachA(): void {
 }
 
 describe("isCountedError", () => {
-  it("counts errors and error/fatal messages only", () => {
-    expect(isCountedError({ kind: "error", level: "warning" })).toBe(true);
-    expect(isCountedError({ kind: "message", level: "error" })).toBe(true);
-    expect(isCountedError({ kind: "message", level: "fatal" })).toBe(true);
-    expect(isCountedError({ kind: "message", level: "warning" })).toBe(false);
-    expect(isCountedError({ kind: "message", level: null })).toBe(false);
+  it("counts error/message records at level error or fatal only", () => {
+    for (const kind of ["error", "message"] as const) {
+      expect(isCountedError({ kind, level: "error" })).toBe(true);
+      expect(isCountedError({ kind, level: "fatal" })).toBe(true);
+      expect(isCountedError({ kind, level: "warning" })).toBe(false);
+      expect(isCountedError({ kind, level: "info" })).toBe(false);
+      expect(isCountedError({ kind, level: null })).toBe(false);
+    }
     expect(isCountedError({ kind: "log", level: "error" })).toBe(false);
+    expect(isCountedError({ kind: "transaction", level: "fatal" })).toBe(false);
   });
 });
 
@@ -49,6 +52,11 @@ describe("ErrorCounter", () => {
     await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "boom" } });
     await ingestEvent(sentra, { service: "web", message: "bad", level: "fatal" });
     await ingestEvent(sentra, { service: "web", message: "fyi", level: "info" });
+    await ingestEvent(sentra, {
+      service: "web",
+      level: "warning",
+      error: { type: "W", value: "w" },
+    });
     await ingestEvent(sentra, { service: "api", message: "oops", level: "error" });
     await ingestEvent(sentra, { service: "other", error: { type: "Error", value: "x" } });
     await ingestEvent(sentra, {

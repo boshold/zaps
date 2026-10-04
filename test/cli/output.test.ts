@@ -373,7 +373,7 @@ describe("serviceRows", () => {
 describe("sentraColumnEnabled", () => {
   const status = { state: "running", port: 1, dbPath: "/x", reason: null, services: [] };
   const plain = parseServiceList([{ name: "db", state: "ready", ports: [] }]);
-  const optedIn = parseServiceList([{ name: "web", state: "ready", ports: [], sentra: false }]);
+  const optedIn = parseServiceList([{ name: "web", state: "ready", ports: [], sentra: true }]);
 
   it("follows sentra.status enabled", () => {
     expect(sentraColumnEnabled({ ...status, enabled: true }, plain)).toBe(true);

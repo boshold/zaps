@@ -98,8 +98,8 @@ async function runPopupTaskNonInteractive(
 function withErrorCount(
   status: ServiceStatus,
   errorCount: number | null,
-): ServiceStatus & { errorCount: number | null } {
-  return { ...status, errorCount };
+): ServiceStatus & { sentra: boolean; errorCount: number | null } {
+  return { ...status, sentra: status.sentra ?? false, errorCount };
 }
 
 export const sessionHandlers: Record<
