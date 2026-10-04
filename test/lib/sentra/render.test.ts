@@ -99,6 +99,9 @@ describe("renderShow", () => {
       latest: null,
     };
     expect(renderShow({ type: "issue", issue, markdown: "# Title" })).toBe("# Title");
+    expect(renderShow({ type: "issue", issue, markdown: "# T\u001B]0;x\u0007\n\tok" })).toBe(
+      "# T]0;x\n\tok",
+    );
   });
 });
 
@@ -112,6 +115,17 @@ describe("renderLiveLine", () => {
   it("prints one line without location and falls back to kind", () => {
     const row = { ...ERROR_ROW, level: null, kind: "log" as const, location: "", title: "a\nb" };
     expect(renderLiveLine(row)).toBe(`${localClock(row.receivedAt)} web log a b`);
+  });
+
+  it("drops terminal control sequences from event fields", () => {
+    const row = {
+      ...ERROR_ROW,
+      title: "boom\u001B]52;c;YXR0YWNrZXI=\u0007 \u009B31m",
+      location: "a.ts:1\u001B[2J",
+    };
+    expect(renderLiveLine(row)).toBe(
+      `${localClock(row.receivedAt)} web error boom]52;c;YXR0YWNrZXI= 31m\n         at a.ts:1[2J`,
+    );
   });
 
   it("tolerates invalid timestamps", () => {

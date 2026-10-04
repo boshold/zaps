@@ -3,6 +3,7 @@ import type { ItemKind, Level } from "@bosdev/sentra-core";
 
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment } from "#src/lib/sentra/config.js";
+import { terminalSafe } from "#src/lib/sentra/render.js";
 import {
   SENTRA_DISABLED_ERROR,
   liveFailedEventSchema,
@@ -89,7 +90,7 @@ function handleEvent(ctx: LiveContext, filter: LiveFilter, event: DaemonEvent): 
   if (event.event === "sentra.failed") {
     const parsed = liveFailedEventSchema.safeParse(event.data);
     if (parsed.success) {
-      ctx.stderr(`sentra: failed envelope: ${parsed.data.error}\n`);
+      ctx.stderr(`sentra: failed envelope: ${terminalSafe(parsed.data.error)}\n`);
     }
     return;
   }
@@ -100,7 +101,9 @@ function handleEvent(ctx: LiveContext, filter: LiveFilter, event: DaemonEvent): 
   if (!parsed.success || !matchesLive(parsed.data.row, filter)) {
     return;
   }
-  ctx.stdout(ctx.json ? `${JSON.stringify(parsed.data.row)}\n` : `${parsed.data.line}\n`);
+  ctx.stdout(
+    ctx.json ? `${JSON.stringify(parsed.data.row)}\n` : `${terminalSafe(parsed.data.line)}\n`,
+  );
 }
 
 async function resolveLiveSession(ctx: LiveContext, sessions: unknown): Promise<string> {
