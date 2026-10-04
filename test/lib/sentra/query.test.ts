@@ -175,6 +175,18 @@ describe("listErrors", () => {
     expect(all.errors.map((row) => row.title)).toEqual(["Error: web", "Error: api"]);
   });
 
+  it("matches service filters against the sanitized DSN segment", async () => {
+    await ingestEvent(sentra, { service: "web-app", error: { type: "Error", value: "web" } });
+
+    const errors = await listErrors(sentra, { sessionId: SESSION_A, service: ["web app"] });
+    const issues = await listIssues(sentra, { sessionId: SESSION_A, service: ["web app"] });
+    const cleared = await clearSession(sentra, { sessionId: SESSION_A, service: ["web app"] });
+
+    expect(errors.errors).toHaveLength(1);
+    expect(issues.issues).toHaveLength(1);
+    expect(cleared).toEqual({ itemsDeleted: 1 });
+  });
+
   it("extracts the newest in-app frame as location", async () => {
     await ingestEvent(sentra, {
       error: {

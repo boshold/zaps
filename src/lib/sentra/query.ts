@@ -16,6 +16,7 @@ import type {
   Sentra,
 } from "@boshold/sentra-core";
 
+import { sanitizeSegment } from "./config.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./schemas.js";
 import type {
   ClearParams,
@@ -51,6 +52,11 @@ async function mapValidation<T>(run: () => Promise<T>): Promise<T> {
 
 function nonEmpty<T>(values: T[] | undefined): T[] | undefined {
   return values && values.length > 0 ? values : undefined;
+}
+
+/** Service names as stored: DSNs carry `sanitizeSegment(name)`. */
+function serviceScopes(services: string[] | undefined): string[] | undefined {
+  return nonEmpty(services)?.map(sanitizeSegment);
 }
 
 async function walk<T>(
@@ -147,7 +153,7 @@ export function buildItemFilter(params: ErrorsParams, now = Date.now()): ItemFil
   const noLevelFlags = kind === undefined && level === undefined && params.minLevel === undefined;
   return {
     session: params.sessionId,
-    service: nonEmpty(params.service),
+    service: serviceScopes(params.service),
     kind: kind ?? ["error", "message"],
     level,
     minLevel: params.minLevel ?? (noLevelFlags ? "error" : undefined),
@@ -162,7 +168,7 @@ export function buildItemFilter(params: ErrorsParams, now = Date.now()): ItemFil
 export function buildIssueFilter(params: IssuesParams, now = Date.now()): IssueFilter {
   return {
     session: params.sessionId,
-    service: nonEmpty(params.service),
+    service: serviceScopes(params.service),
     level: nonEmpty(params.level),
     minLevel: params.minLevel,
     q: params.q,
@@ -231,7 +237,7 @@ export async function clearSession(
   sentra: SentraQuerySource,
   params: ClearParams,
 ): Promise<ClearResult> {
-  const filter: ItemFilter = { session: params.sessionId, service: nonEmpty(params.service) };
+  const filter: ItemFilter = { session: params.sessionId, service: serviceScopes(params.service) };
   if (params.to !== undefined) {
     filter.to = parseTimeInput(params.to, "before");
   }

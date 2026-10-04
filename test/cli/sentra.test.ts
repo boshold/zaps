@@ -667,6 +667,10 @@ describe("withLiveDefaults / matchesLive", () => {
     expect(withLiveDefaults({ kind: ["log"] })).toEqual({ kind: ["log"], minLevel: undefined });
   });
 
+  it("maps service filters to the sanitized DSN segment", () => {
+    expect(withLiveDefaults({ service: ["web app"] }).service).toEqual(["web-app"]);
+  });
+
   it("drops level-less rows under a level filter", () => {
     expect(matchesLive({ ...ROW, level: null }, { minLevel: "debug" })).toBe(false);
     expect(matchesLive({ ...ROW, level: null }, { level: ["error"] })).toBe(false);

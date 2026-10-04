@@ -2,6 +2,7 @@ import { LEVELS } from "@boshold/sentra-core";
 import type { ItemKind, Level } from "@boshold/sentra-core";
 
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { sanitizeSegment } from "#src/lib/sentra/config.js";
 import {
   SENTRA_DISABLED_ERROR,
   liveFailedEventSchema,
@@ -59,6 +60,7 @@ function withLiveDefaults(filter: LiveFilter): LiveFilter {
     filter.kind === undefined && filter.level === undefined && filter.minLevel === undefined;
   return {
     ...filter,
+    service: filter.service?.map(sanitizeSegment),
     kind: filter.kind ?? ["error", "message"],
     minLevel: filter.minLevel ?? (noLevelFlags ? "warning" : undefined),
   };
