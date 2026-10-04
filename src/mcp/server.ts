@@ -390,6 +390,9 @@ async function startMcpServer(
         level: z.array(levelSchema).min(1).optional().describe("Exact levels"),
         minLevel: levelSchema.optional().describe("Minimum level"),
         kind: z.array(itemKindSchema).min(1).optional().describe("Record kinds"),
+        release: z.string().optional().describe("Release"),
+        environment: z.string().optional().describe("Environment"),
+        traceId: z.string().optional().describe("Trace id"),
         q: z.string().optional().describe("Case-insensitive title substring"),
         ...sentraPageShape,
       },
@@ -409,6 +412,7 @@ async function startMcpServer(
       inputSchema: {
         service: z.array(z.string()).min(1).optional().describe("Services"),
         ...sentraTimeShape,
+        level: z.array(levelSchema).min(1).optional().describe("Exact levels"),
         minLevel: levelSchema.optional().describe("Minimum level"),
         q: z.string().optional().describe("Case-insensitive title substring"),
         ...sentraPageShape,

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionId } from "../../src/daemon/session.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
+import { errorsParamsSchema, issuesParamsSchema } from "../../src/lib/sentra/schemas.js";
 
 // --- IPC mocks (same pattern as daemon-client tests) ---
 
@@ -748,6 +749,15 @@ describe("startMcpServer", () => {
           );
         }
       }
+    });
+
+    it.each([
+      ["sentra_errors", errorsParamsSchema],
+      ["sentra_issues", issuesParamsSchema],
+    ])("%s accepts every daemon filter", (name, schema) => {
+      const meta = registeredTools.get(name)!.meta as { inputSchema: Record<string, unknown> };
+      const daemonKeys = Object.keys(schema.shape).filter((key) => key !== "sessionId");
+      expect(Object.keys(meta.inputSchema).toSorted()).toEqual(daemonKeys.toSorted());
     });
 
     it("sentra_errors returns TOON with hasMore and passes sessionId as a param", async () => {
