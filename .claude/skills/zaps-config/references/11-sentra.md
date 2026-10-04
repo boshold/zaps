@@ -45,19 +45,21 @@ export function config({ define }: Library) {
 
 ## Validation errors
 
-| Error                                                        | Fix                                     |
-| ------------------------------------------------------------ | --------------------------------------- |
-| `sentra.env must use {dsn} in at least one value`            | Put `{dsn}` in at least one value       |
-| `sentra.env key '<key>' must match ^[A-Za-z_][A-Za-z0-9_]*$` | Use a valid env variable name           |
-| `services.<name>.sentra requires a top-level "sentra" block` | Add the block, or use `sentra: { env }` |
-| `tasks.<key>.sentra requires a top-level "sentra" block`     | Same for tasks                          |
+| Error                                                        | Fix                                                |
+| ------------------------------------------------------------ | -------------------------------------------------- |
+| `sentra.env must use {dsn} in at least one value`            | Put `{dsn}` in at least one value                  |
+| `sentra.env key '<key>' must match ^[A-Za-z_][A-Za-z0-9_]*$` | Use a valid env variable name                      |
+| `services.<name>.sentra requires a top-level "sentra" block` | Add the block, or use `sentra: { env }`            |
+| `tasks.<key>.sentra requires a top-level "sentra" block`     | Same for tasks                                     |
+| `<a> and <b> both map to Sentra service "<segment>"`         | Rename one; names map to `[A-Za-z0-9._-]` segments |
 
 ## Docker
 
 Docker services accept `sentra`, but the env reaches only the `docker compose` process.
 Containers see it only if the compose file passes it on, and `127.0.0.1` inside a
 container is the container itself. It works with `network_mode: host`. ZAPS logs a
-warning once per service. Prefer opting in the host-run app services.
+warning once per service. Combined services that don't own the compose pane get no
+env and stay out of Sentra. Prefer opting in the host-run app services.
 
 ## Nuxt (`@sentry/nuxt`)
 

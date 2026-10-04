@@ -1313,6 +1313,10 @@ export function config({ define }: Library) {
   or `sentra.env key '<key>' must match ^[A-Za-z_][A-Za-z0-9_]*$`.
 - `sentra: true` without a top-level block fails with
   `services.<name>.sentra requires a top-level "sentra" block` (same for tasks).
+- Names become the DSN's `<service>` segment (characters outside `[A-Za-z0-9._-]` turn
+  into `-`). Two opted-in services or tasks that end up with the same segment, like
+  `web app` and `web-app`, fail with `... both map to Sentra service "web-app"`.
+  `--service` filters accept either spelling.
 - The DSN looks like `http://sentra@127.0.0.1:<port>/<project>/<session>/<service>/1`.
   The port is picked once and reused across daemon restarts when it is free.
 - Env precedence (low to high): the env of the calling shell, the Sentra env, the
@@ -1321,7 +1325,8 @@ export function config({ define }: Library) {
 - Docker services get the env too, but only the `docker compose` process sees it.
   `127.0.0.1` inside a container is the container itself, so this only works with
   `network_mode: host` or a compose file that passes the value on. ZAPS logs a
-  warning once per service.
+  warning once per service. Combined docker services that don't own the compose pane
+  get no env, so they stay out of Sentra.
 - The receiver starts with the first opted-in service or the first `zaps sentra`
   call. If it can't start, services still start without the Sentra env and the
   reason is logged.
