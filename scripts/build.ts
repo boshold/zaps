@@ -19,14 +19,14 @@ const externalNativeBabel: Plugin = {
 };
 
 /**
- * `@bosdev/zaps` ships on npmjs, so GitHub Packages deps (`@boshold/*`) are bundled.
- * Resolved from the importer; `pluginBuild.resolve` would return them as external.
+ * Bundle sentra-core so installs never pull its optional `better-sqlite3` addon.
+ * Resolved from the importer; `pluginBuild.resolve` would return it as external.
  * `createRequire` needs a `require` or `default` export condition in the package.
  */
-const bundleBoshold: Plugin = {
-  name: "bundle-boshold",
+const bundleSentraCore: Plugin = {
+  name: "bundle-sentra-core",
   setup(pluginBuild) {
-    pluginBuild.onResolve({ filter: /^@boshold\// }, (args) => ({
+    pluginBuild.onResolve({ filter: /^@bosdev\/sentra-core(?:\/|$)/ }, (args) => ({
       path: createRequire(args.importer).resolve(args.path),
     }));
   },
@@ -57,7 +57,7 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
-  plugins: [externalNativeBabel, bundleBoshold],
+  plugins: [externalNativeBabel, bundleSentraCore],
   define: {
     __VERSION__: JSON.stringify(resolveVersion()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

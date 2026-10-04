@@ -1,4 +1,4 @@
-import type { LiveEvent, Sentra } from "@boshold/sentra-core";
+import type { LiveEvent, Sentra } from "@bosdev/sentra-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";

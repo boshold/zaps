@@ -1,5 +1,5 @@
-import { LEVELS } from "@boshold/sentra-core";
-import type { ItemKind, Level } from "@boshold/sentra-core";
+import { LEVELS } from "@bosdev/sentra-core";
+import type { ItemKind, Level } from "@bosdev/sentra-core";
 
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment } from "#src/lib/sentra/config.js";

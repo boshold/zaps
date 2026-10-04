@@ -1,5 +1,5 @@
-import { ITEM_KINDS, LEVELS } from "@boshold/sentra-core";
-import type { IssueDetail, Item } from "@boshold/sentra-core";
+import { ITEM_KINDS, LEVELS } from "@bosdev/sentra-core";
+import type { IssueDetail, Item } from "@bosdev/sentra-core";
 import { z } from "zod";
 
 const MAX_LIMIT = 500;

@@ -3,8 +3,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { createSentra, memoryStorage } from "@boshold/sentra-core";
-import type { SentraOptions } from "@boshold/sentra-core";
+import { createSentra, memoryStorage } from "@bosdev/sentra-core";
+import type { SentraOptions } from "@bosdev/sentra-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SentraHost } from "#src/lib/sentra/host.js";

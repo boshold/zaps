@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createSentra, memoryStorage } from "@boshold/sentra-core";
-import type { Sentra } from "@boshold/sentra-core";
+import { createSentra, memoryStorage } from "@bosdev/sentra-core";
+import type { Sentra } from "@bosdev/sentra-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { daemonHandlers } from "#src/daemon/handlers/daemon.js";

@@ -1,8 +1,8 @@
 import http from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
-import { createSentra, isIngestPath, sqliteStorage, toNodeListener } from "@boshold/sentra-core";
-import type { LiveEvent, LiveFilter, Sentra, SentraLogger } from "@boshold/sentra-core";
+import { createSentra, isIngestPath, sqliteStorage, toNodeListener } from "@bosdev/sentra-core";
+import type { LiveEvent, LiveFilter, Sentra, SentraLogger } from "@bosdev/sentra-core";
 
 import { readPortState, sentraDbPath, sentraPortStatePath, writePortState } from "./paths.js";
 

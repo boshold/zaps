@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { createSentra, sqliteStorage } from "@boshold/sentra-core";
+import { createSentra, sqliteStorage } from "@bosdev/sentra-core";
 
 /** Opens a throwaway SQLite-backed Sentra and returns the loaded driver. */
 export async function runSentraSmoke(): Promise<string | null> {

@@ -1565,23 +1565,6 @@ tmux -L zaps kill-session -t =zaps-my-app-a1b2c3d4e5f6
   Dependency "db" not ready
   ```
 
-## Contributing
-
-`@boshold/sentra-core` is installed from GitHub Packages, which needs a token even
-for reads. Create a GitHub PAT with `read:packages` and export it before installing:
-
-```bash
-export NODE_AUTH_TOKEN=<pat>
-pnpm install
-```
-
-A token for `//npm.pkg.github.com/` in `~/.npmrc` also works. The published
-`@bosdev/zaps` package bundles sentra-core, so users need no token.
-
-Without `NODE_AUTH_TOKEN`, every `pnpm` command prints
-`WARN Issue while reading ".npmrc". Failed to replace env in config: ${NODE_AUTH_TOKEN}`.
-The warning is harmless once the package is installed.
-
 ## License
 
 MIT

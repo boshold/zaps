@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import { createSentra, memoryStorage } from "@boshold/sentra-core";
-import type { Sentra } from "@boshold/sentra-core";
+import { createSentra, memoryStorage } from "@bosdev/sentra-core";
+import type { Sentra } from "@bosdev/sentra-core";
 
 const SESSION_A = "aaaaaaaaaaaa";
 const SESSION_B = "bbbbbbbbbbbb";

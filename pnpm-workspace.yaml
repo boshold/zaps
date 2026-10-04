@@ -6,7 +6,7 @@
 # On upgrade to pnpm 11: add minimumReleaseAgeStrict: true (v11-only setting).
 minimumReleaseAge: 4320 # minutes (3 days)
 minimumReleaseAgeExclude:
-  - "@boshold/sentra-core" # own package
+  - "@bosdev/sentra-core" # own package
 
 # sentra-core optional driver; node:sqlite is used instead (Bun aborts on the addon).
 ignoredOptionalDependencies:

@@ -56,7 +56,7 @@ importers:
         specifier: ^4.6.5
         version: 4.6.5
     devDependencies:
-      '@boshold/sentra-core':
+      '@bosdev/sentra-core':
         specifier: ^0.1.0
         version: 0.1.0
       '@sentry/node':
@@ -129,9 +129,9 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@boshold/sentra-core@0.1.0':
-    resolution: {integrity: sha512-kUXpGAWMFtKZ0nZlheJbq6BYRkWT44iDDIkwoEllK0vC25TB2Br9Aill4MuQqGRpduMEj8mCmX0gV1Lyu9OQsQ==, tarball: https://npm.pkg.github.com/download/@boshold/sentra-core/0.1.0/06f406991a7bdb0394775c4f00c4a1cc2209cca0}
-    engines: {node: '>=22.15'}
+  '@bosdev/sentra-core@0.1.0':
+    resolution: {integrity: sha512-IFyweQEGMlaskuY+CX9xCRM9ISMK/M8K8iP9R0Afc1ZP58HcUcI/LaA+BDrYAEuTn3p5tKJ9Oq0BtJbkg/jc7g==}
+    engines: {bun: '>=1.4', node: '>=22.15'}
 
   '@esbuild/aix-ppc64@0.28.2':
     resolution: {integrity: sha512-XExcO+dvLKvVtNTibSTBej1NCAbaGhWn9Ww1ZPx80qsahhPFe/8jgWP0IchNe0F3HwkU7n8ejhH8bjonqht8mQ==}
@@ -2490,7 +2490,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@boshold/sentra-core@0.1.0':
+  '@bosdev/sentra-core@0.1.0':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       zod: 4.6.5

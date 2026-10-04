@@ -1,4 +1,4 @@
-import { parseDuration } from "@boshold/sentra-core";
+import { parseDuration } from "@bosdev/sentra-core";
 
 const ISO_PREFIX = /^\d{4}-\d{2}-\d{2}/;
 const EPOCH_MS = /^\d+$/;

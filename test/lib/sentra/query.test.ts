@@ -1,5 +1,5 @@
-import { SentraValidationError } from "@boshold/sentra-core";
-import type { Item, PageInput, Sentra } from "@boshold/sentra-core";
+import { SentraValidationError } from "@bosdev/sentra-core";
+import type { Item, PageInput, Sentra } from "@bosdev/sentra-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {

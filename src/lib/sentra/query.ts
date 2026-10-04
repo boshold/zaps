@@ -3,7 +3,7 @@ import {
   formatFrameLocation,
   renderIssueDetail,
   renderItemDetail,
-} from "@boshold/sentra-core";
+} from "@bosdev/sentra-core";
 import type {
   Frame,
   Issue,
@@ -14,7 +14,7 @@ import type {
   Page,
   PageInput,
   Sentra,
-} from "@boshold/sentra-core";
+} from "@bosdev/sentra-core";
 
 import { sanitizeSegment } from "./config.js";
 import { DEFAULT_LIMIT, MAX_LIMIT } from "./schemas.js";

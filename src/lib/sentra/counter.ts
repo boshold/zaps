@@ -1,4 +1,4 @@
-import type { Item, LiveEvent, LiveFilter } from "@boshold/sentra-core";
+import type { Item, LiveEvent, LiveFilter } from "@bosdev/sentra-core";
 
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 
