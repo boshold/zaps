@@ -131,17 +131,28 @@ describe("buildSentraEnv", () => {
   it("returns null and logs when the host is unavailable", async () => {
     const deps = fakeSentra(false);
     expect(await buildSentraEnv(deps, { DSN: "{dsn}" }, "web")).toBeNull();
-    expect(deps.log).toHaveBeenCalledWith(
-      "sentra: web starts without Sentra env (port bind failed)",
-    );
+    expect(deps.log).toHaveBeenCalledWith("sentra: web runs without Sentra env (port bind failed)");
     expect(deps.host.getDsn).not.toHaveBeenCalled();
+  });
+
+  it("returns null and logs when the DSN cannot be built", async () => {
+    const onEnvBuilt = vi.fn();
+    const deps = { ...fakeSentra(), onEnvBuilt };
+    deps.host.getDsn.mockImplementation(() => {
+      throw new Error("Sentra is not running");
+    });
+    expect(await buildSentraEnv(deps, { DSN: "{dsn}" }, "web")).toBeNull();
+    expect(deps.log).toHaveBeenCalledWith(
+      "sentra: web runs without Sentra env (Sentra is not running)",
+    );
+    expect(onEnvBuilt).not.toHaveBeenCalled();
   });
 
   it("falls back to a generic reason", async () => {
     const deps = fakeSentra(false);
     deps.host.status.mockReturnValue({ reason: null });
     await buildSentraEnv(deps, { DSN: "{dsn}" }, "web");
-    expect(deps.log).toHaveBeenCalledWith("sentra: web starts without Sentra env (unavailable)");
+    expect(deps.log).toHaveBeenCalledWith("sentra: web runs without Sentra env (unavailable)");
   });
 });
 

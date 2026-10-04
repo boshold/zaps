@@ -94,28 +94,32 @@ export function sentraLog(deps: SentraDeps, msg: string): void {
 
 /**
  * Starts the host if needed and resolves `template` for one service/task.
- * `null` when the host is unavailable (logged; callers run without Sentra env).
+ * Never throws: `null` (logged) when the host is unavailable or the DSN fails.
  */
 export async function buildSentraEnv(
   deps: SentraDeps,
   template: Record<string, string>,
   name: string,
 ): Promise<Record<string, string> | null> {
-  if ((await deps.host.ensureStarted()) === null) {
-    sentraLog(
-      deps,
-      `sentra: ${name} starts without Sentra env (${deps.host.status().reason ?? "unavailable"})`,
-    );
+  const withoutEnv = (reason: string): null => {
+    sentraLog(deps, `sentra: ${name} runs without Sentra env (${reason})`);
     return null;
+  };
+  if ((await deps.host.ensureStarted()) === null) {
+    return withoutEnv(deps.host.status().reason ?? "unavailable");
   }
-  deps.host.addSourceRoot(deps.projectDir);
-  deps.onEnvBuilt?.();
-  const dsn = deps.host.getDsn({
-    project: deps.project,
-    session: deps.session,
-    service: sanitizeSegment(name),
-  });
-  return resolveSentraEnv(template, dsn);
+  try {
+    deps.host.addSourceRoot(deps.projectDir);
+    const dsn = deps.host.getDsn({
+      project: deps.project,
+      session: deps.session,
+      service: sanitizeSegment(name),
+    });
+    deps.onEnvBuilt?.();
+    return resolveSentraEnv(template, dsn);
+  } catch (error) {
+    return withoutEnv(error instanceof Error ? error.message : String(error));
+  }
 }
 
 /** Sentra env for a service/task target; `{}` when not opted in or unavailable. */

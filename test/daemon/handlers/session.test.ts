@@ -1424,7 +1424,7 @@ describe("session handlers", () => {
 
       expect(info?.env).not.toHaveProperty("SENTRY_DSN");
       expect(sentra.log).toHaveBeenCalledWith(
-        "sentra: e2e starts without Sentra env (port bind failed)",
+        "sentra: e2e runs without Sentra env (port bind failed)",
       );
     });
 

@@ -717,7 +717,8 @@ export class ServiceManager extends EventEmitter {
     if (env) {
       sentra.onServiceStart?.(sanitizeSegment(name), status.startedAt ?? Date.now());
     }
-    if (env && serviceConfig.docker && !this.sentraDockerWarned.has(name)) {
+    const passesEnv = serviceConfig._combined?.isOwner !== false;
+    if (env && serviceConfig.docker && passesEnv && !this.sentraDockerWarned.has(name)) {
       this.sentraDockerWarned.add(name);
       sentraLog(
         sentra,

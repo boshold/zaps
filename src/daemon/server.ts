@@ -342,7 +342,9 @@ class DaemonServer implements SessionStore {
       },
       sentra: {
         host: this.sentra,
-        project: sanitizeSegment(config.project.name),
+        get project() {
+          return sanitizeSegment((ref.session?.config ?? config).project.name);
+        },
         session: id,
         projectDir: config.projectDir,
         log: this.log,

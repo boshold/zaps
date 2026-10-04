@@ -3742,7 +3742,7 @@ describe("sentra env injection", () => {
     expect(deps.storeExecInfo).toHaveBeenCalledWith("web", expect.objectContaining({ env: {} }));
     expect(sentra.host.getDsn).not.toHaveBeenCalled();
     expect(sentra.log).toHaveBeenCalledWith(
-      "sentra: web starts without Sentra env (port bind failed)",
+      "sentra: web runs without Sentra env (port bind failed)",
     );
   });
 
@@ -3786,6 +3786,43 @@ describe("sentra env injection", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await plainStart;
     expect(plain.getStatus("web").sentra).toBeUndefined();
+  });
+
+  it("skips the docker warning for combined non-owners (no env reaches them)", async () => {
+    const config = sentraConfig({
+      postgres: {
+        docker: { service: "postgres" },
+        sentra: true,
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: true },
+      },
+      redis: {
+        docker: { service: "redis" },
+        sentra: true,
+        _combined: { group: "infra", allServices: ["postgres", "redis"], isOwner: false },
+      },
+    });
+    const deps = createMockDeps();
+    const sentra = fakeSentra();
+    deps.sentra = sentra;
+    const mgr = new ServiceManager(
+      config,
+      { "@tui": "%tui", postgres: "%infra", redis: "%infra" },
+      deps,
+      "test-session",
+    );
+    const dockerModule = await import("../../../src/lib/docker.js");
+    const containerSpy = vi.spyOn(dockerModule, "getContainerInfo").mockResolvedValue({
+      state: "running",
+      health: "",
+      ports: [],
+      ids: [],
+    });
+    const promise = mgr.startService("redis");
+    await vi.advanceTimersByTimeAsync(2000);
+    await promise;
+    containerSpy.mockRestore();
+    expect(sentra.host.getDsn).toHaveBeenCalled();
+    expect(sentra.log.mock.calls.filter(([msg]) => msg.includes("docker service"))).toEqual([]);
   });
 
   it("adds the project source root and warns once per docker service", async () => {

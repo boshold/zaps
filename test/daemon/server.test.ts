@@ -221,6 +221,21 @@ describe("DaemonServer", () => {
     scoped.stop();
   });
 
+  it("derives the sentra project segment from the current config name", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    expect(session.deps.sentra?.project).toBe("test");
+    session.config = {
+      ...session.config,
+      project: { ...session.config.project, name: "new name" },
+    };
+    expect(session.deps.sentra?.project).toBe("new-name");
+  });
+
   it("wires env builds and service starts into the error counter, detaches on destroy", async () => {
     const session = await server.create({
       configPath: "/test/.zaps.mts",
