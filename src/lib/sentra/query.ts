@@ -233,6 +233,31 @@ export async function showById(
   });
 }
 
+/** What `ErrorCounter` counts for one service, received at or after `since`. */
+export async function countErrorsSince(
+  sentra: SentraQuerySource,
+  sessionId: string,
+  service: string,
+  since: number,
+): Promise<number> {
+  const filter: ItemFilter = {
+    session: sessionId,
+    service,
+    kind: ["error", "message"],
+    level: ["error", "fatal"],
+    from: since,
+  };
+  let count = 0;
+  let cursor: string | undefined = undefined;
+  do {
+    // oxlint-disable-next-line no-await-in-loop -- cursors are sequential
+    const page = await sentra.query.listItems(filter, { limit: MAX_LIMIT, cursor });
+    count += page.items.length;
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor !== undefined);
+  return count;
+}
+
 export async function clearSession(
   sentra: SentraQuerySource,
   params: ClearParams,

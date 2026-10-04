@@ -6,6 +6,7 @@ import {
   MAX_WALK,
   SentraQueryError,
   clearSession,
+  countErrorsSince,
   itemLocation,
   listErrors,
   listIssues,
@@ -373,6 +374,24 @@ describe("showById", () => {
     const result = await showById(sentra, SESSION_A, eventId);
 
     expect(result.type === "item" && result.item.kind).toBe("error");
+  });
+});
+
+describe("countErrorsSince", () => {
+  it("counts error and fatal errors and messages of the service since the given time", async () => {
+    smallPages(sentra);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-04T10:00:00Z"));
+    await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "before" } });
+    vi.setSystemTime(new Date("2026-10-04T11:00:00Z"));
+    const since = Date.now();
+    await ingestErrors(3, { service: "web" });
+    await ingestEvent(sentra, { service: "web", level: "fatal", message: "fatal" });
+    await ingestEvent(sentra, { service: "web", level: "warning", message: "warn" });
+    await ingestEvent(sentra, { service: "api", error: { type: "Error", value: "api" } });
+    await ingestEvent(sentra, { session: SESSION_B, service: "web", message: "b" });
+
+    expect(await countErrorsSince(sentra, SESSION_A, "web", since)).toBe(4);
   });
 });
 

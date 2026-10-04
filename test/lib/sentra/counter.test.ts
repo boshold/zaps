@@ -109,20 +109,23 @@ describe("ErrorCounter", () => {
     expect(counter.get(SESSION_B, "web")).toBe(0);
   });
 
-  it("clear zeroes the given services or all of the session", async () => {
-    attachA();
-    counter.reset(SESSION_A, "web", Date.now() - 1000);
-    counter.reset(SESSION_A, "api", Date.now() - 1000);
-    counter.reset(SESSION_B, "web", Date.now() - 1000);
-    await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "a" } });
-    await ingestEvent(sentra, { service: "api", error: { type: "Error", value: "b" } });
+  it("recount reads the given services or all of the session", async () => {
+    counter.reset(SESSION_A, "web", 1000);
+    counter.reset(SESSION_A, "api", 2000);
+    counter.reset(SESSION_B, "web", 3000);
+    const calls: string[] = [];
+    const count = async (service: string, since: number) => {
+      calls.push(`${service}@${since}`);
+      return since / 1000;
+    };
 
-    counter.clear(SESSION_A, ["web"]);
-    expect(counter.get(SESSION_A, "web")).toBe(0);
-    expect(counter.get(SESSION_A, "api")).toBe(1);
-
-    counter.clear(SESSION_A);
+    await counter.recount(SESSION_A, ["web"], count);
+    expect(calls).toEqual(["web@1000"]);
+    expect(counter.get(SESSION_A, "web")).toBe(1);
     expect(counter.get(SESSION_A, "api")).toBe(0);
+
+    await counter.recount(SESSION_A, undefined, count);
+    expect(counter.get(SESSION_A, "api")).toBe(2);
     expect(counter.get(SESSION_B, "web")).toBe(0);
   });
 

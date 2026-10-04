@@ -4,6 +4,7 @@ import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 
 import { itemLocation, toErrorRow } from "./query.js";
 import { renderLiveLine } from "./render.js";
+import { liveKindSchema } from "./schemas.js";
 
 type Broadcast = (event: DaemonEvent) => void;
 
@@ -15,8 +16,6 @@ interface CounterEntry {
   since: number;
   count: number;
 }
-
-const LIVE_KINDS = new Set(["error", "message", "log"]);
 
 function entryKey(sessionId: string, service: string): string {
   return `${sessionId}\0${service}`;
@@ -71,18 +70,25 @@ export class ErrorCounter {
     return this.entries.get(entryKey(sessionId, service))?.count ?? null;
   }
 
-  /** Zeroes matching counters; all of the session's services when `services` is empty. */
-  public clear(sessionId: string, services?: string[]): void {
+  /**
+   * Re-reads matching counters after a clear, which may delete only part of the
+   * counted errors. All of the session's services when `services` is empty.
+   */
+  public async recount(
+    sessionId: string,
+    services: string[] | undefined,
+    count: (service: string, since: number) => Promise<number>,
+  ): Promise<void> {
     const prefix = entryKey(sessionId, "");
-    const keys =
-      services && services.length > 0
-        ? new Set(services.map((service) => entryKey(sessionId, service)))
-        : null;
-    for (const [key, entry] of this.entries) {
-      if (key.startsWith(prefix) && (keys === null || keys.has(key))) {
-        entry.count = 0;
-      }
-    }
+    const wanted = services && services.length > 0 ? new Set(services) : null;
+    const updates = [...this.entries]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([key, entry]) => ({ entry, service: key.slice(prefix.length) }))
+      .filter(({ service }) => wanted === null || wanted.has(service))
+      .map(async ({ entry, service }) => {
+        entry.count = await count(service, entry.since);
+      });
+    await Promise.all(updates);
   }
 
   private handle(sessionId: string, event: LiveEvent, broadcast: Broadcast): void {
@@ -95,7 +101,7 @@ export class ErrorCounter {
     if (entry && isCountedError(item) && Date.parse(item.receivedAt) >= entry.since) {
       entry.count += 1;
     }
-    if (LIVE_KINDS.has(item.kind)) {
+    if (liveKindSchema.safeParse(item.kind).success) {
       const row = toErrorRow(item, itemLocation(item));
       broadcast({
         session: sessionId,

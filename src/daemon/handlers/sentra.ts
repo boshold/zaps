@@ -4,7 +4,13 @@ import type { SessionStore } from "#src/daemon/server.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment, sentraEnabledFor, sentraTemplateFor } from "#src/lib/sentra/config.js";
-import { clearSession, listErrors, listIssues, showById } from "#src/lib/sentra/query.js";
+import {
+  clearSession,
+  countErrorsSince,
+  listErrors,
+  listIssues,
+  showById,
+} from "#src/lib/sentra/query.js";
 import type { SentraQuerySource } from "#src/lib/sentra/query.js";
 import {
   SENTRA_DISABLED_ERROR,
@@ -15,7 +21,7 @@ import {
   statusParamsSchema,
 } from "#src/lib/sentra/schemas.js";
 import type { StatusResult } from "#src/lib/sentra/schemas.js";
-import { SentraQueryError, parseTimeInput } from "#src/lib/sentra/time.js";
+import { SentraQueryError } from "#src/lib/sentra/time.js";
 
 type Handler = (req: IpcRequest, store: SessionStore) => Promise<IpcResponse>;
 
@@ -41,15 +47,6 @@ function optedInServices(store: SessionStore, sessionId: string): string[] {
 }
 
 /** Records newer than an earlier `to` survive, so counters stay as they are then. */
-function clearsUpToNow(to: string | number | undefined): boolean {
-  if (to === undefined) {
-    return true;
-  }
-  const now = Date.now();
-  const bound = parseTimeInput(to, "before", now);
-  return (typeof bound === "number" ? bound : Date.parse(bound)) >= now;
-}
-
 function errorText(error: unknown): string {
   if (error instanceof SentraQueryError) {
     return error.toString();
@@ -127,9 +124,11 @@ export const sentraHandlers: Record<string, Handler> = {
   ),
   "sentra.clear": queryHandler(clearParamsSchema, async (sentra, params, store) => {
     const result = await clearSession(sentra, params);
-    if (clearsUpToNow(params.to)) {
-      store.sentraCounter.clear(params.sessionId, params.service?.map(sanitizeSegment));
-    }
+    await store.sentraCounter.recount(
+      params.sessionId,
+      params.service?.map(sanitizeSegment),
+      async (service, since) => countErrorsSince(sentra, params.sessionId, service, since),
+    );
     return result;
   }),
 };

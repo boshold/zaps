@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { createSentra, memoryStorage } from "@bosdev/sentra-core";
 import type { Sentra } from "@bosdev/sentra-core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { daemonHandlers } from "#src/daemon/handlers/daemon.js";
 import { sentraHandlers } from "#src/daemon/handlers/sentra.js";
@@ -42,6 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await host.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -320,17 +321,24 @@ describe("sentra handlers", () => {
       expect(store.sentraCounter.get(SESSION_A, "api")).toBe(1);
     });
 
-    it("keeps counters when `to` lies in the past and clears them when it is now or later", async () => {
+    it("recounts after a clear that deletes only older errors", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-04T10:00:00Z"));
       const sentra = await seeded();
       const store = storeWith();
-      store.sentraCounter.reset(SESSION_A, "web", Date.now() - 60_000);
+      store.sentraCounter.reset(SESSION_A, "web", Date.now());
       store.sentraCounter.attach(SESSION_A, () => undefined);
-      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "a" } });
+      vi.setSystemTime(new Date("2026-10-04T10:10:00Z"));
+      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "old" } });
+      vi.setSystemTime(new Date("2026-10-04T10:25:00Z"));
+      await ingestEvent(sentra, { service: "web", error: { type: "Error", value: "new" } });
+      vi.setSystemTime(new Date("2026-10-04T10:30:00Z"));
+      expect(store.sentraCounter.get(SESSION_A, "web")).toBe(2);
 
-      await call(store, "sentra.clear", { sessionId: SESSION_A, to: "1h" });
+      await call(store, "sentra.clear", { sessionId: SESSION_A, to: "10m" });
       expect(store.sentraCounter.get(SESSION_A, "web")).toBe(1);
 
-      await call(store, "sentra.clear", { sessionId: SESSION_A, to: Date.now() + 60_000 });
+      await call(store, "sentra.clear", { sessionId: SESSION_A });
       expect(store.sentraCounter.get(SESSION_A, "web")).toBe(0);
     });
   });
