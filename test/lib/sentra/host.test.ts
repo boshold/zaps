@@ -233,14 +233,14 @@ describe("SentraHost", () => {
 
   it("fails when the preferred port cannot be bound for another reason", async () => {
     writePortState(4321, portStatePath);
-    vi.spyOn(net.Server.prototype, "listen").mockImplementationOnce(
-      function denied(this: net.Server) {
-        process.nextTick(() => {
-          this.emit("error", Object.assign(new Error("denied"), { code: "EACCES" }));
-        });
-        return this;
-      },
-    );
+    vi.spyOn(net.Server.prototype, "listen").mockImplementationOnce(function denied(
+      this: net.Server,
+    ) {
+      process.nextTick(() => {
+        this.emit("error", Object.assign(new Error("denied"), { code: "EACCES" }));
+      });
+      return this;
+    });
     const host = makeHost();
 
     const sentra = await host.ensureStarted();

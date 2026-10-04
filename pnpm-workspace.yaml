@@ -3,8 +3,8 @@
 # Refuse versions published <3 days ago (direct + transitive); fails the install
 # when a range has no old-enough version. Malicious npm releases are typically
 # detected and yanked within hours.
-# On upgrade to pnpm 11: add minimumReleaseAgeStrict: true (v11-only setting).
 minimumReleaseAge: 4320 # minutes (3 days)
+minimumReleaseAgeStrict: true
 minimumReleaseAgeExclude:
   - "@bosdev/sentra-core" # own package
 
