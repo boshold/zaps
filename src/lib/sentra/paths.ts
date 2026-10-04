@@ -27,6 +27,23 @@ export function sentraDbPath(): string {
   return path.join(sentraStateDir(), "sentra.db");
 }
 
+/**
+ * Events can carry request headers and bodies, so the state dir is private
+ * (0700) and an existing database and its WAL/SHM files are owner-only (0600).
+ */
+export function secureSentraState(dbPath = sentraDbPath()): void {
+  const dir = path.dirname(dbPath);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      /* Not created yet */
+    }
+  }
+}
+
 export function sentraPortStatePath(): string {
   return path.join(sentraStateDir(), "sentra.json");
 }

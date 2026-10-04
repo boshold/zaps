@@ -4,7 +4,13 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createSentra, isIngestPath, sqliteStorage, toNodeListener } from "@bosdev/sentra-core";
 import type { LiveEvent, LiveFilter, Sentra, SentraLogger } from "@bosdev/sentra-core";
 
-import { readPortState, sentraDbPath, sentraPortStatePath, writePortState } from "./paths.js";
+import {
+  readPortState,
+  secureSentraState,
+  sentraDbPath,
+  sentraPortStatePath,
+  writePortState,
+} from "./paths.js";
 
 const HOST = "127.0.0.1";
 const RETRY_AFTER_MS = 30_000;
@@ -193,7 +199,11 @@ export class SentraHost {
       res.writeHead(503, { "content-type": "text/plain" }).end("sentra starting\n");
       return;
     }
-    const { pathname } = new URL(req.url ?? "/", `http://${HOST}`);
+    const pathname = URL.parse(req.url ?? "/", `http://${HOST}`)?.pathname;
+    if (pathname === undefined) {
+      res.writeHead(400, { "content-type": "text/plain" }).end("bad request\n");
+      return;
+    }
     if (!isIngestPath(pathname)) {
       res.writeHead(404, { "content-type": "text/plain" }).end("not found\n");
       return;
@@ -229,6 +239,7 @@ export class SentraHost {
     try {
       const port = await this.bind(server);
       this.port = port;
+      secureSentraState(this.dbPath);
       const sentra = await this.createSentraFn({
         storage: sqliteStorage({ path: this.dbPath, driver: "node" }),
         publicUrl: `http://${HOST}:${port}`,
@@ -237,6 +248,7 @@ export class SentraHost {
       for (const dir of this.sourceRoots) {
         sentra.addSourceRoot(dir);
       }
+      secureSentraState(this.dbPath);
       this.instance = sentra;
       this.listener = toNodeListener(async (request) => sentra.handle(request));
       this.state = "running";

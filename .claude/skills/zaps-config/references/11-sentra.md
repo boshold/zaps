@@ -107,6 +107,6 @@ Sentry.init({
 
 ## Data
 
-Stored in `$XDG_STATE_HOME/zaps/sentra.db` (fallback `~/.local/state/zaps/sentra.db`).
+Stored in `$XDG_STATE_HOME/zaps/sentra.db` (fallback `~/.local/state/zaps/sentra.db`), in an owner-only (0700) directory.
 Sessions with no new records for 30 days are deleted; spans, transactions, logs and
 other non-error records after 7 days. Not configurable.

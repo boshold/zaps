@@ -21,6 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(hosts.splice(0).map(async (host) => host.close()));
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -46,6 +47,10 @@ function runningPort(host: SentraHost): number {
     throw new Error("host has no port");
   }
   return port;
+}
+
+function fileMode(file: string): string {
+  return (fs.statSync(file).mode % 0o1000).toString(8);
 }
 
 async function occupyPort(): Promise<net.Server> {
@@ -227,17 +232,52 @@ describe("SentraHost", () => {
   });
 
   it("fails when the preferred port cannot be bound for another reason", async () => {
-    writePortState(1, portStatePath);
+    writePortState(4321, portStatePath);
+    vi.spyOn(net.Server.prototype, "listen").mockImplementationOnce(
+      function denied(this: net.Server) {
+        process.nextTick(() => {
+          this.emit("error", Object.assign(new Error("denied"), { code: "EACCES" }));
+        });
+        return this;
+      },
+    );
     const host = makeHost();
 
-    // Port 1 is privileged: EACCES unless running as root.
     const sentra = await host.ensureStarted();
-    if (process.getuid?.() === 0) {
-      expect(sentra).not.toBeNull();
-      return;
-    }
     expect(sentra).toBeNull();
     expect(host.status().state).toBe("unavailable");
+  });
+
+  it("answers 400 to a request target that is not a valid URL", async () => {
+    const host = makeHost();
+    await host.ensureStarted();
+
+    const response = await new Promise<string>((resolve, reject) => {
+      const socket = net.connect(runningPort(host), "127.0.0.1", () => {
+        socket.end("GET //% HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+      });
+      let data = "";
+      socket.on("data", (chunk) => {
+        data += chunk.toString();
+      });
+      socket.on("end", () => resolve(data));
+      socket.on("error", reject);
+    });
+
+    expect(response).toMatch(/^HTTP\/1\.1 400 /);
+    expect(host.status().state).toBe("running");
+  });
+
+  it("keeps the state dir and database private", async () => {
+    const dbPath = path.join(dir, "state", "sentra.db");
+    fs.mkdirSync(path.dirname(dbPath), { mode: 0o755 });
+    fs.writeFileSync(dbPath, "", { mode: 0o644 });
+    const host = makeHost({ dbPath });
+
+    await host.ensureStarted();
+
+    expect(fileMode(path.dirname(dbPath))).toBe("700");
+    expect(fileMode(dbPath)).toBe("600");
   });
 
   it("closes idempotently and stops serving", async () => {

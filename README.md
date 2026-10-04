@@ -218,13 +218,13 @@ If tmux isn't installed at all, ZAPS says so instead of starting:
 
 Needs [Sentra](#sentry-errors-sentra) set up in the config.
 
-| Command                 | Description                                                                                                         |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `zaps sentra errors`    | List error events, newest first. Time, filter and paging flags, `--fail-if-any`, `--json`                           |
-| `zaps sentra issues`    | List grouped issues, last seen first. `--service`, `--level`, `--min-level`, `--q`, time and paging flags, `--json` |
-| `zaps sentra show <id>` | Show one record, issue, or Sentry event id as Markdown. `--json`                                                    |
-| `zaps sentra live`      | Stream new records until Ctrl-C. `--service`, `--level`, `--min-level`, `--kind`, `--q`, `--json`                   |
-| `zaps sentra clear`     | Delete the session's records. `--service`, `--before <time>`, `--json`                                              |
+| Command                 | Description                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `zaps sentra errors`    | List error events, newest first. Time, filter and paging flags, `--fail-if-any`, `--json`                               |
+| `zaps sentra issues`    | List grouped issues, last seen first. `--service`, `--level`, `--min-level`, `--q`, time and paging flags, `--json`     |
+| `zaps sentra show <id>` | Show one record, issue, or Sentry event id as Markdown. `--json`                                                        |
+| `zaps sentra live`      | Stream new records until Ctrl-C. `--service`, `--level`, `--min-level`, `--kind` (error, message, log), `--q`, `--json` |
+| `zaps sentra clear`     | Delete the session's records. `--service`, `--before <time>`, `--json`                                                  |
 
 ### Config & Setup
 
@@ -1417,6 +1417,7 @@ To stream errors in a pane, add a service:
 
 Records live in `$XDG_STATE_HOME/zaps/sentra.db` (fallback
 `~/.local/state/zaps/sentra.db`), shared by all projects and filtered by session.
+Events can hold request headers and bodies, so the directory is owner-only (0700).
 The chosen port is kept in `sentra.json` next to it. Sentra deletes a session's data
 after 30 days without new records, and spans, transactions, logs and other
 non-error records after 7 days. `zaps sentra clear` deletes the current session's records right away. Events
