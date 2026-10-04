@@ -1173,6 +1173,33 @@ describe("sentra targets", () => {
     ).resolves.toBeDefined();
   });
 
+  it("rejects opted-in names that map to the same Sentra service", async () => {
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { "web app": { start: "x", sentra: true }, "web-app": { start: "y", sentra: true } },
+      }`),
+    ).rejects.toThrow(
+      'services.web app and services.web-app both map to Sentra service "web-app"; rename one of them',
+    );
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { e2e: { start: "x", sentra: true } },
+        tasks: { e2e: { name: "E2E", commands: "x", sentra: true } },
+      }`),
+    ).rejects.toThrow('services.e2e and tasks.e2e both map to Sentra service "e2e"');
+  });
+
+  it("allows colliding names when only one of them is opted in", async () => {
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { "web app": { start: "x", sentra: true }, "web-app": { start: "y" } },
+      }`),
+    ).resolves.toBeDefined();
+  });
+
   it("inherits sentra on docker expand children and validates it", async () => {
     await expect(
       load(`{
