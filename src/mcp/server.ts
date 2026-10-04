@@ -7,6 +7,7 @@ import { z } from "zod";
 import { requestDaemon, resolveCommandArgv } from "#src/cli/helpers.js";
 import { createAutoStartRequest } from "#src/cli/sentra.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
+import { logLinesDataSchema } from "#src/lib/ipc/protocol.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { renderErrors, renderIssues, renderShow } from "#src/lib/sentra/render.js";
 import {
@@ -26,8 +27,10 @@ import type { ServiceStatus } from "#src/lib/service/types.js";
 import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
 import type { SessionInfo } from "#src/lib/session/resolve.js";
 
+const taskResultSchema = z.object({ success: z.boolean() });
+
 function classifyDaemonError(error: unknown): Error {
-  const { code } = error as NodeJS.ErrnoException;
+  const code = error instanceof Error && "code" in error ? error.code : undefined;
   if (code === "ENOENT" || code === "ECONNREFUSED") {
     return new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
       cause: error,
@@ -353,8 +356,8 @@ async function startMcpServer(
         "tasks.run",
         { key: args.key },
         (event, data) => {
-          if (event === "line") {
-            lines.push(data as string);
+          if (event === "line" && typeof data === "string") {
+            lines.push(data);
           }
         },
         120_000,
@@ -363,16 +366,16 @@ async function startMcpServer(
       if (res.error) {
         return { content: [{ type: "text" as const, text: `Error: ${res.error}` }], isError: true };
       }
-      const result = res.result as { success: boolean };
+      const success = taskResultSchema.safeParse(res.result).data?.success ?? false;
       const output = lines.join("\n");
       return {
         content: [
           {
             type: "text" as const,
-            text: output || (result.success ? "Task completed." : "Task failed."),
+            text: output || (success ? "Task completed." : "Task failed."),
           },
         ],
-        isError: !result.success,
+        isError: !success,
       };
     },
   );
@@ -466,10 +469,10 @@ async function startMcpServer(
   if (subscriptionSessionId) {
     ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], {
       onEvent: (event: DaemonEvent) => {
-        if (event.event === "log.lines") {
-          const data = event.data as { service: string };
+        const data = logLinesDataSchema.safeParse(event.data);
+        if (event.event === "log.lines" && data.success) {
           // eslint-disable-next-line no-void -- Fire-and-forget notification
-          void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
+          void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.data.service}` });
         }
       },
     });

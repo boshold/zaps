@@ -640,9 +640,18 @@ describe("startMcpServer", () => {
       });
 
       const eventHandler = subscribeHandlers().onEvent;
-      eventHandler({ session: SESSION, event: "log.lines", data: { service: "api" } });
+      eventHandler({
+        session: SESSION,
+        event: "log.lines",
+        data: { service: "api", lines: ["x"] },
+      });
 
       expect(mockSendResourceUpdated).toHaveBeenCalledWith({ uri: "zaps://logs/api" });
+    });
+
+    it("ipcSubscribe ignores malformed log.lines payloads", () => {
+      subscribeHandlers().onEvent({ session: SESSION, event: "log.lines", data: { lines: [] } });
+      expect(mockSendResourceUpdated).not.toHaveBeenCalled();
     });
 
     it("ipcSubscribe ignores non-log.lines events", () => {
@@ -674,6 +683,12 @@ describe("startMcpServer", () => {
       await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
         "Daemon not running. Start with `zaps up` or `zaps daemon start`.",
       );
+    });
+
+    it("request() wraps non-Error throws", async () => {
+      setMethodError("plain string");
+
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow("plain string");
     });
 
     it("request() re-throws unknown errors", async () => {

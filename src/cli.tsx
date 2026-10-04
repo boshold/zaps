@@ -42,6 +42,7 @@ import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
+import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
 import { installResizeReset } from "./lib/screen-reset.js";
@@ -805,10 +806,10 @@ const logsCommand = command(
         let userClosed = false;
         const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], {
           onEvent: (event: DaemonEvent) => {
-            const data = event.data as { service: string; lines: string[] };
-            if (targetServices.includes(data.service)) {
-              for (const line of data.lines) {
-                process.stdout.write(`${formatLine(data.service, line)}\n`);
+            const logLines = logLinesDataSchema.safeParse(event.data);
+            if (logLines.success && targetServices.includes(logLines.data.service)) {
+              for (const line of logLines.data.lines) {
+                process.stdout.write(`${formatLine(logLines.data.service, line)}\n`);
               }
             }
           },

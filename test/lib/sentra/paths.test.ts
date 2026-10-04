@@ -72,6 +72,13 @@ describe("port state", () => {
     },
   );
 
+  it("removes the tmp file when the rename fails", () => {
+    const target = sentraPortStatePath();
+    fs.mkdirSync(target, { recursive: true });
+    expect(() => writePortState(43_210)).toThrow();
+    expect(fs.readdirSync(path.dirname(target))).toEqual(["sentra.json"]);
+  });
+
   it("rejects writing an invalid port", () => {
     expect(() => writePortState(0)).toThrow();
   });

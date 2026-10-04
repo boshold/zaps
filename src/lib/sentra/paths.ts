@@ -41,6 +41,11 @@ export function readPortState(file = sentraPortStatePath()): number | null {
 export function writePortState(port: number, file = sentraPortStatePath()): void {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(portStateSchema.parse({ port }))}\n`);
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(portStateSchema.parse({ port }))}\n`);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
 }

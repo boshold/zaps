@@ -21,6 +21,7 @@ const externalNativeBabel: Plugin = {
 /**
  * `@bosdev/zaps` ships on npmjs, so GitHub Packages deps (`@boshold/*`) are bundled.
  * Resolved from the importer; `pluginBuild.resolve` would return them as external.
+ * `createRequire` needs a `require` or `default` export condition in the package.
  */
 const bundleBoshold: Plugin = {
   name: "bundle-boshold",
