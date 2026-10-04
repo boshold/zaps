@@ -46,6 +46,10 @@ export interface ServiceStatus {
   isDetached?: boolean;
   /** Group name for expanded docker services */
   group?: string;
+  /** Epoch ms of the last start/restart. */
+  startedAt?: number;
+  /** Sentra env was injected on the last start. */
+  sentra?: boolean;
 }
 
 // === Action results ===

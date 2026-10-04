@@ -1127,3 +1127,98 @@ describe("docker expand", () => {
     });
   });
 });
+
+describe("sentra targets", () => {
+  async function load(body: string): Promise<unknown> {
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `export function config(z) { return z.define(${body}); }`,
+    );
+    return loadConfig(configPath);
+  }
+
+  it("rejects service sentra: true without a project block", async () => {
+    await expect(load(`{ services: { web: { start: "x", sentra: true } } }`)).rejects.toThrow(
+      'services.web.sentra requires a top-level "sentra" block',
+    );
+  });
+
+  it("rejects task sentra: true without a project block", async () => {
+    await expect(
+      load(
+        `{ services: { web: { start: "x" } }, tasks: { e2e: { name: "E2E", commands: "x", sentra: true } } }`,
+      ),
+    ).rejects.toThrow('tasks.e2e.sentra requires a top-level "sentra" block');
+  });
+
+  it("accepts { env } targets and sentra: false without a project block", async () => {
+    await expect(
+      load(`{
+        services: {
+          web: { start: "x", sentra: { env: { SENTRY_DSN: "{dsn}" } } },
+          db: { start: "y", sentra: false },
+        },
+        tasks: { e2e: { name: "E2E", commands: "x", sentra: { env: { DSN: "{dsn}" } } } },
+      }`),
+    ).resolves.toBeDefined();
+  });
+
+  it("accepts sentra: true with a project block", async () => {
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { web: { start: "x", sentra: true } },
+        tasks: { e2e: { name: "E2E", commands: "x", sentra: true } },
+      }`),
+    ).resolves.toBeDefined();
+  });
+
+  it("rejects opted-in names that map to the same Sentra service", async () => {
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { "web app": { start: "x", sentra: true }, "web-app": { start: "y", sentra: true } },
+      }`),
+    ).rejects.toThrow(
+      'services.web app and services.web-app both map to Sentra service "web-app"; rename one of them',
+    );
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { e2e: { start: "x", sentra: true } },
+        tasks: { e2e: { name: "E2E", commands: "x", sentra: true } },
+      }`),
+    ).rejects.toThrow('services.e2e and tasks.e2e both map to Sentra service "e2e"');
+  });
+
+  it("allows colliding names when only one of them is opted in", async () => {
+    await expect(
+      load(`{
+        sentra: { env: { SENTRY_DSN: "{dsn}" } },
+        services: { "web app": { start: "x", sentra: true }, "web-app": { start: "y" } },
+      }`),
+    ).resolves.toBeDefined();
+  });
+
+  it("inherits sentra on docker expand children and validates it", async () => {
+    await expect(
+      load(`{
+        services: {
+          infra: { docker: { service: ["pg"], expand: true }, sentra: true },
+        },
+      }`),
+    ).rejects.toThrow('services.pg.sentra requires a top-level "sentra" block');
+  });
+
+  it("allows a sentra override on a docker expand child", async () => {
+    await expect(
+      load(`{
+        services: {
+          infra: {
+            docker: { service: ["pg"], expand: { pg: { sentra: { env: { DSN: "{dsn}" } } } } },
+          },
+        },
+      }`),
+    ).resolves.toBeDefined();
+  });
+});

@@ -100,7 +100,9 @@ describe.skipIf(!hasTmux())("daemon tasks.runInPane integration (exec-task wrapp
 
   it("runs the task via the wrapper, captures output, completes, and leaves the pane open", async () => {
     const events: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], (event) => events.push(event));
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], {
+      onEvent: (event) => events.push(event),
+    });
     await ipcRequest(daemon.socketPath, "daemon.ping");
 
     const res = await ipcRequest(
@@ -153,7 +155,9 @@ describe.skipIf(!hasTmux())("daemon tasks.runInPane integration (exec-task wrapp
 
   it("runs in a split pane (target: pane), captures output, completes, and leaves it open", async () => {
     const events: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], (event) => events.push(event));
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], {
+      onEvent: (event) => events.push(event),
+    });
     await ipcRequest(daemon.socketPath, "daemon.ping");
 
     const res = await ipcRequest(
@@ -204,7 +208,9 @@ describe.skipIf(!hasTmux())("daemon tasks.runInPane integration (exec-task wrapp
 
   it("captures the trailing line of multi-line, no-trailing-newline output (tail-chunk race)", async () => {
     const events: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], (event) => events.push(event));
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["task.*"], {
+      onEvent: (event) => events.push(event),
+    });
     await ipcRequest(daemon.socketPath, "daemon.ping");
 
     const res = await ipcRequest(

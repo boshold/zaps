@@ -4,6 +4,7 @@ import path from "node:path";
 import type { JitiOptions } from "jiti";
 import { createJiti } from "jiti";
 
+import { sanitizeSegment, sentraTemplateFor } from "#src/lib/sentra/config.js";
 import { detectCycles } from "#src/lib/service/graph.js";
 import { RESERVED_TASK_SHORTCUT_KEYS } from "#src/lib/taskShortcuts.js";
 import { validateLayoutSizes } from "#src/lib/tmux-layout.js";
@@ -288,8 +289,56 @@ function warnReservedTaskShortcuts(project: ProjectConfig): void {
   }
 }
 
+/** `sentra: true` reuses the project template, so it needs the top-level block. */
+function validateSentraTargets(project: ProjectConfig): void {
+  if (project.sentra) {
+    return;
+  }
+  const targets = [
+    ...Object.entries(project.services).map(
+      ([name, svc]) => [`services.${name}`, svc.sentra] as const,
+    ),
+    ...Object.entries(project.tasks ?? {}).map(
+      ([key, task]) => [`tasks.${key}`, task.sentra] as const,
+    ),
+  ];
+  for (const [field, sentra] of targets) {
+    if (sentra === true) {
+      throw new Error(`${field}.sentra requires a top-level "sentra" block`);
+    }
+  }
+}
+
+/** Opted-in services/tasks must map to distinct DSN service segments. */
+function validateSentraScopes(project: ProjectConfig): void {
+  const targets = [
+    ...Object.entries(project.services).map(
+      ([name, svc]) => [name, `services.${name}`, svc.sentra] as const,
+    ),
+    ...Object.entries(project.tasks ?? {}).map(
+      ([key, task]) => [key, `tasks.${key}`, task.sentra] as const,
+    ),
+  ];
+  const seen = new Map<string, string>();
+  for (const [name, field, target] of targets) {
+    if (sentraTemplateFor(project.sentra, target) === null) {
+      continue;
+    }
+    const segment = sanitizeSegment(name);
+    const other = seen.get(segment);
+    if (other !== undefined) {
+      throw new Error(
+        `${other} and ${field} both map to Sentra service "${segment}"; rename one of them`,
+      );
+    }
+    seen.set(segment, field);
+  }
+}
+
 function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
   validateServiceDeps(project);
+  validateSentraTargets(project);
+  validateSentraScopes(project);
   warnNonAutostartDeps(project);
   warnReservedTaskShortcuts(project);
   validateDetachedGroups(project);

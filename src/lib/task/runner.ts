@@ -1,5 +1,7 @@
-import type { TaskConfig } from "#src/config/types.js";
+import type { SentraConfig, TaskConfig } from "#src/config/types.js";
 import { execCommand, execCommandWithResult } from "#src/lib/exec.js";
+import { sentraEnvFor } from "#src/lib/sentra/config.js";
+import type { SentraDeps } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { defaultTmux } from "#src/lib/tmux-default.js";
@@ -17,6 +19,9 @@ interface TaskRunnerDeps {
   onLine?: (key: string, line: string) => void;
   /** Tmux surface for popup tasks; defaults to the env-based handle. */
   tmux?: RunnerTmux;
+  /** Sentra env injection for opted-in tasks. */
+  sentra?: SentraDeps;
+  sentraConfig?: SentraConfig;
 }
 
 interface ExecuteContext {
@@ -114,7 +119,8 @@ export async function runTaskWithDeps(
 
   // Resolve env
   const serviceCtx = buildServiceContext(deps.statuses, deps.projectDir, deps.services);
-  const resolvedEnv = resolveEnv(t.env, serviceCtx);
+  const sentraEnv = await sentraEnvFor(deps.sentra, deps.sentraConfig, t.sentra, key);
+  const resolvedEnv = { ...sentraEnv, ...resolveEnv(t.env, serviceCtx) };
   const taskCwd = t.cwd ?? deps.projectDir;
   const envSpread = Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {};
   const emitLine = (line: string) => deps.onLine?.(key, line);

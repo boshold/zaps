@@ -83,6 +83,38 @@ const urlConfigSchema = z.union([
   z.custom<(ctx: ServiceContext) => string>((v) => typeof v === "function"),
 ]);
 
+// === Sentra ===
+const SENTRA_DSN_PLACEHOLDER = "{dsn}";
+
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+const sentraEnvSchema = z.record(z.string(), z.string()).superRefine((env, ctx) => {
+  for (const key of Object.keys(env)) {
+    if (!ENV_KEY_PATTERN.test(key)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `sentra.env key '${key}' must match ${ENV_KEY_PATTERN.source}`,
+        input: key,
+        path: [key],
+      });
+    }
+  }
+  if (!Object.values(env).some((v) => v.includes(SENTRA_DSN_PLACEHOLDER))) {
+    ctx.addIssue({
+      code: "custom",
+      message: `sentra.env must use ${SENTRA_DSN_PLACEHOLDER} in at least one value`,
+      input: env,
+    });
+  }
+});
+
+const sentraProjectSchema = z.object({
+  enabled: z.boolean().default(true),
+  env: sentraEnvSchema,
+});
+
+const sentraTargetSchema = z.union([z.boolean(), z.object({ env: sentraEnvSchema })]);
+
 // === Service Flags ===
 const flagsSchema = z.object({
   start: z.optional(z.boolean()),
@@ -105,6 +137,7 @@ const serviceConfigBaseSchema = z.object({
   url: z.optional(urlConfigSchema),
   cwd: z.optional(z.string()),
   raw: z.optional(z.boolean()),
+  sentra: z.optional(sentraTargetSchema),
   restart: z.optional(
     z.object({
       maxRetries: z.optional(z.number()),
@@ -264,6 +297,7 @@ const taskConfigSchema = z
     dependsOn: z.optional(z.array(z.string())),
     env: z.optional(envConfigSchema),
     shortcut: z.optional(z.string()),
+    sentra: z.optional(sentraTargetSchema),
   })
   .superRefine((val, ctx) => {
     if (val.commands && val.run) {
@@ -360,6 +394,7 @@ export const projectConfigSchema = z.object({
   tasks: z.optional(z.record(z.string(), taskConfigSchema)),
   layout: z.optional(layoutNodeSchema),
   hooks: z.optional(hooksConfigSchema),
+  sentra: z.optional(sentraProjectSchema),
   // Prefault so an omitted `ui` block resolves to the full set of field defaults.
   ui: uiConfigSchema.prefault({}),
 });
@@ -376,3 +411,5 @@ export const projectConfigSchema = z.object({
 export const expandOverrideSchema = serviceConfigBaseSchema
   .omit({ start: true, run: true, docker: true })
   .strict();
+
+export { sentraEnvSchema, sentraProjectSchema, sentraTargetSchema };

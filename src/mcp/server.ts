@@ -1,16 +1,36 @@
 /* eslint-disable no-unsafe-type-assertion -- IPC boundary */
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import type { SessionInfo } from "#src/cli/helpers.js";
-import { CliError, findSessionByDir, resolveTargetSession } from "#src/cli/helpers.js";
+import { requestDaemon, resolveCommandArgv } from "#src/cli/helpers.js";
+import { createAutoStartRequest } from "#src/cli/sentra.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
+import { logLinesDataSchema } from "#src/lib/ipc/protocol.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import { renderErrors, renderIssues, renderShow } from "#src/lib/sentra/render.js";
+import {
+  MAX_LIMIT,
+  errorsResultSchema,
+  issuesResultSchema,
+  itemKindSchema,
+  levelSchema,
+  showResultSchema,
+} from "#src/lib/sentra/schemas.js";
+import {
+  computeProjectSessionId,
+  describeSentraError,
+  resolveSentraSessionId,
+} from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
+import type { SessionInfo } from "#src/lib/session/resolve.js";
+
+const taskResultSchema = z.object({ success: z.boolean() });
 
 function classifyDaemonError(error: unknown): Error {
-  const { code } = error as NodeJS.ErrnoException;
+  const code = error instanceof Error && "code" in error ? error.code : undefined;
   if (code === "ENOENT" || code === "ECONNREFUSED") {
     return new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
       cause: error,
@@ -19,7 +39,48 @@ function classifyDaemonError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-async function startMcpServer(socketPath: string, sessionArg?: string): Promise<void> {
+const TIME_WINDOW_HINT =
+  "Use `from` = ISO timestamp taken before reproducing/testing. Then only errors of that run show up.";
+
+const sentraTimeShape = {
+  from: z
+    .string()
+    .optional()
+    .describe("Start: ISO 8601, epoch ms, or duration like 10m (now minus)"),
+  to: z.string().optional().describe("End: ISO 8601, epoch ms, or duration"),
+  since: z.string().optional().describe("Relative start, e.g. 10m (not with from)"),
+};
+
+const sentraPageShape = {
+  limit: z.number().int().min(1).max(MAX_LIMIT).optional().describe("Max rows (default 20)"),
+  skip: z.number().int().min(0).optional().describe("Rows to skip (default 0)"),
+};
+
+function textResult(text: string, isError = false): CallToolResult {
+  return isError
+    ? { content: [{ type: "text", text }], isError }
+    : { content: [{ type: "text", text }] };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+interface McpServerOptions {
+  /** Starts the daemon for the sentra tools; resolves with its socket. */
+  ensureDaemon?: () => Promise<string>;
+}
+
+async function defaultEnsureDaemon(): Promise<string> {
+  const { ensureDaemon } = await import("#src/daemon/index.js");
+  return ensureDaemon(resolveCommandArgv());
+}
+
+async function startMcpServer(
+  socketPath: string,
+  sessionArg?: string,
+  options: McpServerOptions = {},
+): Promise<void> {
   const server = new McpServer(
     { name: "zaps", version: "0.1.0" },
     { capabilities: { resources: { subscribe: true, listChanged: true } } },
@@ -70,6 +131,45 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
       throw new Error(res.error);
     }
     return res.result;
+  }
+
+  /** Like the CLI: starts the daemon once when it is not running, so stopped sessions stay readable. */
+  const sentraRequest = createAutoStartRequest({
+    request: async (sock, method, params) => requestDaemon(sock, method, params, 30_000),
+    socket: () => socketPath,
+    ensureDaemon: options.ensureDaemon ?? defaultEnsureDaemon,
+  });
+
+  /** Running session, `-s` verbatim, or the cwd config id (stopped session). */
+  async function resolveSentraSession(): Promise<string> {
+    const listRes = await sentraRequest("session.list");
+    if (listRes.error) {
+      throw new Error(listRes.error);
+    }
+    return await resolveSentraSessionId({
+      sessions: listRes.result,
+      sessionArg,
+      cwd: process.cwd(),
+      configSessionId: async () => computeProjectSessionId(process.cwd()),
+    });
+  }
+
+  /** Daemon-level `sentra.*` call; errors become `isError` results with CLI messages. */
+  async function sentraTool(
+    method: string,
+    params: Record<string, unknown>,
+    render: (result: unknown) => string,
+  ): Promise<CallToolResult> {
+    try {
+      const sessionId = await resolveSentraSession();
+      const res = await sentraRequest(method, { ...params, sessionId });
+      if (res.error) {
+        return textResult(describeSentraError(res.error).message, true);
+      }
+      return textResult(render(res.result));
+    } catch (error) {
+      return textResult(errorMessage(error), true);
+    }
   }
 
   // --- Tools ---
@@ -256,8 +356,8 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
         "tasks.run",
         { key: args.key },
         (event, data) => {
-          if (event === "line") {
-            lines.push(data as string);
+          if (event === "line" && typeof data === "string") {
+            lines.push(data);
           }
         },
         120_000,
@@ -266,18 +366,76 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
       if (res.error) {
         return { content: [{ type: "text" as const, text: `Error: ${res.error}` }], isError: true };
       }
-      const result = res.result as { success: boolean };
+      const success = taskResultSchema.safeParse(res.result).data?.success ?? false;
       const output = lines.join("\n");
       return {
         content: [
           {
             type: "text" as const,
-            text: output || (result.success ? "Task completed." : "Task failed."),
+            text: output || (success ? "Task completed." : "Task failed."),
           },
         ],
-        isError: !result.success,
+        isError: !success,
       };
     },
+  );
+
+  server.registerTool(
+    "sentra_errors",
+    {
+      description: `List runtime error events (Sentry SDKs) of this project's session, newest first. TOON rows: id, receivedAt, service, kind, level, title, location, issueId; plus hasMore. Defaults: kind error,message and min level error (level default dropped when kind/level/minLevel given). ${TIME_WINDOW_HINT} Page with skip.`,
+      inputSchema: {
+        service: z.array(z.string()).min(1).optional().describe("Services"),
+        ...sentraTimeShape,
+        level: z.array(levelSchema).min(1).optional().describe("Exact levels"),
+        minLevel: levelSchema.optional().describe("Minimum level"),
+        kind: z.array(itemKindSchema).min(1).optional().describe("Record kinds"),
+        release: z.string().optional().describe("Release"),
+        environment: z.string().optional().describe("Environment"),
+        traceId: z.string().optional().describe("Trace id"),
+        q: z.string().optional().describe("Case-insensitive title substring"),
+        ...sentraPageShape,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.errors", args, (result) => {
+        const parsed = errorsResultSchema.parse(result);
+        return `${renderErrors(parsed, null)}\nhasMore: ${parsed.hasMore}`;
+      }),
+  );
+
+  server.registerTool(
+    "sentra_issues",
+    {
+      description: `List grouped runtime errors (issues) of this project's session, last seen first; time filters apply to lastSeen. TOON rows: id, shortId, services, level, title, culprit, count, firstSeen, lastSeen; plus hasMore. ${TIME_WINDOW_HINT}`,
+      inputSchema: {
+        service: z.array(z.string()).min(1).optional().describe("Services"),
+        ...sentraTimeShape,
+        level: z.array(levelSchema).min(1).optional().describe("Exact levels"),
+        minLevel: levelSchema.optional().describe("Minimum level"),
+        q: z.string().optional().describe("Case-insensitive title substring"),
+        ...sentraPageShape,
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.issues", args, (result) => {
+        const parsed = issuesResultSchema.parse(result);
+        return `${renderIssues(parsed, null)}\nhasMore: ${parsed.hasMore}`;
+      }),
+  );
+
+  server.registerTool(
+    "sentra_show",
+    {
+      description:
+        "Show one runtime error record, issue, or Sentry event id (32 hex) as Markdown: title, level, service, mapped stack with source context, breadcrumbs, request, tags.",
+      inputSchema: { id: z.string().min(1).describe("Record id, issue id, or event id") },
+      annotations: { readOnlyHint: true },
+    },
+    async (args) =>
+      sentraTool("sentra.show", args, (result) => renderShow(showResultSchema.parse(result))),
   );
 
   // --- Resources: live log streaming ---
@@ -313,12 +471,14 @@ async function startMcpServer(socketPath: string, sessionArg?: string): Promise<
   // Simply unavailable until the server is restarted.
   const subscriptionSessionId = await resolveSession().catch(() => "");
   if (subscriptionSessionId) {
-    ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], (event: DaemonEvent) => {
-      if (event.event === "log.lines") {
-        const data = event.data as { service: string };
-        // eslint-disable-next-line no-void -- Fire-and-forget notification
-        void server.server.sendResourceUpdated({ uri: `zaps://logs/${data.service}` });
-      }
+    ipcSubscribe(socketPath, subscriptionSessionId, ["log.lines"], {
+      onEvent: (event: DaemonEvent) => {
+        const logLines = logLinesDataSchema.safeParse(event.data);
+        if (event.event === "log.lines" && logLines.success) {
+          // eslint-disable-next-line no-void -- Fire-and-forget notification
+          void server.server.sendResourceUpdated({ uri: `zaps://logs/${logLines.data.service}` });
+        }
+      },
     });
   }
 

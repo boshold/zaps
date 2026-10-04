@@ -56,6 +56,7 @@
     "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage"
   },
   "dependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@toon-format/toon": "^4.1.1",
     "@types/node": "^26.2.0",
@@ -66,9 +67,11 @@
     "open": "^11.0.1",
     "react": "^19.2.8",
     "yoga-layout": "^3.2.1",
-    "zod": "^4.4.3"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@bosdev/sentra-core": "^0.1.1",
+    "@sentry/node": "^11.1.0",
     "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.28.2",
@@ -83,7 +86,7 @@
     "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.15"
   },
   "packageManager": "pnpm@10.34.3+sha512.f2c531b08829d7be7f03c90addc266615f9c5477463e4bf1d275cb263ce9ea57cf0d5599110d94649a9bb3fed9f0b5efcea74a7016b61532a24cb9ad87860c1d"
 }

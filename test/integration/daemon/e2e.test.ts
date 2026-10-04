@@ -285,9 +285,9 @@ describe.skipIf(!hasTmux())("daemon e2e", () => {
       await waitForServiceState(daemon.socketPath, sid, "web", "ready");
 
       const events: DaemonEvent[] = [];
-      const sub = ipcSubscribe(daemon.socketPath, sid, ["service.stateChange"], (event) =>
-        events.push(event),
-      );
+      const sub = ipcSubscribe(daemon.socketPath, sid, ["service.stateChange"], {
+        onEvent: (event) => events.push(event),
+      });
 
       // Confirm subscription is live via a ping round-trip
       await ipcRequest(daemon.socketPath, "daemon.ping");
