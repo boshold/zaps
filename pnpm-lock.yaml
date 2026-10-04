@@ -57,8 +57,8 @@ importers:
         version: 4.6.5
     devDependencies:
       '@bosdev/sentra-core':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.1.1
+        version: 0.1.1
       '@sentry/node':
         specifier: ^11.1.0
         version: 11.1.0(rollup@4.62.5)
@@ -129,8 +129,8 @@ packages:
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
     engines: {node: '>=18'}
 
-  '@bosdev/sentra-core@0.1.0':
-    resolution: {integrity: sha512-IFyweQEGMlaskuY+CX9xCRM9ISMK/M8K8iP9R0Afc1ZP58HcUcI/LaA+BDrYAEuTn3p5tKJ9Oq0BtJbkg/jc7g==}
+  '@bosdev/sentra-core@0.1.1':
+    resolution: {integrity: sha512-YzdjOVU+gpBhrvpmbCNPybn5As1DKq5fGVr+sUld8fYQELwVje0QtPnxrSpLQnXmGFJLjgi4lpiaV8Pt4k0wUQ==}
     engines: {bun: '>=1.4', node: '>=22.15'}
 
   '@esbuild/aix-ppc64@0.28.2':
@@ -2490,7 +2490,7 @@ snapshots:
 
   '@bcoe/v8-coverage@1.0.2': {}
 
-  '@bosdev/sentra-core@0.1.0':
+  '@bosdev/sentra-core@0.1.1':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       zod: 4.6.5
