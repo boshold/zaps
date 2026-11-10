@@ -11,6 +11,7 @@ function fixture(managed = false) {
     ...tmuxFor(managed ? "zaps" : null),
     hasSession: vi.fn(async () => true),
     paneExists: vi.fn(async () => true),
+    windowExists: vi.fn(async () => true),
     displayMessage: vi.fn(async () => "0"),
     splitPane: vi.fn(async () => "%2"),
     killPane: vi.fn(async (_pane: string) => {
@@ -212,6 +213,60 @@ describe("tmux session backend", () => {
     expect(options.tmux.killPane).toHaveBeenCalledWith("%3");
     expect(options.tmux.killSession).not.toHaveBeenCalled();
     expect(backend.dispose()).toBe(disposal);
+  });
+
+  it("disposes a confirmed deleted window after external host loss", async () => {
+    const options = fixture();
+    const backend = await TmuxSessionBackend.create(options);
+    await backend.activateWindowTitles();
+    options.tmux.renameWindow.mockRejectedValue(new Error("window missing"));
+    options.tmux.setWindowOption.mockRejectedValue(new Error("window missing"));
+    options.tmux.windowExists.mockResolvedValue(false);
+    options.tmux.killPane.mockRejectedValue(new Error("pane missing"));
+    options.tmux.paneExists.mockResolvedValue(false);
+    await expect(backend.dispose()).resolves.toBeUndefined();
+    expect(options.tmux.windowExists).toHaveBeenCalledWith("@1");
+    expect(options.tmux.killPane).toHaveBeenCalledExactlyOnceWith("%2");
+    expect(backend.getPresentation()).toMatchObject({ paneMap: {} });
+    expect(options.tmux.killSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves runtime and pane cleanup failures for a deleted window", async () => {
+    const options = fixture();
+    const runtimeError = new Error("runtime cleanup failed");
+    const paneError = new Error("pane cleanup failed");
+    const backend = await TmuxSessionBackend.create({
+      ...options,
+      disposeRuntime: async () => {
+        throw runtimeError;
+      },
+    });
+    await backend.activateWindowTitles();
+    options.tmux.renameWindow.mockRejectedValue(new Error("window missing"));
+    options.tmux.setWindowOption.mockRejectedValue(new Error("window missing"));
+    options.tmux.windowExists.mockResolvedValue(false);
+    options.tmux.killPane.mockRejectedValue(paneError);
+    await expect(backend.dispose()).rejects.toMatchObject({ errors: [runtimeError, paneError] });
+    expect(backend.getPresentation()).toMatchObject({ paneMap: { web: "%2" } });
+  });
+
+  it("retains restoration errors when window absence cannot be verified", async () => {
+    const options = fixture();
+    const backend = await TmuxSessionBackend.create(options);
+    await backend.activateWindowTitles();
+    const titleError = new Error("title restore failed");
+    const probeError = new Error("window probe failed");
+    options.tmux.renameWindow.mockRejectedValue(titleError);
+    options.tmux.windowExists.mockRejectedValue(probeError);
+    await expect(backend.dispose()).rejects.toMatchObject({
+      errors: [expect.objectContaining({ errors: [titleError, probeError], cause: titleError })],
+    });
+    expect(options.tmux.setWindowOption).toHaveBeenCalledExactlyOnceWith(
+      "@1",
+      "automatic-rename",
+      "on",
+    );
+    expect(options.tmux.killPane).toHaveBeenCalledExactlyOnceWith("%2");
   });
 
   it("hands off partial-layout ownership before factory rejection and verifies retry cleanup", async () => {

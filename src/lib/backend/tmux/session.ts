@@ -477,8 +477,17 @@ class TmuxSessionBackend implements SessionBackend {
     }
     const state = this.windowState;
     if (state) {
-      await attempt(async () => tmux.renameWindow(host.tmuxWindow, state.title));
-      await attempt(async () =>
+      const restore = async (action: () => Promise<void>): Promise<void> => {
+        await attempt(async () => {
+          try {
+            await action();
+          } catch (error) {
+            await confirmAbsent(error, async () => tmux.windowExists(host.tmuxWindow));
+          }
+        });
+      };
+      await restore(async () => tmux.renameWindow(host.tmuxWindow, state.title));
+      await restore(async () =>
         tmux.setWindowOption(host.tmuxWindow, "automatic-rename", state.autoRename),
       );
     }

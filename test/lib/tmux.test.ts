@@ -42,6 +42,7 @@ import {
   resyncPaneSizes,
   swapPanes,
   selectLayout,
+  windowExists,
   windowLayout,
   paneIndexOrder,
   tmuxFor,
@@ -825,5 +826,23 @@ describe("owned popup primitives", () => {
       "-S",
       "-",
     ]);
+  });
+});
+
+describe("windowExists", () => {
+  it("checks exact membership on the bound server", async () => {
+    mockSpawn.mockImplementation(() => createMockProc("@1\n@10\n"));
+    expect(await tmuxFor("owned").windowExists("@1")).toBe(true);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["-u", "-L", "owned", "list-windows", "-a", "-F", "#{window_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(await windowExists("@0")).toBe(false);
+  });
+
+  it("does not confuse an unavailable probe with an absent window", async () => {
+    mockSpawn.mockReturnValue(createMockProc("", 1, "server unavailable"));
+    await expect(windowExists("@1")).rejects.toThrow("server unavailable");
   });
 });

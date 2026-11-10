@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { runWithEnvironment } from "#src/lib/request-context.js";
+import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import { splitPane } from "#src/lib/tmux.js";
 
@@ -47,15 +47,23 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
 
   async function startGroup(manager: ServiceManager): Promise<void> {
     await runWithEnvironment(
-      {
+      captureEnvironment({
+        TMPDIR: process.env.TMPDIR,
+        TMUX_TMPDIR: process.env.TMUX_TMPDIR,
+        TERM: process.env.TERM,
+        TERMINFO: process.env.TERMINFO,
+        TERMINFO_DIRS: process.env.TERMINFO_DIRS,
+        TERMCAP: process.env.TERMCAP,
+        LANG: process.env.LANG,
+        LC_ALL: process.env.LC_ALL,
+        DOCKER_HOST: process.env.DOCKER_HOST,
+        DOCKER_CONTEXT: process.env.DOCKER_CONTEXT,
+        DOCKER_CONFIG: process.env.DOCKER_CONFIG,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
         PATH: process.env.PATH ?? "",
         HOME: os.homedir(),
         ZAPS_TMUX_SOCKET: testTmuxSocket() ?? "zaps-test",
-        ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
-        ...(process.env.DOCKER_CONTEXT ? { DOCKER_CONTEXT: process.env.DOCKER_CONTEXT } : {}),
-        ...(process.env.DOCKER_CONFIG ? { DOCKER_CONFIG: process.env.DOCKER_CONFIG } : {}),
-        ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}),
-      },
+      }),
       async () => {
         await manager.startService("redis");
         await manager.startService("memcached");

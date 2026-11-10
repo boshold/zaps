@@ -316,6 +316,11 @@ function createTmux(resolveSocket: () => string | null) {
     }
   }
 
+  async function windowExists(target: string): Promise<boolean> {
+    const out = await run(["list-windows", "-a", "-F", "#{window_id}"]);
+    return out.split("\n").includes(target);
+  }
+
   async function capturePane(target: string, lines = 100): Promise<string> {
     return run(["capture-pane", "-t", target, "-p", "-S", `-${lines}`]);
   }
@@ -533,6 +538,7 @@ function createTmux(resolveSocket: () => string | null) {
     swapPanes,
     tmuxSupportsPopup,
     tmuxVersion,
+    windowExists,
     windowLayout,
     zoomPane,
   };
@@ -592,6 +598,7 @@ export const {
   swapPanes,
   tmuxSupportsPopup,
   tmuxVersion,
+  windowExists,
   windowLayout,
   zoomPane,
 } = defaultTmux;

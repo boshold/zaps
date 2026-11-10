@@ -17,7 +17,7 @@ import {
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
-import { runWithEnvironment } from "#src/lib/request-context.js";
+import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import { paneExists, sendKeys, setEnv, tmuxFor } from "#src/lib/tmux.js";
 
@@ -212,14 +212,21 @@ describe.skipIf(!hasTmux())("session task lifetimes", () => {
       throw new Error("Missing owned tmux socket");
     }
     const response = await runWithEnvironment(
-      {
+      captureEnvironment({
+        TMPDIR: process.env.TMPDIR,
+        TMUX_TMPDIR: process.env.TMUX_TMPDIR,
+        HOME: process.env.HOME,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+        TERMINFO: process.env.TERMINFO,
+        TERMINFO_DIRS: process.env.TERMINFO_DIRS,
+        TERMCAP: process.env.TERMCAP,
         PATH: process.env.PATH ?? "/usr/bin:/bin",
         TERM: "xterm-256color",
         LIFETIME_TOKEN: "accepted",
         ZAPS_TMUX_SOCKET: tmuxSocket,
         LANG: locale,
         LC_ALL: locale,
-      },
+      }),
       async () =>
         ipcRequest(daemon.socketPath, "session.create", {
           configPath,
