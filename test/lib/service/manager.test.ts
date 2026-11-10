@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
+import { DetachedRunner } from "../../../src/lib/service/detached.js";
 import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
@@ -75,16 +76,147 @@ function makePaneMap(names: string[]): Record<string, string> {
   return map;
 }
 
+let restoreDetachedInspection: (() => void) | undefined;
+
+class FakeDetachedChild extends ChildProcess {
+  public override readonly stdout = new PassThrough();
+  public override readonly stderr = new PassThrough();
+  public readonly gate = new PassThrough();
+  public override readonly stdio: ChildProcess["stdio"] = [
+    null,
+    this.stdout,
+    this.stderr,
+    this.gate,
+    null,
+  ];
+  public override readonly pid: number;
+  public exited = false;
+  public holdPipes = false;
+  public constructor(pid: number) {
+    super();
+    this.pid = pid;
+    this.once("exit", () => {
+      this.exited = true;
+      if (!this.holdPipes) {
+        this.stdout.end();
+        this.stderr.end();
+      }
+    });
+  }
+}
+
+const detachedManagers: ServiceManager[] = [];
+const detachedChildren: FakeDetachedChild[] = [];
+const detachedRunners = new Set<DetachedRunner>();
+let restoreDetachedStart: (() => void) | undefined;
+
+async function advanceDetachedUntil(condition: () => boolean): Promise<void> {
+  for (let elapsed = 0; !condition() && elapsed < 10_000; elapsed += 25) {
+    await vi.advanceTimersByTimeAsync(25);
+  }
+  expect(condition()).toBe(true);
+}
+
+async function settleDetached<T>(promise: Promise<T>): Promise<T> {
+  let settled = false;
+  const result = promise.finally(() => {
+    settled = true;
+  });
+  await advanceDetachedUntil(() => settled);
+  return result;
+}
+
+function makeDetachedManager(
+  config: ResolvedConfig,
+  paneMap: Record<string, string>,
+  deps: ServiceManagerDeps,
+): ServiceManager {
+  const manager = new ServiceManager(config, paneMap, deps, "test-session");
+  detachedManagers.push(manager);
+  return manager;
+}
+
+function makeDetachedSpawn(
+  children: FakeDetachedChild[],
+  basePid = 7000,
+): {
+  spawn: NonNullable<ServiceManagerDeps["detachedSpawn"]>;
+  args: { file: string; args: string[] }[];
+} {
+  const { start } = DetachedRunner.prototype;
+  const startSpy = vi
+    .spyOn(DetachedRunner.prototype, "start")
+    .mockImplementation(function trackRunner(this: DetachedRunner, opts) {
+      detachedRunners.add(this);
+      return start.call(this, opts);
+    });
+  const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
+  restoreDetachedStart = () => {
+    startSpy.mockRestore();
+    killSpy.mockRestore();
+  };
+  const inspection = processInspection.createProcessInspection();
+  const readProcessIdentity = async (pid: number) => {
+    const child = children.find((candidate) => candidate.pid === pid && !candidate.exited);
+    return child ? { pid, startTime: `birth-${pid}`, pgid: pid, sid: pid } : null;
+  };
+  const spy = vi.spyOn(processInspection, "createProcessInspection").mockReturnValue({
+    ...inspection,
+    readProcessIdentity,
+    getProcessMembers: async (identity) => {
+      const member = await readProcessIdentity(identity.pid);
+      return member ? [member] : [];
+    },
+  });
+  restoreDetachedInspection = () => {
+    spy.mockRestore();
+  };
+  const args: { file: string; args: string[] }[] = [];
+  let pid = basePid;
+  const spawn = (file: string, argv: string[]) => {
+    const child = new FakeDetachedChild(pid);
+    pid += 1;
+    children.push(child);
+    detachedChildren.push(child);
+    args.push({ file, args: argv });
+    return child;
+  };
+  return { spawn, args };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.useFakeTimers();
 });
 
-let restoreDetachedInspection: (() => void) | undefined;
-afterEach(() => {
-  restoreDetachedInspection?.();
-  restoreDetachedInspection = undefined;
-  vi.useRealTimers();
+afterEach(async () => {
+  try {
+    if (detachedManagers.length === 0) {
+      return;
+    }
+    await advanceDetachedUntil(() =>
+      detachedChildren.every((child) => child.exited || child.gate.writableFinished),
+    );
+    const stopping = detachedManagers.map(async (manager) => manager.stopAll());
+    const disposing = [...detachedRunners].map(async (runner) => runner.dispose());
+    for (const child of detachedChildren) {
+      if (!child.exited) {
+        child.emit("exit", null, "SIGTERM");
+      }
+      child.stdout.end();
+      child.stderr.end();
+    }
+    await settleDetached(Promise.all([...stopping, ...disposing]));
+  } finally {
+    detachedManagers.length = 0;
+    detachedChildren.length = 0;
+    detachedRunners.clear();
+    restoreDetachedStart?.();
+    restoreDetachedStart = undefined;
+    restoreDetachedInspection?.();
+    restoreDetachedInspection = undefined;
+    vi.useRealTimers();
+  }
 });
 
 // =============================================================================
@@ -3105,67 +3237,7 @@ describe("unavailable services", () => {
 // Detached services (E4)
 // =============================================================================
 
-class FakeDetachedChild extends ChildProcess {
-  public override readonly stdout = new PassThrough();
-  public override readonly stderr = new PassThrough();
-  public override readonly stdio: ChildProcess["stdio"] = [
-    null,
-    this.stdout,
-    this.stderr,
-    new PassThrough(),
-    null,
-  ];
-  public override readonly pid: number;
-  public exited = false;
-  public constructor(pid: number) {
-    super();
-    this.pid = pid;
-    this.once("exit", () => {
-      this.exited = true;
-    });
-  }
-}
-
-function makeDetachedSpawn(
-  children: FakeDetachedChild[],
-  basePid = 7000,
-): {
-  spawn: NonNullable<ServiceManagerDeps["detachedSpawn"]>;
-  args: { file: string; args: string[] }[];
-} {
-  const inspection = processInspection.createProcessInspection();
-  const readProcessIdentity = async (pid: number) => {
-    const child = children.find((candidate) => candidate.pid === pid && !candidate.exited);
-    return child ? { pid, startTime: `birth-${pid}`, pgid: pid, sid: pid } : null;
-  };
-  const spy = vi.spyOn(processInspection, "createProcessInspection").mockReturnValue({
-    ...inspection,
-    readProcessIdentity,
-    getProcessMembers: async (identity) => {
-      const member = await readProcessIdentity(identity.pid);
-      return member ? [member] : [];
-    },
-  });
-  restoreDetachedInspection = () => {
-    spy.mockRestore();
-  };
-  const args: { file: string; args: string[] }[] = [];
-  let pid = basePid;
-  const spawn = (file: string, argv: string[]) => {
-    const child = new FakeDetachedChild(pid);
-    pid += 1;
-    children.push(child);
-    args.push({ file, args: argv });
-    return child;
-  };
-  return { spawn, args };
-}
-
 describe("detached services (E4)", () => {
-  beforeEach(() => {
-    vi.spyOn(process, "kill").mockImplementation(() => true);
-  });
-
   it("starts a detached service with no pane: spawns sh -c and goes ready", async () => {
     const config = makeConfig({ worker: { start: "node w.js", detached: true } });
     const paneMap = makePaneMap([]); // Worker has NO pane entry
@@ -3175,7 +3247,7 @@ describe("detached services (E4)", () => {
     deps.detachedSpawn = spawn;
     deps.detectPortsForPid = vi.fn().mockResolvedValue([4000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = makeDetachedManager(config, paneMap, deps);
     await mgr.startService("worker");
 
     const status = mgr.getStatus("worker");
@@ -3203,7 +3275,7 @@ describe("detached services (E4)", () => {
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
 
-    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     const seen: [string, string[]][] = [];
     mgr.on("logLines", (name: string, lines: string[]) => {
       seen.push([name, lines]);
@@ -3221,7 +3293,7 @@ describe("detached services (E4)", () => {
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
 
-    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
 
     const kill = vi.mocked(process.kill);
@@ -3245,16 +3317,43 @@ describe("detached services (E4)", () => {
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
 
-    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
     expect(mgr.getStatus("worker").state).toBe("ready");
 
+    await advanceDetachedUntil(() => children[0].gate.writableFinished);
     // Child crashes unexpectedly.
     children[0].emit("exit", 1, null);
     await vi.advanceTimersByTimeAsync(1500);
 
     expect(children.length).toBe(2); // Respawned
     expect(mgr.getStatus("worker").state).toBe("ready");
+    expect(mgr.getStatus("worker").retryCount).toBe(1);
+  });
+
+  it("restarts after the bounded drain when a crashed child leaves pipes open", async () => {
+    const config = makeConfig({
+      worker: { start: "node w.js", detached: true, restart: { maxRetries: 3, backoff: 1000 } },
+    });
+    const deps = createMockDeps();
+    const children: FakeDetachedChild[] = [];
+    deps.detachedSpawn = makeDetachedSpawn(children).spawn;
+    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
+    await mgr.startService("worker");
+    await advanceDetachedUntil(() => children[0].gate.writableFinished);
+
+    children[0].holdPipes = true;
+    children[0].emit("exit", 1, null);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(children).toHaveLength(1);
+    expect(children[0].stdout.destroyed).toBe(false);
+
+    await advanceDetachedUntil(
+      () => children.length === 2 && mgr.getStatus("worker").state === "ready",
+    );
+    expect(children[0].stdout.destroyed).toBe(true);
+    expect(children[0].stderr.destroyed).toBe(true);
     expect(mgr.getStatus("worker").retryCount).toBe(1);
   });
 
@@ -3267,7 +3366,7 @@ describe("detached services (E4)", () => {
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
 
-    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     const startPromise = mgr.startService("worker");
     // Let the lock run startServiceInternal far enough to spawn the child.
     await vi.advanceTimersByTimeAsync(1);
@@ -3293,7 +3392,7 @@ describe("detached services (E4)", () => {
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
     deps.detectPorts = vi.fn().mockResolvedValue([]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = makeDetachedManager(config, paneMap, deps);
     await mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
 
@@ -3743,7 +3842,6 @@ describe("sentra env injection", () => {
   });
 
   it("injects the DSN into detached services", async () => {
-    vi.spyOn(process, "kill").mockImplementation(() => true);
     const config = sentraConfig({
       worker: { start: "node w.js", detached: true, sentra: { env: { DSN: "{dsn}" } } },
     });
@@ -3758,7 +3856,7 @@ describe("sentra env injection", () => {
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
     deps.sentra = fakeSentra();
 
-    const mgr = new ServiceManager(config, makePaneMap([]), deps, "test-session");
+    const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
 
     expect(spawnEnvs[0]?.DSN).toBe("http://sentra@127.0.0.1:9000/proj/sess123/worker/1");
