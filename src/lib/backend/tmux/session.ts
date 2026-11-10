@@ -186,7 +186,23 @@ class TmuxSessionBackend implements SessionBackend {
       await previous.catch(() => {
         /* Prior caller owns failure */
       });
-      await action();
+      const paneMap = { ...this.paneMap };
+      const { focusPane } = this;
+      try {
+        await action();
+      } catch (error) {
+        if (this.focusPane && !Object.values(this.paneMap).includes(this.focusPane)) {
+          this.focusPane = this.paneMap["@tui"];
+        }
+        if (
+          focusPane !== this.focusPane ||
+          Object.keys(paneMap).length !== Object.keys(this.paneMap).length ||
+          Object.entries(paneMap).some(([name, pane]) => this.paneMap[name] !== pane)
+        ) {
+          this.publish();
+        }
+        throw error;
+      }
     })();
     await this.pendingLayout;
   }
@@ -294,25 +310,32 @@ class TmuxSessionBackend implements SessionBackend {
     if (host.managedTmux && tmux.getSocket() !== MANAGED_SOCKET) {
       throw new Error("Managed tmux socket changed");
     }
-    try {
-      if (this.windowState) {
-        await tmux.renameWindow(host.tmuxWindow, this.windowState.title);
-        await tmux.setWindowOption(
-          host.tmuxWindow,
-          "automatic-rename",
-          this.windowState.autoRename,
-        );
+    const errors: unknown[] = [];
+    async function attempt(action: () => Promise<void>): Promise<void> {
+      try {
+        await action();
+      } catch (error) {
+        errors.push(error);
       }
-    } finally {
-      await (host.managedTmux
-        ? tmux.killSession(host.tmuxSession)
-        : Promise.all(
-            [...new Set(Object.values(this.paneMap))]
-              .filter((pane) => pane !== host.originPane)
-              .map(async (pane) => tmux.killPane(pane)),
-          ));
-      this.paneMap = {};
-      this.focusPane = undefined;
+    }
+    const state = this.windowState;
+    if (state) {
+      await attempt(async () => tmux.renameWindow(host.tmuxWindow, state.title));
+      await attempt(async () =>
+        tmux.setWindowOption(host.tmuxWindow, "automatic-rename", state.autoRename),
+      );
+    }
+    await (host.managedTmux
+      ? attempt(async () => tmux.killSession(host.tmuxSession))
+      : Promise.all(
+          [...new Set(Object.values(this.paneMap))]
+            .filter((pane) => pane !== host.originPane)
+            .map(async (pane) => attempt(async () => tmux.killPane(pane))),
+        ));
+    this.paneMap = {};
+    this.focusPane = undefined;
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "Tmux host disposal incomplete");
     }
   }
 }

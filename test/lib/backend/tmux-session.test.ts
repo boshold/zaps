@@ -146,6 +146,73 @@ describe("tmux session backend", () => {
     expect(options.tmux.setWindowOption).toHaveBeenCalledWith("@1", "automatic-rename", "on");
   });
 
+  it("publishes surviving map changes when removal geometry fails", async () => {
+    const options = fixture();
+    const backend = await TmuxSessionBackend.create({
+      ...options,
+      layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "web", focus: true }] },
+    });
+    const changed = vi.fn();
+    backend.subscribePresentation(changed);
+    options.tmux.paneIndexOrder.mockResolvedValue([{ index: 0, id: "%1" }]);
+    options.tmux.selectLayout.mockRejectedValue(new Error("geometry failed"));
+    await expect(backend.removePane("web")).rejects.toThrow("geometry failed");
+    expect(changed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        paneMap: { "@tui": "%1" },
+        focusPane: "%1",
+      }),
+    );
+    expect(backend.getPresentation()).toMatchObject({ paneMap: { "@tui": "%1" }, focusPane: "%1" });
+    await backend.dispose();
+  });
+
+  it("publishes inserted pane when the subsequent focus query fails", async () => {
+    const options = fixture();
+    const backend = await TmuxSessionBackend.create({
+      ...options,
+      layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "web", focus: true }] },
+      skip: new Set(["web"]),
+    });
+    const changed = vi.fn();
+    backend.subscribePresentation(changed);
+    options.tmux.displayMessage.mockRejectedValue(new Error("focus query failed"));
+    await expect(backend.insertPane("web")).rejects.toThrow("focus query failed");
+    expect(changed).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        paneMap: { "@tui": "%1", web: "%2" },
+      }),
+    );
+    await backend.dispose();
+  });
+
+  it("attempts every restoration and pane cleanup and aggregates failures", async () => {
+    const options = fixture();
+    options.tmux.splitPane.mockResolvedValueOnce("%2").mockResolvedValueOnce("%3");
+    const backend = await TmuxSessionBackend.create({
+      ...options,
+      services: { web: { start: "web" }, api: { start: "api" } },
+    });
+    await backend.activateWindowTitles();
+    const titleError = new Error("title restore failed");
+    const optionError = new Error("option restore failed");
+    const paneError = new Error("pane cleanup failed");
+    options.tmux.renameWindow.mockRejectedValue(titleError);
+    options.tmux.setWindowOption.mockRejectedValue(optionError);
+    options.tmux.killPane.mockRejectedValueOnce(paneError);
+    const disposal = backend.dispose();
+    await expect(disposal).rejects.toMatchObject({ errors: [titleError, optionError, paneError] });
+    expect(options.tmux.setWindowOption).toHaveBeenCalledExactlyOnceWith(
+      "@1",
+      "automatic-rename",
+      "on",
+    );
+    expect(options.tmux.killPane).toHaveBeenCalledWith("%2");
+    expect(options.tmux.killPane).toHaveBeenCalledWith("%3");
+    expect(options.tmux.killSession).not.toHaveBeenCalled();
+    expect(backend.dispose()).toBe(disposal);
+  });
+
   it("waits for in-flight lazy construction before disposal", async () => {
     const options = fixture();
     const backend = await TmuxSessionBackend.create({ ...options, skip: new Set(["web"]) });
