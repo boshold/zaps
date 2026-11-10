@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import path from "node:path";
 
 import { daemonDir, isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
@@ -33,6 +33,25 @@ import type { SessionInfo } from "./helpers.js";
 import { resolveCommandArgv } from "./helpers.js";
 import { decideTmuxContext } from "./tmux-context.js";
 import type { DaemonSessionView } from "./tmux-context.js";
+
+function clearManagedEnvironmentSnapshot(): void {
+  const {
+    ZAPS_ENVIRONMENT_SNAPSHOT: snapshot,
+    ZAPS_TMUX_SOCKET: socket,
+    TMUX_PANE: pane,
+  } = process.env;
+  if (snapshot && process.env.ZAPS_MANAGED_TMUX === "1" && socket === MANAGED_SOCKET && pane) {
+    try {
+      execFileSync(
+        "tmux",
+        ["-L", socket, "set-environment", "-u", "-t", pane, ENVIRONMENT_SNAPSHOT_VARIABLE],
+        { stdio: "ignore" },
+      );
+    } catch {
+      /* Process-local snapshot consumption still proceeds. */
+    }
+  }
+}
 
 /** How long the inner `zaps up -d` may take to settle before we give up (F4). */
 const DETACHED_SETTLE_TIMEOUT_MS = 120_000;
@@ -507,5 +526,5 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
   }
 }
 
-export { DETACHED_HINT, ensureTmuxContext, reattachManaged };
+export { DETACHED_HINT, clearManagedEnvironmentSnapshot, ensureTmuxContext, reattachManaged };
 export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux };

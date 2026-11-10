@@ -2,7 +2,11 @@
 import { cli, command } from "cleye";
 import type { Command } from "cleye";
 
-import { ensureTmuxContext, reattachManaged } from "./cli/bootstrap-tmux.js";
+import {
+  clearManagedEnvironmentSnapshot,
+  ensureTmuxContext,
+  reattachManaged,
+} from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -54,6 +58,7 @@ declare const __VERSION__: string;
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
 
+clearManagedEnvironmentSnapshot();
 consumeEnvironmentSnapshot();
 
 const VERSION = `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`;

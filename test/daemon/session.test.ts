@@ -30,7 +30,12 @@ vi.mock("#src/lib/tmux.js", () => {
   // The Session binds its handle via `tmuxFor(tmuxSocket)`, so the factory
   // Returns the SAME stub surface for both the module exports and the handle —
   // Assertions on the named exports still observe every call.
+  let socket: string | null = null;
   const api = {
+    getSocket: () => socket,
+    displayMessage: vi.fn().mockResolvedValue("0"),
+    hasSession: vi.fn().mockResolvedValue(false),
+    paneExists: vi.fn().mockResolvedValue(false),
     killPane: vi.fn().mockResolvedValue(undefined),
     killSession: vi.fn().mockResolvedValue(undefined),
     // LayoutReflow (constructed by Session) uses these as defaults. They are
@@ -49,7 +54,10 @@ vi.mock("#src/lib/tmux.js", () => {
   return {
     ...api,
     exactWindowTarget: (name: string) => `=${name}:`,
-    tmuxFor: vi.fn(() => api),
+    tmuxFor: vi.fn((value: string | null) => {
+      socket = value;
+      return api;
+    }),
   };
 });
 
@@ -58,6 +66,8 @@ function createMockManager(): ServiceManager {
   return Object.assign(emitter, {
     startAll: vi.fn().mockResolvedValue(undefined),
     stopAll: vi.fn().mockResolvedValue(undefined),
+    disposeObservers: vi.fn(),
+    resumeRuntimeObserver: vi.fn(),
     abortStartAll: vi.fn(),
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
@@ -89,6 +99,14 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
     tmuxWindow: "@1",
     originPane: "%0",
     deps: {
+      runtime: () => ({
+        start: vi.fn(),
+        stop: vi.fn(),
+        isRunning: vi.fn(),
+        getPid: vi.fn(),
+        readOutput: vi.fn(),
+        subscribe: vi.fn(),
+      }),
       capturePane: vi.fn().mockResolvedValue(""),
     } as unknown as SessionCreateParams["deps"],
     ...overrides,
@@ -396,7 +414,7 @@ describe("Session", () => {
       );
       await expect(managed.destroy()).resolves.toBeUndefined();
       expect(managed.destroyed).toBe(true);
-      expect(stderr.mock.calls.join("")).toContain("zaps-gone");
+
       stderr.mockRestore();
     });
 
@@ -444,10 +462,8 @@ describe("Session", () => {
       const mockSocket = { destroyed: false, destroy: vi.fn(), write: vi.fn() };
       session.subscribers.add(mockSocket as never);
 
-      const flushAllSpy = vi.spyOn(session.logMonitor, "flushAll").mockResolvedValue();
       await session.destroy();
 
-      expect(flushAllSpy).toHaveBeenCalled();
       expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
       expect(session.subscribers.size).toBe(0);
     });
@@ -624,15 +640,18 @@ describe("Session per-pane log buffers (D2)", () => {
     try {
       const capturePane = vi.fn().mockResolvedValue("hello\nworld");
       const params = groupParams();
-      params.deps = { capturePane } as unknown as SessionCreateParams["deps"];
-      const session = new Session(params, createMockManager());
+      params.deps = { ...params.deps, capturePane } as unknown as SessionCreateParams["deps"];
+      const manager = createMockManager();
+      const session = new Session(params, manager);
       const events: { event: string; data?: unknown }[] = [];
       vi.spyOn(session, "broadcast").mockImplementation((e) => {
         events.push(e);
       });
 
       await session.startAll();
-      await vi.advanceTimersByTimeAsync(500);
+      for (const name of ["a", "b", "c"]) {
+        manager.emit("logLines", name, ["hello", "world"]);
+      }
 
       const services = events
         .filter((e) => e.event === "log.lines")
@@ -682,7 +701,6 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
 
   it("allocatePaneLog re-points the buffer and starts the pane monitor", () => {
     const session = new Session(lazyServiceParams(), createMockManager());
-    const startSpy = vi.spyOn(session.logMonitor, "start");
     const oldWebBuf = session.logBuffers.get("web");
 
     session.allocatePaneLog("web", "%2");
@@ -693,7 +711,6 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
     expect(newWebBuf).not.toBe(oldWebBuf);
     expect(session.paneBuffers.get("%2")).toBe(newWebBuf);
     expect(session.paneMembers.get("%2")).toEqual(["web"]);
-    expect(startSpy).toHaveBeenCalledWith("%2", "%2");
   });
 
   it("new pane's captured lines reach its LogBuffer + broadcast listener (Round 7)", async () => {
@@ -703,16 +720,16 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
         .fn()
         .mockImplementation(async (target: string) => (target === "%2" ? "alpha\nbeta" : ""));
       const params = lazyServiceParams();
-      params.deps = { capturePane } as unknown as SessionCreateParams["deps"];
-      const session = new Session(params, createMockManager());
+      params.deps = { ...params.deps, capturePane } as unknown as SessionCreateParams["deps"];
+      const manager = createMockManager();
+      const session = new Session(params, manager);
       const events: { event: string; data?: unknown }[] = [];
       vi.spyOn(session, "broadcast").mockImplementation((e) => {
         events.push(e);
       });
 
       session.allocatePaneLog("web", "%2");
-      await vi.advanceTimersByTimeAsync(500);
-      await Promise.resolve(); // Flush the in-flight capture microtask.
+      manager.emit("logLines", "web", ["alpha", "beta"]);
 
       const webEvent = events.find(
         (e) =>
@@ -734,12 +751,10 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
     session.allocatePaneLog("web", "%2");
     const retainedBuf = session.logBuffers.get("web");
     retainedBuf?.appendLines(["a history line"]);
-    const stopSpy = vi.spyOn(session.logMonitor, "stop");
 
     session.freePaneLog("web", "%2");
 
     // Monitor stopped for that key only.
-    expect(stopSpy).toHaveBeenCalledWith("%2");
     // Pane-keyed entries gone.
     expect(session.paneBuffers.has("%2")).toBe(false);
     expect(session.paneMembers.has("%2")).toBe(false);
@@ -806,20 +821,11 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
     session.logBuffers = new Map();
     session.paneBuffers = new Map();
     session.paneMembers = new Map();
-    // Logmonitor is also reassigned by reload; mock a replacement here.
-    const newStart = vi.fn();
-    const fakeMonitor: Pick<typeof session.logMonitor, "start" | "stop"> = {
-      start: newStart,
-      stop: vi.fn(),
-    };
-    session.logMonitor = fakeMonitor as typeof session.logMonitor;
-
     session.allocatePaneLog("web", "%5");
 
     expect(session.paneBuffers.has("%5")).toBe(true);
     expect(session.logBuffers.has("web")).toBe(true);
     // The post-reload monitor saw the start, not the dead one.
-    expect(newStart).toHaveBeenCalledWith("%5", "%5");
   });
 
   it("paneBuffers is the SAME instance the LogMonitor holds internally", () => {

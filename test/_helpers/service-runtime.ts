@@ -35,7 +35,7 @@ interface RuntimeRecord {
   exit?: { code: number; signal: string | null; spawnError?: string };
 }
 
-// Removed when session composition installs SessionBackend (P02-T08).
+// Legacy dependency fixture only; production composition uses TmuxRuntime.
 class ServiceRuntime implements RuntimeDriver {
   private readonly records = new Map<string, RuntimeRecord>();
   private readonly listeners = new Set<(event: ExecutionEvent) => void>();

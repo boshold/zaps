@@ -17,7 +17,7 @@ import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const localZaps = path.join(projectRoot, "bin", "zaps");
+const localZaps = path.join(projectRoot, "dist", "cli.mjs");
 
 function writeWrapperConfig(dir: string, port: number): string {
   const configPath = path.join(dir, ".zaps.mjs");

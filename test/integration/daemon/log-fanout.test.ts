@@ -1,12 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
+import { ServiceManager } from "#src/lib/service/manager.js";
 import { sendKeys, splitPane } from "#src/lib/tmux.js";
 
 import { makeConfig } from "../helpers/config.js";
@@ -22,17 +21,6 @@ import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
  * Printed to it must surface for EVERY member — including the non-first one —
  * Via both the shared buffer and a `log.lines` event per member name.
  */
-function fakeManager(): ServiceManager {
-  const emitter = new EventEmitter();
-  return Object.assign(emitter, {
-    startAll: async () => undefined,
-    stopAll: async () => undefined,
-    abortStartAll: () => undefined,
-    getAllStatuses: () => [],
-    removeAllListeners: () => emitter,
-  }) as unknown as ServiceManager;
-}
-
 describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
   let tmux: TestSession;
   let session: Session | undefined;
@@ -61,7 +49,7 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
     };
     const config = makeConfig({
       alpha: {
-        start: "true",
+        start: "node -e 'setInterval(()=>{},1000)'",
         _combined: { group: "combo", allServices: ["alpha", "beta"], isOwner: true },
       },
       beta: {
@@ -83,7 +71,7 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       managedTmux: false,
       deps: tmuxDeps as unknown as SessionCreateParams["deps"],
     };
-    session = new Session(params, fakeManager());
+    session = new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmux.name));
 
     // Both members must resolve to one shared buffer; the group never owns one.
     expect(session.logBuffers.get("alpha")).toBe(session.logBuffers.get("beta"));

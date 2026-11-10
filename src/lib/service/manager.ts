@@ -217,6 +217,7 @@ export class ServiceManager extends EventEmitter {
     }
   >();
   private readonly runtime: RuntimeDriver;
+  private unsubscribeRuntime: () => void;
   private readonly executions = new Map<string, OwnedExecution>();
   private readonly unitGenerations = new Map<string, number>();
   private readonly memberUnits = new Map<string, string>();
@@ -228,10 +229,6 @@ export class ServiceManager extends EventEmitter {
   /** Docker project names already checked for a legacy-project migration warning. */
   private readonly legacyWarned = new Set<string>();
   private readonly sentraDockerWarned = new Set<string>();
-  private readonly originalWindowTitle: Promise<string>;
-  private readonly originalAutoRename: Promise<string | null>;
-  // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
-  private pendingRename: Promise<void> = Promise.resolve();
 
   public constructor(
     config: ResolvedConfig,
@@ -244,20 +241,10 @@ export class ServiceManager extends EventEmitter {
     this.paneMap = paneMap;
     this.deps = deps;
     this.session = session;
-    this.originalWindowTitle = deps.getWindowName(this.paneMap["@tui"]);
-    const tuiPane = paneMap["@tui"];
-    this.originalAutoRename = (async () => {
-      try {
-        return await deps.getWindowOption(tuiPane, "automatic-rename");
-      } catch {
-        return null;
-      }
-    })();
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
     this.runtime = deps.runtime(paneMap);
-    this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
 
     // Initialize statuses for all services
     for (const [name, svc] of Object.entries(config.project.services)) {
@@ -290,10 +277,6 @@ export class ServiceManager extends EventEmitter {
     }
 
     this.restartWithMap = buildRestartWithMap(config.project.services);
-
-    this.on("stateChange", () => {
-      this.updateWindowTitle();
-    });
 
     // Bind library actions so lib methods work inside hooks
     config.bindActions?.({
@@ -341,6 +324,7 @@ export class ServiceManager extends EventEmitter {
       },
       isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
     });
+    this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
   }
 
   /**
@@ -392,15 +376,6 @@ export class ServiceManager extends EventEmitter {
 
   private async runStartAll(): Promise<void> {
     this.startAllAborted = false;
-    // Capture-before-mutate: the constructor issues the original window title /
-    // Automatic-rename reads asynchronously, but `startAllServices` emits state
-    // Changes that drive `updateWindowTitle` → `renameWindow`, which flips
-    // Automatic-rename off and overwrites the name. Awaiting the captures here
-    // Guarantees they observe the pre-rename state so `stopAll` restores it
-    // Correctly (otherwise they race and record our own rename under load).
-    await Promise.all([this.originalWindowTitle, this.originalAutoRename]).catch(() => {
-      // Reads are best-effort; stopAll handles null/unknown originals.
-    });
     try {
       await this.startAllServices();
     } finally {
@@ -524,18 +499,6 @@ export class ServiceManager extends EventEmitter {
 
     await fireHook(hooks?.onStop);
 
-    await this.pendingRename.catch(() => {
-      /* Ignored */
-    });
-
-    const autoRename = await this.originalAutoRename;
-    await (
-      autoRename === "on"
-        ? this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on")
-        : this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle)
-    ).catch(() => {
-      // Session may already be gone
-    });
     if (failures.length > 0) {
       throw new AggregateError(failures, "Service cleanup incomplete");
     }
@@ -967,15 +930,16 @@ export class ServiceManager extends EventEmitter {
     execution: OwnedExecution,
     members: string[],
   ): void {
-    const shared = this.config.project.services[event.unitId]?._combined !== undefined;
-    if (!shared && (execution.leaderExited || execution.requestedStop)) {
+    if (
+      execution.leaderExited &&
+      !execution.handle &&
+      !this.config.project.services[event.unitId]?._combined
+    ) {
       return;
     }
+    // Keep draining owned output; hook queues independently fence lifecycle changes.
     for (const member of members) {
-      const state = this.statuses.get(member)?.state;
-      if (shared || state === "starting" || state === "ready") {
-        this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
-      }
+      this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
     }
   }
 
@@ -1091,8 +1055,11 @@ export class ServiceManager extends EventEmitter {
       previous.lifecycleEpoch === lifecycleEpoch;
     const isCurrent = (): boolean => {
       const state = this.statuses.get(name)?.state;
+      const execution = this.executions.get(unitId);
       return (
-        this.executions.get(unitId)?.generation === generation &&
+        execution?.generation === generation &&
+        !execution.leaderExited &&
+        !execution.requestedStop &&
         (this.lifecycleEpochs.get(name) ?? 0) === lifecycleEpoch &&
         (state === "starting" || state === "ready")
       );
@@ -1631,47 +1598,14 @@ export class ServiceManager extends EventEmitter {
       }
     }
   }
-  private updateWindowTitle(): void {
-    if (this.shuttingDown) {
-      return;
-    }
-    const counts: Record<string, number> = {};
-    for (const status of this.statuses.values()) {
-      if (status.state === "unavailable") {
-        continue;
-      }
-      counts[status.state] = (counts[status.state] ?? 0) + 1;
-    }
-
-    const symbols: [string, string][] = [
-      ["error", "✖"],
-      ["starting", "◐"],
-      ["restarting", "◐"],
-      ["stopping", "◐"],
-      ["ready", "●"],
-      ["stopped", "○"],
-    ];
-
-    const parts: string[] = [];
-    for (const [state, symbol] of symbols) {
-      const count = counts[state] ?? 0;
-      if (count > 0) {
-        parts.push(`${symbol}${count}`);
-      }
-    }
-
-    const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    this.pendingRename = this.chainRename(title);
-    void this.pendingRename;
+  public resumeRuntimeObserver(): void {
+    this.unsubscribeRuntime();
+    this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
   }
 
-  private async chainRename(title: string): Promise<void> {
-    await this.pendingRename.catch(() => {
-      /* Ignored */
-    });
-    await this.deps.renameWindow(this.paneMap["@tui"], title).catch(() => {
-      // Best-effort cosmetic title update; the tmux window/server may be gone (e.g. teardown).
-    });
+  public disposeObservers(): void {
+    this.unsubscribeRuntime();
+    this.removeAllListeners();
   }
 
   private async handleCrash(

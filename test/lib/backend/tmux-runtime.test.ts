@@ -2,8 +2,6 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { LogBuffer } from "#src/daemon/log-buffer.js";
-import { LogMonitor } from "#src/daemon/log-monitor.js";
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
@@ -482,7 +480,7 @@ describe("TmuxRuntime", () => {
     }
   });
 
-  it("drains shared in-flight log capture before allowing a replacement", async () => {
+  it("drains its sole in-flight log capture before allowing a replacement", async () => {
     vi.useFakeTimers();
     try {
       const { runtime, tmux, wrappers } = fixture();
@@ -496,14 +494,6 @@ describe("TmuxRuntime", () => {
         )
         .mockResolvedValueOnce("final old output\nFINAL")
         .mockResolvedValue("replacement\nline\nready fragment");
-      const buffer = new LogBuffer();
-      const log = vi.fn();
-      const monitor = new LogMonitor(
-        { capturePane: tmux.capturePane },
-        new Map([["%1", buffer]]),
-        log,
-      );
-      monitor.start("%1", "%1", 250);
       const events: ExecutionEvent[] = [];
       runtime.subscribe((event) => {
         events.push(event);
@@ -529,19 +519,9 @@ describe("TmuxRuntime", () => {
           lines: ["replacement", "line", "ready fragment"],
         },
       ]);
-      expect(buffer.snapshot()).toEqual([
-        "final old output",
-        "FINAL",
-        "replacement",
-        "line",
-        "ready fragment",
-      ]);
-      expect(log).toHaveBeenCalledTimes(3);
-      expect(log).toHaveBeenLastCalledWith("%1", ["replacement", "line", "ready fragment"]);
       expect(await runtime.readOutput(second, 1)).toEqual(["ready fragment"]);
       expect(tmux.capturePane).toHaveBeenCalledTimes(3);
       await runtime.stop(second);
-      monitor.stopAll();
     } finally {
       vi.useRealTimers();
     }

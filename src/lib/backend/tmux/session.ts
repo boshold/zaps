@@ -1,4 +1,4 @@
-import type { LayoutNode, ServiceConfig } from "#src/config/types.js";
+import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import type {
   PresentationSnapshot,
   RuntimeDriver,
@@ -6,6 +6,7 @@ import type {
   TerminalDriver,
 } from "#src/lib/backend/types.js";
 import { MANAGED_SOCKET } from "#src/lib/managed-tmux.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
 import { LayoutReflow } from "#src/lib/tmux-reflow.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
@@ -18,6 +19,7 @@ interface TmuxSessionOptions {
   host: TmuxHost;
   tmux: TmuxHandle;
   runtime: RuntimeDriver;
+  disposeRuntime?: () => Promise<void>;
   terminal?: TerminalDriver;
   layout?: LayoutNode;
   services: Record<string, ServiceConfig>;
@@ -69,15 +71,66 @@ class TmuxSessionBackend implements SessionBackend {
     });
   }
 
+  // Legacy constructor projection; removed with final boundary cleanup (P06-T04).
+  public static adopt(
+    options: TmuxSessionOptions,
+    paneMap: Record<string, string>,
+  ): TmuxSessionBackend {
+    const backend = new TmuxSessionBackend(options);
+    backend.paneMap = paneMap;
+    return backend;
+  }
+
+  public async reload(config: ResolvedConfig, skip: Set<string>): Promise<void> {
+    await this.mutate(async () => {
+      const errors: unknown[] = [];
+      for (const pane of new Set(Object.values(this.paneMap))) {
+        if (pane === this.options.host.originPane) {
+          continue;
+        }
+        try {
+          await this.options.tmux.killPane(pane);
+        } catch (error) {
+          if (await this.options.tmux.paneExists(pane)) {
+            errors.push(error);
+            continue;
+          }
+        }
+        for (const [name, target] of Object.entries(this.paneMap)) {
+          if (target === pane) {
+            Reflect.deleteProperty(this.paneMap, name);
+          }
+        }
+      }
+      if (errors.length) {
+        throw new AggregateError(errors, "Tmux layout cleanup incomplete");
+      }
+      this.paneMap = { "@tui": this.options.host.originPane };
+      this.layout = config.project.layout;
+      this.options.services = config.project.services;
+      this.options.groups = config.groups;
+      this.options.skip = skip;
+      await this.buildLayout();
+    });
+  }
+
+  public get legacyReflow(): LayoutReflow {
+    return this.reflow;
+  }
+
   public static async create(options: TmuxSessionOptions): Promise<TmuxSessionBackend> {
     const backend = new TmuxSessionBackend(options);
     try {
       await backend.buildLayout();
       return backend;
     } catch (error) {
-      await backend.dispose().catch(() => {
-        /* Best effort */
-      });
+      try {
+        await backend.dispose();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Tmux construction cleanup incomplete", {
+          cause: cleanupError,
+        });
+      }
       throw error;
     }
   }
@@ -103,6 +156,7 @@ class TmuxSessionBackend implements SessionBackend {
     });
     this.paneMap = result.paneMap;
     this.focusPane = result.focusPane;
+    await tmux.resyncPaneSizes(result.paneMap["@tui"] ?? result.focusPane);
     await tmux.selectPane(result.focusPane);
     this.publish();
   }
@@ -257,6 +311,57 @@ class TmuxSessionBackend implements SessionBackend {
     }
   }
 
+  public async restoreWindowTitles(): Promise<void> {
+    const previous = this.pendingTitle;
+    this.pendingTitle = (async () => {
+      await previous.catch(() => {
+        /* Prior caller owns failure. */
+      });
+      const state = this.windowState;
+      if (!state) {
+        return;
+      }
+      const { tmux, host } = this.options;
+      await tmux.renameWindow(host.tmuxWindow, state.title);
+      await tmux.setWindowOption(host.tmuxWindow, "automatic-rename", state.autoRename);
+    })();
+    await this.pendingTitle;
+  }
+
+  public async updateServiceTitle(statuses: ServiceStatus[]): Promise<void> {
+    if (statuses.every((status) => status.state === "stopped" || status.state === "unavailable")) {
+      await this.restoreWindowTitles();
+      return;
+    }
+    const counts: Record<string, number> = {};
+    for (const status of statuses) {
+      if (status.state === "unavailable") {
+        continue;
+      }
+      counts[status.state] = (counts[status.state] ?? 0) + 1;
+    }
+
+    const symbols: [string, string][] = [
+      ["error", "✖"],
+      ["starting", "◐"],
+      ["restarting", "◐"],
+      ["stopping", "◐"],
+      ["ready", "●"],
+      ["stopped", "○"],
+    ];
+
+    const parts: string[] = [];
+    for (const [state, symbol] of symbols) {
+      const count = counts[state] ?? 0;
+      if (count > 0) {
+        parts.push(`${symbol}${count}`);
+      }
+    }
+
+    const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
+    await this.updateWindowTitle(title);
+  }
+
   public async activateWindowTitles(): Promise<void> {
     this.assertActive();
     const previous = this.pendingTitle;
@@ -318,6 +423,9 @@ class TmuxSessionBackend implements SessionBackend {
         errors.push(error);
       }
     }
+    if (this.options.disposeRuntime) {
+      await attempt(this.options.disposeRuntime);
+    }
     const state = this.windowState;
     if (state) {
       await attempt(async () => tmux.renameWindow(host.tmuxWindow, state.title));
@@ -326,11 +434,29 @@ class TmuxSessionBackend implements SessionBackend {
       );
     }
     await (host.managedTmux
-      ? attempt(async () => tmux.killSession(host.tmuxSession))
+      ? attempt(async () => {
+          try {
+            await tmux.killSession(host.tmuxSession);
+          } catch (error) {
+            if (await tmux.hasSession(host.tmuxSession)) {
+              throw error;
+            }
+          }
+        })
       : Promise.all(
           [...new Set(Object.values(this.paneMap))]
             .filter((pane) => pane !== host.originPane)
-            .map(async (pane) => attempt(async () => tmux.killPane(pane))),
+            .map(async (pane) =>
+              attempt(async () => {
+                try {
+                  await tmux.killPane(pane);
+                } catch (error) {
+                  if (await tmux.paneExists(pane)) {
+                    throw error;
+                  }
+                }
+              }),
+            ),
         ));
     this.paneMap = {};
     this.focusPane = undefined;

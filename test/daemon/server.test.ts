@@ -64,7 +64,11 @@ vi.mock("#src/lib/tmux.js", () => {
   // Server + Session bind handles via `tmuxFor(tmuxSocket)`; the factory returns
   // The SAME stub surface for both the module exports and the handle, so
   // Assertions on the named exports still observe every call.
+  let socket: string | null = null;
   const api = {
+    getSocket: () => socket,
+    hasSession: vi.fn().mockResolvedValue(true),
+    killSession: vi.fn().mockResolvedValue(undefined),
     capturePane: vi.fn(),
     selectPane: vi.fn(),
     sendKeys: vi.fn(),
@@ -87,7 +91,13 @@ vi.mock("#src/lib/tmux.js", () => {
     swapPanes: vi.fn().mockResolvedValue(undefined),
     windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
   };
-  return { ...api, tmuxFor: vi.fn(() => api) };
+  return {
+    ...api,
+    tmuxFor: vi.fn((value: string | null) => {
+      socket = value;
+      return api;
+    }),
+  };
 });
 
 vi.mock("#src/lib/port.js", () => ({
@@ -104,6 +114,8 @@ vi.mock("#src/lib/service/manager.js", () => {
   // eslint-disable-next-line no-require-imports, global-require, no-var-requires, unicorn/prefer-module -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   class MockServiceManager extends EE {
+    public disposeObservers = vi.fn();
+    public resumeRuntimeObserver = vi.fn();
     public startAll = vi.fn().mockResolvedValue(undefined);
     public stopAll = vi.fn().mockResolvedValue(undefined);
     public abortStartAll = vi.fn();
@@ -145,13 +157,48 @@ describe("DaemonServer", () => {
     tmux.getWindowName.mockResolvedValue("bash");
     tmux.getWindowOption.mockResolvedValue("on");
     tmux.setWindowOption.mockResolvedValue(undefined);
-    tmux.displayMessage.mockResolvedValue("@1");
+    tmux.displayMessage.mockImplementation(async (_target, format) =>
+      format === "#{pane_dead}" ? "0" : "@1",
+    );
     server = new DaemonServer();
   });
 
   afterEach(() => {
     server.stop();
     vi.restoreAllMocks();
+  });
+
+  it("tracks autostart once and never restarts on reuse, list or snapshots", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    const session = await server.create(params);
+    await session.startPromise;
+    expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+    await session.manager.stopAll();
+    expect(await server.create(params)).toBe(session);
+    server.list();
+    session.config.unavailableServices = new Map();
+    session.attachSnapshot();
+    expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans presentation after a post-layout construction failure", async () => {
+    tmux.getWindowName.mockRejectedValueOnce(new Error("snapshot failed"));
+    await expect(
+      server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      }),
+    ).rejects.toThrow("snapshot failed");
+    expect(tmux.killPane).toHaveBeenCalledWith("%1");
+    expect(tmux.killPane).not.toHaveBeenCalledWith("%0");
+    expect(server.sessionCount).toBe(0);
   });
 
   it("starts and listens on socket path", async () => {
@@ -504,7 +551,7 @@ describe("DaemonServer", () => {
     await expect(server.create({ ...params, originPane: "%9" })).resolves.toBe(s1);
     expect(s1.originPane).toBe("%0");
     expect(s1.tmuxWindow).toBe("@1");
-    expect(tmux.displayMessage).toHaveBeenCalledTimes(1);
+    expect(tmux.displayMessage).toHaveBeenCalledTimes(2);
   });
 
   it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {
@@ -859,8 +906,9 @@ describe("DaemonServer", () => {
       expect(response.error).toBe("daemon string error");
     });
 
-    it("destroy completes when killPane rejects", async () => {
+    it("destroy completes when an already-gone pane rejects killing", async () => {
       tmux.killPane.mockRejectedValue(new Error("pane already dead"));
+      tmux.paneExists.mockResolvedValue(false);
 
       const session = await server.create({
         configPath: "/test/.zaps.mts",

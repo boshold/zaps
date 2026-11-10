@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
-import { acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
-import type { OutputLease } from "#src/lib/backend/tmux/output.js";
+import { TmuxOutputProducer } from "#src/lib/backend/tmux/output.js";
 import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type { PaneCleanupOptions, PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type {
@@ -113,6 +112,9 @@ class WrapperRegistry {
 }
 
 const sessionRegistries = new WeakMap<object, WrapperRegistry>();
+function bindServiceWrappers(session: object, registry: WrapperRegistry): void {
+  sessionRegistries.set(session, registry);
+}
 function serviceWrappers(session: object): WrapperRegistry {
   let registry = sessionRegistries.get(session);
   if (!registry) {
@@ -133,6 +135,8 @@ function serviceWrapperCommand(
 
 interface TmuxRuntimeOptions extends PaneCleanupOptions {
   tmux: TmuxHandle;
+  environmentFile?: (env: Record<string, string>) => string;
+  removeEnvironmentFile?: (file: string) => void;
   sessionId: string;
   zapsCommand: string;
   paneFor: (unitId: string) => string;
@@ -144,9 +148,10 @@ interface TmuxRuntimeOptions extends PaneCleanupOptions {
 interface PaneExecution {
   handle: ExecutionHandle;
   pane: string;
-  output?: OutputLease;
+  output?: TmuxOutputProducer;
   unsubscribeOutput?: () => void;
   raw: boolean;
+  environmentFile?: string;
   ownership: Promise<PaneOwnership>;
   stop?: Promise<void>;
   stopping?: boolean;
@@ -211,24 +216,30 @@ class TmuxRuntime implements RuntimeDriver {
         },
       );
     }
+    let envFile: string | undefined = undefined;
     try {
-      const command = spec.raw
-        ? `cd ${shellEscape(spec.cwd)} && env -i ${Object.entries(spec.env)
-            .map(([key, value]) => shellEscape(`${key}=${value}`))
-            .join(" ")} sh -c ${shellEscape(spec.command)}`
-        : serviceWrapperCommand(
-            this.options.zapsCommand,
-            this.options.sessionId,
-            spec.unitId,
-            handle.id,
-          );
+      envFile = spec.raw ? this.options.environmentFile?.({ ...spec.env }) : undefined;
+      record.environmentFile = envFile;
+      let command = serviceWrapperCommand(
+        this.options.zapsCommand,
+        this.options.sessionId,
+        spec.unitId,
+        handle.id,
+      );
+      if (spec.raw) {
+        command = envFile
+          ? `cd ${shellEscape(spec.cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} sh -c ${shellEscape(spec.command)}`
+          : `cd ${shellEscape(spec.cwd)} && env -i ${Object.entries(spec.env)
+              .map(([key, value]) => shellEscape(`${key}=${value}`))
+              .join(" ")} sh -c ${shellEscape(spec.command)}`;
+      }
       await this.options.tmux.sendKeys(pane, command);
       if (this.lookup(handle) !== record || record.wrapperExit) {
         return handle;
       }
-      record.output = acquireTmuxOutput(this.options.tmux.capturePane, pane, 250);
-      record.output.producer.reset();
-      record.unsubscribeOutput = record.output.producer.subscribe((lines) => {
+      record.output = new TmuxOutputProducer(this.options.tmux.capturePane, pane, 250);
+      record.output.reset();
+      record.unsubscribeOutput = record.output.subscribe((lines) => {
         if (this.lookup(handle) === record) {
           this.publish({
             kind: "output",
@@ -239,6 +250,9 @@ class TmuxRuntime implements RuntimeDriver {
         }
       });
     } catch (error) {
+      if (envFile) {
+        this.options.removeEnvironmentFile?.(envFile);
+      }
       this.records.delete(handle.id);
       this.options.wrappers.remove(handle);
       if (this.current.get(handle.unitId) === handle.id) {
@@ -247,6 +261,19 @@ class TmuxRuntime implements RuntimeDriver {
       throw error;
     }
     return handle;
+  }
+
+  public async dispose(): Promise<void> {
+    const results = await Promise.allSettled([
+      ...[...this.records.values()].map(async (record) => this.stop(record.handle)),
+      this.options.processes.dispose(),
+    ]);
+    const failures = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length) {
+      throw new AggregateError(failures, "Runtime cleanup incomplete");
+    }
   }
 
   private lookup(handle: ExecutionHandle): PaneExecution | undefined {
@@ -263,8 +290,11 @@ class TmuxRuntime implements RuntimeDriver {
     if (this.lookup(handle) !== record) {
       return;
     }
+    if (record.environmentFile) {
+      this.options.removeEnvironmentFile?.(record.environmentFile);
+    }
     record.unsubscribeOutput?.();
-    record.output?.release();
+    record.output?.stop();
     this.records.delete(handle.id);
     if (this.current.get(handle.unitId) === handle.id) {
       this.current.delete(handle.unitId);
@@ -325,10 +355,6 @@ class TmuxRuntime implements RuntimeDriver {
     return record.stop;
   }
 
-  public static async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
-    return bounded(operation, deadline);
-  }
-
   private async stopPane(record: PaneExecution): Promise<void> {
     try {
       const deadline = await this.cleanup.stop(
@@ -338,8 +364,8 @@ class TmuxRuntime implements RuntimeDriver {
       );
       if (record.output) {
         const drainDeadline = Math.min(Date.now() + 1000, deadline);
-        await bounded(async () => record.output?.producer.drain(), drainDeadline);
-        await bounded(async () => record.output?.producer.poll(), drainDeadline);
+        await bounded(async () => record.output?.drain(), drainDeadline);
+        await bounded(async () => record.output?.poll(), drainDeadline);
       }
       this.release(record, record.wrapperExit);
     } catch (error) {
@@ -393,7 +419,7 @@ class TmuxRuntime implements RuntimeDriver {
     if (!record) {
       return this.options.processes.readOutput(handle, tail);
     }
-    return record.output?.producer.read(tail) ?? [];
+    return record.output?.read(tail) ?? [];
   }
 
   private publish(event: ExecutionEvent): void {
@@ -416,6 +442,7 @@ export {
   TmuxRuntime,
   WrapperRegistry,
   serviceWrappers,
+  bindServiceWrappers,
   serviceWrapperCommand,
   wrapperIdentitySchema,
   wrapperExitSchema,

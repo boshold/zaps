@@ -27,7 +27,6 @@ import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { Session } from "#src/daemon/session.js";
 import type { SessionCreateParams } from "#src/daemon/session.js";
-import { withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -44,6 +43,7 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";

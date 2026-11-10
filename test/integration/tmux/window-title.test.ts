@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
+import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import {
@@ -19,6 +19,7 @@ import {
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
+import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
@@ -56,6 +57,7 @@ const deps = withServiceRuntime({
 describe.skipIf(!hasTmux())("window-title integration", () => {
   let session: TestSession;
   let mgr: ServiceManager;
+  let backend: TmuxSessionBackend;
 
   afterEach(async () => {
     try {
@@ -63,6 +65,7 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     } catch {
       // Best-effort stop
     }
+    await backend?.dispose();
     await session.cleanup();
   });
 
@@ -77,7 +80,26 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
       svc2: { start: httpServerCmd(port2), ready: { port: port2 } },
     });
 
+    backend = TmuxSessionBackend.adopt(
+      {
+        tmux: tmuxFor(testTmuxSocket()),
+        runtime: deps.runtime(paneMap),
+        host: {
+          tmuxSession: session.name,
+          tmuxWindow: paneMap["@tui"],
+          originPane: session.initialPaneId,
+          tmuxSocket: testTmuxSocket(),
+          managedTmux: false,
+        },
+        services: config.project.services,
+      },
+      paneMap,
+    );
+    await backend.activateWindowTitles();
     mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr.on("stateChange", () => {
+      void backend.updateServiceTitle(mgr.getAllStatuses());
+    });
     await mgr.startAll();
 
     // Poll for the async window rename to settle (both services ready).
@@ -102,7 +124,26 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
+    backend = TmuxSessionBackend.adopt(
+      {
+        tmux: tmuxFor(testTmuxSocket()),
+        runtime: deps.runtime(paneMap),
+        host: {
+          tmuxSession: session.name,
+          tmuxWindow: paneMap["@tui"],
+          originPane: session.initialPaneId,
+          tmuxSocket: testTmuxSocket(),
+          managedTmux: false,
+        },
+        services: config.project.services,
+      },
+      paneMap,
+    );
+    await backend.activateWindowTitles();
     mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr.on("stateChange", () => {
+      void backend.updateServiceTitle(mgr.getAllStatuses());
+    });
     await mgr.startAll();
 
     // Title should have changed — poll until the rename lands.
@@ -133,7 +174,26 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
+    backend = TmuxSessionBackend.adopt(
+      {
+        tmux: tmuxFor(testTmuxSocket()),
+        runtime: deps.runtime(paneMap),
+        host: {
+          tmuxSession: session.name,
+          tmuxWindow: paneMap["@tui"],
+          originPane: session.initialPaneId,
+          tmuxSocket: testTmuxSocket(),
+          managedTmux: false,
+        },
+        services: config.project.services,
+      },
+      paneMap,
+    );
+    await backend.activateWindowTitles();
     mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr.on("stateChange", () => {
+      void backend.updateServiceTitle(mgr.getAllStatuses());
+    });
     await mgr.startAll();
     await mgr.stopAll();
 

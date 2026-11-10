@@ -529,11 +529,17 @@ export async function createLayout(
 
     return { paneMap, focusPane: (focusName && paneMap[focusName]) || paneMap["@tui"] };
   } catch (error) {
-    // Best-effort: tear down every pane this call created so a failed
-    // Create/reload never leaves a half-built layout behind (E15).
+    const failures: unknown[] = [];
     for (const paneId of createdPanes) {
-      await tmux.killPane(paneId).catch(() => {
-        /* Swallow — cleanup is best-effort */
+      try {
+        await tmux.killPane(paneId);
+      } catch (cleanupError) {
+        failures.push(new Error(`Pane cleanup incomplete: ${paneId}`, { cause: cleanupError }));
+      }
+    }
+    if (failures.length) {
+      throw new AggregateError([error, ...failures], "Layout construction cleanup incomplete", {
+        cause: error,
       });
     }
     throw error;

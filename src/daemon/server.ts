@@ -6,8 +6,14 @@ import { promisify } from "node:util";
 
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
-import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
-import { serviceRuntimeExited, withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
+import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
+import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import {
+  TmuxRuntime,
+  bindServiceWrappers,
+  serviceWrappers,
+} from "#src/lib/backend/tmux/runtime.js";
+import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -17,8 +23,8 @@ import { sanitizeSegment } from "#src/lib/sentra/config.js";
 import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
+import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
-import { createLayout } from "#src/lib/tmux-layout.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
@@ -230,8 +236,7 @@ class DaemonServer implements SessionStore {
       const existing = this.sessions.get(id);
       if (existing) {
         assertSameTmuxContext(existing, params);
-        const tuiPane = existing.paneMap["@tui"];
-        if (tuiPane && (await existing.tmux.paneExists(tuiPane))) {
+        if ((await existing.backend.health()) === "alive") {
           return existing;
         }
         // The tmux window was closed externally — full teardown, then rebuild.
@@ -262,155 +267,193 @@ class DaemonServer implements SessionStore {
     }
     const tmuxWindow = await tmux.displayMessage(params.originPane, "#{window_id}");
 
-    // Build pane layout. Boot-skip the pane for any service that is lazy
-    // (P04-T02 resolved `lazyPaneByService`) AND won't autostart
-    // (`flags?.start === false`). The guard-first resolution already forces
-    // `lazyPaneByService=false` for `_combined` members + detached, so the
-    // Skip predicate never fires for those — group/detached panes are built
-    // Exactly as before.
-    const skip = computeBootSkip(config);
-    const { paneMap, focusPane } = await createLayout(
-      params.originPane,
-      config.project.layout,
-      config.project.services,
-      config.groups,
-      { skip, tmux },
-    );
-    // Splitting panes off @tui can leave its kernel pty winsize stale at the
-    // Pre-split width, garbling the in-process TUI until a manual resize. Force
-    // Tmux to re-push every pane's winsize now that the layout is final.
-    await tmux.resyncPaneSizes(paneMap["@tui"] ?? focusPane);
-    await tmux.selectPane(focusPane);
-
-    // Late-bound ref so storeExecInfo closure can capture session before it's created
-    const ref: { session: Session | null } = { session: null };
-    const deps = withServiceRuntime({
-      sendKeys: tmux.sendKeys,
-      sendCtrlC: tmux.sendCtrlC,
-      panePid: tmux.panePid,
-      detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
-      detectPortsForPid,
-      capturePane: tmux.capturePane,
-      getDescendantPids,
-      recordDetached: async (pid: number) => this.detachedRegistry.record(pid),
-      removeDetached: async (pid: number) => this.detachedRegistry.remove(pid),
-      renameWindow: tmux.renameWindow,
-      getWindowName: tmux.getWindowName,
-      getWindowOption: tmux.getWindowOption,
-      setWindowOption: tmux.setWindowOption,
-      displayPopup: tmux.displayPopup,
-      exec: async (cmd: string, args: string[], cwd?: string) => {
-        await execFileAsync(cmd, args, {
-          ...(cwd ? { cwd } : {}),
-          env: captureEnvironment(),
-        });
+    const wrappers = serviceWrappers({});
+    const processes = new ProcessRunner({
+      onLines: () => {
+        /* Runtime events own output. */
       },
-      preflightPorts: checkPortPreflight,
-      storeExecInfo: (service: string, info: ExecInfo, executionId?: string, generation = 0) => {
-        const { session } = ref;
-        if (!session || !executionId) {
-          throw new Error("Missing wrapper registration");
-        }
-        session.execInfo.set(service, info);
-        serviceWrappers(session).register(
-          { id: executionId, unitId: service, generation },
-          service,
-          info,
-          (exit) =>
-            serviceRuntimeExited(deps, executionId, {
-              code: exit.code,
-              signal: exit.signal ?? null,
-              ...(exit.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
-            }),
-        );
+      onExit: () => {
+        /* Runtime events own exits. */
       },
+      record: async (pid) => this.detachedRegistry.record(pid),
+      unrecord: async (pid) => this.detachedRegistry.remove(pid),
+    });
+    const backendRef: { current: TmuxSessionBackend | null } = { current: null };
+    const runtime = new TmuxRuntime({
+      tmux,
+      processes,
+      wrappers,
       sessionId: id,
-      zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
-      environment: () => ({ ...(ref.session?.env ?? loaded.env) }),
       environmentFile: writeEnvironmentFile,
-      removeEnvironmentFile: (filePath: string) => {
-        try {
-          fs.unlinkSync(filePath);
-        } catch {
-          /* Already consumed or unavailable. */
+      removeEnvironmentFile: (file) => fs.rmSync(file, { force: true }),
+      zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+      paneFor: (name) => {
+        if (!backendRef.current) {
+          throw new Error("Backend not initialized");
         }
+        return backendRef.current.paneFor(name);
       },
-      // Reflow hooks late-bind to the session (same ref pattern as
-      // `storeExecInfo`). They always invoke `session.reflowInsert/Remove`,
-      // Which wrap `withOpLock` around the LIVE-getter `Session.reflow`. After
-      // A reload, `ref.session` is the same Session instance but
-      // `session.paneMap`/`session.config` have been atomically swapped — the
-      // Reflow's live getters pick that up without any reconstruction here.
-      reflowInsert: async (name: string) => {
-        if (!ref.session) {
-          throw new Error("reflowInsert: session not yet wired");
-        }
-        await ref.session.reflowInsert(name);
+    });
+    const backend = await TmuxSessionBackend.create({
+      host: {
+        tmuxSession: params.tmuxSession,
+        tmuxWindow,
+        originPane: params.originPane,
+        tmuxSocket,
+        managedTmux: params.managedTmux ?? false,
       },
-      reflowRemove: async (name: string) => {
-        if (!ref.session) {
-          throw new Error("reflowRemove: session not yet wired");
-        }
-        await ref.session.reflowRemove(name);
-      },
-      sentra: {
-        host: this.sentra,
-        get project() {
-          return sanitizeSegment((ref.session?.config ?? config).project.name);
+      tmux,
+      runtime,
+      disposeRuntime: async () => runtime.dispose(),
+      layout: config.project.layout,
+      services: config.project.services,
+      groups: config.groups,
+      skip: computeBootSkip(config),
+    });
+    backendRef.current = backend;
+    try {
+      await backend.activateWindowTitles();
+      const view = backend.getPresentation();
+      if (view.kind !== "tmux") {
+        throw new Error("Expected tmux presentation");
+      }
+      const paneMap = { ...view.paneMap };
+      const focusPane = view.focusPane ?? params.originPane;
+
+      // Late-bound ref so storeExecInfo closure can capture session before it's created
+      const ref: { session: Session | null } = { session: null };
+      const deps: ServiceManagerDeps = {
+        runtime: () => runtime,
+        inspectPorts: async (pid) => createProcessInspection().detectPortsForPid(pid),
+        sendKeys: tmux.sendKeys,
+        sendCtrlC: tmux.sendCtrlC,
+        panePid: tmux.panePid,
+        detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
+        detectPortsForPid,
+        capturePane: tmux.capturePane,
+        getDescendantPids,
+        recordDetached: async (pid: number) => this.detachedRegistry.record(pid),
+        removeDetached: async (pid: number) => this.detachedRegistry.remove(pid),
+        renameWindow: tmux.renameWindow,
+        getWindowName: tmux.getWindowName,
+        getWindowOption: tmux.getWindowOption,
+        setWindowOption: tmux.setWindowOption,
+        displayPopup: tmux.displayPopup,
+        exec: async (cmd: string, args: string[], cwd?: string) => {
+          await execFileAsync(cmd, args, {
+            ...(cwd ? { cwd } : {}),
+            env: captureEnvironment(),
+          });
         },
-        session: id,
-        projectDir: config.projectDir,
-        log: this.log,
-        onEnvBuilt: () => {
+        preflightPorts: checkPortPreflight,
+        storeExecInfo: (service: string, info: ExecInfo, executionId?: string) => {
+          const { session } = ref;
+          if (!session || !executionId) {
+            throw new Error("Missing wrapper registration");
+          }
+          session.execInfo.set(service, info);
+        },
+        sessionId: id,
+        zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+        environment: () => ({ ...(ref.session?.env ?? loaded.env) }),
+        environmentFile: writeEnvironmentFile,
+        removeEnvironmentFile: (filePath: string) => {
           try {
-            this.sentraCounter.attach(id, (event) => ref.session?.broadcast(event));
-          } catch (error) {
-            this.log?.(`sentra: cannot subscribe session ${id}: ${String(error)}`);
+            fs.unlinkSync(filePath);
+          } catch {
+            /* Already consumed or unavailable. */
           }
         },
-        onServiceStart: (service: string, startedAt: number) => {
-          this.sentraCounter.reset(id, service, startedAt);
+        // Reflow hooks late-bind to the session (same ref pattern as
+        // `storeExecInfo`). They always invoke `session.reflowInsert/Remove`,
+        // Which wrap `withOpLock` around the LIVE-getter `Session.reflow`. After
+        // A reload, `ref.session` is the same Session instance but
+        // `session.paneMap`/`session.config` have been atomically swapped — the
+        // Reflow's live getters pick that up without any reconstruction here.
+        reflowInsert: async (name: string) => {
+          if (!ref.session) {
+            throw new Error("reflowInsert: session not yet wired");
+          }
+          await ref.session.reflowInsert(name);
         },
-      },
-    });
+        reflowRemove: async (name: string) => {
+          if (!ref.session) {
+            throw new Error("reflowRemove: session not yet wired");
+          }
+          await ref.session.reflowRemove(name);
+        },
+        sentra: {
+          host: this.sentra,
+          get project() {
+            return sanitizeSegment((ref.session?.config ?? config).project.name);
+          },
+          session: id,
+          projectDir: config.projectDir,
+          log: this.log,
+          onEnvBuilt: () => {
+            try {
+              this.sentraCounter.attach(id, (event) => ref.session?.broadcast(event));
+            } catch (error) {
+              this.log?.(`sentra: cannot subscribe session ${id}: ${String(error)}`);
+            }
+          },
+          onServiceStart: (service: string, startedAt: number) => {
+            this.sentraCounter.reset(id, service, startedAt);
+          },
+        },
+      };
 
-    // Create ServiceManager
-    const { ServiceManager } = await import("#src/lib/service/manager.js");
-    const manager = new ServiceManager(config, paneMap, deps, params.tmuxSession);
+      // Create ServiceManager
+      const { ServiceManager } = await import("#src/lib/service/manager.js");
+      const manager = new ServiceManager(config, paneMap, deps, params.tmuxSession);
 
-    const sessionParams: SessionCreateParams = {
-      configPath: params.configPath,
-      projectDir: params.projectDir,
-      config,
-      paneMap,
-      tmuxSession: params.tmuxSession,
-      tmuxWindow,
-      originPane: params.originPane,
-      deps,
-      tmuxSocket,
-      managedTmux: params.managedTmux ?? false,
-      shellEnv: params.shellEnv,
-      env: loaded.env,
-    };
+      const sessionParams: SessionCreateParams = {
+        backend,
+        configPath: params.configPath,
+        projectDir: params.projectDir,
+        config,
+        paneMap,
+        tmuxSession: params.tmuxSession,
+        tmuxWindow,
+        originPane: params.originPane,
+        deps,
+        tmuxSocket,
+        managedTmux: params.managedTmux ?? false,
+        shellEnv: params.shellEnv,
+        env: loaded.env,
+      };
 
-    const session = new Session(sessionParams, manager);
-    // Create-response-only focus target; attach never returns it (E14).
-    session.focusPane = focusPane;
-    ref.session = session;
-    this.sessions.set(id, session);
-    this.onSessionChange?.(this.sessions.size);
+      const session = new Session(sessionParams, manager);
+      // Create-response-only focus target; attach never returns it (E14).
+      session.focusPane = focusPane;
+      ref.session = session;
+      bindServiceWrappers(session, wrappers);
+      this.sessions.set(id, session);
+      this.onSessionChange?.(this.sessions.size);
 
-    // Start services in background — TUI connects and sees them starting.
-    // Tracked so reload/destroy can cooperatively abort and await it (A5).
-    session.startPromise = session.runWithContext(async () => {
-      try {
-        await session.startAll();
-      } catch {
-        /* Errors surfaced via stateChange */
+      // Start services in background — TUI connects and sees them starting.
+      // Tracked so reload/destroy can cooperatively abort and await it (A5).
+      session.startPromise = session.runWithContext(async () => {
+        try {
+          await session.startAll();
+        } catch {
+          /* Errors surfaced via stateChange */
+        }
+      });
+
+      return session;
+    } catch (error) {
+      const results = await Promise.allSettled([processes.dispose(), backend.dispose()]);
+      const failures = results
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason);
+      if (failures.length) {
+        throw new AggregateError([error, ...failures], "Session construction cleanup failed", {
+          cause: error,
+        });
       }
-    });
-
-    return session;
+      throw error;
+    }
   }
 
   public async destroy(id: string): Promise<void> {
@@ -423,15 +466,6 @@ class DaemonServer implements SessionStore {
       await session.destroy();
     } finally {
       this.sentraCounter.detach(id);
-    }
-
-    // Kill non-origin, non-TUI panes
-    for (const paneId of Object.values(session.paneMap)) {
-      if (paneId !== session.originPane && paneId !== session.paneMap["@tui"]) {
-        await session.tmux.killPane(paneId).catch(() => {
-          /* Best-effort cleanup */
-        });
-      }
     }
 
     this.sessions.delete(id);

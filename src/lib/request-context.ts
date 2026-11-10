@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -92,20 +91,6 @@ export function consumeEnvironmentSnapshot(): void {
   const filePath = process.env[ENVIRONMENT_SNAPSHOT_VARIABLE];
   if (!filePath) {
     return;
-  }
-
-  const tmuxSocket = process.env.ZAPS_TMUX_SOCKET;
-  const tmuxPane = process.env.TMUX_PANE;
-  if (process.env.ZAPS_MANAGED_TMUX === "1" && tmuxSocket && tmuxPane) {
-    try {
-      execFileSync(
-        "tmux",
-        ["-L", tmuxSocket, "set-environment", "-u", "-t", tmuxPane, ENVIRONMENT_SNAPSHOT_VARIABLE],
-        { stdio: "ignore" },
-      );
-    } catch {
-      /* The process-local cleanup below is sufficient for this invocation. */
-    }
   }
 
   const tmuxEnvironment = captureEnvironment({

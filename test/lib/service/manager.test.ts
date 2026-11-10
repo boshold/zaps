@@ -7,7 +7,6 @@ import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
-import { serviceRuntimeExited, withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -22,6 +21,7 @@ import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { SENTRA_BLOCK, fakeSentra } from "../../_helpers/fake-sentra.js";
+import { serviceRuntimeExited, withServiceRuntime } from "../../_helpers/service-runtime.js";
 
 const processInspection = await import("../../../src/lib/backend/runtime/process-inspection.js");
 
@@ -550,7 +550,7 @@ describe("stopAll", () => {
     expect(onStop).toHaveBeenCalledTimes(1);
   });
 
-  it("restores automatic-rename when originally on", async () => {
+  it("leaves automatic-rename ownership to the backend", async () => {
     const config = makeConfig({ db: { start: "start-db" } });
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
@@ -571,7 +571,7 @@ describe("stopAll", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await stopPromise;
 
-    expect(deps.setWindowOption).toHaveBeenCalledWith("view:tui", "automatic-rename", "on");
+    expect(deps.setWindowOption).not.toHaveBeenCalled();
     expect(deps.renameWindow).not.toHaveBeenCalled();
   });
 
@@ -4961,6 +4961,39 @@ describe("neutral runtime launch", () => {
     expect(deps.sendKeys).not.toHaveBeenCalled();
     runtime.emit({ kind: "leaderExit", unitId: "svc", generation: 0, code: 1, signal: null });
     expect(manager.getStatus("svc").state).toBe("ready");
+    manager.abortStartAll();
+  });
+
+  it("retains final owned output during stop and excludes stale replacement output", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const onOutput = vi.fn();
+    const manager = new ServiceManager(
+      makeConfig({ svc: { start: "serve", onOutput } }),
+      {},
+      deps,
+      "neutral-session",
+    );
+    const logs = vi.fn();
+    manager.on("logLines", logs);
+    await manager.startService("svc");
+    vi.mocked(runtime.driver.stop).mockImplementationOnce(async (handle) => {
+      runtime.emit({
+        kind: "output",
+        unitId: handle.unitId,
+        generation: handle.generation,
+        lines: ["FINAL"],
+      });
+    });
+    await manager.stopService("svc");
+    expect(logs).toHaveBeenCalledExactlyOnceWith("svc", ["FINAL"]);
+    expect(onOutput).not.toHaveBeenCalled();
+    await manager.startService("svc");
+    runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["stale"] });
+    runtime.emit({ kind: "output", unitId: "svc", generation: 2, lines: ["current"] });
+    expect(logs).toHaveBeenLastCalledWith("svc", ["current"]);
+    expect(logs).toHaveBeenCalledTimes(2);
     manager.abortStartAll();
   });
 
