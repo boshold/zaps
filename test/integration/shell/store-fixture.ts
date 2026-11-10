@@ -26,7 +26,7 @@ export async function withShellStore(
       errors.push(error);
     }
     const cleanup = await Promise.allSettled(
-      store.list().map(async (session) => store.destroy(session.id)),
+      store.ownedSessionIds().map(async (id) => store.destroy(id)),
     );
     const cleanupErrors: unknown[] = cleanup.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
@@ -36,10 +36,10 @@ export async function withShellStore(
     } catch (error) {
       cleanupErrors.push(error);
     }
-    if (cleanupErrors.length) {
+    if (errors.length || cleanupErrors.length) {
       fs.writeFileSync(
         path.join(fixture.rootDir, "store-cleanup-error.txt"),
-        cleanupErrors.map(String).join("\n"),
+        [...errors, ...cleanupErrors].map(String).join("\n"),
       );
     } else {
       try {

@@ -63,60 +63,59 @@ async function pingSocket(sock: string): Promise<boolean> {
  * Error stack and falling back to a string representation.
  */
 function formatReason(reason: unknown): string {
+  if (reason instanceof AggregateError) {
+    return `${reason.message}: ${reason.errors.map((error: unknown) => formatReason(error)).join("; ")}`;
+  }
   if (reason instanceof Error) {
     return reason.stack ?? `${reason.name}: ${reason.message}`;
   }
   return String(reason);
 }
 
-/** Minimal surface `shutdownAll` needs from the daemon server. */
 interface ShutdownTarget {
-  list(): { id: string }[];
+  closeAdmission(): void;
+  settleCreates(): Promise<void>;
+  ownedSessionIds(): string[];
   destroy(id: string): Promise<void>;
   stop(): void;
   sentra: { close(): Promise<void> };
 }
 
-/**
- * Build the single daemon teardown path shared by SIGTERM, SIGINT, the idle
- * timer, and the `daemon.shutdown` IPC method (D1). Destroys every session
- * best-effort — services stopped reverse-topo, panes killed and
- * `session.destroyed` broadcast by `Session.destroy()` — so one session failing
- * to destroy is logged and does NOT skip the remaining sessions or the file
- * cleanup. After all sessions are torn down it stops the socket server, then
- * runs `finalize` (idle cancel + ownership-checked socket/pid removal).
- *
- * Does NOT exit the process: callers exit *after* the returned promise resolves,
- * so an in-flight `daemon.shutdown` ACK can flush before the process dies. The
- * returned function is idempotent — a signal racing the IPC path is a no-op, so
- * sessions and files are never torn down twice.
- */
 function createShutdownAll(
   server: ShutdownTarget,
   log: (msg: string) => void,
   finalize: () => void,
 ): () => Promise<void> {
-  let shuttingDown = false;
-  return async () => {
-    if (shuttingDown) {
-      return;
+  let pending: Promise<void> | undefined = undefined;
+  // eslint-disable-next-line typescript/promise-function-async -- callers join the identical cleanup promise
+  return () => {
+    if (pending) {
+      return pending;
     }
-    shuttingDown = true;
-    log("shutting down");
-    for (const { id } of server.list()) {
-      try {
-        await server.destroy(id);
-      } catch (error) {
-        log(`error destroying session ${id}: ${formatReason(error)}`);
+    server.closeAdmission();
+    pending = (async () => {
+      log("shutting down");
+      const errors: unknown[] = [];
+      const attempt = async (label: string, action: () => void | Promise<void>) => {
+        try {
+          await action();
+        } catch (error) {
+          errors.push(error);
+          log(`error ${label}: ${formatReason(error)}`);
+        }
+      };
+      await attempt("settling creations", async () => server.settleCreates());
+      for (const id of server.ownedSessionIds()) {
+        await attempt(`destroying session ${id}`, async () => server.destroy(id));
       }
-    }
-    try {
-      await server.sentra.close();
-    } catch (error) {
-      log(`error closing sentra: ${formatReason(error)}`);
-    }
-    server.stop();
-    finalize();
+      await attempt("closing sentra", async () => server.sentra.close());
+      await attempt("stopping server", () => server.stop());
+      await attempt("finalizing daemon", finalize);
+      if (errors.length) {
+        throw new AggregateError(errors, "Daemon cleanup incomplete; see daemon log");
+      }
+    })();
+    return pending;
   };
 }
 
@@ -156,7 +155,7 @@ async function runDaemon(): Promise<void> {
   await server.reapDetachedOrphans();
 
   const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
-    if (server.sessionCount === 0) {
+    if (!server.hasOwnedWork) {
       log("idle timeout, shutting down");
       shutdownAndExit(); // eslint-disable-line no-use-before-define -- circular: idle/shutdownAndExit
     } else {
@@ -182,7 +181,7 @@ async function runDaemon(): Promise<void> {
   // Idempotent: the IPC path schedules it via setImmediate while a racing signal
   // May also call it — only the first wins.
   let exited = false;
-  const exitDaemon = () => {
+  const exitDaemon = (code: number) => {
     if (exited) {
       return;
     }
@@ -192,34 +191,50 @@ async function runDaemon(): Promise<void> {
     } catch {
       // Already closed.
     }
-    process.exit(0);
+    process.exit(code);
   };
 
-  // Signals + idle: tear down, then exit immediately.
+  let exitCode = 0;
+  const scheduleExit = () => {
+    setImmediate(() => {
+      void (async () => {
+        await server.flushShutdownResponses();
+        exitDaemon(exitCode);
+      })();
+    });
+  };
   const shutdownAndExit = () => {
     void (async () => {
       try {
         await shutdownAll();
+      } catch (error) {
+        exitCode = 1;
+        log(formatReason(error));
       } finally {
-        exitDaemon();
+        scheduleExit();
       }
     })();
   };
 
-  server.onSessionChange = (count: number) => {
-    if (count === 0) {
-      idle.reset();
-    } else {
+  const updateIdle = () => {
+    if (server.hasOwnedWork) {
       idle.cancel();
+    } else {
+      idle.reset();
     }
   };
+  server.onSessionChange = updateIdle;
+  server.onOwnershipChange = updateIdle;
 
-  // `daemon.shutdown` IPC: run the teardown *inline* (so the response can ACK
-  // Only after sockets/pids/panes are actually gone — deterministic), then exit
-  // On the next tick so the ACK flushes to the caller first (D1).
   registerShutdownHook(async () => {
-    await shutdownAll();
-    setImmediate(exitDaemon);
+    try {
+      await shutdownAll();
+    } catch (error) {
+      exitCode = 1;
+      throw error;
+    } finally {
+      scheduleExit();
+    }
   });
 
   process.on("SIGTERM", () => {
@@ -241,7 +256,7 @@ async function runDaemon(): Promise<void> {
 
   // Arm the idle timer immediately so a daemon that never receives a session
   // Still exits after the idle window instead of living forever (D5).
-  idle.reset();
+  updateIdle();
 }
 
 /**

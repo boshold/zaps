@@ -8,11 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import { sessionHandlers } from "#src/daemon/handlers/session.js";
+import { createShutdownAll } from "#src/daemon/index.js";
 import { DaemonServer } from "#src/daemon/server.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { ShellRuntime } from "#src/lib/backend/shell/runtime.js";
 import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
+import { ipcRequest } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
@@ -79,6 +81,159 @@ describe("session creation with real shell orchestration", () => {
       projectDir: root,
     } satisfies Parameters<DaemonServer["create"]>[0];
   }
+
+  it("blocks established-socket allocation paths while preserving cleanup and daemon queries", async () => {
+    const socket = path.join(root, "closing.sock");
+    await server.start(socket);
+    const sentra = vi.spyOn(server.sentra, "ensureStarted");
+    server.closeAdmission();
+    for (const method of [
+      "session.create",
+      "services.start",
+      "tasks.run",
+      "terminal.action",
+      "exec-service.resolve",
+      "sentra.status",
+    ]) {
+      const response = await ipcRequest(socket, method);
+      expect(response.error).toBe("session_closing");
+    }
+    expect(sentra).not.toHaveBeenCalled();
+    const ping = await ipcRequest(socket, "daemon.ping");
+    const stop = await ipcRequest(socket, "services.stop");
+    expect(ping.result).toBe("pong");
+    expect(stop.error).toContain("Session required");
+  });
+
+  it("cancels config waiting without late backend allocation or registration", async () => {
+    const loaded = deferred<Awaited<ReturnType<typeof loadProjectContext>>>();
+    vi.mocked(loadProjectContext).mockReturnValueOnce(loaded.promise);
+    const backend = vi.spyOn(ShellSessionBackend, "create");
+    const pending = server.create(request());
+    const rejected = expect(pending).rejects.toThrow("session_closing");
+    expect(server.hasOwnedWork).toBe(true);
+    server.closeAdmission();
+    await server.settleCreates();
+    await rejected;
+    expect(server.hasOwnedWork).toBe(false);
+    loaded.resolve({ config, env: captureEnvironment() });
+    await Promise.resolve();
+    expect(backend).not.toHaveBeenCalled();
+    expect(server.ownedSessionIds()).toEqual([]);
+    await expect(server.create(request())).rejects.toThrow("session_closing");
+  });
+
+  it("awaits an acquired backend before sweeping owners and never registers it after closure", async () => {
+    const acquired = deferred<void>();
+    const release = deferred<void>();
+    const { create } = ShellSessionBackend;
+    const dispose = vi.spyOn(ShellSessionBackend.prototype, "dispose");
+    vi.spyOn(ShellSessionBackend, "create").mockImplementationOnce(async (options) => {
+      const backend = await create(options);
+      acquired.resolve();
+      await release.promise;
+      return backend;
+    });
+    const pending = server.create(request());
+    const rejected = expect(pending).rejects.toThrow("session_closing");
+    await acquired.promise;
+    server.closeAdmission();
+    let settled = false;
+    const settling = (async () => {
+      await server.settleCreates();
+      settled = true;
+    })();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(server.hasOwnedWork).toBe(true);
+    release.resolve();
+    await settling;
+    await rejected;
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(server.list()).toEqual([]);
+    expect(server.hasOwnedWork).toBe(false);
+  });
+
+  it("attempts live Sessions after retained preparation cleanup fails during shutdown", async () => {
+    config.bindActions = () => {
+      throw new Error("construction failed");
+    };
+    vi.spyOn(ShellSessionBackend.prototype, "dispose").mockRejectedValueOnce(
+      new Error("rollback failed"),
+    );
+    await expect(server.create(request())).rejects.toThrow("Session construction cleanup failed");
+    const [retained] = server.ownedSessionIds();
+    config.bindActions = undefined;
+    const live = await server.create({ ...request(), configPath: path.join(root, "live.mts") });
+    const retry = vi
+      .spyOn(ShellSessionBackend.prototype, "retryCleanup")
+      .mockRejectedValueOnce(new Error("retry failed"));
+    await expect(createShutdownAll(server, vi.fn(), vi.fn())()).rejects.toThrow(
+      "Daemon cleanup incomplete",
+    );
+    expect(live.destroyed).toBe(true);
+    expect(server.list()).toEqual([]);
+    expect(server.ownedSessionIds()).toEqual([retained]);
+    expect(server.hasOwnedWork).toBe(true);
+    expect(retry).toHaveBeenCalledTimes(1);
+    await server.destroy(retained);
+    expect(server.hasOwnedWork).toBe(false);
+  });
+
+  it("seals every live owner before awaiting any cleanup", async () => {
+    const first = await server.create(request());
+    const otherPath = path.join(root, "other.mts");
+    const second = await server.create({ ...request(), configPath: otherPath });
+    const held = deferred<void>();
+    vi.spyOn(first.manager, "stopAll").mockReturnValueOnce(held.promise);
+    server.closeAdmission();
+    expect(first.taskExecution.accepting).toBe(false);
+    expect(second.taskExecution.accepting).toBe(false);
+    const cleanup = server.destroy(first.id);
+    await expect(second.startAll()).rejects.toThrow("session_closing");
+    held.resolve();
+    await cleanup;
+    await server.destroy(second.id);
+  });
+
+  it("cancels queued reload config waiting before destroy without interrupting JavaScript", async () => {
+    const session = await server.create(request());
+    await session.startPromise;
+    const loaded = deferred<Awaited<ReturnType<typeof loadProjectContext>>>();
+    vi.mocked(loadProjectContext).mockReturnValueOnce(loaded.promise);
+    const reload = session.reload();
+    const rejected = expect(reload).rejects.toThrow("session_closing");
+    await vi.waitFor(() => expect(loadProjectContext).toHaveBeenCalledTimes(2));
+    await server.destroy(session.id);
+    await rejected;
+    loaded.resolve({ config, env: captureEnvironment() });
+    await Promise.resolve();
+    expect(server.sessionCount).toBe(0);
+  });
+
+  it("sweeps retained preparation owners without fabricating session rows", async () => {
+    config.bindActions = () => {
+      throw new Error("construction failed");
+    };
+    vi.spyOn(ShellSessionBackend.prototype, "dispose").mockRejectedValueOnce(
+      new Error("cleanup failed"),
+    );
+    const changed = vi.fn();
+    server.onOwnershipChange = changed;
+    await expect(server.create(request())).rejects.toThrow("Session construction cleanup failed");
+    expect(server.list()).toEqual([]);
+    expect(server.sessionCount).toBe(0);
+    expect(server.hasOwnedWork).toBe(true);
+    expect(server.ownedSessionIds()).toHaveLength(1);
+    server.closeAdmission();
+    await server.settleCreates();
+    const [id] = server.ownedSessionIds();
+    await server.destroy(id);
+    expect(server.hasOwnedWork).toBe(false);
+    expect(server.ownedSessionIds()).toEqual([]);
+    expect(changed).toHaveBeenCalled();
+    await server.destroy(id);
+  });
 
   it.each(["'./effective'", "({ configDir }) => configDir + '/effective'"])(
     "resolves no-hint cwd %s once per invocation and converges after project .env loading",

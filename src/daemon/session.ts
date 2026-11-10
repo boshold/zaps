@@ -189,6 +189,7 @@ export class Session {
   public env: Record<string, string>;
   private destroyFailure?: AggregateError;
   private reloading = false;
+  private readonly closing = new AbortController();
   /** Subscriber-gated config-staleness poll; null when no subscribers (A4). */
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   /** One-shot guard so `session.configStale` fires once per false→true edge. */
@@ -350,6 +351,9 @@ export class Session {
     if (this.destroyed) {
       throw new Error("session destroyed");
     }
+    if (this.closing.signal.aborted) {
+      throw new Error("session_closing");
+    }
     if (this.reloading) {
       throw new Error("reload already in progress");
     }
@@ -371,9 +375,13 @@ export class Session {
     // Throws verbatim and the running session is left fully intact (A1). The old
     // Session is alive throughout the load, so cli.warn/info/success notices
     // Broadcast to the attached TUI as toasts.
-    const loaded = await loadProjectContext(this.configPath, this.invokeDir, shellEnv, (notice) => {
-      this.broadcast({ session: this.id, event: "config.notice", data: notice });
-    });
+    const loaded = await abortable(
+      loadProjectContext(this.configPath, this.invokeDir, shellEnv, (notice) => {
+        this.broadcast({ session: this.id, event: "config.notice", data: notice });
+      }),
+      this.closing.signal,
+      "session_closing",
+    );
     if (!this.taskExecution.accepting) {
       throw new Error("session_closing");
     }
@@ -450,11 +458,8 @@ export class Session {
     });
   }
 
-  /**
-   * Stop all services and clean up. Shares the op lock with `reload()` and uses
-   * the same abort-then-await protocol (A5).
-   */
-  public async destroy(): Promise<void> {
+  public closeAdmission(): void {
+    this.closing.abort();
     this.taskExecution.close();
     this.manager.closeAdmission?.();
     this.backend.runtime.closeAdmission?.();
@@ -464,6 +469,14 @@ export class Session {
     this.uiBindings.clear();
     this.acknowledgedSubscribers.clear();
     this.subscriptionRegistrations.clear();
+  }
+
+  /**
+   * Stop all services and clean up. Shares the op lock with `reload()` and uses
+   * the same abort-then-await protocol (A5).
+   */
+  public async destroy(): Promise<void> {
+    this.closeAdmission();
     await this.withOpLock(async () => {
       if (this.destroyed) {
         if (this.destroyFailure) {

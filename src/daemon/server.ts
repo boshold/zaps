@@ -9,6 +9,7 @@ import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedProjectContext } from "#src/config/project-context.js";
 import { backendFactories } from "#src/lib/backend/factory.js";
+import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { normalizeLegacySessionCreateParams } from "#src/lib/backend/schemas.js";
@@ -66,6 +67,18 @@ const CONTEXT_MUTATING_METHODS = new Set([
   "services.restartAll",
   "tasks.run",
   "tasks.runInPane",
+]);
+
+const SHUTDOWN_BLOCKED_METHODS = new Set([
+  ...[...CONTEXT_MUTATING_METHODS].filter(
+    (method) => method !== "services.stop" && method !== "services.stopAll",
+  ),
+  "session.create",
+  "session.attach",
+  "subscribe",
+  "terminal.action",
+  "exec-task.resolve",
+  "exec-service.resolve",
 ]);
 
 type CreateParams = (
@@ -167,6 +180,9 @@ class DaemonServer implements SessionStore {
   private readonly preparationCleanup = new Map<string, PreparationCleanupOwner>();
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
+  private readonly closing = new AbortController();
+  private readonly shutdownResponses = new Set<Promise<void>>();
+  public onOwnershipChange?: () => void;
   public onSessionChange?: (count: number) => void;
   public readonly sentra: SentraHost;
   public readonly sentraCounter: ErrorCounter;
@@ -225,6 +241,47 @@ class DaemonServer implements SessionStore {
     return this.sessions.size;
   }
 
+  public get hasOwnedWork(): boolean {
+    return (
+      this.sessions.size +
+        this.preparations.size +
+        this.inFlightCreates.size +
+        this.preparationCleanup.size >
+      0
+    );
+  }
+
+  public closeAdmission(): void {
+    this.closing.abort();
+    for (const session of this.sessions.values()) {
+      session.closeAdmission();
+    }
+  }
+
+  public async settleCreates(): Promise<void> {
+    await Promise.allSettled(
+      [...this.preparations.values(), ...this.inFlightCreates.values()].map(
+        async (record) => record.promise,
+      ),
+    );
+  }
+
+  public ownedSessionIds(): string[] {
+    return [...new Set([...this.sessions.keys(), ...this.preparationCleanup.keys()])];
+  }
+
+  public async flushShutdownResponses(): Promise<void> {
+    while (this.shutdownResponses.size) {
+      await Promise.all(this.shutdownResponses);
+    }
+  }
+
+  private assertAccepting(): void {
+    if (this.closing.signal.aborted) {
+      throw new Error("session_closing");
+    }
+  }
+
   /**
    * Reap detached children orphaned by a previous daemon's crash/SIGKILL, then
    * retain unresolved ownership evidence. Call before any session
@@ -254,6 +311,7 @@ class DaemonServer implements SessionStore {
   }
 
   public async create(input: CreateParams): Promise<Session> {
+    this.assertAccepting();
     const { shellEnv, ...request } = input;
     const params: CapturedCreateParams = {
       ...normalizeLegacySessionCreateParams(request),
@@ -266,12 +324,14 @@ class DaemonServer implements SessionStore {
       params.resolvedProjectDir === undefined ? null : path.resolve(params.resolvedProjectDir),
       Object.entries(params.shellEnv).toSorted(([left], [right]) => left.localeCompare(right)),
     ]);
-    return DaemonServer.reserve(this.preparations, key, identity, async () => {
-      const loaded = await loadProjectContext(
-        params.configPath,
-        params.projectDir,
-        params.shellEnv,
+    return this.reserve(this.preparations, key, identity, async () => {
+      this.assertAccepting();
+      const loaded = await abortable(
+        loadProjectContext(params.configPath, params.projectDir, params.shellEnv),
+        this.closing.signal,
+        "session_closing",
       );
+      this.assertAccepting();
       const id = sessionId(params.configPath, loaded.config.projectDir);
       if (
         params.resolvedProjectDir !== undefined &&
@@ -279,13 +339,13 @@ class DaemonServer implements SessionStore {
       ) {
         throw new Error("Resolved project directory does not match the request context");
       }
-      return DaemonServer.reserve(this.inFlightCreates, id, identity, async () =>
+      return this.reserve(this.inFlightCreates, id, identity, async () =>
         this.resolveCreate(id, params, loaded),
       );
     });
   }
 
-  private static async reserve(
+  private async reserve(
     records: Map<string, PendingCreate>,
     key: string,
     identity: CreationIdentity,
@@ -303,10 +363,12 @@ class DaemonServer implements SessionStore {
         .finally(() => {
           if (records.get(key) === record) {
             records.delete(key);
+            this.onOwnershipChange?.();
           }
         }),
     };
     records.set(key, record);
+    this.onOwnershipChange?.();
     return record.promise;
   }
 
@@ -335,6 +397,7 @@ class DaemonServer implements SessionStore {
     }
     if (this.preparationCleanup.get(id) === owner) {
       this.preparationCleanup.delete(id);
+      this.onOwnershipChange?.();
     }
   }
 
@@ -358,10 +421,12 @@ class DaemonServer implements SessionStore {
         creationIdentity(params),
       );
       if (!existing.destroyed && (await existing.backend.health()) === "alive") {
+        this.assertAccepting();
         return existing;
       }
       await this.destroy(id);
     }
+    this.assertAccepting();
     return this.buildSession(id, params, loaded);
   }
 
@@ -375,6 +440,7 @@ class DaemonServer implements SessionStore {
     const tmuxSocket = params.tmuxSocket ?? null;
     const tmux = tmuxFor(tmuxSocket);
     const tmuxWindow = await tmux.displayMessage(params.originPane, "#{window_id}");
+    this.assertAccepting();
     const wrappers = serviceWrappers({});
     const processes = new ProcessRunner({
       onLines: () => {
@@ -534,6 +600,7 @@ class DaemonServer implements SessionStore {
           cause: failure,
           cleanup: async () => (prepared ? prepared.retryCleanup() : disposeResources()),
         });
+        this.onOwnershipChange?.();
         throw failure;
       }
       throw error;
@@ -545,6 +612,7 @@ class DaemonServer implements SessionStore {
     params: CapturedCreateParams,
     loaded: ResolvedProjectContext,
   ): Promise<Session> {
+    this.assertAccepting();
     const { config } = loaded;
     const ref: { session: Session | null } = { session: null };
     const tmux =
@@ -561,6 +629,7 @@ class DaemonServer implements SessionStore {
       }));
     let manager: ServiceManager | undefined = undefined;
     try {
+      this.assertAccepting();
       const view = backend.getPresentation();
       const paneMap = view.kind === "tmux" ? { ...view.paneMap } : {};
       const deps: ServiceManagerRuntimeDeps = {
@@ -650,6 +719,7 @@ class DaemonServer implements SessionStore {
         env: loaded.env,
       };
 
+      this.assertAccepting();
       const session = new Session(sessionParams, manager);
       ref.session = session;
       if (tmux) {
@@ -657,6 +727,7 @@ class DaemonServer implements SessionStore {
       }
       this.sessions.set(id, session);
       this.onSessionChange?.(this.sessions.size);
+      this.onOwnershipChange?.();
 
       // Start services in background — TUI connects and sees them starting.
       // Tracked so reload/destroy can cooperatively abort and await it (A5).
@@ -714,6 +785,7 @@ class DaemonServer implements SessionStore {
             },
           });
         }
+        this.onOwnershipChange?.();
         throw failure;
       }
       if (session && this.sessions.get(id) === session) {
@@ -738,6 +810,7 @@ class DaemonServer implements SessionStore {
 
     this.sessions.delete(id);
     this.onSessionChange?.(this.sessions.size);
+    this.onOwnershipChange?.();
   }
 
   // --- Request routing ---
@@ -751,15 +824,34 @@ class DaemonServer implements SessionStore {
       return;
     }
 
+    let finishResponse: (() => void) | undefined = undefined;
+    if (req.method === "daemon.shutdown") {
+      let resolveDrain: (() => void) | undefined = undefined;
+      const drained = new Promise<void>((resolve) => {
+        resolveDrain = resolve;
+      });
+      this.shutdownResponses.add(drained);
+      const finish = () => {
+        this.shutdownResponses.delete(drained);
+        resolveDrain?.();
+        socket.off("close", finish);
+        socket.off("error", finish);
+      };
+      finishResponse = finish;
+      socket.once("close", finish);
+      socket.once("error", finish);
+    }
     const subscription: { acknowledge?: () => void } = {};
     const response = await this.routeRequest(req, socket, (acknowledge) => {
       subscription.acknowledge = acknowledge;
     });
     if (socket.destroyed || !socket.writable) {
+      finishResponse?.();
       return;
     }
     // eslint-disable-next-line prefer-await-to-callbacks -- acknowledgement follows socket flush
     socket.write(`${JSON.stringify(response)}\n`, (error) => {
+      finishResponse?.();
       if (!error && response.error === undefined && req.session) {
         subscription.acknowledge?.();
       }
@@ -771,6 +863,12 @@ class DaemonServer implements SessionStore {
     socket: net.Socket,
     onSubscription: (acknowledge: () => void) => void,
   ): Promise<IpcResponse> {
+    if (
+      this.closing.signal.aborted &&
+      (SHUTDOWN_BLOCKED_METHODS.has(req.method) || req.method.startsWith("sentra."))
+    ) {
+      return ipcErr(req.id, "session_closing");
+    }
     // Daemon-level handlers
     const dHandler = daemonHandlers[req.method];
     if (dHandler) {
