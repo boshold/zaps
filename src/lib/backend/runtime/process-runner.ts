@@ -2,15 +2,17 @@ import { spawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 
-import type { ExecutionHandle } from "#src/lib/backend/types.js";
+import type { ExecutionEvent, ExecutionHandle } from "#src/lib/backend/types.js";
 
 import { createProcessInspection, sameProcess } from "./process-inspection.js";
 import type { ProcessIdentity } from "./process-inspection.js";
 
 const STOP_GRACE_MS = 5000;
 const KILL_WAIT_MS = 1000;
+const DRAIN_WAIT_MS = 1000;
 const GATE_COMMAND = 'read -r zaps_gate <&3 || exit 125; exec 3<&-; exec sh -c "$1"';
 
 type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
@@ -56,6 +58,14 @@ interface OwnedProcess {
   unexpected: boolean;
   gateReleased: boolean;
   childCompleted: boolean;
+  code: number | null;
+  signal: string | null;
+  spawnError?: string;
+  stdoutDecoder: StringDecoder;
+  stderrDecoder: StringDecoder;
+  closed: Set<"stdout" | "stderr">;
+  drain?: Promise<boolean>;
+  streamsChanged?: () => void;
   stdout: string;
   stderr: string;
   lines: string[];
@@ -67,6 +77,7 @@ export class ProcessRunner {
   private readonly units = new Map<string, ExecutionHandle>();
   private readonly deps;
   private disposed = false;
+  private readonly listeners = new Set<(event: ExecutionEvent) => void>();
 
   public constructor(deps: ProcessRunnerDeps) {
     const inspection = createProcessInspection();
@@ -120,21 +131,38 @@ export class ProcessRunner {
       unexpected: false,
       gateReleased: false,
       childCompleted: false,
+      code: null,
+      signal: null,
+      stdoutDecoder: new StringDecoder("utf8"),
+      stderrDecoder: new StringDecoder("utf8"),
+      closed: new Set(),
       stdout: "",
       stderr: "",
       lines: [],
     };
     this.records.set(handle.id, proc);
     this.units.set(opts.unitId, handle);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      this.output(proc, "stdout", chunk);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      this.output(proc, "stderr", chunk);
-    });
+    for (const stream of ["stdout", "stderr"] as const) {
+      const readable = child[stream];
+      if (!readable) {
+        proc.closed.add(stream);
+        continue;
+      }
+      readable.on("data", (chunk: Buffer) => {
+        this.output(proc, stream, proc[`${stream}Decoder`].write(chunk));
+      });
+      const closed = () => {
+        this.closeStream(proc, stream);
+      };
+      readable.once("end", closed);
+      readable.once("close", closed);
+    }
     const exited = (completed: boolean) => {
       proc.childCompleted ||= completed;
       if (proc.finalized) {
+        if (completed && this.lookup(handle)) {
+          void this.stopObserved(handle);
+        }
         return;
       }
       if (proc.exited) {
@@ -146,12 +174,16 @@ export class ProcessRunner {
       proc.exited = true;
       proc.unexpected ||= !proc.stopping;
       clearTimeout(proc.monitor);
+      this.publish(proc, { kind: "leaderExit", ...ProcessRunner.exitDetails(proc) });
       void this.stopObserved(handle);
     };
-    child.on("exit", () => {
+    child.on("exit", (code, signal) => {
+      proc.code = code;
+      proc.signal = signal;
       exited(true);
     });
-    child.on("error", () => {
+    child.on("error", (error) => {
+      proc.spawnError ??= error.message;
       exited(proc.pid <= 0);
     });
     proc.ready = this.register(proc);
@@ -191,6 +223,7 @@ export class ProcessRunner {
     try {
       await this.cleanup(proc);
     } catch (error) {
+      await this.finish(proc, String(error));
       proc.stop = undefined;
       throw error;
     }
@@ -402,7 +435,7 @@ export class ProcessRunner {
         }
         await this.deps.wait(Math.min(25, remaining));
       }
-      this.finish(proc);
+      await this.finish(proc);
       return;
     }
     if (!(proc.childCompleted && !proc.gateReleased)) {
@@ -417,7 +450,7 @@ export class ProcessRunner {
     if (proc.pid > 0) {
       await this.probe(async () => this.deps.unrecord?.(proc.pid), killDeadline);
     }
-    this.finish(proc);
+    await this.finish(proc);
   }
 
   private async waitForExit(proc: OwnedProcess, deadline: number): Promise<boolean> {
@@ -442,20 +475,90 @@ export class ProcessRunner {
     return false;
   }
 
-  private finish(proc: OwnedProcess): void {
+  private static exitDetails(proc: OwnedProcess) {
+    return {
+      code: proc.code,
+      signal: proc.signal,
+      ...(proc.spawnError ? { spawnError: proc.spawnError } : {}),
+    };
+  }
+
+  public subscribe(listener: (event: ExecutionEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private publish(
+    proc: OwnedProcess,
+    event:
+      | Omit<Extract<ExecutionEvent, { kind: "leaderExit" }>, "unitId" | "generation">
+      | Omit<Extract<ExecutionEvent, { kind: "exit" }>, "unitId" | "generation">
+      | Omit<Extract<ExecutionEvent, { kind: "output" }>, "unitId" | "generation">,
+  ): void {
+    for (const listener of this.listeners) {
+      listener({ ...event, unitId: proc.handle.unitId, generation: proc.handle.generation });
+    }
+  }
+
+  private closeStream(proc: OwnedProcess, stream: "stdout" | "stderr"): void {
+    if (proc.closed.has(stream)) {
+      return;
+    }
+    this.output(proc, stream, proc[`${stream}Decoder`].end());
+    proc.closed.add(stream);
+    const trailing = proc[stream];
+    proc[stream] = "";
+    if (trailing) {
+      this.emitLines(proc, [trailing]);
+    }
+    proc.streamsChanged?.();
+  }
+
+  private async drain(proc: OwnedProcess): Promise<boolean> {
+    if (proc.closed.size === 2) {
+      return false;
+    }
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        proc.streamsChanged = undefined;
+        for (const stream of ["stdout", "stderr"] as const) {
+          this.closeStream(proc, stream);
+          proc.child[stream]?.destroy();
+        }
+        resolve(true);
+      }, DRAIN_WAIT_MS);
+      proc.streamsChanged = () => {
+        if (proc.closed.size === 2) {
+          clearTimeout(timer);
+          proc.streamsChanged = undefined;
+          resolve(false);
+        }
+      };
+    });
+  }
+
+  private async finish(proc: OwnedProcess, cleanupError?: string): Promise<void> {
+    proc.drain ??= this.drain(proc);
+    const drainTimedOut = await proc.drain;
+    if (!cleanupError) {
+      this.records.delete(proc.handle.id);
+      if (this.units.get(proc.handle.unitId) === proc.handle) {
+        this.units.delete(proc.handle.unitId);
+      }
+    }
     if (proc.finalized) {
       return;
     }
     proc.finalized = true;
     clearTimeout(proc.monitor);
-    const trailing = [proc.stdout, proc.stderr].filter(Boolean);
-    this.emitLines(proc, trailing);
-    proc.child.stdout?.destroy();
-    proc.child.stderr?.destroy();
-    this.records.delete(proc.handle.id);
-    if (this.units.get(proc.handle.unitId) === proc.handle) {
-      this.units.delete(proc.handle.unitId);
-    }
+    this.publish(proc, {
+      kind: "exit",
+      ...ProcessRunner.exitDetails(proc),
+      ...(cleanupError ? { cleanupError } : {}),
+      ...(drainTimedOut ? { drainTimedOut } : {}),
+    });
     if (proc.unexpected) {
       this.deps.onExit(proc.handle.unitId, proc.handle.generation);
     }
@@ -480,6 +583,12 @@ export class ProcessRunner {
   public getLines(handle: ExecutionHandle): string[] {
     return this.lookup(handle)?.lines ?? [];
   }
+  public readOutput(handle: ExecutionHandle, tail: number): string[] {
+    const proc = this.lookup(handle);
+    return proc && tail > 0
+      ? [...proc.lines, ...[proc.stdout, proc.stderr].filter(Boolean)].slice(-Math.min(tail, 500))
+      : [];
+  }
   public async stopAll(): Promise<void> {
     const results = await Promise.allSettled(
       [...this.records.values()].map(async (proc) => this.stop(proc.handle)),
@@ -497,11 +606,11 @@ export class ProcessRunner {
     await this.stopAll();
   }
 
-  private output(proc: OwnedProcess, stream: "stdout" | "stderr", chunk: Buffer): void {
+  private output(proc: OwnedProcess, stream: "stdout" | "stderr", chunk: string): void {
     if (proc.finalized) {
       return;
     }
-    const parts = (proc[stream] + chunk.toString()).split("\n");
+    const parts = (proc[stream] + chunk).split("\n");
     proc[stream] = parts.pop() ?? "";
     this.emitLines(proc, parts);
   }
@@ -514,6 +623,7 @@ export class ProcessRunner {
       proc.lines.splice(0, proc.lines.length - 500);
     }
     this.deps.onLines(proc.handle.unitId, lines);
+    this.publish(proc, { kind: "output", lines });
   }
 }
 export type { SpawnFn, ProcessSpawnOptions, ProcessRunnerDeps };

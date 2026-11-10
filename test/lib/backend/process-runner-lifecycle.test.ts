@@ -22,7 +22,12 @@ function harness() {
   let now = 0;
   const signals: { pid: number; signal: NodeJS.Signals; at: number }[] = [];
   const record = vi.fn();
-  const unrecord = vi.fn();
+  const closeStreams = () => {
+    stdout.destroy();
+    stderr.destroy();
+  };
+  child.on("exit", closeStreams);
+  const unrecord = vi.fn(closeStreams);
   const onExit = vi.fn();
   const onLines = vi.fn();
   const diagnostic = vi.fn();
@@ -44,6 +49,7 @@ function harness() {
     diagnostic,
   };
   return {
+    closeStreams,
     identity,
     live,
     child,
@@ -101,6 +107,7 @@ describe("ProcessRunner ownership lifecycle", () => {
     await vi.waitFor(() => {
       expect(h.record).toHaveBeenCalledOnce();
     });
+    h.closeStreams();
     const first = runner.stop(handle);
     expect(runner.stop(handle)).toBe(first);
     await expect(first).rejects.toThrow("survived SIGKILL");
@@ -124,6 +131,7 @@ describe("ProcessRunner ownership lifecycle", () => {
     await vi.waitFor(() => {
       expect(h.gate.readableLength).toBeGreaterThan(0);
     });
+    h.closeStreams();
     h.live.set(4242, { ...h.identity, startTime: "reused" });
     await expect(runner.stop(handle)).rejects.toThrow("Unverified");
     expect(h.signals).toEqual([]);
@@ -296,6 +304,8 @@ describe("ProcessRunner ownership lifecycle", () => {
         const handle = runner.spawnOwned(spec);
         await vi.advanceTimersByTimeAsync(0);
         expect(h.gate.readableLength).toBeGreaterThan(0);
+        h.closeStreams();
+        await vi.advanceTimersByTimeAsync(0);
         slow = true;
         const result = expect(runner.stop(handle)).rejects.toThrow("deadline");
         await vi.advanceTimersByTimeAsync(6000);
@@ -327,6 +337,7 @@ describe("ProcessRunner ownership lifecycle", () => {
     const h = harness();
     const runner = new ProcessRunner({ ...h.deps, readProcessIdentity: async () => null });
     const handle = runner.spawnOwned(spec);
+    h.closeStreams();
     await expect(runner.stop(handle)).rejects.toThrow("Unresolved ownership");
     expect(runner.getPid(handle)).toBe(4242);
     expect(h.signals).toEqual([]);
