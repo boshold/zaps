@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 import { DaemonClient } from "#src/client/daemon-client.js";
 import { getEnv } from "#src/lib/env.js";
 import { installResizeReset } from "#src/lib/screen-reset.js";
@@ -57,7 +55,8 @@ export async function runTui(opts: {
   try {
     // Parallel: load yoga + attach to daemon (no config loading needed)
     const [yogaMod, snapshot] = await Promise.all([import("yoga-layout"), client.connectUi()]);
-    await z.object({ __yogaReady: z.unknown().optional() }).parse(yogaMod.default).__yogaReady;
+    const yogaReady: unknown = Reflect.get(yogaMod.default, "__yogaReady");
+    await yogaReady;
 
     // Skip splash on reattach (services already running)
     const allStopped = snapshot.statuses.every((s) => s.state === "stopped");

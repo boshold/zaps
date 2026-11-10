@@ -177,22 +177,31 @@ export class DaemonClient extends EventEmitter {
       throw new Error("Not connected");
     }
     const epoch = this.connectionEpoch;
+    const assertCurrent = () => {
+      if (epoch !== this.connectionEpoch || this.sub !== subscription || !subscription.connected) {
+        throw new Error("daemon connection closed");
+      }
+    };
     await subscription.subscribed;
-    if (epoch !== this.connectionEpoch || this.sub !== subscription || !subscription.connected) {
-      throw new Error("daemon connection closed");
-    }
-    const response = await subscription.request("session.attach", { ui: true });
-    if (response.error !== undefined) {
-      throw new DaemonRequestError(response.error, response.errorCode);
-    }
-    if (epoch !== this.connectionEpoch || this.sub !== subscription || !subscription.connected) {
-      throw new Error("daemon connection closed");
-    }
-    const snapshot = parseSessionSnapshot(response.result, this.advertised);
-    this.managedHost = snapshot.backend === "tmux" && snapshot.managed;
-    this.boundSubscription = subscription;
-    this.emit("session.snapshot", snapshot);
-    this.noticeUpgrade();
+    assertCurrent();
+    const snapshot = await subscription.request(
+      "session.attach",
+      { ui: true },
+      undefined,
+      (response) => {
+        assertCurrent();
+        if (response.error !== undefined) {
+          throw new DaemonRequestError(response.error, response.errorCode);
+        }
+        const parsed = parseSessionSnapshot(response.result, this.advertised);
+        this.managedHost = parsed.backend === "tmux" && parsed.managed;
+        this.boundSubscription = subscription;
+        this.emit("session.snapshot", parsed);
+        this.noticeUpgrade();
+        return parsed;
+      },
+    );
+    assertCurrent();
     return snapshot;
   }
 

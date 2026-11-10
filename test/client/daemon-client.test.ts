@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { unavailableActions, unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
+import type { IpcResponse } from "../../src/lib/ipc/protocol.js";
+import { acceptMockResponse } from "../_helpers/accept-mock-response.js";
 import { makeSessionSnapshot as wireSnapshot } from "../_helpers/session-snapshot.js";
 
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -21,7 +23,7 @@ describe("DaemonClient", () => {
   let mockSub: {
     send: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
-    request: ReturnType<typeof vi.fn>;
+    request: ReturnType<typeof vi.fn<(...args: unknown[]) => Promise<IpcResponse>>>;
     connected: boolean;
     subscribed: Promise<void>;
   };
@@ -52,7 +54,14 @@ describe("DaemonClient", () => {
           (() => {
             /* Noop */
           });
-        return mockSub;
+        const fixture = mockSub;
+        return {
+          ...fixture,
+          get subscribed() {
+            return fixture.subscribed;
+          },
+          request: acceptMockResponse(fixture.request),
+        };
       },
     );
 
@@ -171,7 +180,12 @@ describe("DaemonClient", () => {
       expect(mockSub.request).not.toHaveBeenCalled();
       acknowledgements.subscribe?.();
       await vi.waitFor(() =>
-        expect(mockSub.request).toHaveBeenCalledWith("session.attach", { ui: true }),
+        expect(mockSub.request).toHaveBeenCalledWith(
+          "session.attach",
+          { ui: true },
+          undefined,
+          expect.any(Function),
+        ),
       );
       expect(client.uiBound).toBe(false);
       acknowledgements.attach?.();
@@ -339,7 +353,7 @@ describe("DaemonClient", () => {
       await client.bindUi();
       vi.useFakeTimers();
       try {
-        let complete: ((response: unknown) => void) | undefined;
+        let complete: ((response: IpcResponse) => void) | undefined;
         mockSub.request.mockReturnValueOnce(
           new Promise((resolve) => {
             complete = resolve;

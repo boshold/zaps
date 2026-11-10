@@ -12,6 +12,7 @@ import { App } from "../src/components/App.js";
 import { unavailableCapabilities } from "../src/lib/backend/wire.js";
 import type { IpcResponse } from "../src/lib/ipc/protocol.js";
 
+import { acceptMockResponse } from "./_helpers/accept-mock-response.js";
 import { deferred } from "./_helpers/deferred.js";
 import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
 
@@ -193,11 +194,27 @@ describe("CLI — runTui", () => {
   it("loads Yoga independently and renders only after the two ACKs on the UI socket", async () => {
     const subscribed = deferred<void>();
     const attached = deferred<IpcResponse>();
+    const yogaReady = deferred<void>();
+    const yogaRead = deferred<void>();
+    mockLoadYoga.mockReturnValue(
+      new Proxy(
+        {},
+        {
+          get(_target, property): unknown {
+            if (property === "__yogaReady") {
+              yogaRead.resolve();
+              return yogaReady.promise;
+            }
+            throw new Error("Yoga not ready");
+          },
+        },
+      ),
+    );
     const request = vi.fn(async () => attached.promise);
     const close = vi.fn();
     mockIpcSubscribe.mockReturnValue({
       subscribed: subscribed.promise,
-      request,
+      request: acceptMockResponse(request),
       send: vi.fn(),
       connected: true,
       close,
@@ -224,12 +241,21 @@ describe("CLI — runTui", () => {
     expect(renderInk).not.toHaveBeenCalled();
     subscribed.resolve();
     await vi.waitFor(() =>
-      expect(request).toHaveBeenCalledExactlyOnceWith("session.attach", { ui: true }),
+      expect(request).toHaveBeenCalledExactlyOnceWith(
+        "session.attach",
+        { ui: true },
+        undefined,
+        expect.any(Function),
+      ),
     );
     expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
     expect(renderInk).not.toHaveBeenCalled();
 
     attached.resolve({ id: "attach", result: snapshot });
+    await yogaRead.promise;
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    yogaReady.resolve();
     await tui;
     expect(renderInk).toHaveBeenCalledOnce();
     const rendered = vi.mocked(renderInk).mock.calls[0]?.[0];
@@ -255,7 +281,7 @@ describe("CLI — runTui", () => {
     const close = vi.fn();
     mockIpcSubscribe.mockReturnValue({
       subscribed: Promise.resolve(),
-      request: vi.fn().mockResolvedValue({ id: "attach", error: "attach failed" }),
+      request: acceptMockResponse(async () => ({ id: "attach", error: "attach failed" })),
       send: vi.fn(),
       connected: true,
       close,

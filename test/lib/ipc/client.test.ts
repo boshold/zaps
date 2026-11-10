@@ -491,6 +491,26 @@ describe("ipcSubscribe", () => {
     sub.close();
   });
 
+  it("rejects a failed ACK acceptance and still dispatches the following event", async () => {
+    const onEvent = vi.fn();
+    const sub = ipcSubscribe("/test.sock", "s1", [], { onEvent });
+    mockSocket.emit("connect");
+    acknowledge();
+    const pending = sub.request("session.attach", { ui: true }, undefined, (response) =>
+      z.object({ statuses: z.array(z.unknown()) }).parse(response.result),
+    );
+    const [, written] = mockSocket.write.mock.calls;
+    const request = z.object({ id: z.string() }).parse(JSON.parse(String(written?.[0])));
+    const event = { session: "s1", event: "task.start", data: { key: "build", name: "Build" } };
+    mockSocket.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ id: request.id, result: {} })}\n${JSON.stringify(event)}\n`),
+    );
+    await expect(pending).rejects.toThrow(z.ZodError);
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith(event);
+    sub.close();
+  });
+
   it("handles malformed JSON gracefully", () => {
     const onEvent = vi.fn();
     ipcSubscribe("/test.sock", "s1", [], { onEvent });

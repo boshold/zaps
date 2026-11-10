@@ -214,7 +214,7 @@ export function ipcSubscribe(
 
   interface Pending {
     resolve: (res: IpcResponse) => void;
-    reject: (err: Error) => void;
+    reject: (error: unknown) => void;
     timer?: ReturnType<typeof setTimeout>;
   }
   const pending = new Map<string, Pending>();
@@ -267,7 +267,11 @@ export function ipcSubscribe(
           clearTimeout(waiter.timer);
         }
         pending.delete(msg.id);
-        waiter.resolve(msg);
+        try {
+          waiter.resolve(msg);
+        } catch (error) {
+          waiter.reject(error);
+        }
         return;
       }
       if (msg.id === subscribeId) {
@@ -307,6 +311,42 @@ export function ipcSubscribe(
   socket.on("close", () => finish(new Error("daemon connection closed")));
   socket.on("error", (error) => finish(error));
 
+  function request(method: string, params?: unknown, timeoutMs?: number): Promise<IpcResponse>;
+  function request<T>(
+    method: string,
+    params: unknown,
+    timeoutMs: number | undefined,
+    accept: (response: IpcResponse) => T,
+  ): Promise<T>;
+  async function request<T>(
+    method: string,
+    params?: unknown,
+    timeoutMs = 30_000,
+    accept?: (response: IpcResponse) => T,
+  ): Promise<IpcResponse | T> {
+    const id = generateId();
+    const req: IpcRequest = { id, method, session, params, context: captureRequestContext() };
+    return new Promise((resolve, reject) => {
+      if (!connected) {
+        reject(new Error("Not connected"));
+        return;
+      }
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              pending.delete(id);
+              reject(new Error("Request timed out"));
+            }, timeoutMs)
+          : undefined;
+      pending.set(id, {
+        resolve: (response) => resolve(accept ? accept(response) : response),
+        reject,
+        timer,
+      });
+      socket.write(`${JSON.stringify(req)}\n`);
+    });
+  }
+
   return {
     ready,
     subscribed,
@@ -326,25 +366,7 @@ export function ipcSubscribe(
       };
       socket.write(`${JSON.stringify(req)}\n`);
     },
-    async request(method: string, params?: unknown, timeoutMs = 30_000): Promise<IpcResponse> {
-      const id = generateId();
-      const req: IpcRequest = { id, method, session, params, context: captureRequestContext() };
-      return new Promise((resolve, reject) => {
-        if (!connected) {
-          reject(new Error("Not connected"));
-          return;
-        }
-        const timer =
-          timeoutMs > 0
-            ? setTimeout(() => {
-                pending.delete(id);
-                reject(new Error("Request timed out"));
-              }, timeoutMs)
-            : undefined;
-        pending.set(id, { resolve, reject, timer });
-        socket.write(`${JSON.stringify(req)}\n`);
-      });
-    },
+    request,
     close(): void {
       finish(new Error("daemon connection closed"));
       socket.destroy();
@@ -374,6 +396,13 @@ export interface IpcSubscription {
   send(method: string, params?: unknown): void;
   /** `timeoutMs <= 0` disables the per-request timeout (inactivity-bounded use). */
   request(method: string, params?: unknown, timeoutMs?: number): Promise<IpcResponse>;
+  /** Accept the ACK synchronously before dispatching later socket frames. */
+  request<T>(
+    method: string,
+    params: unknown,
+    timeoutMs: number | undefined,
+    accept: (response: IpcResponse) => T,
+  ): Promise<T>;
   close(): void;
   readonly connected: boolean;
 }
