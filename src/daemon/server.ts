@@ -175,11 +175,11 @@ class DaemonServer implements SessionStore {
 
   /**
    * Reap detached children orphaned by a previous daemon's crash/SIGKILL, then
-   * clear the bookkeeping file. Call once at daemon startup, before any session
+   * retain unresolved ownership evidence. Call before any session
    * is created (R10).
    */
-  public reapDetachedOrphans(): void {
-    this.detachedRegistry.reapOrphans();
+  public async reapDetachedOrphans(): Promise<void> {
+    await this.detachedRegistry.reapOrphans();
   }
 
   // --- SessionStore ---
@@ -291,10 +291,10 @@ class DaemonServer implements SessionStore {
       capturePane: tmux.capturePane,
       getDescendantPids,
       recordDetached: (pid: number) => {
-        this.detachedRegistry.record(pid);
+        void this.detachedRegistry.record(pid);
       },
       removeDetached: (pid: number) => {
-        this.detachedRegistry.remove(pid);
+        void this.detachedRegistry.remove(pid);
       },
       renameWindow: tmux.renameWindow,
       getWindowName: tmux.getWindowName,

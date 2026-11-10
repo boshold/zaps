@@ -153,7 +153,7 @@ async function runDaemon(): Promise<void> {
 
   // Reap detached children orphaned by a previous daemon (crash/SIGKILL) before
   // Anything new starts, so leftover pane-less children don't hold ports (R10).
-  server.reapDetachedOrphans();
+  await server.reapDetachedOrphans();
 
   const idle = new IdleTimer(IDLE_TIMEOUT_MS, () => {
     if (server.sessionCount === 0) {

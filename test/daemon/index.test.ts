@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const reapDetachedOrphans = vi.hoisted(() => vi.fn(async (): Promise<void> => undefined));
+
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => ({
     unref: vi.fn(),
@@ -76,7 +78,7 @@ vi.mock("../../src/daemon/server.js", () => {
         stop: vi.fn(),
         list: vi.fn(() => []),
         destroy: vi.fn().mockResolvedValue(undefined),
-        reapDetachedOrphans: vi.fn(),
+        reapDetachedOrphans,
         sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
@@ -264,6 +266,7 @@ describe("runDaemon", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    reapDetachedOrphans.mockResolvedValue(undefined);
     process.exit = vi.fn() as unknown as typeof process.exit;
     processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
     // Never move the test worker's cwd; runDaemon chdirs to a stable dir.
@@ -280,7 +283,7 @@ describe("runDaemon", () => {
         stop: vi.fn(),
         list: vi.fn(() => []),
         destroy: vi.fn().mockResolvedValue(undefined),
-        reapDetachedOrphans: vi.fn(),
+        reapDetachedOrphans,
         sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
@@ -314,6 +317,20 @@ describe("runDaemon", () => {
       sentra: { close: ReturnType<typeof vi.fn> };
     };
   }
+
+  it("awaits orphan cleanup before opening the admission socket", async () => {
+    let finishCleanup: () => void = () => undefined;
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    reapDetachedOrphans.mockReturnValueOnce(cleanup);
+    const startup = runDaemon();
+    expect(reapDetachedOrphans).toHaveBeenCalled();
+    expect(serverInstance().start).not.toHaveBeenCalled();
+    finishCleanup();
+    await startup;
+    expect(serverInstance().start).toHaveBeenCalledOnce();
+  });
 
   it("writes PID and starts server on socket path", async () => {
     await runDaemon();
