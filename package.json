@@ -53,7 +53,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
     "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware",
-    "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage"
+    "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage",
+    "test:integration:shell": "vitest run -c test/integration/shell/vitest.config.ts"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31",
