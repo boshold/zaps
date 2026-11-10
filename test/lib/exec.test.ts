@@ -153,3 +153,38 @@ describe("execCommandWithResult", () => {
     expect(lines).toContain("err-msg");
   });
 });
+
+describe("owned exec compatibility", () => {
+  it("preserves caller environment precedence", async () => {
+    const result = await execCommandWithResult('printf "%s" "$PATH"', {
+      cwd: "/tmp",
+      env: { PATH: "/bin:/caller-path" },
+    });
+    expect(result.output).toEqual(["/bin:/caller-path"]);
+    expect(result.success).toBe(true);
+  });
+
+  it("returns spawn errors and rejects the void helper", async () => {
+    const result = await execCommandWithResult("true", { cwd: "/does-not-exist-zaps" });
+    expect(result.success).toBe(false);
+    expect(result.output.join("\n")).toContain("ENOENT");
+    await expect(
+      execCommand("true", {
+        cwd: "/does-not-exist-zaps",
+        onLine: () => {
+          /* No-op */
+        },
+      }),
+    ).rejects.toThrow("Command failed with code 1");
+  });
+
+  it("does not spawn already-cancelled commands", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const result = await execCommandWithResult("echo never", {
+      cwd: "/tmp",
+      signal: controller.signal,
+    });
+    expect(result).toEqual({ success: false, exitCode: 1, output: ["Command cancelled"] });
+  });
+});

@@ -16,7 +16,83 @@ const DRAIN_WAIT_MS = 1000;
 const GATE_COMMAND = 'read -r zaps_gate <&3 || exit 125; exec 3<&-; exec sh -c "$1"';
 
 type SpawnFn = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+interface ProcessAuthority {
+  readonly signal: AbortSignal;
+}
+
+class ProcessAdmission {
+  private state: "active" | "closing" | "disposed" = "active";
+  private readonly scopes = new Map<
+    ProcessAuthority,
+    {
+      controller: AbortController;
+      deadline: number;
+      cleanup: boolean;
+      timer?: ReturnType<typeof setTimeout>;
+    }
+  >();
+  public readonly normal: ProcessAuthority;
+
+  public constructor() {
+    this.normal = this.issue(false, Infinity);
+  }
+
+  private issue(cleanup: boolean, deadline: number): ProcessAuthority {
+    const controller = new AbortController();
+    const authority = Object.freeze({ signal: controller.signal });
+    this.scopes.set(authority, { controller, deadline, cleanup });
+    return authority;
+  }
+
+  public allows(authority: ProcessAuthority | undefined): boolean {
+    const scope = authority && this.scopes.get(authority);
+    return Boolean(
+      scope &&
+      this.state !== "disposed" &&
+      !scope.controller.signal.aborted &&
+      Date.now() < scope.deadline &&
+      (scope.cleanup || this.state === "active"),
+    );
+  }
+
+  public close(): void {
+    if (this.state === "active") {
+      this.state = "closing";
+    }
+  }
+
+  public createCleanupScope(deadline: number): { authority: ProcessAuthority; revoke: () => void } {
+    if (this.state === "disposed" || !Number.isFinite(deadline) || deadline <= Date.now()) {
+      throw new Error("session_closing");
+    }
+    const authority = this.issue(true, deadline);
+    const revoke = () => {
+      const scope = this.scopes.get(authority);
+      if (scope) {
+        clearTimeout(scope.timer);
+        scope.controller.abort();
+        this.scopes.delete(authority);
+      }
+    };
+    const scope = this.scopes.get(authority);
+    if (scope) {
+      scope.timer = setTimeout(revoke, Math.min(deadline - Date.now(), 2_147_483_647));
+    }
+    return { authority, revoke };
+  }
+
+  public dispose(): void {
+    this.state = "disposed";
+    for (const scope of this.scopes.values()) {
+      clearTimeout(scope.timer);
+      scope.controller.abort();
+    }
+    this.scopes.clear();
+  }
+}
+
 interface ProcessSpawnOptions {
+  authority?: ProcessAuthority;
   unitId: string;
   command: string;
   cwd: string;
@@ -30,6 +106,7 @@ interface ProcessRunnerDeps {
   unrecord?: (pid: number) => void | Promise<void>;
   spawn?: SpawnFn;
   admit?: () => boolean;
+  admission?: ProcessAdmission;
   readProcessIdentity?: (pid: number) => Promise<ProcessIdentity | null>;
   getProcessMembers?: (identity: ProcessIdentity) => Promise<ProcessIdentity[]>;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
@@ -46,6 +123,8 @@ class CleanupDeadlineError extends Error {
 
 interface OwnedProcess {
   handle: ExecutionHandle;
+  authority?: ProcessAuthority;
+  removeAbort?: () => void;
   child: ChildProcess;
   pid: number;
   members: Map<number, ProcessIdentity>;
@@ -101,8 +180,16 @@ export class ProcessRunner {
     };
   }
 
+  public admits(authority?: ProcessAuthority): boolean {
+    return (
+      !this.disposed &&
+      this.deps.admit?.() !== false &&
+      (!this.deps.admission || this.deps.admission.allows(authority))
+    );
+  }
+
   public spawnOwned(opts: ProcessSpawnOptions): ExecutionHandle {
-    if (this.disposed || this.deps.admit?.() === false) {
+    if (!this.admits(opts.authority)) {
       throw new Error("session_closing");
     }
     if (this.units.has(opts.unitId)) {
@@ -121,6 +208,7 @@ export class ProcessRunner {
     });
     const proc: OwnedProcess = {
       handle,
+      authority: opts.authority,
       child,
       pid: child.pid ?? -1,
       members: new Map(),
@@ -180,6 +268,13 @@ export class ProcessRunner {
       proc.spawnError ??= error.message;
       exited(proc.pid <= 0);
     });
+    const cancel = () => {
+      void this.stopObserved(handle);
+    };
+    opts.authority?.signal.addEventListener("abort", cancel, { once: true });
+    proc.removeAbort = () => {
+      opts.authority?.signal.removeEventListener("abort", cancel);
+    };
     proc.ready = this.register(proc);
     void this.observeRegistration(proc);
     return handle;
@@ -253,7 +348,7 @@ export class ProcessRunner {
     gate?.on("error", () => {
       /* Gate closure is expected during cleanup. */
     });
-    if (proc.stopping || proc.exited || this.disposed || this.deps.admit?.() === false) {
+    if (proc.stopping || proc.exited || !this.admits(proc.authority)) {
       gate?.destroy();
     } else {
       if (!gate) {
@@ -537,6 +632,7 @@ export class ProcessRunner {
     proc.drain ??= this.drain(proc);
     const drainTimedOut = await proc.drain;
     if (!cleanupError) {
+      proc.removeAbort?.();
       this.records.delete(proc.handle.id);
       if (this.units.get(proc.handle.unitId) === proc.handle) {
         this.units.delete(proc.handle.unitId);
@@ -597,6 +693,7 @@ export class ProcessRunner {
   }
   public async dispose(): Promise<void> {
     this.disposed = true;
+    this.deps.admission?.dispose();
     await this.stopAll();
   }
 
@@ -621,3 +718,6 @@ export class ProcessRunner {
   }
 }
 export type { SpawnFn, ProcessSpawnOptions, ProcessRunnerDeps };
+
+export { ProcessAdmission };
+export type { ProcessAuthority };
