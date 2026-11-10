@@ -4,10 +4,11 @@ import type { ExecResult, ResolvedConfig, TaskConfig, TaskRunContext } from "#sr
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import type { TaskRunOptions } from "#src/daemon/task-execution.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
+import type { TerminalDriver } from "#src/lib/backend/types.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
-import type { TaskPopupRequest } from "#src/lib/task/runner.js";
 
 import { fakeSentra } from "../_helpers/fake-sentra.js";
 
@@ -48,18 +49,19 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
+function makeTerminal(
+  runConfiguredTask: NonNullable<TerminalDriver["runConfiguredTask"]>,
+): Pick<TerminalDriver, "runConfiguredTask"> | undefined {
+  return { runConfiguredTask };
+}
+
 function setup(tasks: Record<string, TaskConfig>, sentra?: SentraDeps) {
   const config = makeConfig(tasks);
-  const displayPopup = vi.fn().mockResolvedValue(undefined);
+  const displayPopup = vi
+    .fn<NonNullable<TerminalDriver["runConfiguredTask"]>>()
+    .mockResolvedValue({ kind: "completed", exitCode: 0 });
   const session = {
-    taskPresentation: {
-      popup: async ({ commands, key: _key, ...request }: TaskPopupRequest) => {
-        await displayPopup({
-          ...request,
-          command: `${commands.join(" && ")}; echo; echo 'Press Enter to close...'; read`,
-        });
-      },
-    },
+    backend: { terminal: makeTerminal(displayPopup) },
     id: "session",
     config,
     env: { TOKEN: "accepted" },
@@ -296,13 +298,14 @@ describe("configuration snapshots before deferred dependencies", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(session.deps.displayPopup).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: expect.stringContaining("echo /original;"),
+        commands: ["echo /original"],
         width: "60%",
         height: "40%",
         env: { TOKEN: "accepted", SERVICE_CWD: "/original" },
       }),
+      expect.objectContaining({ id: result.runId, cwd: "/project" }),
     );
-    expect(session.deps.displayPopup.mock.calls[0]?.[0].command).not.toContain("changed command");
+    expect(session.deps.displayPopup.mock.calls[0]?.[0].commands).not.toContain("changed command");
   });
 });
 
@@ -438,6 +441,7 @@ describe.each(["background", "configured"] as const)("%s DAG lifecycle", (mode) 
     });
     session.deps.displayPopup.mockImplementation(async (request) => {
       order.push(request.title.toLowerCase());
+      return { kind: "completed", exitCode: 0 };
     });
     const progress = vi.fn();
     options.onProgress = progress;
@@ -497,4 +501,145 @@ describe.each(["background", "configured"] as const)("%s DAG lifecycle", (mode) 
       expect(execute).not.toHaveBeenCalled();
     }
   });
+});
+
+it("falls back once per task/config load without terminal and resets notice dedup on reload", async () => {
+  const { owner, session, options, execute } = setup({
+    root: { name: "Root", popup: true, commands: "root" },
+  });
+  session.backend.terminal = undefined;
+  options.mode = "configured";
+  await expect(owner.run("root", options)).resolves.toMatchObject({ success: true });
+  await expect(owner.run("root", options)).resolves.toMatchObject({ success: true });
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(
+    session.broadcast.mock.calls.filter(([event]) => event.event === "config.notice"),
+  ).toHaveLength(1);
+  session.config = makeConfig({ root: { name: "Root", popup: true, commands: "reloaded" } });
+  await expect(owner.run("root", { ...options, config: session.config })).resolves.toMatchObject({
+    success: true,
+  });
+  expect(
+    session.broadcast.mock.calls.filter(([event]) => event.event === "config.notice"),
+  ).toHaveLength(2);
+});
+
+it("keeps callback library calls noninteractive under a public run", async () => {
+  const { owner, session, options, execute } = setup({
+    dep: { name: "Dep", popup: true, commands: "dep" },
+    nested: { name: "Nested", popup: true, dependsOn: ["dep"], commands: "nested" },
+    root: {
+      name: "Root",
+      popup: true,
+      run: async (ctx) => {
+        await owner.actions.runTask("nested");
+        await ctx.exec("callback");
+      },
+    },
+  });
+  await expect(owner.run("root", options)).resolves.toMatchObject({ success: true });
+  expect(execute.mock.calls.map(([command]) => command)).toEqual(["dep", "nested", "callback"]);
+  expect(session.deps.displayPopup).not.toHaveBeenCalled();
+});
+
+it.each(["terminal_busy", "cancelled"] as const)(
+  "never replays %s after a popup side effect",
+  async (code) => {
+    let sideEffects = 0;
+    const { owner, session, options, execute } = setup({
+      root: { name: "Root", popup: true, commands: "effect" },
+    });
+    options.mode = "configured";
+    session.deps.displayPopup.mockImplementation(async () => {
+      sideEffects += 1;
+      throw new TerminalOperationError(code, true);
+    });
+    const result = await owner.run("root", options);
+    expect(result.success).toBe(false);
+    expect(sideEffects).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
+  },
+);
+
+it("cancels normal startup presentation before waiting while allowing bounded stop-hook presentation", async () => {
+  const entered = deferred<void>();
+  const { owner, session, options, stopHook } = setup({
+    root: { name: "Root", popup: true, commands: "root" },
+  });
+  options.mode = "configured";
+  session.deps.displayPopup.mockImplementationOnce(async (_command, operation) => {
+    entered.resolve();
+    return new Promise((_resolve, reject) => {
+      operation.signal.addEventListener(
+        "abort",
+        () => reject(new TerminalOperationError("cancelled", true)),
+        { once: true },
+      );
+    });
+  });
+  const startup = owner.run("root", options);
+  await entered.promise;
+  owner.close();
+  await expect(startup).resolves.toMatchObject({ success: false });
+  await stopHook(async () => owner.actions.runTask("root"));
+  expect(session.deps.displayPopup).toHaveBeenCalledTimes(2);
+  expect(session.deps.displayPopup.mock.calls[1]?.[1].signal.aborted).toBe(true);
+  expect(
+    session.broadcast.mock.calls.filter(([event]) => event.event === "task.complete"),
+  ).toHaveLength(2);
+});
+
+it("passes callback popup commands and overrides through the task-owned operation", async () => {
+  const { owner, session, options, execute } = setup({
+    root: {
+      name: "Root",
+      popup: true,
+      env: { LOCAL: "task" },
+      run: async (ctx) => {
+        expect(await ctx.exec("exit 17", { cwd: "/override", env: { EXTRA: "exec" } })).toEqual({
+          success: false,
+          exitCode: 17,
+          output: [],
+        });
+      },
+    },
+  });
+  options.mode = "configured";
+  session.deps.displayPopup.mockResolvedValue({ kind: "completed", exitCode: 17 });
+  const result = await owner.run("root", options);
+  expect(result.success).toBe(true);
+  expect(session.deps.displayPopup).toHaveBeenCalledWith(
+    expect.objectContaining({ commands: ["exit 17"] }),
+    expect.objectContaining({
+      id: result.runId,
+      cwd: "/override",
+      env: { TOKEN: "accepted", LOCAL: "task", EXTRA: "exec" },
+    }),
+  );
+  expect(execute).not.toHaveBeenCalled();
+});
+
+it("keeps a callback node in background after its first prelaunch fallback", async () => {
+  const { owner, session, options, execute } = setup({
+    root: {
+      name: "Root",
+      popup: true,
+      run: async (ctx) => {
+        await ctx.exec("first");
+        await ctx.exec("second");
+      },
+    },
+  });
+  options.mode = "configured";
+  session.deps.displayPopup.mockResolvedValueOnce({ kind: "unavailable" });
+  await expect(owner.run("root", options)).resolves.toMatchObject({ success: true });
+  expect(session.deps.displayPopup).toHaveBeenCalledOnce();
+  expect(execute.mock.calls.map(([command]) => command)).toEqual(["first", "second"]);
+  expect(
+    session.broadcast.mock.calls.filter(([event]) => event.event === "config.notice"),
+  ).toHaveLength(1);
 });

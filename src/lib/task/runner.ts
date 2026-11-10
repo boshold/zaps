@@ -1,5 +1,6 @@
-import type { SentraConfig, TaskConfig } from "#src/config/types.js";
+import type { ExecResult, SentraConfig, TaskConfig } from "#src/config/types.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+import type { ConfiguredTaskOutcome } from "#src/lib/backend/types.js";
 import { sentraEnvFor } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
@@ -18,7 +19,7 @@ interface TaskPopupRequest {
 }
 
 interface TaskPresentation {
-  popup(request: TaskPopupRequest): Promise<void>;
+  popup(request: TaskPopupRequest): Promise<ConfiguredTaskOutcome>;
 }
 
 interface TaskRunnerDeps {
@@ -51,15 +52,39 @@ interface ExecuteContext {
 }
 
 async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
+  const execute = async (commands: string[], cwd = ctx.taskCwd, env = ctx.resolvedEnv) => {
+    if (t.popup && ctx.mode === "configured" && ctx.presentation) {
+      const popupCfg = typeof t.popup === "object" ? t.popup : {};
+      const outcome = await ctx.presentation.popup({
+        key: ctx.key,
+        cwd,
+        commands,
+        title: t.name,
+        width: popupCfg.width ?? "80%",
+        height: popupCfg.height ?? "80%",
+        env,
+      });
+      if (outcome.kind === "completed") {
+        return { success: outcome.exitCode === 0, exitCode: outcome.exitCode, output: [] };
+      }
+    }
+    let result: ExecResult = { success: true, exitCode: 0, output: [] };
+    for (const command of commands) {
+      result = await ctx.commandExecutor.execute(command, { cwd, env, onLine: ctx.emitLine });
+      if (!result.success) {
+        break;
+      }
+    }
+    return result;
+  };
   if (t.run) {
     await t.run({
-      async exec(cmd, opts) {
-        return ctx.commandExecutor.execute(cmd, {
-          cwd: opts?.cwd ?? ctx.taskCwd,
-          env: opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
-          onLine: ctx.emitLine,
-        });
-      },
+      exec: async (cmd, opts) =>
+        execute(
+          [cmd],
+          opts?.cwd ?? ctx.taskCwd,
+          opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
+        ),
       stdout: {
         write(text) {
           const lines = text.endsWith("\n") ? text.slice(0, -1) : text;
@@ -74,32 +99,11 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
     });
   } else if (t.commands) {
     const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
-    const resolvedCommands = commands.map((cmd) =>
-      typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd,
+    const result = await execute(
+      commands.map((cmd) => (typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd)),
     );
-
-    if (t.popup && ctx.mode === "configured" && ctx.presentation) {
-      const popupCfg = typeof t.popup === "object" ? t.popup : {};
-      await ctx.presentation.popup({
-        key: ctx.key,
-        cwd: ctx.taskCwd,
-        commands: resolvedCommands,
-        title: t.name,
-        width: popupCfg.width ?? "80%",
-        height: popupCfg.height ?? "80%",
-        env: ctx.resolvedEnv,
-      });
-    } else {
-      for (const resolved of resolvedCommands) {
-        const result = await ctx.commandExecutor.execute(resolved, {
-          cwd: ctx.taskCwd,
-          env: ctx.resolvedEnv,
-          onLine: ctx.emitLine,
-        });
-        if (!result.success) {
-          throw new Error(`Command failed with code ${result.exitCode}`);
-        }
-      }
+    if (!result.success) {
+      throw new Error(`Command failed with code ${result.exitCode}`);
     }
   }
 }

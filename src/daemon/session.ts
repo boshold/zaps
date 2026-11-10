@@ -17,7 +17,6 @@ import {
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
-import type { TaskPresentation } from "#src/lib/task/runner.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type { LayoutReflow } from "#src/lib/tmux-reflow.js";
 import { tmuxFor } from "#src/lib/tmux.js";
@@ -143,7 +142,6 @@ export class Session {
   private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
   public readonly taskExecution: TaskExecutionService;
-  public taskPresentation?: TaskPresentation;
 
   public get taskHistory(): TaskRunRecord[] {
     return this.taskExecution.history;
@@ -270,16 +268,6 @@ export class Session {
 
     this.reflow = this.backend.legacyReflow;
 
-    // P03-T06 replaces this injected bridge with the owned terminal driver.
-    const { displayPopup } = this.deps;
-    this.taskPresentation = {
-      popup: async ({ commands, key: _key, ...request }) => {
-        await displayPopup({
-          ...request,
-          command: `${commands.join(" && ")}; echo; echo 'Press Enter to close...'; read`,
-        });
-      },
-    };
     this.taskExecution = new TaskExecutionService(this);
     this.taskExecution.bindManager(manager);
     this.wireManagerEvents(manager);

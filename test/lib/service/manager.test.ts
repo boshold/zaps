@@ -2353,9 +2353,17 @@ describe("bindActions", () => {
       env: {},
       manager: mgr,
       deps,
-      taskPresentation: {
-        popup: async ({ commands, key: _key, ...request }) => {
-          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+      backend: {
+        terminal: {
+          runConfiguredTask: async ({ commands, ...request }, operation) => {
+            await deps.displayPopup({
+              ...request,
+              cwd: operation.cwd,
+              env: { ...operation.env },
+              command: commands.join(" && "),
+            });
+            return { kind: "completed", exitCode: 0 };
+          },
         },
       },
       broadcast: (event) => {
@@ -2405,9 +2413,17 @@ describe("bindActions", () => {
       env: {},
       manager: mgr,
       deps,
-      taskPresentation: {
-        popup: async ({ commands, key: _key, ...request }) => {
-          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+      backend: {
+        terminal: {
+          runConfiguredTask: async ({ commands, ...request }, operation) => {
+            await deps.displayPopup({
+              ...request,
+              cwd: operation.cwd,
+              env: { ...operation.env },
+              command: commands.join(" && "),
+            });
+            return { kind: "completed", exitCode: 0 };
+          },
         },
       },
       broadcast: (event) => {
@@ -2455,9 +2471,17 @@ describe("bindActions", () => {
       env: {},
       manager: mgr,
       deps,
-      taskPresentation: {
-        popup: async ({ commands, key: _key, ...request }) => {
-          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+      backend: {
+        terminal: {
+          runConfiguredTask: async ({ commands, ...request }, operation) => {
+            await deps.displayPopup({
+              ...request,
+              cwd: operation.cwd,
+              env: { ...operation.env },
+              command: commands.join(" && "),
+            });
+            return { kind: "completed", exitCode: 0 };
+          },
         },
       },
       broadcast: (event) => {

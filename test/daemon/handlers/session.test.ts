@@ -108,7 +108,14 @@ function taskSession(tasks: Record<string, TaskConfig>) {
         getAllStatuses: () => [createServiceStatus("api")],
       },
       deps: {},
-      taskPresentation: { popup: displayPopup },
+      backend: {
+        terminal: {
+          runConfiguredTask: async (request) => {
+            await displayPopup(request);
+            return { kind: "completed", exitCode: 0 };
+          },
+        },
+      },
       broadcast,
     },
     () => ({ execute }),

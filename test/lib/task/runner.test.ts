@@ -23,7 +23,7 @@ import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sen
 
 const mockExecCommand = vi.mocked(execCommand);
 const mockExecCommandWithResult = vi.mocked(execCommandWithResult);
-const mockDisplayPopup = vi.fn().mockResolvedValue(undefined);
+const mockDisplayPopup = vi.fn().mockResolvedValue({ kind: "completed", exitCode: 0 });
 
 function makeDeps(
   tasks: Record<string, TaskConfig>,
@@ -469,4 +469,30 @@ describe("runTaskWithDeps sentra", () => {
     expect(await runTaskWithDeps("e2e", deps, new Set(), new Map())).toBe(true);
     expect(mockExecCommand).toHaveBeenCalledWith("pnpm e2e", expect.objectContaining({ env: {} }));
   });
+});
+
+it("runs resolved popup commands once in background on prelaunch unavailable", async () => {
+  mockDisplayPopup.mockResolvedValueOnce({ kind: "unavailable" });
+  const deps = makeDeps({
+    root: { name: "Root", popup: true, commands: [() => "first", "second"] },
+  });
+  expect(await runTaskWithDeps("root", deps, new Set(), new Map())).toBe(true);
+  expect(mockDisplayPopup).toHaveBeenCalledOnce();
+  expect(mockExecCommand.mock.calls.map(([command]) => command)).toEqual(["first", "second"]);
+});
+
+it("fails a popup node and suppresses its root on nonzero interactive status", async () => {
+  mockDisplayPopup.mockResolvedValueOnce({ kind: "completed", exitCode: 17 });
+  const onProgress = vi.fn();
+  const deps = makeDeps(
+    {
+      dep: { name: "Dep", popup: true, commands: "failure" },
+      root: { name: "Root", dependsOn: ["dep"], commands: "root" },
+    },
+    { onProgress },
+  );
+  expect(await runTaskWithDeps("root", deps, new Set(), new Map())).toBe(false);
+  expect(onProgress.mock.calls).toEqual([["dep", "error"]]);
+  expect(mockDisplayPopup).toHaveBeenCalledOnce();
+  expect(mockExecCommand).not.toHaveBeenCalled();
 });

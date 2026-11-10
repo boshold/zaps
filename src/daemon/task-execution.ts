@@ -11,6 +11,7 @@ import { OwnedCommandExecutor } from "#src/lib/backend/runtime/command-executor.
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { ProcessAdmission, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import type { ProcessAuthority } from "#src/lib/backend/runtime/process-runner.js";
+import type { TerminalDriver } from "#src/lib/backend/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -32,7 +33,7 @@ interface TaskSession {
     "startService" | "restartService" | "stopService" | "getAllStatuses"
   >;
   deps: Pick<ServiceManagerDeps, "sentra">;
-  taskPresentation?: TaskPresentation;
+  backend?: { readonly terminal?: Pick<TerminalDriver, "runConfiguredTask"> };
   broadcast(event: DaemonEvent): void;
 }
 
@@ -86,6 +87,8 @@ interface AcceptedRun {
   key: string;
   name: string;
   context: CapturedTaskContext;
+  authority: ProcessAuthority;
+  presentationCancellation: AbortController;
 }
 
 class TaskExecutionService {
@@ -93,6 +96,8 @@ class TaskExecutionService {
   public readonly output = new TaskOutputStore();
   public readonly actions: LibraryActions;
   private readonly admission = new ProcessAdmission();
+  private readonly modeContext = new AsyncLocalStorage<TaskRunMode>();
+  private readonly fallbackNotices = new WeakMap<ResolvedConfig, Set<string>>();
   private readonly cleanupContext = new AsyncLocalStorage<ProcessAuthority>();
   private readonly runner: ProcessRunner;
   private readonly activeRuns = new Map<string, AcceptedRun>();
@@ -125,7 +130,7 @@ class TaskExecutionService {
           config: this.session.config,
           cwd: this.session.config.projectDir,
           env: this.session.env,
-          mode: "configured",
+          mode: this.modeContext.getStore() ?? "configured",
         });
         if (!result.success) {
           throw new Error(`Task '${key}' failed`);
@@ -172,6 +177,11 @@ class TaskExecutionService {
     if (this.state === "active") {
       this.state = "closing";
       this.admission.close();
+      for (const run of this.activeRuns.values()) {
+        if (run.authority === this.admission.normal) {
+          run.presentationCancellation.abort();
+        }
+      }
     }
   }
 
@@ -212,6 +222,7 @@ class TaskExecutionService {
   ): Promise<{ success: boolean; runId: string }> {
     const authority = this.cleanupContext.getStore() ?? this.admission.normal;
     this.assertAdmission(authority);
+    const configIdentity = options.config;
     const context = captureContext(options);
     const { tasks } = context;
     const task = tasks[key];
@@ -224,9 +235,52 @@ class TaskExecutionService {
         .map((status) => [status.name, { ...status, ports: [...status.ports] }]),
     );
     const { sentra } = this.session.deps;
-    const { taskPresentation: presentation } = this.session;
-    const run: AcceptedRun = { runId: newRunId(), key, name: task.name, context };
+    const run: AcceptedRun = {
+      runId: newRunId(),
+      key,
+      name: task.name,
+      context,
+      authority,
+      presentationCancellation: new AbortController(),
+    };
     this.activeRuns.set(run.runId, run);
+    const terminal = this.session.backend?.terminal;
+    const backgroundTasks = new Set<string>();
+    const presentation: TaskPresentation = {
+      popup: async (request) => {
+        this.assertAdmission(authority);
+        if (backgroundTasks.has(request.key)) {
+          return { kind: "unavailable" };
+        }
+        const outcome = (await terminal?.runConfiguredTask?.(request, {
+          id: run.runId,
+          cwd: request.cwd,
+          env: request.env,
+          signal: AbortSignal.any([authority.signal, run.presentationCancellation.signal]),
+        })) ?? { kind: "unavailable" };
+        if (outcome.kind === "unavailable") {
+          this.assertAdmission(authority);
+          backgroundTasks.add(request.key);
+          let noticed = this.fallbackNotices.get(configIdentity);
+          if (!noticed) {
+            noticed = new Set();
+            this.fallbackNotices.set(configIdentity, noticed);
+          }
+          if (!noticed.has(request.key)) {
+            noticed.add(request.key);
+            this.session.broadcast({
+              session: this.session.id,
+              event: "config.notice",
+              data: {
+                level: "warn",
+                message: `Task '${request.key}': popup unavailable; running in background.`,
+              },
+            });
+          }
+        }
+        return outcome;
+      },
+    };
     this.output.start(run.runId, key, Date.now());
     this.pushRecord({
       runId: run.runId,
@@ -252,39 +306,41 @@ class TaskExecutionService {
     };
     let success = false;
     try {
-      success = await runWithEnvironment(context.env, async () =>
-        runTaskWithDeps(
-          key,
-          {
-            tasks,
-            statuses,
-            projectDir: context.cwd,
-            services: context.services,
-            env: context.env,
-            commandExecutor,
-            mode: context.mode,
-            assertAdmission: () => this.assertAdmission(authority),
-            presentation,
-            sentra,
-            sentraConfig: context.sentraConfig,
-            onLine: (_key, line) => {
-              this.output.append(run.runId, line);
-              try {
-                context.onLine?.(line);
-              } catch {
-                /* Request sinks may disconnect. */
-              }
+      success = await this.modeContext.run(context.mode, async () =>
+        runWithEnvironment(context.env, async () =>
+          runTaskWithDeps(
+            key,
+            {
+              tasks,
+              statuses,
+              projectDir: context.cwd,
+              services: context.services,
+              env: context.env,
+              commandExecutor,
+              mode: context.mode,
+              assertAdmission: () => this.assertAdmission(authority),
+              presentation,
+              sentra,
+              sentraConfig: context.sentraConfig,
+              onLine: (_key, line) => {
+                this.output.append(run.runId, line);
+                try {
+                  context.onLine?.(line);
+                } catch {
+                  /* Request sinks may disconnect. */
+                }
+              },
+              onProgress: (taskKey, result) => {
+                try {
+                  context.onProgress?.(taskKey, result);
+                } catch {
+                  /* Request sinks may disconnect. */
+                }
+              },
             },
-            onProgress: (taskKey, result) => {
-              try {
-                context.onProgress?.(taskKey, result);
-              } catch {
-                /* Request sinks may disconnect. */
-              }
-            },
-          },
-          new Set(),
-          new Map(),
+            new Set(),
+            new Map(),
+          ),
         ),
       );
     } finally {

@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
@@ -5,6 +7,7 @@ import {
   TmuxTerminalLeaseRegistry,
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
+import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 function fixture() {
@@ -23,7 +26,8 @@ function fixture() {
     selectPane: vi.fn(async () => undefined),
     zoomPane: vi.fn(async () => undefined),
     tmuxSupportsPopup: vi.fn(async () => false),
-    displayPopup: vi.fn(async () => undefined),
+    displayPopup: vi.fn(async (_options: DisplayPopupOptions) => undefined),
+    closePopup: vi.fn(async () => undefined),
   };
   const operations = new TmuxTerminalOperations(
     tmux,
@@ -112,4 +116,81 @@ describe("semantic tmux driver", () => {
     await expect(f.operations.assertClientAvailable()).resolves.toBeUndefined();
     expect(f.tmux.displayPopup).not.toHaveBeenCalled();
   });
+});
+
+const configuredCommand = {
+  key: "root",
+  title: "Root",
+  commands: ["exit 17", "exit 99"],
+  width: "80%",
+  height: "80%",
+};
+const configuredOperation = {
+  id: "run",
+  cwd: process.cwd(),
+  env: {},
+  signal: new AbortController().signal,
+};
+
+it("runs configured commands using task ownership and the owning session dashboard; retains exact failure code", async () => {
+  const f = fixture();
+  f.tmux.tmuxSupportsPopup.mockResolvedValue(true);
+  const run = vi.spyOn(f.operations, "run");
+  f.tmux.displayPopup.mockImplementation(async (options) => {
+    execFileSync("sh", ["-c", options.command], {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+    });
+  });
+  expect(await f.driver.runConfiguredTask(configuredCommand, configuredOperation)).toEqual({
+    kind: "completed",
+    exitCode: 17,
+  });
+  expect(run).toHaveBeenCalledWith(
+    expect.objectContaining({ owner: { kind: "task", runId: "run", sessionId: "session" } }),
+    expect.any(Function),
+  );
+  expect(f.tmux.displayPopup).toHaveBeenCalledWith(
+    expect.objectContaining({ client: "owned", pane: "%0" }),
+  );
+});
+
+it("returns unavailable only before launch when client or popup support is missing", async () => {
+  const f = fixture();
+  expect(await f.driver.runConfiguredTask(configuredCommand, configuredOperation)).toEqual({
+    kind: "unavailable",
+  });
+  f.tmux.listClients.mockResolvedValue([]);
+  expect(await f.driver.runConfiguredTask(configuredCommand, configuredOperation)).toEqual({
+    kind: "unavailable",
+  });
+  expect(f.tmux.displayPopup).not.toHaveBeenCalled();
+});
+
+it("fails launched commands on client loss after a side effect, without replay", async () => {
+  const f = fixture();
+  f.tmux.tmuxSupportsPopup.mockResolvedValue(true);
+  let sideEffects = "";
+  let finish: () => void = () => {
+    throw new Error("Popup not started");
+  };
+  f.tmux.displayPopup.mockImplementation(async (options) => {
+    sideEffects += execFileSync("sh", ["-c", options.command], {
+      encoding: "utf8",
+      env: { ...process.env, ...options.env },
+    });
+    f.tmux.listClients.mockResolvedValue([]);
+    return new Promise((resolve) => {
+      finish = () => resolve(undefined);
+    });
+  });
+  const result = f.driver.runConfiguredTask(
+    { ...configuredCommand, commands: ["printf side-effect"] },
+    configuredOperation,
+  );
+  await expect(result).rejects.toMatchObject({ launched: true });
+  expect(sideEffects).toBe("side-effect");
+  expect(f.tmux.displayPopup).toHaveBeenCalledOnce();
+  finish();
+  await f.operations.dispose();
 });

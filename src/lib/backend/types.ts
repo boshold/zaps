@@ -103,7 +103,23 @@ interface TaskPaneSpec {
   readonly execution: ExecutionSpec;
 }
 
+interface ConfiguredTaskCommand {
+  readonly key: string;
+  readonly title: string;
+  readonly commands: readonly string[];
+  readonly width: string;
+  readonly height: string;
+}
+
+type ConfiguredTaskOutcome =
+  | { readonly kind: "completed"; readonly exitCode: number }
+  | { readonly kind: "unavailable" };
+
 interface TerminalDriver {
+  runConfiguredTask?(
+    command: ConfiguredTaskCommand,
+    operation: TerminalOperation,
+  ): Promise<ConfiguredTaskOutcome>;
   reconcileLayout(plan: PresentationPlan): Promise<void>;
   focus(target: TerminalTarget): Promise<void>;
   zoom(target: TerminalTarget): Promise<void>;
@@ -138,5 +154,7 @@ export type {
   TerminalOperation,
   TaskPaneSpec,
   TerminalDriver,
+  ConfiguredTaskCommand,
+  ConfiguredTaskOutcome,
   SessionBackend,
 };

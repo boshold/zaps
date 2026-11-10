@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+
+import { z } from "zod";
 
 import type { LayoutNode } from "#src/config/types.js";
 import { TerminalOperationError, editOperationCapture } from "#src/lib/backend/tmux/operations.js";
@@ -7,6 +11,8 @@ import type {
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
 import type {
+  ConfiguredTaskCommand,
+  ConfiguredTaskOutcome,
   ExecutionHandle,
   PresentationPlan,
   TaskPaneSpec,
@@ -14,6 +20,7 @@ import type {
   TerminalOperation,
   TerminalTarget,
 } from "#src/lib/backend/types.js";
+import { shellEscape } from "#src/lib/service/env.js";
 import { showOutputPopup } from "#src/lib/task/output-popup.js";
 import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
 import type { PopupTask } from "#src/lib/task/popup-picker.js";
@@ -104,6 +111,55 @@ class TmuxTerminalDriver implements TerminalDriver {
         return action(context);
       },
     );
+  }
+
+  public async runConfiguredTask(
+    command: ConfiguredTaskCommand,
+    operation: TerminalOperation,
+  ): Promise<ConfiguredTaskOutcome> {
+    try {
+      return await this.options.operations.run(
+        {
+          owner: { kind: "task", runId: operation.id, sessionId: this.options.sessionId },
+          cwd: operation.cwd,
+          env: operation.env,
+          signal: operation.signal,
+        },
+        async (context) => {
+          if (!(await this.options.tmux.tmuxSupportsPopup())) {
+            throw new TerminalOperationError("backend_unavailable");
+          }
+          const statusFile = path.join(context.directory, "exit-code");
+          const commands = command.commands.map((value) => `sh -c ${shellEscape(value)}`);
+          const script = `${commands.join(" && ")}
+status=$?
+printf '%s' "$status" > ${shellEscape(statusFile)}`;
+          await context.popup({
+            command: `sh -c ${shellEscape(script)}`,
+            title: command.title,
+            width: command.width,
+            height: command.height,
+          });
+          const status = await readFile(statusFile, "utf8");
+          const exitCode = z.coerce
+            .number()
+            .int()
+            .min(0)
+            .max(255)
+            .parse(z.string().regex(/^\d+$/).parse(status));
+          return { kind: "completed", exitCode };
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof TerminalOperationError &&
+        error.code === "backend_unavailable" &&
+        !error.launched
+      ) {
+        return { kind: "unavailable" };
+      }
+      throw error;
+    }
   }
 
   public async editOutput(service: string, operation: TerminalOperation): Promise<void> {
