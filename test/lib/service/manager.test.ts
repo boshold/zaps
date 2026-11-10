@@ -3174,6 +3174,126 @@ describe("combined docker services", () => {
     },
   );
 
+  it.each(["hook", "preflight"])("reserves membership before a paused %s await", async (phase) => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const config = makeCombinedConfig();
+    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const paused = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pause = async () => {
+      entered?.();
+      await gate;
+    };
+    if (phase === "hook") {
+      config.project.services.postgres.onBeforeStart = pause;
+    } else {
+      deps.preflightPorts = async () => {
+        await pause();
+        return null;
+      };
+    }
+    const ownerStart = mgr.startService("postgres");
+    await paused;
+    await mgr.stopService("redis");
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    release?.();
+    await ownerStart;
+    expect(runtime.specs).toHaveLength(1);
+    expect(mgr.getStatus("postgres").state).toBe("ready");
+    await mgr.stopService("postgres");
+    expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["cancel", "preflight", "hook failure"])(
+    "releases pending startup reservation after %s",
+    async (reason) => {
+      const runtime = neutralRuntime();
+      const deps = createMockDeps();
+      deps.runtime = () => runtime.driver;
+      const config = makeCombinedConfig();
+      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      await mgr.startAll();
+      await mgr.stopService("postgres");
+      let release: (() => void) | undefined;
+      let entered: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const paused = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      config.project.services.postgres.onBeforeStart = async () => {
+        entered?.();
+        await gate;
+        if (reason === "hook failure") {
+          throw new Error("hook failed");
+        }
+      };
+      if (reason === "preflight") {
+        deps.preflightPorts = async () => "port conflict";
+      }
+      const ownerStart = mgr.startService("postgres");
+      const result =
+        reason === "preflight" ? expect(ownerStart).rejects.toThrow("port conflict") : ownerStart;
+      await paused;
+      await mgr.stopService("redis");
+      expect(runtime.driver.stop).not.toHaveBeenCalled();
+      const cancelled = reason === "cancel" ? mgr.stopService("postgres") : undefined;
+      release?.();
+      await result;
+      await cancelled;
+      if (reason === "hook failure") {
+        expect(mgr.getStatus("postgres")).toMatchObject({
+          state: "ready",
+          lastError: expect.stringContaining("hook failed"),
+        });
+        await mgr.stopService("postgres");
+      }
+      expect(runtime.specs).toHaveLength(1);
+      expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("retries uncertain member cleanup after the shared handle has exited", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    deps.exec = vi.fn(async (_command, args) => {
+      if (args.includes("start") && args.includes("postgres")) {
+        throw new Error("uncertain start");
+      }
+    });
+    await expect(mgr.startService("postgres")).rejects.toThrow("uncertain start");
+    runtime.emit({ kind: "leaderExit", unitId: "postgres", generation: 1, code: 1, signal: null });
+    runtime.emit({ kind: "exit", unitId: "postgres", generation: 1, code: 1, signal: null });
+    expect(mgr.getStatus("postgres").state).toBe("error");
+    deps.exec = vi.fn().mockResolvedValue(undefined);
+    await expect(mgr.stopService("postgres")).resolves.toEqual({ noop: false });
+    expect(deps.exec).toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["stop", "postgres"]),
+      expect.any(String),
+    );
+    await mgr.startService("postgres");
+    expect(runtime.specs).toHaveLength(2);
+    expect(runtime.specs[1]).toMatchObject({ unitId: "postgres", generation: 2 });
+    expect(mgr.getStatus("postgres").state).toBe("ready");
+    await mgr.stopAll();
+  });
+
   it("reserves a paused member start before final sibling cleanup", async () => {
     const runtime = neutralRuntime();
     const deps = createMockDeps();

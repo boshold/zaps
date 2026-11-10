@@ -1,11 +1,6 @@
 import { EventEmitter } from "node:events";
 
-import type {
-  CombinedServiceMeta,
-  DockerConfig,
-  ResolvedConfig,
-  ServiceConfig,
-} from "#src/config/types.js";
+import type { DockerConfig, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
   buildDockerCommand,
@@ -218,6 +213,7 @@ export class ServiceManager extends EventEmitter {
   private readonly memberUnits = new Map<string, string>();
   private readonly unitMembers = new Map<string, string[]>();
   private readonly memberCleanupFailures = new Set<string>();
+  private readonly pendingMemberStarts = new Map<string, number>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -565,6 +561,46 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
+    return this.withMemberStart(name, async () => this.startServiceWithPane(name, satisfiedDeps));
+  }
+
+  private async withMemberStart<T>(name: string, start: () => Promise<T>): Promise<T> {
+    const service = this.config.project.services[name];
+    if (!service?._combined) {
+      return start();
+    }
+    this.pendingMemberStarts.set(name, (this.pendingMemberStarts.get(name) ?? 0) + 1);
+    try {
+      return await start();
+    } catch (error) {
+      const status = this.getStatus(name);
+      if (
+        (status.state === "starting" || status.state === "stopping") &&
+        !this.abortControllers.get(name)?.signal.aborted
+      ) {
+        status.state = transition(status.state, "error");
+        status.lastError = error instanceof Error ? error.message : String(error);
+        this.emit("stateChange", name, status);
+      }
+      throw error;
+    } finally {
+      const remaining = (this.pendingMemberStarts.get(name) ?? 1) - 1;
+      if (remaining > 0) {
+        this.pendingMemberStarts.set(name, remaining);
+      } else {
+        this.pendingMemberStarts.delete(name);
+        const unitId = this.memberUnits.get(name) ?? name;
+        await this.withServiceLock(`@unit:${unitId}`, async () =>
+          this.disposeStoppedCombinedUnit(unitId),
+        );
+      }
+    }
+  }
+
+  private async startServiceWithPane(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): Promise<ServiceActionResult> {
     // Lazy-pane services start pane-less and acquire their pane on first
     // Start (Flow B). MUST insert BEFORE `withServiceLock`:
     //   1. `startServiceInternal` (manager.ts:577) throws `Unknown service`
@@ -600,6 +636,13 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async startServiceInternal(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): Promise<ServiceActionResult> {
+    return this.withMemberStart(name, async () => this.runServiceStart(name, satisfiedDeps));
+  }
+
+  private async runServiceStart(
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
@@ -639,11 +682,18 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
+    if (controller.signal.aborted) {
+      return { noop: false };
+    }
+
     // Port pre-flight: fail fast with an actionable message instead of a silent
     // 60s ready timeout when an expected host port is already taken (B2). Runs
     // Only from the `starting` transition, so a restart's own listener is gone
     // (stop completed first, per the state machine ordering).
     const conflict = await this.deps.preflightPorts(serviceConfig, this.config.projectDir);
+    if (controller.signal.aborted) {
+      return { noop: false };
+    }
     if (conflict) {
       status.state = transition(status.state, "error");
       status.lastError = conflict;
@@ -655,7 +705,9 @@ export class ServiceManager extends EventEmitter {
 
     const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
 
-    await this.startExecution(name, serviceConfig, status, controller, sentraEnv);
+    if (!controller.signal.aborted) {
+      await this.startExecution(name, serviceConfig, status, controller, sentraEnv);
+    }
     return { noop: false };
   }
 
@@ -669,9 +721,11 @@ export class ServiceManager extends EventEmitter {
     if (serviceConfig._combined) {
       const unitId = this.memberUnits.get(name) ?? name;
       try {
-        await this.withServiceLock(`@unit:${unitId}`, async () =>
-          this.prepareCombinedStart(name, unitId, serviceConfig, sentraEnv),
-        );
+        await this.withServiceLock(`@unit:${unitId}`, async () => {
+          if (!controller.signal.aborted) {
+            await this.prepareCombinedStart(name, unitId, serviceConfig, sentraEnv);
+          }
+        });
       } catch (error) {
         if (!controller.signal.aborted) {
           status.state = transition(status.state, "error");
@@ -954,7 +1008,7 @@ export class ServiceManager extends EventEmitter {
       let message = error instanceof Error ? error.message : String(error);
       try {
         await (serviceConfig._combined
-          ? this.stopCombinedService(name, serviceConfig, serviceConfig._combined)
+          ? this.stopCombinedService(name, serviceConfig)
           : this.stopRuntimeExecution(name));
       } catch (cleanupError) {
         message += `; cleanup failed: ${String(cleanupError)}`;
@@ -1122,6 +1176,7 @@ export class ServiceManager extends EventEmitter {
     if (
       status.state === "unavailable" ||
       (!this.executions.has(this.memberUnits.get(name) ?? name) &&
+        !this.memberCleanupFailures.has(name) &&
         (status.state === "stopped" || status.state === "stopping" || status.state === "error"))
     ) {
       return { noop: true };
@@ -1146,7 +1201,7 @@ export class ServiceManager extends EventEmitter {
 
     try {
       await (combined
-        ? this.stopCombinedService(name, serviceConfig, combined)
+        ? this.stopCombinedService(name, serviceConfig)
         : this.stopRuntimeExecution(name));
     } catch (error) {
       this.publishCleanupFailure(name, String(error));
@@ -1196,21 +1251,13 @@ export class ServiceManager extends EventEmitter {
    * Stop one member of a combined docker group via `docker compose stop`, then —
    * once every sibling is stopped, dispose the shared command.
    */
-  private async stopCombinedService(
-    name: string,
-    serviceConfig: ServiceConfig,
-    combined: CombinedServiceMeta,
-  ): Promise<void> {
+  private async stopCombinedService(name: string, serviceConfig: ServiceConfig): Promise<void> {
     await this.withServiceLock(`@unit:${this.memberUnits.get(name) ?? name}`, async () => {
-      await this.stopCombinedMember(name, serviceConfig, combined);
+      await this.stopCombinedMember(name, serviceConfig);
     });
   }
 
-  private async stopCombinedMember(
-    name: string,
-    serviceConfig: ServiceConfig,
-    combined: CombinedServiceMeta,
-  ): Promise<void> {
+  private async stopCombinedMember(name: string, serviceConfig: ServiceConfig): Promise<void> {
     this.memberCleanupFailures.add(name);
     await this.deps.exec(
       "docker",
@@ -1229,24 +1276,26 @@ export class ServiceManager extends EventEmitter {
       execution.stoppedMembers ??= new Set();
       execution.stoppedMembers.add(name);
     }
-    const allStopped = combined.allServices.every((sib) => {
-      if (sib === name) {
-        return true;
+    await this.disposeStoppedCombinedUnit(this.memberUnits.get(name) ?? name);
+  }
+
+  private async disposeStoppedCombinedUnit(unitId: string): Promise<void> {
+    const members = this.unitMembers.get(unitId) ?? [unitId];
+    const execution = this.executions.get(unitId);
+    const allStopped = members.every((member) => {
+      if (this.pendingMemberStarts.has(member) || this.memberCleanupFailures.has(member)) {
+        return false;
       }
-      const sibStatus = this.statuses.get(sib);
+      const status = this.statuses.get(member);
       return (
-        execution?.stoppedMembers?.has(sib) ||
-        !sibStatus ||
-        sibStatus.state === "stopped" ||
-        sibStatus.state === "error"
+        execution?.stoppedMembers?.has(member) ||
+        !status ||
+        status.state === "stopped" ||
+        status.state === "error"
       );
     });
-
-    if (
-      allStopped &&
-      !combined.allServices.some((member) => this.memberCleanupFailures.has(member))
-    ) {
-      await this.stopRuntimeExecution(this.memberUnits.get(name) ?? name);
+    if (allStopped) {
+      await this.stopRuntimeExecution(unitId);
     }
   }
 
@@ -1254,6 +1303,10 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    return this.withMemberStart(name, async () => this.restartServiceWithPane(name));
+  }
+
+  private async restartServiceWithPane(name: string): Promise<void> {
     this.abortControllers.get(name)?.abort();
     this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     // Same lazy-pane invariant as `startService`: if the service is pane-less +
@@ -1276,6 +1329,10 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async restartServiceInternal(name: string): Promise<void> {
+    return this.withMemberStart(name, async () => this.runServiceRestart(name));
+  }
+
+  private async runServiceRestart(name: string): Promise<void> {
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);
@@ -1301,16 +1358,20 @@ export class ServiceManager extends EventEmitter {
       status.state = transition(status.state, "stopping");
       this.emit("stateChange", name, status);
 
-      await this.deps.exec(
-        "docker",
-        buildDockerComposeArgs(
-          "restart",
-          name,
-          serviceConfig.docker?.file,
-          this.dockerProjectArgs(serviceConfig),
-        ),
-        serviceConfig.cwd ?? this.config.projectDir,
-      );
+      await this.withServiceLock(`@unit:${this.memberUnits.get(name) ?? name}`, async () => {
+        this.memberCleanupFailures.add(name);
+        await this.deps.exec(
+          "docker",
+          buildDockerComposeArgs(
+            "restart",
+            name,
+            serviceConfig.docker?.file,
+            this.dockerProjectArgs(serviceConfig),
+          ),
+          serviceConfig.cwd ?? this.config.projectDir,
+        );
+        this.memberCleanupFailures.delete(name);
+      });
 
       status.state = transition(status.state, "stopped");
       delete status.readySince;
