@@ -7,13 +7,13 @@ import type { UiBinding } from "#src/daemon/session.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
-import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
 import {
   TmuxTerminalLeaseRegistry,
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
 import type { OperationTmux } from "#src/lib/backend/tmux/operations.js";
 import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
+import type { TerminalDriver } from "#src/lib/backend/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
 
@@ -32,44 +32,27 @@ vi.mock("../../../src/lib/service/env.js", () => ({
   resolveEnv: vi.fn(() => ({})),
 }));
 
-vi.mock("../../../src/lib/tmux.js", () => {
-  // Handlers reach tmux through `session.tmux`, so the factory returns the SAME
-  // Stub surface for the module exports and for `tmuxFor()` — assertions on the
-  // Named exports still observe every call.
-  const api = {
-    killPane: vi.fn().mockResolvedValue(undefined),
-    paneExists: vi.fn().mockResolvedValue(false),
-    getSocket: () => null,
-    newWindow: vi.fn().mockResolvedValue("%win"),
-    splitPane: vi.fn().mockResolvedValue("%split"),
-    sendKeys: vi.fn().mockResolvedValue(undefined),
-  };
-  return { ...api, tmuxFor: vi.fn(() => api) };
-});
-
-// `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
-
 function createMockSession(...args: Parameters<typeof createBaseMockSession>) {
   const session = createBaseMockSession(...args);
-  const terminal = new TmuxTerminalDriver({
-    sessionId: session.id,
-    sessionName: session.tmuxSession,
-    dashboardPane: session.paneMap["@tui"] ?? session.originPane,
-    tmux: session.tmux,
-    operations: new TmuxTerminalOperations(
-      session.tmux,
-      session.tmuxSession,
-      session.originPane,
-      new TmuxTerminalLeaseRegistry(),
-    ),
-    paneFor: () => "%1",
-    tasks: () => [],
-    output: () => undefined,
-    taskPane: (runId, pane) => {
-      session.panesByRun.set(runId, pane);
-    },
-    reconcile: async () => undefined,
-  });
+  const terminal = {
+    reconcileLayout: vi.fn<TerminalDriver["reconcileLayout"]>().mockResolvedValue(undefined),
+    focus: vi.fn<TerminalDriver["focus"]>().mockResolvedValue(undefined),
+    zoom: vi.fn<TerminalDriver["zoom"]>().mockResolvedValue(undefined),
+    editOutput: vi.fn<TerminalDriver["editOutput"]>().mockResolvedValue(undefined),
+    taskPicker: vi.fn<TerminalDriver["taskPicker"]>().mockResolvedValue(null),
+    taskOutput: vi.fn<TerminalDriver["taskOutput"]>().mockResolvedValue(undefined),
+    runTaskInPane: vi
+      .fn<TerminalDriver["runTaskInPane"]>()
+      .mockImplementation(async (spec, operation) => {
+        operation.signal.throwIfAborted();
+        session.panesByRun.set(spec.runId, spec.target === "pane" ? "%split" : "%win");
+        return {
+          id: spec.runId,
+          unitId: spec.execution.unitId,
+          generation: spec.execution.generation,
+        };
+      }),
+  } satisfies TerminalDriver;
   return Object.assign(session, {
     backend: { terminal, capabilities: { taskPanes: true } },
     taskExecution: { accepting: true },
@@ -987,13 +970,6 @@ describe("session handlers", () => {
     });
 
     it("creates a new window by default and returns runId + paneId", async () => {
-      const { newWindow, splitPane, sendKeys } =
-        (await import("../../../src/lib/tmux.js")) as unknown as {
-          newWindow: ReturnType<typeof vi.fn>;
-          splitPane: ReturnType<typeof vi.fn>;
-          sendKeys: ReturnType<typeof vi.fn>;
-        };
-
       const session = createMockSession();
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
@@ -1008,10 +984,23 @@ describe("session handlers", () => {
       const result = res.result as { runId: string; paneId: string };
       expect(result.runId).toEqual(expect.any(String));
       expect(result.paneId).toBe("%win");
-      expect(newWindow).toHaveBeenCalledWith("test-tmux");
-      expect(splitPane).not.toHaveBeenCalled();
-      // The launched command is the exec-task wrapper invocation for this run.
-      expect(sendKeys).toHaveBeenCalledWith("%win", `zaps -s abc123 exec-task ${result.runId}`);
+      expect(session.backend.terminal.runTaskInPane).toHaveBeenCalledExactlyOnceWith(
+        {
+          taskKey: "build",
+          runId: result.runId,
+          target: "window",
+          execution: {
+            unitId: "build",
+            generation: 0,
+            command: `zaps -s abc123 exec-task ${result.runId}`,
+            cwd: "/fake",
+            env: {},
+            placement: "default",
+            raw: false,
+          },
+        },
+        { id: result.runId, cwd: "/fake", env: {}, signal: expect.any(AbortSignal) },
+      );
       // Stores runId → paneId so the pane can later be addressed (T04).
       expect(session.panesByRun.get(result.runId)).toBe("%win");
       // Stashes the resolve info the wrapper fetches over IPC.
@@ -1035,10 +1024,6 @@ describe("session handlers", () => {
     });
 
     it("splits a pane when target=pane", async () => {
-      const { splitPane } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        splitPane: ReturnType<typeof vi.fn>;
-      };
-
       const session = createMockSession();
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
@@ -1051,17 +1036,15 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
       expect((res.result as { paneId: string }).paneId).toBe("%split");
-      // Splits off the reserved TUI pane.
-      expect(splitPane).toHaveBeenCalledWith("%0", "v");
+      expect(session.backend.terminal.runTaskInPane).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ taskKey: "build", target: "pane" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
 
     it("returns tmux_failed when pane creation fails", async () => {
-      const { newWindow } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        newWindow: ReturnType<typeof vi.fn>;
-      };
-      newWindow.mockRejectedValueOnce(new Error("tmux down"));
-
       const session = createMockSession();
+      session.backend.terminal.runTaskInPane.mockRejectedValueOnce(new Error("tmux down"));
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -1097,13 +1080,12 @@ describe("session handlers", () => {
       expect(res.error).toContain("no shell commands");
     });
 
-    it("returns tmux_failed and finishes the run as error when sendKeys fails", async () => {
-      const { sendKeys } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        sendKeys: ReturnType<typeof vi.fn>;
-      };
-      sendKeys.mockRejectedValueOnce(new Error("pane gone"));
-
+    it("returns tmux_failed and finishes the run as error when terminal launch fails", async () => {
       const session = createMockSession();
+      session.backend.terminal.runTaskInPane.mockImplementationOnce(async (spec) => {
+        session.panesByRun.set(spec.runId, "%win");
+        throw new Error("pane gone");
+      });
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
       const socket = createMockSocket();
