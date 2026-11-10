@@ -1,3 +1,4 @@
+import { backendIdSchema } from "#src/lib/backend/schemas.js";
 import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
 import type { ShellSessionOptions } from "#src/lib/backend/shell/session.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
@@ -25,6 +26,10 @@ async function createSessionBackend(request: SessionBackendOptions): Promise<Ses
   return backendFactories.shell(request.options);
 }
 
-export { backendFactories, createSessionBackend };
+const supportedBackends = Object.freeze(
+  Object.keys(backendFactories).map((key) => backendIdSchema.parse(key)),
+);
+
+export { backendFactories, createSessionBackend, supportedBackends };
 export { preflightBackendCompatibility } from "#src/lib/backend/compatibility.js";
 export type { SessionBackendOptions };

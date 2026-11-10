@@ -5,6 +5,7 @@ import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { ExecutionEvent, ExecutionHandle } from "#src/lib/backend/types.js";
 
 import { createProcessInspection, sameProcess } from "./process-inspection.js";
@@ -63,7 +64,7 @@ class ProcessAdmission {
 
   public createCleanupScope(deadline: number): { authority: ProcessAuthority; revoke: () => void } {
     if (this.state === "disposed" || !Number.isFinite(deadline) || deadline <= Date.now()) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     const authority = this.issue(true, deadline);
     const revoke = () => {
@@ -200,7 +201,7 @@ export class ProcessRunner {
 
   public spawnOwned(opts: ProcessSpawnOptions): ExecutionHandle {
     if (!this.admits(opts.authority)) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     if (this.units.has(opts.unitId)) {
       throw new Error(`Execution still owned: ${opts.unitId}`);

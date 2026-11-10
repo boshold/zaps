@@ -6,10 +6,10 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
+import type { ProjectedServiceStatus } from "../../src/daemon/session.js";
 import { useServices } from "../../src/hooks/useServices.js";
-import type { ServiceStatus } from "../../src/lib/service/types.js";
 
-function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
+function createMockClient(statuses: ProjectedServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     connect: vi.fn(),
@@ -32,8 +32,17 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   return client as unknown as DaemonClient;
 }
 
-function makeStatus(name: string, state: ServiceStatus["state"] = "stopped"): ServiceStatus {
-  return { name, state, ports: [], retryCount: 0 };
+function makeStatus(
+  name: string,
+  state: ProjectedServiceStatus["state"] = "stopped",
+): ProjectedServiceStatus {
+  return {
+    name,
+    state,
+    ports: [],
+    retryCount: 0,
+    actions: { focus: false, zoom: false, editOutput: false },
+  };
 }
 
 describe("useServices", () => {
@@ -121,10 +130,10 @@ describe("useServices", () => {
       const client = createMockClient(initial);
 
       // Hold the poll response open so an event can land while it is in flight.
-      let resolvePoll: (v: ServiceStatus[]) => void = () => {
+      let resolvePoll: (v: ProjectedServiceStatus[]) => void = () => {
         /* Replaced below once the pending poll promise exists */
       };
-      const pendingPoll = new Promise<ServiceStatus[]>((resolve) => {
+      const pendingPoll = new Promise<ProjectedServiceStatus[]>((resolve) => {
         resolvePoll = resolve;
       });
       client.listServices = vi.fn(async () => pendingPoll);

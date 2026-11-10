@@ -18,6 +18,10 @@ import type { TmuxHandle } from "../../src/lib/tmux.js";
 const MOCK_PORT_STATE_PATH = path.join(os.tmpdir(), `zaps-mock-sentra-${process.pid}.json`);
 
 export interface MockSession {
+  backend: {
+    id: "tmux" | "shell";
+    capabilities: import("../../src/lib/backend/types.js").BackendCapabilities;
+  };
   id: string;
   name: string;
   configPath: string;
@@ -87,6 +91,17 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
   const logBuffers = overrides.logBuffers ?? new Map([["api", new LogBuffer(100)]]);
   const subscribers = overrides.subscribers ?? new Set<unknown>();
   return {
+    backend: {
+      id: "tmux",
+      capabilities: {
+        panes: true,
+        zoom: true,
+        popups: true,
+        taskPanes: true,
+        rawInput: true,
+        layout: true,
+      },
+    },
     id: "abc123",
     name: "test-project",
     configPath: "/fake/.zaps.mts",
@@ -162,12 +177,31 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     taskHistory: [],
     deps: overrides.deps ?? { zapsCommand: "zaps", sessionId: "abc123" },
     attachSnapshot: vi.fn(() => ({
+      backend: "tmux",
+      capabilities: {
+        panes: true,
+        zoom: true,
+        popups: true,
+        taskPanes: true,
+        rawInput: true,
+        layout: true,
+      },
+      managed: false,
+      configStale: false,
       id: "abc123",
       name: "test-project",
       paneMap: { "@tui": "%0", api: "%1" },
       tmuxSession: "test-tmux",
       originPane: "%0",
-      statuses: [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }],
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [3000],
+          retryCount: 0,
+          actions: { focus: true, zoom: true, editOutput: true },
+        },
+      ],
       logSnapshots: { api: [] },
       configPath: "/fake/.zaps.mts",
       projectDir: "/fake",

@@ -6,6 +6,7 @@ import type { Command, DockerConfig } from "#src/config/types.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { TerminalActionParams } from "#src/lib/backend/schemas.js";
 import { terminalActionParamsSchema } from "#src/lib/backend/schemas.js";
 import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
@@ -15,6 +16,7 @@ import {
   wrapperIdentitySchema,
 } from "#src/lib/backend/tmux/runtime.js";
 import { wrapperStartedSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
+import { projectedStatusSchema, sessionSnapshotSchema } from "#src/lib/backend/wire.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { parseRequestContext } from "#src/lib/request-context.js";
@@ -216,7 +218,7 @@ export const sessionHandlers: Record<
       .optional()
       .safeParse(req.params);
     if (!params.success) {
-      return ipcErr(req.id, "invalid_request");
+      return ipcErr(req.id, "invalid_request", "invalid_request");
     }
     const session = getSession(req, store);
     if (!session) {
@@ -226,10 +228,10 @@ export const sessionHandlers: Record<
       try {
         session.bindUi(socket);
       } catch (error) {
-        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+        return ipcErr(req.id, error);
       }
     }
-    return ipcOk(req.id, session.attachSnapshot());
+    return ipcOk(req.id, sessionSnapshotSchema.parse(session.attachSnapshot()));
   },
 
   async "session.detach"(req, store, socket) {
@@ -311,7 +313,7 @@ export const sessionHandlers: Record<
       // Log the full error (with ConfigError attribution) locally before sending
       // The message-only IPC response — the running session is left intact (A1).
       logConfigError(error);
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -330,7 +332,7 @@ export const sessionHandlers: Record<
             : null,
         ),
       );
-    return ipcOk(req.id, statuses);
+    return ipcOk(req.id, z.array(projectedStatusSchema).parse(statuses));
   },
 
   async "services.details"(req, store) {
@@ -342,11 +344,16 @@ export const sessionHandlers: Record<
     try {
       const status = session.projectStatus(session.manager.getStatus(name));
       const svcConfig = session.config.project.services[name];
-      return ipcOk(req.id, {
-        ...status,
-        dependsOn: svcConfig?.dependsOn ?? [],
-        hasDocker: Boolean(svcConfig?.docker),
-      });
+      return ipcOk(
+        req.id,
+        projectedStatusSchema
+          .extend({ dependsOn: z.array(z.string()), hasDocker: z.boolean() })
+          .parse({
+            ...status,
+            dependsOn: svcConfig?.dependsOn ?? [],
+            hasDocker: Boolean(svcConfig?.docker),
+          }),
+      );
     } catch {
       return ipcErr(req.id, `Unknown service: ${name}`);
     }
@@ -362,7 +369,7 @@ export const sessionHandlers: Record<
       const result = await session.manager.startService(name);
       return ipcOk(req.id, { started: name, noop: result.noop });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -376,7 +383,7 @@ export const sessionHandlers: Record<
       const result = await session.manager.stopService(name);
       return ipcOk(req.id, { stopped: name, noop: result.noop });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -390,7 +397,7 @@ export const sessionHandlers: Record<
       await session.manager.restartService(name);
       return ipcOk(req.id, { restarted: name });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -411,7 +418,7 @@ export const sessionHandlers: Record<
       if (error instanceof GroupedDockerRebuildError) {
         return { ...ipcErr(req.id, error.message), errorCode: error.code };
       }
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -432,7 +439,7 @@ export const sessionHandlers: Record<
       await session.manager.startAll();
       return ipcOk(req.id, { started: "all" });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -453,7 +460,7 @@ export const sessionHandlers: Record<
       await session.manager.stopAll();
       return ipcOk(req.id, { stopped: "all" });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -476,7 +483,7 @@ export const sessionHandlers: Record<
       await session.manager.startAll();
       return ipcOk(req.id, { restarted: "all" });
     } catch (error) {
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 
@@ -542,7 +549,10 @@ export const sessionHandlers: Record<
     }
     const { key, target } = parsed.data;
     if (!session.taskExecution.accepting) {
-      return { ...ipcErr(req.id, "session_closing"), errorCode: "session_closing" };
+      return {
+        ...ipcErr(req.id, "session_closing", "session_closing"),
+        errorCode: "session_closing",
+      };
     }
     const { terminal } = session.backend;
     if (!terminal || !session.backend.capabilities.taskPanes) {
@@ -622,7 +632,7 @@ export const sessionHandlers: Record<
     });
     try {
       if (!session.taskExecution.accepting) {
-        throw new Error("session_closing");
+        throw new SessionClosingError();
       }
       await terminal.runTaskInPane(
         {
@@ -659,7 +669,7 @@ export const sessionHandlers: Record<
     const { runId } = req.params as { runId: string };
     const info = session.paneRunInfo.get(runId);
     if (!session.taskExecution.accepting) {
-      return ipcErr(req.id, "session_closing");
+      return ipcErr(req.id, "session_closing", "session_closing");
     }
     if (!info) {
       return ipcErr(req.id, "not_found");

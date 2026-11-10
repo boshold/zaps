@@ -1219,6 +1219,8 @@ describe("Session backend presentation", () => {
           configPath: session.configPath,
           projectDir: session.projectDir,
           createdAt: session.createdAt,
+          backend: "shell",
+          capabilities: session.backend.capabilities,
         },
       ]);
       expect(await backend.health()).toBe("alive");
@@ -1499,7 +1501,18 @@ describe("Session presentation-independent logs", () => {
         { name: "b", state: "ready", ports: [], retryCount: 0 },
       ],
     );
-    const host = observedBackend(fixture.runtime, mixedCapabilities, { kind: "shell" });
+    const host = observedBackend(
+      fixture.runtime,
+      {
+        panes: false,
+        zoom: false,
+        popups: false,
+        taskPanes: false,
+        rawInput: false,
+        layout: false,
+      },
+      { kind: "shell" },
+    );
     const session = projectedSession(fixture, host.backend);
     const broadcast = vi.spyOn(session, "broadcast");
     const buffer = session.logBuffers.get("a");

@@ -3,9 +3,10 @@ import { EventEmitter } from "node:events";
 import { z } from "zod";
 
 import type { DockerConfig, NoticeLevel } from "#src/config/types.js";
-import type { SessionSnapshot } from "#src/daemon/session.js";
+import type { ProjectedServiceStatus, SessionSnapshot } from "#src/daemon/session.js";
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import {
+  backendErrorCodeSchema,
   terminalActionParamsSchema,
   terminalActionResultSchema,
 } from "#src/lib/backend/schemas.js";
@@ -14,22 +15,32 @@ import type {
   TerminalActionParams,
   TerminalActionResult,
 } from "#src/lib/backend/schemas.js";
+import {
+  daemonEventDataSchemas,
+  parseDaemonStatus,
+  parseServiceStatus,
+  parseSessionSnapshot,
+} from "#src/lib/backend/wire.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
 
-export class TerminalActionError extends Error {
-  public override readonly name = "TerminalActionError";
+export class DaemonRequestError extends Error {
+  public override readonly name: string = "DaemonRequestError";
   public readonly code?: BackendErrorCode;
   public constructor(message: string, code?: BackendErrorCode) {
     super(message);
-    this.code = code;
+    const parsed = backendErrorCodeSchema.safeParse(code);
+    this.code = parsed.success ? parsed.data : undefined;
   }
 }
 
+export class TerminalActionError extends DaemonRequestError {
+  public override readonly name = "TerminalActionError";
+}
+
 export interface DaemonClientEvents {
-  "service.stateChange": (name: string, status: ServiceStatus) => void;
+  "service.stateChange": (name: string, status: ProjectedServiceStatus) => void;
   "log.lines": (service: string, lines: string[]) => void;
   "task.start": (key: string, name: string, runId?: string) => void;
   "task.complete": (key: string, name: string, result: "success" | "error", runId?: string) => void;
@@ -52,15 +63,20 @@ export class DaemonClient extends EventEmitter {
   private boundSubscription: IpcSubscription | null = null;
 
   private managedHost = true;
+  private advertised = false;
+  private upgradeNoticed = false;
   private readonly supportsHostDetach: () => boolean;
 
   public constructor(
     socketPath: string,
     sessionId: string,
     // Trusted protocol support, supplied by connection metadata composition.
-    options: { supportsHostDetach?: () => boolean } = {},
+    options: { supportsHostDetach?: () => boolean; daemonStatus?: unknown } = {},
   ) {
     super();
+    if (options.daemonStatus !== undefined) {
+      this.advertised = parseDaemonStatus(options.daemonStatus).advertised;
+    }
     this.supportsHostDetach = options.supportsHostDetach ?? (() => false);
     this.socketPath = socketPath;
     this.sessionId = sessionId;
@@ -107,7 +123,7 @@ export class DaemonClient extends EventEmitter {
   public async reloadConfig(): Promise<void> {
     const res = await this.request("session.reload");
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
@@ -126,7 +142,7 @@ export class DaemonClient extends EventEmitter {
     }
     const response = await subscription.request("session.attach", { ui: true });
     if (response.error !== undefined) {
-      throw new Error(response.error);
+      throw new DaemonRequestError(response.error, response.errorCode);
     }
     if (this.sub !== subscription || !subscription.connected) {
       throw new Error("daemon connection closed");
@@ -135,7 +151,12 @@ export class DaemonClient extends EventEmitter {
       .object({ managed: z.boolean().optional() })
       .passthrough()
       .parse(response.result);
-    this.managedHost = snapshot.managed !== false;
+    const metadata = z.record(z.string(), z.unknown()).parse(response.result);
+    if (Object.hasOwn(metadata, "backend") || Object.hasOwn(metadata, "capabilities")) {
+      parseSessionSnapshot(response.result, this.advertised);
+    }
+    this.managedHost = metadata.backend !== "shell" && snapshot.managed !== false;
+    this.noticeUpgrade();
     this.boundSubscription = subscription;
   }
 
@@ -183,69 +204,74 @@ export class DaemonClient extends EventEmitter {
   public async attach(): Promise<SessionSnapshot> {
     const res = await this.request("session.attach");
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
-    return res.result as SessionSnapshot;
+    const snapshot = parseSessionSnapshot(res.result, this.advertised);
+    this.noticeUpgrade();
+    return snapshot;
   }
 
   public async destroySession(): Promise<void> {
     const res = await this.request("session.destroy");
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   // --- Service operations ---
 
-  public async listServices(): Promise<ServiceStatus[]> {
+  public async listServices(): Promise<ProjectedServiceStatus[]> {
     const res = await this.request("services.list");
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
-    return res.result as ServiceStatus[];
+    return z
+      .array(z.unknown())
+      .parse(res.result)
+      .map((status) => parseServiceStatus(status, this.advertised));
   }
 
   public async startService(name: string): Promise<void> {
     const res = await this.request("services.start", { name });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   public async stopService(name: string): Promise<void> {
     const res = await this.request("services.stop", { name });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   public async restartService(name: string): Promise<void> {
     const res = await this.request("services.restart", { name });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   public async rebuildDocker(name: string, overrides: Partial<DockerConfig>): Promise<void> {
     const res = await this.request("services.rebuild", { name, overrides });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   public async restartAll(): Promise<void> {
     const res = await this.request("services.restartAll");
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
   }
 
   public async getLogSnapshot(service: string): Promise<string[]> {
     const res = await this.request("logs.snapshot", { service });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
-    return res.result as string[];
+    return z.array(z.string()).parse(res.result);
   }
 
   // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
@@ -272,7 +298,7 @@ export class DaemonClient extends EventEmitter {
       this.sessionId,
     );
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
     return res.result as { success: boolean; runId?: string };
   }
@@ -287,7 +313,7 @@ export class DaemonClient extends EventEmitter {
       ...(target ? { target } : {}),
     });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
     return res.result as { runId: string; paneId: string };
   }
@@ -301,7 +327,7 @@ export class DaemonClient extends EventEmitter {
   public async getTaskOutput(runId: string): Promise<TaskOutputSnapshot> {
     const res = await this.request("tasks.output", { runId });
     if (res.error) {
-      throw new Error(res.error);
+      throw new DaemonRequestError(res.error, res.errorCode);
     }
     return res.result as TaskOutputSnapshot;
   }
@@ -312,23 +338,72 @@ export class DaemonClient extends EventEmitter {
     return ipcRequest(this.socketPath, method, params, 30_000, this.sessionId);
   }
 
+  public async status() {
+    const response = await this.request("daemon.status");
+    if (response.error !== undefined) {
+      throw new DaemonRequestError(response.error, response.errorCode);
+    }
+    const status = parseDaemonStatus(response.result);
+    this.advertised = status.advertised;
+    this.noticeUpgrade();
+    return status;
+  }
+
+  public async serviceDetails(name: string) {
+    const response = await this.request("services.details", { name });
+    if (response.error !== undefined) {
+      throw new DaemonRequestError(response.error, response.errorCode);
+    }
+    const details = z
+      .object({ dependsOn: z.array(z.string()), hasDocker: z.boolean() })
+      .parse(response.result);
+    return { ...parseServiceStatus(response.result, this.advertised), ...details };
+  }
+
+  private noticeUpgrade(): void {
+    if (!this.advertised && !this.upgradeNoticed) {
+      this.upgradeNoticed = true;
+      this.emit(
+        "config.notice",
+        "warn",
+        "Daemon capabilities unavailable. Restart the daemon to upgrade; detach managed tmux manually.",
+      );
+    }
+  }
+
   private handleEvent(event: DaemonEvent): void {
-    const data = (event.data ?? {}) as Record<string, unknown>;
+    try {
+      this.decodeEvent(event);
+    } catch {
+      // Ignore malformed daemon events.
+    }
+  }
+
+  private decodeEvent(event: DaemonEvent): void {
+    const data = z.record(z.string(), z.unknown()).parse(event.data ?? {});
     switch (event.event) {
       case "service.stateChange": {
-        this.emit("service.stateChange", data.name, data.status);
+        const state = daemonEventDataSchemas.stateChange.parse(data);
+        this.emit(
+          "service.stateChange",
+          state.name,
+          parseServiceStatus(state.status, this.advertised),
+        );
         break;
       }
       case "log.lines": {
-        this.emit("log.lines", data.service, data.lines);
+        const log = daemonEventDataSchemas.logLines.parse(data);
+        this.emit("log.lines", log.service, log.lines);
         break;
       }
       case "task.start": {
-        this.emit("task.start", data.key, data.name, data.runId);
+        const task = daemonEventDataSchemas.taskStart.parse(data);
+        this.emit("task.start", task.key, task.name, task.runId);
         break;
       }
       case "task.complete": {
-        this.emit("task.complete", data.key, data.name, data.result, data.runId);
+        const task = daemonEventDataSchemas.taskComplete.parse(data);
+        this.emit("task.complete", task.key, task.name, task.result, task.runId);
         break;
       }
       case "session.destroyed": {
@@ -336,7 +411,7 @@ export class DaemonClient extends EventEmitter {
         break;
       }
       case "session.configReloaded": {
-        this.emit("session.configReloaded", data);
+        this.emit("session.configReloaded", parseSessionSnapshot(data, this.advertised));
         break;
       }
       case "session.configStale": {
@@ -344,11 +419,12 @@ export class DaemonClient extends EventEmitter {
         break;
       }
       case "session.paneMap": {
-        this.emit("session.paneMap", data.paneMap);
+        this.emit("session.paneMap", daemonEventDataSchemas.paneMap.parse(data).paneMap);
         break;
       }
       case "config.notice": {
-        this.emit("config.notice", data.level, data.message);
+        const notice = daemonEventDataSchemas.notice.parse(data);
+        this.emit("config.notice", notice.level, notice.message);
         break;
       }
       default: {

@@ -6,6 +6,7 @@ import path from "node:path";
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { preflightBackendCompatibility } from "#src/lib/backend/compatibility.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import type {
@@ -14,6 +15,7 @@ import type {
   ServiceActions,
   SessionBackend,
 } from "#src/lib/backend/types.js";
+import { sessionSnapshotSchema } from "#src/lib/backend/wire.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import {
   captureEnvironment,
@@ -352,7 +354,7 @@ export class Session {
       throw new Error("session destroyed");
     }
     if (this.closing.signal.aborted) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     if (this.reloading) {
       throw new Error("reload already in progress");
@@ -380,10 +382,10 @@ export class Session {
         this.broadcast({ session: this.id, event: "config.notice", data: notice });
       }),
       this.closing.signal,
-      "session_closing",
+      new SessionClosingError(),
     );
     if (!this.taskExecution.accepting) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     const newConfig = loaded.config;
     if (newConfig.projectDir !== this.projectDir) {
@@ -564,7 +566,7 @@ export class Session {
 
   public bindUi(socket: net.Socket): void {
     if (!this.taskExecution.accepting) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     if (!this.acknowledgedSubscribers.has(socket) || socket.destroyed || !socket.writable) {
       throw new Error("invalid_request");
@@ -730,7 +732,7 @@ export class Session {
     );
 
     const { focusPane: _focusPane, ...host } = this.compatibilityProjection();
-    return {
+    return sessionSnapshotSchema.parse({
       id: this.id,
       name: this.name,
       ...host,
@@ -745,7 +747,7 @@ export class Session {
       unavailableServices: [...this.config.unavailableServices.values()],
       configStale: this.isConfigStale(),
       ui: this.config.project.ui,
-    };
+    });
   }
 
   public compatibilityProjection(): CompatibilityProjection {

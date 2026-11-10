@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedProjectContext } from "#src/config/project-context.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { backendFactories } from "#src/lib/backend/factory.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
@@ -278,7 +279,7 @@ class DaemonServer implements SessionStore {
 
   private assertAccepting(): void {
     if (this.closing.signal.aborted) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
   }
 
@@ -329,7 +330,7 @@ class DaemonServer implements SessionStore {
       const loaded = await abortable(
         loadProjectContext(params.configPath, params.projectDir, params.shellEnv),
         this.closing.signal,
-        "session_closing",
+        new SessionClosingError(),
       );
       this.assertAccepting();
       const id = sessionId(params.configPath, loaded.config.projectDir);
@@ -867,7 +868,7 @@ class DaemonServer implements SessionStore {
       this.closing.signal.aborted &&
       (SHUTDOWN_BLOCKED_METHODS.has(req.method) || req.method.startsWith("sentra."))
     ) {
-      return ipcErr(req.id, "session_closing");
+      return ipcErr(req.id, "session_closing", "session_closing");
     }
     // Daemon-level handlers
     const dHandler = daemonHandlers[req.method];
@@ -878,7 +879,7 @@ class DaemonServer implements SessionStore {
         }
         return await dHandler(req, this);
       } catch (error) {
-        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+        return ipcErr(req.id, error);
       }
     }
 
@@ -915,7 +916,7 @@ class DaemonServer implements SessionStore {
           return response;
         });
       } catch (error) {
-        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+        return ipcErr(req.id, error);
       }
     }
 

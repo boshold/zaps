@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { z } from "zod";
 
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { TmuxOutputProducer } from "#src/lib/backend/tmux/output.js";
 import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
@@ -207,7 +208,7 @@ class TmuxRuntime implements RuntimeDriver {
 
   private assertAdmission(): void {
     if (this.admissionClosed) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
   }
 

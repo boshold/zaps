@@ -5,6 +5,7 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { LayoutNode } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
 import { TerminalOperationError, editOperationCapture } from "#src/lib/backend/tmux/operations.js";
 import type {
@@ -236,7 +237,7 @@ printf '%s' "$status" > ${shellEscape(statusFile)}`;
       const launch = createRawPaneLaunch(spec.execution.command, () => {
         operation.signal.throwIfAborted();
         if (this.disposed) {
-          throw new Error("session_closing");
+          throw new SessionClosingError();
         }
       });
       const entry = this.taskPanes.get(spec.runId);

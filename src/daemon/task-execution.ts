@@ -7,6 +7,7 @@ import type {
   SentraConfig,
   TaskConfig,
 } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { OwnedCommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
@@ -166,7 +167,7 @@ class TaskExecutionService {
 
   private assertAdmission(authority: ProcessAuthority): void {
     if (!this.admission.allows(authority)) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
   }
 

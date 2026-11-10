@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 import { PassThrough } from "node:stream";
 
 import type { ExecResult } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { ExecutionEvent } from "#src/lib/backend/types.js";
 
 import type { ProcessAuthority, ProcessRunner } from "./process-runner.js";
@@ -71,7 +72,7 @@ export class OwnedCommandExecutor implements CommandExecutor {
 
   public async execute(command: string, options: CommandOptions): Promise<ExecResult> {
     if (!this.runner.admits(this.authority)) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
     if (options.signal?.aborted) {
       return { success: false, exitCode: 1, output: ["Command cancelled"] };

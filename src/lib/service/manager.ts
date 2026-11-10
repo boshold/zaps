@@ -6,6 +6,7 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
@@ -382,7 +383,7 @@ export class ServiceManager extends EventEmitter {
 
   private assertAdmission(): void {
     if (this.admissionClosed) {
-      throw new Error("session_closing");
+      throw new SessionClosingError();
     }
   }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { unavailableActions, unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
 
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -11,6 +12,28 @@ vi.mock("../../src/lib/ipc/client.js", () => ({
   ipcStream: async (...args: unknown[]) => mockIpcStream(...args),
   ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
 }));
+
+function wireSnapshot() {
+  return {
+    id: "sess1",
+    name: "test",
+    backend: "tmux",
+    capabilities: { ...unavailableCapabilities },
+    tmuxSession: "main",
+    managed: false,
+    originPane: "%0",
+    paneMap: {},
+    statuses: [],
+    logSnapshots: {},
+    configPath: "/project/.zaps.mts",
+    projectDir: "/project",
+    tasks: [],
+    servicesMeta: [],
+    taskHistory: [],
+    unavailableServices: [],
+    configStale: false,
+  };
+}
 
 const { DaemonClient } = await import("../../src/client/daemon-client.js");
 
@@ -302,13 +325,85 @@ describe("DaemonClient", () => {
     });
   });
 
+  describe("backend decoding", () => {
+    it("shell binding can quit without host-detach trust", async () => {
+      const {
+        tmuxSession: _session,
+        managed: _managed,
+        originPane: _origin,
+        ...common
+      } = wireSnapshot();
+      client.connect();
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: { ...common, backend: "shell" } });
+      await client.bindUi();
+      mockSub.request.mockResolvedValueOnce({ id: "d", result: { detached: true } });
+      await client.detach({ detachHost: true });
+      expect(client.uiBound).toBe(false);
+      expect(mockSub.close).toHaveBeenCalledOnce();
+    });
+
+    it("rejects explicit malformed binding metadata", async () => {
+      client.connect();
+      mockSub.request.mockResolvedValueOnce({
+        id: "a",
+        result: { managed: false, backend: undefined },
+      });
+      await expect(client.bindUi()).rejects.toThrow();
+      expect(client.uiBound).toBe(false);
+    });
+
+    it("ignores malformed updates and emits one established upgrade hint", async () => {
+      const update = vi.fn();
+      const reload = vi.fn();
+      const notice = vi.fn();
+      client.on("service.stateChange", update);
+      client.on("session.configReloaded", reload);
+      client.on("config.notice", notice);
+      client.connect();
+      eventHandler({
+        session: "sess1",
+        event: "service.stateChange",
+        data: { name: "api", status: { state: "ready" } },
+      });
+      eventHandler({
+        session: "sess1",
+        event: "session.configReloaded",
+        data: { ...wireSnapshot(), backend: "future" },
+      });
+      expect(update).not.toHaveBeenCalled();
+      expect(reload).not.toHaveBeenCalled();
+      mockIpcRequest.mockResolvedValue({ id: "r", result: wireSnapshot() });
+      await client.attach();
+      await client.attach();
+      expect(notice).toHaveBeenCalledOnce();
+      expect(notice).toHaveBeenCalledWith("warn", expect.stringContaining("Restart the daemon"));
+    });
+
+    it("exposes parsed advertisement and preserves typed service errors", async () => {
+      mockIpcRequest.mockResolvedValueOnce({ id: "r", result: { pid: 42, sessions: [] } });
+      expect(await client.status()).toMatchObject({
+        advertised: false,
+        supportedBackends: ["tmux"],
+      });
+      mockIpcRequest.mockResolvedValueOnce({
+        id: "r",
+        error: "closing",
+        errorCode: "session_closing",
+      });
+      await expect(client.startService("api")).rejects.toMatchObject({
+        message: "closing",
+        code: "session_closing",
+      });
+    });
+  });
+
   describe("request methods", () => {
     beforeEach(() => {
       mockIpcRequest.mockResolvedValue({ id: "r1", result: "ok" });
     });
 
     it("attach returns snapshot", async () => {
-      const snapshot = { id: "sess1", statuses: [] };
+      const snapshot = wireSnapshot();
       mockIpcRequest.mockResolvedValue({ id: "r1", result: snapshot });
       const result = await client.attach();
       expect(result).toEqual(snapshot);
@@ -361,7 +456,9 @@ describe("DaemonClient", () => {
     });
 
     it("listServices", async () => {
-      const statuses = [{ name: "api", state: "ready" }];
+      const statuses = [
+        { name: "api", state: "ready", ports: [], retryCount: 0, actions: unavailableActions },
+      ];
       mockIpcRequest.mockResolvedValue({ id: "r1", result: statuses });
       const result = await client.listServices();
       expect(result).toEqual(statuses);
@@ -539,10 +636,16 @@ describe("DaemonClient", () => {
       eventHandler({
         session: "sess1",
         event: "service.stateChange",
-        data: { name: "api", status: { state: "ready" } },
+        data: { name: "api", status: { name: "api", state: "ready", ports: [], retryCount: 0 } },
       });
 
-      expect(spy).toHaveBeenCalledWith("api", { state: "ready" });
+      expect(spy).toHaveBeenCalledWith("api", {
+        name: "api",
+        state: "ready",
+        ports: [],
+        retryCount: 0,
+        actions: unavailableActions,
+      });
     });
 
     it("routes log.lines", () => {
@@ -638,7 +741,7 @@ describe("DaemonClient", () => {
       client.on("session.configReloaded", spy);
       client.connect();
 
-      const snapshot = { id: "sess1", name: "test", statuses: [] };
+      const snapshot = wireSnapshot();
       eventHandler({
         session: "sess1",
         event: "session.configReloaded",

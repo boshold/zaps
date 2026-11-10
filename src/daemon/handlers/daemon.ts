@@ -1,7 +1,17 @@
+import { z } from "zod";
+
 import { sentraHandlers } from "#src/daemon/handlers/sentra.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import { runShutdownHook } from "#src/daemon/shutdown.js";
+import { supportedBackends } from "#src/lib/backend/factory.js";
+import {
+  backendIdSchema,
+  normalizeLegacySessionCreateParams,
+  sessionCreatedSchema,
+  sessionListEntrySchema,
+} from "#src/lib/backend/schemas.js";
+import { daemonStatusSchema } from "#src/lib/backend/wire.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
@@ -22,18 +32,22 @@ export const daemonHandlers: Record<
   },
 
   async "daemon.status"(req, store) {
-    return ipcOk(req.id, {
-      pid: process.pid,
-      sessions: store.list().map((s) => ({
-        id: s.id,
-        name: s.name,
-        configPath: s.configPath,
-        projectDir: s.projectDir,
-        serviceCount: Object.keys(s.config.project.services).length,
-        subscriberCount: s.subscribers.size,
-        createdAt: s.createdAt,
-      })),
-    });
+    return ipcOk(
+      req.id,
+      daemonStatusSchema.required({ supportedBackends: true }).parse({
+        pid: process.pid,
+        supportedBackends,
+        sessions: store.list().map((s) => ({
+          id: s.id,
+          name: s.name,
+          configPath: s.configPath,
+          projectDir: s.projectDir,
+          serviceCount: Object.keys(s.config.project.services).length,
+          subscriberCount: s.subscribers.size,
+          createdAt: s.createdAt,
+        })),
+      }),
+    );
   },
 
   async "daemon.shutdown"(req) {
@@ -60,36 +74,59 @@ export const daemonHandlers: Record<
           configPath: s.configPath,
           projectDir: s.projectDir,
           createdAt: s.createdAt,
+          backend: s.backend.id,
+          capabilities: { ...s.backend.capabilities },
         };
         if (host.backend === "tmux") {
-          return Object.assign(entry, {
-            tmuxSession: host.tmuxSession,
-            managed: host.managed,
-            tuiPane: host.paneMap["@tui"] ?? null,
-          });
+          return sessionListEntrySchema.parse(
+            Object.assign(entry, {
+              tmuxSession: host.tmuxSession,
+              managed: host.managed,
+              tuiPane: host.paneMap["@tui"] ?? null,
+            }),
+          );
         }
-        return entry;
+        return sessionListEntrySchema.parse(entry);
       }),
     );
   },
 
   async "session.create"(req, store) {
-    const params = req.params as {
-      configPath: string;
-      projectDir: string;
-      resolvedProjectDir?: string;
-      tmuxSession: string;
-      originPane: string;
-      tmuxSocket?: string | null;
-      managedTmux?: boolean;
-    };
-
-    if (!params?.configPath) {
-      return ipcErr(req.id, "configPath required");
+    const raw = z.record(z.string(), z.unknown()).safeParse(req.params);
+    if (!raw.success) {
+      return ipcErr(req.id, "invalid_request", "invalid_request");
+    }
+    if (!raw.data.configPath) {
+      return ipcErr(req.id, "configPath required", "invalid_request");
+    }
+    if (
+      Object.hasOwn(raw.data, "backend") &&
+      !backendIdSchema.safeParse(raw.data.backend).success
+    ) {
+      return ipcErr(req.id, "invalid_backend", "invalid_backend");
+    }
+    if (raw.data.backend !== "shell") {
+      const socket = raw.data.tmuxSocket;
+      if (socket !== undefined && socket !== null && !isSocketName(socket)) {
+        return ipcErr(req.id, "tmuxSocket must be a non-empty string or null", "invalid_request");
+      }
+      if (raw.data.managedTmux === true && (socket === undefined || socket === null)) {
+        return ipcErr(req.id, "managed session requires tmuxSocket", "invalid_request");
+      }
+    }
+    const params = (() => {
+      try {
+        return normalizeLegacySessionCreateParams(raw.data);
+      } catch {
+        return null;
+      }
+    })();
+    if (!params) {
+      return ipcErr(req.id, "invalid_request", "invalid_request");
     }
     const context = (() => {
       try {
-        return req.context
+        return req.context !== undefined
           ? parseRequestContext(req.context)
           : { cwd: params.projectDir, env: captureEnvironment() };
       } catch {
@@ -97,20 +134,7 @@ export const daemonHandlers: Record<
       }
     })();
     if (!context) {
-      return ipcErr(req.id, "invalid request context");
-    }
-
-    // A socket is either absent/null (default server) or a non-empty name — an
-    // Empty string must never silently degrade into "default server".
-    const rawSocket = params.tmuxSocket;
-    if (rawSocket !== undefined && rawSocket !== null && !isSocketName(rawSocket)) {
-      return ipcErr(req.id, "tmuxSocket must be a non-empty string or null");
-    }
-    const tmuxSocket = typeof rawSocket === "string" ? rawSocket : null;
-    const managedTmux = params.managedTmux === true;
-    // The daemon must never kill-session on the user's default server (50_api).
-    if (managedTmux && tmuxSocket === null) {
-      return ipcErr(req.id, "managed session requires tmuxSocket");
+      return ipcErr(req.id, "invalid request context", "invalid_request");
     }
 
     try {
@@ -118,21 +142,24 @@ export const daemonHandlers: Record<
         ...params,
         projectDir: params.projectDir || context.cwd,
         shellEnv: context.env,
-        tmuxSocket,
-        managedTmux,
       });
       const host = session.compatibilityProjection();
-      return ipcOk(req.id, {
-        id: session.id,
-        name: session.name,
-        paneMap: host.paneMap,
-        ...(host.focusPane === undefined ? {} : { focusPane: host.focusPane }),
-      });
+      return ipcOk(
+        req.id,
+        sessionCreatedSchema.parse({
+          backend: session.backend.id,
+          capabilities: { ...session.backend.capabilities },
+          id: session.id,
+          name: session.name,
+          paneMap: host.paneMap,
+          ...(host.focusPane === undefined ? {} : { focusPane: host.focusPane }),
+        }),
+      );
     } catch (error) {
       // `buildSession` loads config first (server.ts) — a throw here leaves no
       // Partial session registered. Log the full error before the IPC message.
       logConfigError(error);
-      return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      return ipcErr(req.id, error);
     }
   },
 

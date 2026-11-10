@@ -4,7 +4,7 @@ import path from "node:path";
 import { DaemonServer } from "#src/daemon/server.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 
-import { createShellTestEnvironment } from "./helpers.js";
+import { createShellTestEnvironment, waitForCondition } from "./helpers.js";
 
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", String.raw`'\''`)}'`;
@@ -25,6 +25,8 @@ export async function withShellStore(
     } catch (error) {
       errors.push(error);
     }
+    store.closeAdmission();
+    await store.settleCreates();
     const cleanup = await Promise.allSettled(
       store.ownedSessionIds().map(async (id) => store.destroy(id)),
     );
@@ -33,6 +35,13 @@ export async function withShellStore(
     );
     try {
       await store.sentra.close();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    await store.flushShutdownResponses();
+    store.stop();
+    try {
+      await waitForCondition(() => !fs.existsSync(fixture.socketPath));
     } catch (error) {
       cleanupErrors.push(error);
     }
