@@ -225,6 +225,48 @@ describe("session creation with real shell orchestration", () => {
     presentation.mockRestore();
   });
 
+  it.each(["manager", "Session"])(
+    "retains %s construction cleanup ownership until retry succeeds",
+    async (stage) => {
+      const preparation = new Error(`${stage} construction failed`);
+      const cleanup = new Error("backend cleanup failed");
+      const create = vi.spyOn(ShellSessionBackend, "create");
+      const backendDispose = vi
+        .spyOn(ShellSessionBackend.prototype, "dispose")
+        .mockRejectedValueOnce(cleanup);
+      const observers = vi.spyOn(ServiceManager.prototype, "disposeObservers");
+      if (stage === "manager") {
+        config.bindActions = () => {
+          throw preparation;
+        };
+      } else {
+        vi.spyOn(ShellSessionBackend.prototype, "subscribePresentation").mockImplementationOnce(
+          () => {
+            throw preparation;
+          },
+        );
+      }
+      await expect(server.create(request())).rejects.toMatchObject({
+        cause: preparation,
+        errors: [preparation, cleanup],
+      });
+      expect(backendDispose).toHaveBeenCalledTimes(1);
+      expect(server.sessionCount).toBe(0);
+      if (stage === "Session") {
+        expect(observers).toHaveBeenCalledTimes(1);
+      }
+      config.bindActions = undefined;
+      const retry = vi
+        .spyOn(ShellSessionBackend.prototype, "retryCleanup")
+        .mockRejectedValueOnce(cleanup);
+      await expect(server.create(request())).rejects.toThrow("Session construction cleanup failed");
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(await server.create(request())).toBeDefined();
+      expect(retry).toHaveBeenCalledTimes(2);
+      expect(create).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("preserves registration failure and cleanup diagnostics while disposing task ownership", async () => {
     const cause = new Error("count failed");
     const cleanup = new Error("observer cleanup failed");

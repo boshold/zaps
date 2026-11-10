@@ -27,6 +27,18 @@ interface TmuxSessionOptions {
   skip?: Set<string>;
 }
 
+async function confirmAbsent(failure: unknown, exists: () => Promise<boolean>): Promise<void> {
+  const [probe] = await Promise.allSettled([Promise.resolve().then(exists)]);
+  if (probe.status === "rejected") {
+    throw new AggregateError([failure, probe.reason], "Tmux cleanup verification failed", {
+      cause: failure,
+    });
+  }
+  if (probe.value) {
+    throw failure;
+  }
+}
+
 class TmuxSessionBackend implements SessionBackend {
   public readonly id = "tmux";
   public readonly runtime: RuntimeDriver;
@@ -34,6 +46,7 @@ class TmuxSessionBackend implements SessionBackend {
   public readonly capabilities;
   private readonly options: TmuxSessionOptions;
   private paneMap: Record<string, string> = {};
+  private readonly acquiredPanes = new Set<string>();
   private focusPane?: string;
   private lastPublished?: string;
   private layout?: LayoutNode;
@@ -122,9 +135,13 @@ class TmuxSessionBackend implements SessionBackend {
     return this.reflow;
   }
 
-  public static async create(options: TmuxSessionOptions): Promise<TmuxSessionBackend> {
+  public static async create(
+    options: TmuxSessionOptions,
+    onAcquire?: (backend: TmuxSessionBackend) => void,
+  ): Promise<TmuxSessionBackend> {
     const backend = new TmuxSessionBackend(options);
     try {
+      onAcquire?.(backend);
       await backend.buildLayout();
       return backend;
     } catch (error) {
@@ -154,11 +171,19 @@ class TmuxSessionBackend implements SessionBackend {
       }
     }
     const result = await createLayout(host.originPane, this.layout, services, groups, {
-      tmux,
+      tmux: {
+        killPane: tmux.killPane,
+        splitPane: async (...args) => {
+          const pane = await tmux.splitPane(...args);
+          this.acquiredPanes.add(pane);
+          return pane;
+        },
+      },
       skip,
       reserveTuiPane: true,
     });
     this.paneMap = result.paneMap;
+    this.acquiredPanes.clear();
     this.focusPane = result.focusPane;
     await tmux.resyncPaneSizes(result.paneMap["@tui"] ?? result.focusPane);
     await tmux.selectPane(result.focusPane);
@@ -415,6 +440,11 @@ class TmuxSessionBackend implements SessionBackend {
     return this.disposal;
   }
 
+  public async retryCleanup(): Promise<void> {
+    this.disposed = true;
+    await this.disposeHost();
+  }
+
   private async disposeHost(): Promise<void> {
     const { tmux, host } = this.options;
     this.listeners.clear();
@@ -450,31 +480,34 @@ class TmuxSessionBackend implements SessionBackend {
           try {
             await tmux.killSession(host.tmuxSession);
           } catch (error) {
-            if (await tmux.hasSession(host.tmuxSession)) {
-              throw error;
-            }
+            await confirmAbsent(error, async () => tmux.hasSession(host.tmuxSession));
           }
         })
       : Promise.all(
-          [...new Set(Object.values(this.paneMap))]
+          [...new Set([...Object.values(this.paneMap), ...this.acquiredPanes])]
             .filter((pane) => pane !== host.originPane)
             .map(async (pane) =>
               attempt(async () => {
                 try {
                   await tmux.killPane(pane);
                 } catch (error) {
-                  if (await tmux.paneExists(pane)) {
-                    throw error;
+                  await confirmAbsent(error, async () => tmux.paneExists(pane));
+                }
+                this.acquiredPanes.delete(pane);
+                for (const [name, target] of Object.entries(this.paneMap)) {
+                  if (target === pane) {
+                    Reflect.deleteProperty(this.paneMap, name);
                   }
                 }
               }),
             ),
         ));
-    this.paneMap = {};
-    this.focusPane = undefined;
     if (errors.length > 0) {
       throw new AggregateError(errors, "Tmux host disposal incomplete");
     }
+    this.paneMap = {};
+    this.acquiredPanes.clear();
+    this.focusPane = undefined;
   }
 }
 

@@ -73,6 +73,11 @@ class ShellSessionBackend implements SessionBackend {
     return this.disposed ? "lost" : "alive";
   }
 
+  public async retryCleanup(): Promise<void> {
+    this.disposed = true;
+    await this.runtime.dispose();
+  }
+
   // oxlint-disable-next-line promise-function-async
   public dispose(): Promise<void> {
     this.disposed = true;

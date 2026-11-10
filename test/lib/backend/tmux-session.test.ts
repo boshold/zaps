@@ -213,6 +213,58 @@ describe("tmux session backend", () => {
     expect(backend.dispose()).toBe(disposal);
   });
 
+  it("hands off partial-layout ownership before factory rejection and verifies retry cleanup", async () => {
+    const options = fixture();
+    const splitFailure = new Error("split failed");
+    const cleanupFailure = new Error("owned pane survived");
+    options.tmux.splitPane.mockResolvedValueOnce("%2").mockRejectedValueOnce(splitFailure);
+    options.tmux.killPane.mockRejectedValue(cleanupFailure);
+    const owner: { current: TmuxSessionBackend | null } = { current: null };
+    await expect(
+      TmuxSessionBackend.create(
+        {
+          ...options,
+          services: { first: { start: "true" }, second: { start: "true" } },
+        },
+        (backend) => {
+          owner.current = backend;
+        },
+      ),
+    ).rejects.toThrow("Tmux construction cleanup incomplete");
+    const backend = owner.current;
+    if (!backend) {
+      throw new Error("Missing backend cleanup owner");
+    }
+    await expect(backend.retryCleanup()).rejects.toMatchObject({ errors: [cleanupFailure] });
+    options.tmux.killPane.mockResolvedValue(undefined);
+    await expect(backend.retryCleanup()).resolves.toBeUndefined();
+    expect(options.tmux.killPane).toHaveBeenCalledWith("%2");
+    expect(options.tmux.killPane).not.toHaveBeenCalledWith("%1");
+    expect(options.tmux.killSession).not.toHaveBeenCalled();
+    const calls = options.tmux.killPane.mock.calls.length;
+    await backend.retryCleanup();
+    expect(options.tmux.killPane).toHaveBeenCalledTimes(calls);
+  });
+
+  it("retains ownership and both errors when cleanup verification is unavailable", async () => {
+    const options = fixture();
+    const backend = await TmuxSessionBackend.create(options);
+    const killFailure = new Error("pane kill failed");
+    const probeFailure = new Error("pane ownership unknown");
+    options.tmux.killPane.mockRejectedValue(killFailure);
+    options.tmux.paneExists.mockRejectedValueOnce(probeFailure);
+    await expect(backend.dispose()).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ cause: killFailure, errors: [killFailure, probeFailure] }),
+      ],
+    });
+    await expect(backend.retryCleanup()).rejects.toMatchObject({ errors: [killFailure] });
+    options.tmux.killPane.mockResolvedValue(undefined);
+    await backend.retryCleanup();
+    expect(options.tmux.killPane).toHaveBeenCalledTimes(3);
+    expect(options.tmux.killPane).not.toHaveBeenCalledWith("%1");
+  });
+
   it("waits for in-flight lazy construction before disposal", async () => {
     const options = fixture();
     const backend = await TmuxSessionBackend.create({ ...options, skip: new Set(["web"]) });

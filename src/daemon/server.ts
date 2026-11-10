@@ -24,7 +24,6 @@ import {
   serviceWrappers,
 } from "#src/lib/backend/tmux/runtime.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
-import type { SessionBackend } from "#src/lib/backend/types.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -83,6 +82,13 @@ type CreationIdentity =
       tmuxSocket: string | null;
       managedTmux: boolean;
     };
+interface PreparationCleanupOwner {
+  identity: CreationIdentity;
+  cleanup: () => Promise<void>;
+  cause: unknown;
+  pending?: Promise<void>;
+}
+
 interface PendingCreate {
   identity: CreationIdentity;
   promise: Promise<Session>;
@@ -158,6 +164,7 @@ class DaemonServer implements SessionStore {
    * creates for the same config into one config-load/layout/startAll (D3). */
   private readonly inFlightCreates = new Map<string, PendingCreate>();
   private readonly preparations = new Map<string, PendingCreate>();
+  private readonly preparationCleanup = new Map<string, PreparationCleanupOwner>();
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
@@ -303,11 +310,40 @@ class DaemonServer implements SessionStore {
     return record.promise;
   }
 
+  private async settlePreparationCleanup(id: string, requested?: CreationIdentity): Promise<void> {
+    const owner = this.preparationCleanup.get(id);
+    if (!owner) {
+      return;
+    }
+    if (requested) {
+      assertCompatible(owner.identity, requested);
+    }
+    owner.pending ??= Promise.resolve().then(owner.cleanup);
+    const { pending } = owner;
+    const [result] = await Promise.allSettled([pending]);
+    if (result.status === "rejected") {
+      if (owner.pending === pending) {
+        owner.pending = undefined;
+      }
+      throw new AggregateError(
+        [owner.cause, result.reason],
+        "Session construction cleanup failed",
+        {
+          cause: owner.cause,
+        },
+      );
+    }
+    if (this.preparationCleanup.get(id) === owner) {
+      this.preparationCleanup.delete(id);
+    }
+  }
+
   private async resolveCreate(
     id: string,
     params: CapturedCreateParams,
     loaded: ResolvedProjectContext,
   ): Promise<Session> {
+    await this.settlePreparationCleanup(id, creationIdentity(params));
     const existing = this.sessions.get(id);
     if (existing) {
       const host = existing.backend.getPresentation();
@@ -362,7 +398,15 @@ class DaemonServer implements SessionStore {
           throw new AggregateError(failures, "Backend resource cleanup incomplete");
         }
       })();
-      await disposal;
+      const current = disposal;
+      try {
+        await current;
+      } catch (error) {
+        if (disposal === current) {
+          disposal = undefined;
+        }
+        throw error;
+      }
     };
     let prepared: TmuxSessionBackend | undefined = undefined;
     try {
@@ -419,24 +463,29 @@ class DaemonServer implements SessionStore {
         },
       });
       cleanup.splice(-1, 0, async () => terminal.dispose());
-      const backend = await TmuxSessionBackend.create({
-        host: {
-          tmuxSession: params.tmuxSession,
-          tmuxWindow,
-          originPane: params.originPane,
-          tmuxSocket,
-          managedTmux: params.managedTmux ?? false,
-        },
-        tmux,
-        runtime,
-        terminal,
-        disposeRuntime: disposeResources,
+      const backend = await TmuxSessionBackend.create(
+        {
+          host: {
+            tmuxSession: params.tmuxSession,
+            tmuxWindow,
+            originPane: params.originPane,
+            tmuxSocket,
+            managedTmux: params.managedTmux ?? false,
+          },
+          tmux,
+          runtime,
+          terminal,
+          disposeRuntime: disposeResources,
 
-        layout: config.project.layout,
-        services: config.project.services,
-        groups: config.groups,
-        skip: computeBootSkip(config),
-      });
+          layout: config.project.layout,
+          services: config.project.services,
+          groups: config.groups,
+          skip: computeBootSkip(config),
+        },
+        (acquired) => {
+          prepared = acquired;
+        },
+      );
       prepared = backend;
       backendRef.current = backend;
       backend.subscribePresentation((view) => {
@@ -475,9 +524,17 @@ class DaemonServer implements SessionStore {
         (async () => (prepared ? prepared.dispose() : disposeResources()))(),
       ]);
       if (result.status === "rejected") {
-        throw new AggregateError([error, result.reason], "Session construction cleanup failed", {
-          cause: error,
+        const failure = new AggregateError(
+          [error, result.reason],
+          "Session construction cleanup failed",
+          { cause: error },
+        );
+        this.preparationCleanup.set(id, {
+          identity: creationIdentity(params),
+          cause: failure,
+          cleanup: async () => (prepared ? prepared.retryCleanup() : disposeResources()),
         });
+        throw failure;
       }
       throw error;
     }
@@ -492,7 +549,7 @@ class DaemonServer implements SessionStore {
     const ref: { session: Session | null } = { session: null };
     const tmux =
       params.backend === "tmux" ? await this.prepareTmux(id, params, loaded, ref) : undefined;
-    const backend: SessionBackend =
+    const backend =
       tmux?.backend ??
       (await backendFactories.shell({
         services: config.project.services,
@@ -629,9 +686,35 @@ class DaemonServer implements SessionStore {
         .filter((result) => result.status === "rejected")
         .map((result) => result.reason);
       if (failures.length) {
-        throw new AggregateError([error, ...failures], "Session construction cleanup failed", {
-          cause: error,
-        });
+        const failure = new AggregateError(
+          [error, ...failures],
+          "Session construction cleanup failed",
+          { cause: error },
+        );
+        if (!session) {
+          this.preparationCleanup.set(id, {
+            identity: creationIdentity(params),
+            cause: failure,
+            cleanup: async () => {
+              const attempts = await Promise.allSettled([
+                (async () => this.sentraCounter.detach(id))(),
+                (async () => manager?.disposeObservers())(),
+                backend.retryCleanup(),
+              ]);
+              const cleanupFailures = attempts
+                .filter((attempt) => attempt.status === "rejected")
+                .map((attempt) => attempt.reason);
+              if (cleanupFailures.length) {
+                throw new AggregateError(
+                  cleanupFailures,
+                  "Session construction cleanup incomplete",
+                  { cause: error },
+                );
+              }
+            },
+          });
+        }
+        throw failure;
       }
       if (session && this.sessions.get(id) === session) {
         this.sessions.delete(id);
@@ -643,6 +726,7 @@ class DaemonServer implements SessionStore {
   public async destroy(id: string): Promise<void> {
     const session = this.sessions.get(id);
     if (!session) {
+      await this.settlePreparationCleanup(id);
       return;
     }
 
