@@ -152,6 +152,28 @@ function sameProcess(expected: ProcessIdentity, actual: ProcessIdentity): boolea
   );
 }
 
+function descendantTree(
+  rows: readonly { pid: number; ppid: number }[],
+  rootPid: number,
+  excluded: readonly number[] = [],
+): number[] {
+  const blocked = new Set(excluded);
+  const result = new Set<number>();
+  const queue = [rootPid];
+  if (rows.some((row) => row.pid === rootPid)) {
+    result.add(rootPid);
+  }
+  for (const parent of queue) {
+    for (const row of rows) {
+      if (row.ppid === parent && !blocked.has(row.pid) && !result.has(row.pid)) {
+        result.add(row.pid);
+        queue.push(row.pid);
+      }
+    }
+  }
+  return [...result];
+}
+
 function includeDescendantSessions(
   rows: readonly { pid: number; sid: ProcessSessionId }[],
   result: Set<number>,
@@ -319,6 +341,13 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     }
   }
 
+  async function getDescendantTree(
+    rootPid: number,
+    excluded: readonly number[] = [],
+  ): Promise<number[]> {
+    return descendantTree(await processTable(), rootPid, excluded);
+  }
+
   async function getDescendantPids(rootPid: number): Promise<number[]> {
     const rows = await processTable();
     const result = new Set<number>();
@@ -375,6 +404,7 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     readProcessIdentity,
     getProcessMembers,
     getDescendantPids,
+    getDescendantTree,
     getListeningPorts,
     detectPortsForPid,
   };

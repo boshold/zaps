@@ -6,6 +6,8 @@ import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/p
 import { TmuxOutputProducer } from "#src/lib/backend/tmux/output.js";
 import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type { PaneCleanupOptions, PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
+import { createRawPaneLaunch } from "#src/lib/backend/tmux/raw-launch.js";
+import type { RawPaneLaunch } from "#src/lib/backend/tmux/raw-launch.js";
 import {
   execInfoSchema,
   wrapperExitSchema,
@@ -146,6 +148,7 @@ function serviceWrapperCommand(
 }
 
 interface TmuxRuntimeOptions extends PaneCleanupOptions {
+  rawLaunch?: (command: string, active: () => void, shell: string) => RawPaneLaunch;
   tmux: TmuxHandle;
   environmentFile?: (env: Record<string, string>) => string;
   removeEnvironmentFile?: (file: string) => void;
@@ -163,6 +166,8 @@ interface PaneExecution {
   output?: TmuxOutputProducer;
   unsubscribeOutput?: () => void;
   raw: boolean;
+  rawLaunch?: RawPaneLaunch;
+  rawHolder?: number;
   environmentFile?: string;
   ownership: Promise<PaneOwnership>;
   stop?: Promise<void>;
@@ -256,6 +261,7 @@ class TmuxRuntime implements RuntimeDriver {
       }
     });
     let envFile: string | undefined = undefined;
+    let dispatched = false;
     try {
       envFile = spec.raw ? this.options.environmentFile?.({ ...spec.env }) : undefined;
       record.environmentFile = envFile;
@@ -266,15 +272,29 @@ class TmuxRuntime implements RuntimeDriver {
         handle.id,
       );
       if (spec.raw) {
+        const shell = spec.env.PATH === undefined ? "/bin/sh" : "sh";
+        record.rawLaunch = (this.options.rawLaunch ?? createRawPaneLaunch)(
+          spec.command,
+          () => {
+            if (record.stopping || this.lookup(handle) !== record) {
+              throw new Error("Raw launch cancelled");
+            }
+          },
+          shell,
+        );
+        const rawFile = record.rawLaunch.file;
         command = envFile
-          ? `cd ${shellEscape(spec.cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} sh -c ${shellEscape(spec.command)}`
+          ? `cd ${shellEscape(spec.cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} ${shellEscape(shell)} ${shellEscape(rawFile)}`
           : `cd ${shellEscape(spec.cwd)} && env -i ${Object.entries(spec.env)
               .map(([key, value]) => shellEscape(`${key}=${value}`))
-              .join(" ")} sh -c ${shellEscape(spec.command)}`;
+              .join(" ")} ${shellEscape(shell)} ${shellEscape(rawFile)}`;
       }
       await record.ownership;
+      dispatched = true;
       await this.options.tmux.sendKeys(pane, command);
+      await this.activateRaw(record);
     } catch (error) {
+      await this.finishFailedRawLaunch(record, dispatched, error);
       if (this.lookup(handle) === record && record.output) {
         this.paneBaselines.set(record.pane, record.output.snapshot());
       }
@@ -291,6 +311,39 @@ class TmuxRuntime implements RuntimeDriver {
       throw error;
     }
     return handle;
+  }
+
+  private async activateRaw(record: PaneExecution): Promise<void> {
+    const launch = record.rawLaunch;
+    if (!launch) {
+      return;
+    }
+    const pid = await launch.holder();
+    await this.cleanup.registerPaneCommand(record.ownership, pid, async () => launch.confirm());
+    record.rawHolder = pid;
+    await launch.start();
+  }
+
+  private async finishFailedRawLaunch(
+    record: PaneExecution,
+    dispatched: boolean,
+    error: unknown,
+  ): Promise<void> {
+    const launch = record.rawLaunch;
+    if (launch && !launch.started) {
+      launch.dispose();
+      return;
+    }
+    if (launch && dispatched) {
+      try {
+        await this.stop(record.handle);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Raw launch cleanup incomplete", {
+          cause: cleanupError,
+        });
+      }
+    }
+    launch?.dispose();
   }
 
   public retainPanes(panes: ReadonlySet<string>): void {
@@ -337,6 +390,7 @@ class TmuxRuntime implements RuntimeDriver {
     }
     record.unsubscribeOutput?.();
     record.output?.stop();
+    record.rawLaunch?.dispose();
     this.records.delete(handle.id);
     if (this.current.get(handle.unitId) === handle.id) {
       this.current.delete(handle.unitId);
@@ -401,8 +455,11 @@ class TmuxRuntime implements RuntimeDriver {
     try {
       const deadline = await this.cleanup.stop(
         record.ownership,
-        async () => this.options.tmux.sendCtrlC(record.pane),
+        async () => {
+          /* Unverified foreground receives no terminal input. */
+        },
         async () => this.paneHasCommand(record),
+        () => record.rawLaunch?.release(),
       );
       if (record.output) {
         const drainDeadline = Math.min(Date.now() + 1000, deadline);
@@ -420,6 +477,9 @@ class TmuxRuntime implements RuntimeDriver {
   }
 
   private async paneHasCommand(record: PaneExecution): Promise<boolean> {
+    if (record.rawHolder !== undefined) {
+      return this.cleanup.workload(record.ownership, record.rawHolder);
+    }
     if (
       !(await this.options.tmux.paneExists(record.pane)) ||
       (await this.options.tmux.displayMessage(record.pane, "#{pane_dead}")) === "1"

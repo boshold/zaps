@@ -12,11 +12,15 @@ describe("pane cleanup ownership regressions", () => {
   it("escalates a wrapper-created session after a grace probe expires", async () => {
     vi.useFakeTimers();
     const identities = new Map([[root.pid, root]]);
-    const kill = vi.fn((pid: number) => {
-      identities.delete(pid);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") {
+        identities.delete(pid);
+      }
     });
     const cleanup = new PaneCleanup(async () => [...identities.keys()], {
       getProcessMembers: async () => [],
+      getDescendantTree: async (pid, excluded = []) =>
+        pid === root.pid ? [...identities.keys()].filter((id) => !excluded.includes(id)) : [pid],
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
       kill,
     });
@@ -36,26 +40,37 @@ describe("pane cleanup ownership regressions", () => {
       },
     );
     await vi.advanceTimersByTimeAsync(4999);
-    expect(kill).not.toHaveBeenCalled();
+    expect(kill).not.toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
     await vi.advanceTimersByTimeAsync(101);
     await expect(stopping).resolves.toBe(started + 7000);
-    expect(kill).toHaveBeenCalledExactlyOnceWith(child.pid, "SIGKILL");
+    expect(kill.mock.calls.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+      [child.pid, "SIGKILL"],
+    ]);
     expect(identities.get(root.pid)).toEqual(root);
   });
 
-  it("finds a reparented background member through the verified pane group", async () => {
+  it("finds a reparented background member through its attested owned group", async () => {
     vi.useFakeTimers();
-    const orphan = { ...child, pgid: root.pgid, sid: root.sid };
+    const holder = { ...child, sid: root.sid };
+    const orphan = { ...holder, pid: 125, startTime: "orphan" };
     const identities = new Map([[root.pid, root]]);
-    const kill = vi.fn((pid: number) => {
-      identities.delete(pid);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") {
+        identities.delete(pid);
+      }
     });
     const cleanup = new PaneCleanup(async () => [root.pid], {
+      getDescendantTree: async () => [...identities.keys()],
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
-      getProcessMembers: async () => [...identities.values()],
+      getProcessMembers: async (identity) =>
+        [...identities.values()].filter(
+          (member) => member.pgid === identity.pgid && member.sid === identity.sid,
+        ),
       kill,
     });
     const captured = Promise.resolve(await cleanup.capture(Promise.resolve(root.pid)));
+    identities.set(holder.pid, holder);
+    await cleanup.registerPaneCommand(captured, holder.pid, async () => holder.pid);
     identities.set(orphan.pid, orphan);
     const stopping = cleanup.stop(
       captured,
@@ -66,7 +81,8 @@ describe("pane cleanup ownership regressions", () => {
     );
     await vi.advanceTimersByTimeAsync(5100);
     await stopping;
-    expect(kill).toHaveBeenCalledExactlyOnceWith(orphan.pid, "SIGKILL");
+    expect(kill).toHaveBeenCalledWith(holder.pid, "SIGKILL");
+    expect(kill).toHaveBeenCalledWith(orphan.pid, "SIGKILL");
     expect(identities.get(root.pid)).toEqual(root);
   });
   it("preserves an unchanged prelaunch job while killing the new execution", async () => {
@@ -76,14 +92,21 @@ describe("pane cleanup ownership regressions", () => {
       [root.pid, root],
       [previous.pid, previous],
     ]);
-    const kill = vi.fn((pid: number) => {
-      identities.delete(pid);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") {
+        identities.delete(pid);
+      }
     });
-    const cleanup = new PaneCleanup(async () => [...identities.keys()], {
-      getProcessMembers: async () => [],
-      readProcessIdentity: async (pid) => identities.get(pid) ?? null,
-      kill,
-    });
+    const cleanup = new PaneCleanup(
+      async (pid) => (pid === root.pid ? [...identities.keys()] : [pid]),
+      {
+        getProcessMembers: async () => [],
+        getDescendantTree: async (pid, excluded = []) =>
+          pid === root.pid ? [...identities.keys()].filter((id) => !excluded.includes(id)) : [pid],
+        readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+        kill,
+      },
+    );
     const captured = Promise.resolve(await cleanup.capture(Promise.resolve(root.pid)));
     identities.set(child.pid, child);
     const stopping = cleanup.stop(
@@ -98,13 +121,17 @@ describe("pane cleanup ownership regressions", () => {
     );
     await vi.advanceTimersByTimeAsync(5100);
     await stopping;
-    expect(kill).toHaveBeenCalledExactlyOnceWith(child.pid, "SIGKILL");
+    expect(kill.mock.calls.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+      [child.pid, "SIGKILL"],
+    ]);
     expect(identities.get(previous.pid)).toEqual(previous);
   });
   it("accepts duplicate ownership ACKs but rejects a reused registered group leader", async () => {
     const identities = new Map([[root.pid, root]]);
     const cleanup = new PaneCleanup(async () => [...identities.keys()], {
       getProcessMembers: async () => [],
+      getDescendantTree: async (pid, excluded = []) =>
+        pid === root.pid ? [...identities.keys()].filter((id) => !excluded.includes(id)) : [pid],
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
     });
     const captured = Promise.resolve(await cleanup.capture(Promise.resolve(root.pid)));
@@ -118,6 +145,8 @@ describe("pane cleanup ownership regressions", () => {
     const identities = new Map([[root.pid, root]]);
     const cleanup = new PaneCleanup(async () => [...identities.keys()], {
       getProcessMembers: async () => [],
+      getDescendantTree: async (pid, excluded = []) =>
+        pid === root.pid ? [...identities.keys()].filter((id) => !excluded.includes(id)) : [pid],
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
     });
     const captured = Promise.resolve(await cleanup.capture(Promise.resolve(root.pid)));
@@ -136,10 +165,18 @@ describe("pane cleanup ownership regressions", () => {
     vi.useFakeTimers();
     const identities = new Map([[root.pid, root]]);
     const orphan = { ...child, pid: 125, startTime: "orphan" };
-    const kill = vi.fn((pid: number) => {
-      identities.delete(pid);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGINT" && pid === child.pid) {
+        identities.delete(root.pid);
+        identities.set(orphan.pid, orphan);
+      }
+      if (signal === "SIGKILL") {
+        identities.delete(pid);
+      }
     });
     const cleanup = new PaneCleanup(async () => [...identities.keys()], {
+      getDescendantTree: async (pid, excluded = []) =>
+        pid === root.pid ? [...identities.keys()].filter((id) => !excluded.includes(id)) : [pid],
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
       getProcessMembers: async (identity) =>
         [...identities.values()].filter(
@@ -153,8 +190,7 @@ describe("pane cleanup ownership regressions", () => {
     const stopping = cleanup.stop(
       captured,
       async () => {
-        identities.delete(root.pid);
-        identities.set(orphan.pid, orphan);
+        /* No terminal input. */
       },
       async () => false,
     );

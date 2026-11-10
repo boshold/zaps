@@ -10,6 +10,7 @@ import {
   createProcessInspection,
   sameProcess,
 } from "#src/lib/backend/runtime/process-inspection.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { TmuxRuntime, WrapperRegistry } from "#src/lib/backend/tmux/runtime.js";
 import type { ExecutionEvent } from "#src/lib/backend/types.js";
@@ -53,6 +54,29 @@ function assertLifecycle(
 
 function expectedDiagnostic(mode: string): string {
   return mode === "exit" ? "FATAL" : "FINAL";
+}
+
+async function observeOwnedGroup(
+  inspection: ReturnType<typeof createProcessInspection>,
+  root: number,
+  command: string,
+): Promise<ProcessIdentity[]> {
+  return vi.waitFor(
+    async () => {
+      const pids = await inspection.getDescendantPids(root);
+      const identities = await Promise.all(
+        pids.map(async (pid) => inspection.readProcessIdentity(pid)),
+      );
+      const member = identities.find((identity) => identity?.cmdline === command);
+      if (!member) {
+        throw new Error("Payload not yet started");
+      }
+      const members = await inspection.getProcessMembers(member);
+      expect(members.length).toBeGreaterThan(1);
+      return members;
+    },
+    { timeout: 15_000 },
+  );
 }
 
 describe.skipIf(!hasTmux())("owned pane cleanup regressions", () => {
@@ -118,16 +142,17 @@ describe.skipIf(!hasTmux())("owned pane cleanup regressions", () => {
         unsubscribe = observed.backend.runtime.subscribe((event) =>
           events.push({ event, at: Date.now() }),
         );
+        const inspection = createProcessInspection();
+        const shellPid = await tmux.panePid(view.paneMap.svc);
+        const shell = await inspection.readProcessIdentity(shellPid);
+        const ownedGroup = await observeOwnedGroup(inspection, shellPid, command);
         fs.writeFileSync(observedFile, "observing");
         await vi.waitFor(() => expect(fs.existsSync(pidFile)).toBe(true), { timeout: 15_000 });
-        const inspection = createProcessInspection();
         const pid = z.coerce.number().int().positive().parse(fs.readFileSync(pidFile, "utf8"));
         const child = await inspection.readProcessIdentity(pid);
         if (!immediate) {
           expect(child).not.toBeNull();
         }
-        const shellPid = await tmux.panePid(view.paneMap.svc);
-        const shell = await inspection.readProcessIdentity(shellPid);
         expect(shell).not.toBeNull();
         if (mode === "wrapped") {
           expect(child?.sid).not.toBe(shell?.sid);
@@ -164,6 +189,14 @@ describe.skipIf(!hasTmux())("owned pane cleanup regressions", () => {
         }
         expect(await inspection.getListeningPorts([pid])).not.toContain(port);
         expect(await inspection.readProcessIdentity(pid)).toBeNull();
+        const remainingGroup = await Promise.all(
+          ownedGroup.map(async (member) => inspection.readProcessIdentity(member.pid)),
+        );
+        expect(
+          remainingGroup.every(
+            (current, index) => !current || !sameProcess(ownedGroup[index], current),
+          ),
+        ).toBe(true);
         const remainingShell = await inspection.readProcessIdentity(shellPid);
         expect(shell && remainingShell && sameProcess(shell, remainingShell)).toBe(true);
       } finally {

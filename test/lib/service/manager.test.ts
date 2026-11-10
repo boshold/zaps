@@ -1070,8 +1070,10 @@ describe("stopService", () => {
     const root: ProcessIdentity = { pid: 1000, startTime: "shell", pgid: 1000, sid: 1000 };
     const child: ProcessIdentity = { pid: 2000, startTime: "command", pgid: 2000, sid: 1000 };
     const identities = new Map([[root.pid, root]]);
-    const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
-      identities.delete(pid);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+      if (signal === "SIGKILL") {
+        identities.delete(pid);
+      }
     });
     const deps = createMockDeps({
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
@@ -1103,10 +1105,12 @@ describe("stopService", () => {
       identities.set(child.pid, child);
       const stopped = Promise.allSettled([mgr.stopService("svc")]);
       await vi.advanceTimersByTimeAsync(4999);
-      expect(kill).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
       await vi.advanceTimersByTimeAsync(26);
       expect(await stopped).toEqual([{ status: "fulfilled", value: { noop: false } }]);
-      expect(kill).toHaveBeenCalledExactlyOnceWith(2000, "SIGKILL");
+      expect(kill.mock.calls.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+        [2000, "SIGKILL"],
+      ]);
       expect(identities.get(1000)).toEqual(root);
       expect(mgr.getStatus("svc").state).toBe("stopped");
     } finally {

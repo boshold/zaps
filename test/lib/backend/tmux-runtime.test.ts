@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
+import type { RawPaneLaunch } from "#src/lib/backend/tmux/raw-launch.js";
 import {
   TmuxRuntime,
   WrapperRegistry,
@@ -21,7 +22,10 @@ const spec: ExecutionSpec = {
   raw: false,
   placement: "default",
 };
-function fixture(options: PaneCleanupOptions = { readProcessIdentity: async () => null }) {
+function fixture(
+  options: PaneCleanupOptions = { readProcessIdentity: async () => null },
+  rawLaunch?: (command: string, active: () => void) => RawPaneLaunch,
+) {
   const tmux = tmuxFor("owned-socket");
   const send = vi.spyOn(tmux, "sendKeys").mockResolvedValue();
   vi.spyOn(tmux, "sendCtrlC").mockResolvedValue();
@@ -40,10 +44,48 @@ function fixture(options: PaneCleanupOptions = { readProcessIdentity: async () =
     zapsCommand: "zaps",
     paneFor: () => "%1",
     getDescendantPids: descendants,
+    getDescendantTree: descendants,
     getProcessMembers: async () => [],
     ...options,
+    rawLaunch,
   });
   return { tmux, send, processes, wrappers, runtime, descendants };
+}
+
+function rawFixture() {
+  const root: ProcessIdentity = { pid: 123, pgid: 123, sid: 123, startTime: "root" };
+  const holder: ProcessIdentity = { pid: 124, pgid: 124, sid: 123, startTime: "holder" };
+  const payload: ProcessIdentity = { pid: 125, pgid: 124, sid: 123, startTime: "payload" };
+  const identities = new Map([[root.pid, root]]);
+  const f = fixture(
+    {
+      readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+      getProcessMembers: async (identity) =>
+        [...identities.values()].filter(
+          (member) => member.pgid === identity.pgid && member.sid === identity.sid,
+        ),
+    },
+    () => ({
+      file: "/private/raw-script",
+      started: true,
+      confirm: async () => holder.pid,
+      holder: async () => holder.pid,
+      start: async () => {
+        /* Launch acknowledged. */
+      },
+      release: () => {
+        identities.delete(holder.pid);
+      },
+      dispose: () => {
+        /* No fixture files. */
+      },
+    }),
+  );
+  f.send.mockImplementation(async () => {
+    identities.set(holder.pid, holder);
+    f.descendants.mockResolvedValue([...identities.keys()]);
+  });
+  return { ...f, identities, payload };
 }
 
 describe("TmuxRuntime", () => {
@@ -214,7 +256,7 @@ describe("TmuxRuntime", () => {
     expect(wrappers.resolve({ service: "api", executionId: first.id })).toBeUndefined();
     void wrappers.exited({ service: "api", executionId: first.id, code: 1 });
     await runtime.stop(first);
-    expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1);
+    expect(tmux.sendCtrlC).not.toHaveBeenCalled();
     expect(await runtime.isRunning(second)).toBe(true);
     expect(wrappers.resolve({ service: "other", executionId: second.id })).toBeUndefined();
     expect(wrappers.resolve({ service: "api" })).toBeUndefined();
@@ -226,17 +268,17 @@ describe("TmuxRuntime", () => {
     let acknowledge: () => void = () => {
       throw new Error("not initialized");
     };
-    vi.mocked(tmux.sendCtrlC).mockImplementationOnce(
+    vi.mocked(tmux.capturePane).mockImplementationOnce(
       async () =>
-        new Promise<void>((resolve) => {
-          acknowledge = resolve;
+        new Promise<string>((resolve) => {
+          acknowledge = () => resolve("stopped");
         }),
     );
     const old = await runtime.start(spec);
     const first = runtime.stop(old);
     const second = runtime.stop(old);
     expect(first).toBe(second);
-    await vi.waitFor(() => expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(tmux.capturePane).toHaveBeenCalledTimes(1));
     await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
     acknowledge();
     await first;
@@ -252,8 +294,10 @@ describe("TmuxRuntime", () => {
       const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
       const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
       const identities = new Map([[root.pid, root]]);
-      const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
-        identities.delete(pid);
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+        if (signal === "SIGKILL") {
+          identities.delete(pid);
+        }
       });
       const { runtime, descendants } = fixture({
         readProcessIdentity: async (pid) => identities.get(pid) ?? null,
@@ -264,10 +308,12 @@ describe("TmuxRuntime", () => {
       identities.set(child.pid, child);
       const stopping = runtime.stop(handle);
       await vi.advanceTimersByTimeAsync(4999);
-      expect(kill).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
       await vi.advanceTimersByTimeAsync(26);
       await stopping;
-      expect(kill).toHaveBeenCalledExactlyOnceWith(124, "SIGKILL");
+      expect(kill.mock.calls.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+        [124, "SIGKILL"],
+      ]);
       expect(identities.get(123)).toEqual(root);
       expect(await runtime.isRunning(handle)).toBe(false);
     } finally {
@@ -294,7 +340,7 @@ describe("TmuxRuntime", () => {
       identities.set(124, { ...child, startTime: "reused" });
       await vi.advanceTimersByTimeAsync(2500);
       await stopped;
-      expect(kill).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
       descendants.mockResolvedValue([123]);
       await runtime.stop(handle);
@@ -309,8 +355,10 @@ describe("TmuxRuntime", () => {
       const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
       const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
       const identities = new Map([[root.pid, root]]);
-      const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
-        identities.delete(pid);
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals) => {
+        if (signal === "SIGKILL") {
+          identities.delete(pid);
+        }
       });
       const { runtime, descendants, tmux } = fixture({
         readProcessIdentity: async (pid) => identities.get(pid) ?? null,
@@ -325,7 +373,9 @@ describe("TmuxRuntime", () => {
       identities.delete(123);
       await vi.advanceTimersByTimeAsync(4925);
       await stopping;
-      expect(kill).toHaveBeenCalledExactlyOnceWith(124, "SIGKILL");
+      expect(kill.mock.calls.filter(([, signal]) => signal === "SIGKILL")).toEqual([
+        [124, "SIGKILL"],
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -364,7 +414,7 @@ describe("TmuxRuntime", () => {
       await stopped;
       complete(child);
       await vi.advanceTimersByTimeAsync(0);
-      expect(kill).not.toHaveBeenCalled();
+      expect(kill).not.toHaveBeenCalledWith(expect.any(Number), "SIGKILL");
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
     } finally {
       vi.useRealTimers();
@@ -440,11 +490,12 @@ describe("TmuxRuntime", () => {
   });
 
   it("treats the persistent pane shell as idle for raw commands", async () => {
-    const { runtime, descendants } = fixture();
+    const { runtime, descendants, identities, payload } = rawFixture();
     const handle = await runtime.start({ ...spec, raw: true });
     descendants.mockResolvedValue([123]);
     expect(await runtime.isRunning(handle)).toBe(false);
-    descendants.mockResolvedValue([123, 124]);
+    identities.set(payload.pid, payload);
+    descendants.mockResolvedValue([123, 124, 125]);
     expect(await runtime.isRunning(handle)).toBe(true);
   });
 
@@ -609,11 +660,11 @@ describe("TmuxRuntime", () => {
   });
 
   it("sends raw commands with quoted cwd and environment", async () => {
-    const { runtime, send, wrappers } = fixture();
+    const { runtime, send, wrappers } = rawFixture();
     const handle = await runtime.start({ ...spec, raw: true, cwd: "/project with spaces" });
     expect(send).toHaveBeenCalledWith(
       "%1",
-      "cd '/project with spaces' && env -i 'KEY=value' sh -c 'echo hello'",
+      "cd '/project with spaces' && env -i 'KEY=value' '/bin/sh' '/private/raw-script'",
     );
     expect(wrappers.resolve({ service: "api", executionId: handle.id })).toBeUndefined();
   });
