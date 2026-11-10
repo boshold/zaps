@@ -142,14 +142,18 @@ async function fireHook(
 }
 
 /**
- * Drive a detached service's `onOutput` hook per non-empty line. Errors are
+ * Drive a service's `onOutput` hook per non-empty line. Errors are
  * swallowed — `onOutput` must never crash the service (E4).
  */
-async function fireDetachedOutput(
+async function fireServiceOutput(
   onOutput: (line: string) => void | Promise<void>,
   lines: string[],
+  isCurrent: () => boolean,
 ): Promise<void> {
   for (const line of lines) {
+    if (!isCurrent()) {
+      return;
+    }
     if (line.trim() !== "") {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential per-line hook
@@ -192,6 +196,15 @@ export class ServiceManager extends EventEmitter {
   private readonly wrapperIds = new Map<string, string>();
   private readonly outputSubscriptions = new Map<string, () => void>();
   private readonly monitorGenerations = new Map<string, number>();
+  private readonly outputQueues = new Map<
+    string,
+    {
+      unitId: string;
+      generation: number;
+      memberGeneration: number;
+      pending: Promise<void>;
+    }
+  >();
   private readonly runtime: RuntimeDriver;
   private readonly executions = new Map<string, { generation: number; handle?: ExecutionHandle }>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
@@ -756,7 +769,7 @@ export class ServiceManager extends EventEmitter {
       for (const member of members) {
         const state = this.statuses.get(member)?.state;
         if (state === "starting" || state === "ready") {
-          this.handleDetachedLines(member, [...event.lines]);
+          this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
         }
       }
     } else if (event.kind === "exit" || this.statuses.get(event.unitId)?.state === "starting") {
@@ -814,17 +827,39 @@ export class ServiceManager extends EventEmitter {
     }
   }
 
-  /**
-   * Append detached child output to the session log path (via `logLines`) and
-   * drive the `onOutput` hook — the detached analogue of the pane LogMonitor and
-   * `monitorOutput` (E4).
-   */
-  private handleDetachedLines(name: string, lines: string[]): void {
+  private handleRuntimeLines(
+    name: string,
+    lines: string[],
+    unitId: string,
+    generation: number,
+  ): void {
     this.emit("logLines", name, lines);
     const onOutput = this.config.project.services[name]?.onOutput;
-    if (onOutput) {
-      void fireDetachedOutput(onOutput, lines);
+    if (!onOutput) {
+      return;
     }
+    const memberGeneration = this.monitorGenerations.get(name) ?? 0;
+    const previous = this.outputQueues.get(name);
+    const sameGeneration =
+      previous?.unitId === unitId &&
+      previous.generation === generation &&
+      previous.memberGeneration === memberGeneration;
+    const isCurrent = (): boolean => {
+      const state = this.statuses.get(name)?.state;
+      return (
+        this.monitorGenerations.get(unitId) === generation &&
+        (this.monitorGenerations.get(name) ?? 0) === memberGeneration &&
+        (state === "starting" || state === "ready")
+      );
+    };
+    const pending = sameGeneration ? previous.pending : Promise.resolve();
+    this.outputQueues.set(name, {
+      unitId,
+      generation,
+      memberGeneration,
+      // eslint-disable-next-line promise/prefer-await-to-then -- serialize runtime output batches
+      pending: pending.then(async () => fireServiceOutput(onOutput, lines, isCurrent)),
+    });
   }
 
   /**

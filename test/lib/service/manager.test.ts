@@ -4217,6 +4217,86 @@ function neutralRuntime(
 }
 
 describe("neutral runtime launch", () => {
+  it("serializes async output hooks across runtime batches", async () => {
+    const lines: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const manager = new ServiceManager(
+      makeConfig({
+        svc: {
+          start: "serve",
+          onOutput: async (line) => {
+            lines.push(line);
+            if (line === "first") {
+              await gate;
+              throw new Error("isolated hook failure");
+            }
+          },
+        },
+      }),
+      {},
+      deps,
+      "neutral-session",
+    );
+    await manager.startService("svc");
+    runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["first", "second"] });
+    runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["third"] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual(["first"]);
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual(["first", "second", "third"]);
+    expect(manager.getStatus("svc").state).toBe("ready");
+    manager.abortStartAll();
+  });
+
+  it("discards old queued hooks while a replacement generation proceeds", async () => {
+    const lines: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const manager = new ServiceManager(
+      makeConfig({
+        svc: {
+          start: "serve",
+          onOutput: async (line) => {
+            lines.push(line);
+            if (line === "first") {
+              await gate;
+            }
+          },
+        },
+      }),
+      makePaneMap(["svc"]),
+      deps,
+      "neutral-session",
+    );
+    await manager.startService("svc");
+    runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["first", "old second"] });
+    runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["old third"] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual(["first"]);
+    await manager.stopService("svc");
+    await manager.startService("svc");
+    expect(runtime.specs[1]?.generation).toBe(3);
+    runtime.emit({ kind: "output", unitId: "svc", generation: 3, lines: ["replacement"] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual(["first", "replacement"]);
+    release?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lines).toEqual(["first", "replacement"]);
+    manager.abortStartAll();
+  });
+
   it("routes matching wrapper exits through the compatibility runtime during launch", async () => {
     const deps = createMockDeps();
     let executionId = "";
