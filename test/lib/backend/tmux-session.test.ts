@@ -234,8 +234,12 @@ describe("tmux session backend", () => {
   it("uses explicit client and pane targets", async () => {
     const { tmux } = fixture(true);
     const terminal = new TmuxTerminalPrimitives(tmux);
-    await terminal.popup({ client: "/dev/pts/8" }, { command: "picker" });
-    expect(tmux.displayPopup).toHaveBeenCalledWith({ command: "picker", client: "/dev/pts/8" });
+    await terminal.popup({ client: "/dev/pts/8", pane: "%1" }, { command: "picker" });
+    expect(tmux.displayPopup).toHaveBeenCalledWith({
+      command: "picker",
+      client: "/dev/pts/8",
+      pane: "%1",
+    });
     expect(await terminal.capture("%4")).toBe("output");
     expect(tmux.capturePane).toHaveBeenCalledWith("%4", 100);
   });

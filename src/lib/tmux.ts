@@ -1,8 +1,12 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { z } from "zod";
+
 import { getEnv } from "./env.js";
+import { shellEscape } from "./service/env.js";
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -58,6 +62,7 @@ function exactWindowTarget(sessionName: string): string {
 
 interface DisplayPopupOptions {
   client?: string;
+  pane?: string;
   cwd?: string;
   command: string;
   title?: string;
@@ -78,7 +83,7 @@ function createTmux(resolveSocket: () => string | null) {
     return socket ? ["-L", socket] : [];
   }
 
-  async function run(args: string[]): Promise<string> {
+  async function run(args: string[], raw = false): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
@@ -91,12 +96,41 @@ function createTmux(resolveSocket: () => string | null) {
       proc.on("error", reject);
       proc.on("close", (code: number | null) => {
         if (code === 0) {
-          resolve(stdout.trim());
+          resolve(raw ? stdout : stdout.trim());
         } else {
           reject(new Error(`tmux ${args.join(" ")} failed: ${stderr.trim()}`));
         }
       });
     });
+  }
+
+  async function listClients() {
+    const out = await run([
+      "list-clients",
+      "-F",
+      "#{client_name}\t#{client_pid}\t#{session_id}\t#{session_name}\t#{window_id}",
+    ]);
+    const schema = z.tuple([
+      z.string().min(1),
+      z.coerce.number().int().positive(),
+      z.string().min(1),
+      z.string().min(1),
+      z.string().min(1),
+    ]);
+    return out
+      ? out.split("\n").map((line) => {
+          const [name, pid, sessionId, sessionName, windowId] = schema.parse(line.split("\t"));
+          return { name, pid, sessionId, sessionName, windowId };
+        })
+      : [];
+  }
+
+  async function closePopup(client: string): Promise<void> {
+    await run(["display-popup", "-C", "-c", client]);
+  }
+
+  async function capturePaneHistory(target: string): Promise<string> {
+    return run(["capture-pane", "-t", target, "-p", "-N", "-S", "-"], true);
   }
 
   async function currentPaneId(): Promise<string> {
@@ -414,6 +448,9 @@ function createTmux(resolveSocket: () => string | null) {
       if (opts.client) {
         args.push("-c", opts.client);
       }
+      if (opts.pane) {
+        args.push("-t", opts.pane);
+      }
       if (opts.cwd) {
         args.push("-d", opts.cwd);
       }
@@ -447,19 +484,29 @@ function createTmux(resolveSocket: () => string | null) {
     });
   }
 
+  // P05-T04 removes this legacy UI bridge; owned editors use editOperationCapture.
   async function editPaneCapture(target: string, title: string): Promise<void> {
     const editor = getEnv("EDITOR") || "vim";
-    const template = path.join(os.tmpdir(), "zaps-capture-XXXXXX");
-    await displayPopup({
-      command: `sh -c 'f=$(mktemp ${template}) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
-      title,
-      width: "90%",
-      height: "90%",
-    });
+    const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-capture-"));
+    const file = path.join(dir, "output");
+    try {
+      await writeFile(file, await capturePaneHistory(target), "utf8");
+      await displayPopup({
+        command: `sh -c ${shellEscape(`${editor} ${shellEscape(file)}`)}`,
+        title,
+        width: "90%",
+        height: "90%",
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 
   return {
     getSocket: resolveSocket,
+    listClients,
+    closePopup,
+    capturePaneHistory,
     capturePane,
     currentPaneId,
     currentSession,
@@ -516,6 +563,9 @@ export type { DisplayPopupOptions, PaneInfo, SplitPaneOptions, TmuxHandle };
 export { exactWindowTarget, tmuxFor };
 export const {
   getSocket,
+  listClients,
+  closePopup,
+  capturePaneHistory,
   capturePane,
   currentPaneId,
   currentSession,

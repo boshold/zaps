@@ -2,6 +2,7 @@ import type { DisplayPopupOptions, TmuxHandle } from "#src/lib/tmux.js";
 
 interface PopupTarget {
   readonly client: string;
+  readonly pane: string;
 }
 
 class TmuxTerminalPrimitives {
@@ -13,12 +14,12 @@ class TmuxTerminalPrimitives {
 
   public async popup(
     target: PopupTarget,
-    options: Omit<DisplayPopupOptions, "client">,
+    options: Omit<DisplayPopupOptions, "client" | "pane">,
   ): Promise<void> {
-    if (!target.client) {
+    if (!target.client || !target.pane) {
       throw new Error("Popup requires a resolved tmux client");
     }
-    await this.tmux.displayPopup({ ...options, client: target.client });
+    await this.tmux.displayPopup({ ...options, client: target.client, pane: target.pane });
   }
 
   public async capture(pane: string, lines = 100): Promise<string> {

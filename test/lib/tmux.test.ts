@@ -456,29 +456,22 @@ describe("renameWindow", () => {
 });
 
 describe("editPaneCapture", () => {
-  it("calls displayPopup with capture command using vim by default", async () => {
-    mockSpawn.mockReturnValue(createSilentMockProc(0));
+  it("captures full raw history through the bound handle before opening the editor", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc("  history \n\n"));
+    mockSpawn.mockImplementationOnce(() => createSilentMockProc(0));
     await editPaneCapture("%1", "Capture");
-    expect(mockSpawn).toHaveBeenCalledWith(
-      "tmux",
-      expect.arrayContaining([
-        "display-popup",
-        "-EE",
-        "-w",
-        "90%",
-        "-h",
-        "90%",
-        "-T",
-        "Capture",
-        "--",
-        expect.stringContaining("tmux capture-pane -t %1"),
-      ]),
-      { stdio: "ignore" },
-    );
-    // Should use vim or EDITOR
-    const args = mockSpawn.mock.calls[0][1] as string[];
-    const cmd = args[args.length - 1];
-    expect(cmd).toMatch(/vim|nano|EDITOR/);
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "capture-pane",
+      "-t",
+      "%1",
+      "-p",
+      "-N",
+      "-S",
+      "-",
+    ]);
+    const args = mockSpawn.mock.calls[1]?.[1];
+    expect(args).toEqual(expect.arrayContaining(["display-popup", "-T", "Capture"]));
+    expect(args?.at(-1)).not.toContain("tmux capture-pane");
   });
 });
 
@@ -740,6 +733,63 @@ describe("tmuxFor", () => {
       "-L first kill-pane -t %1",
       "-L second kill-pane -t %2",
       "kill-pane -t %3",
+    ]);
+  });
+});
+
+describe("owned popup primitives", () => {
+  it("targets both client and pane on the bound socket", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc());
+    await tmuxFor("owned").displayPopup({ client: "/dev/pts/4", pane: "%2", command: "picker" });
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-L",
+      "owned",
+      "display-popup",
+      "-EE",
+      "-c",
+      "/dev/pts/4",
+      "-t",
+      "%2",
+      "--",
+      "picker",
+    ]);
+  });
+
+  it("closes only the explicitly targeted client popup", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await tmuxFor("owned").closePopup("/dev/pts/4");
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-L",
+      "owned",
+      "display-popup",
+      "-C",
+      "-c",
+      "/dev/pts/4",
+    ]);
+  });
+
+  it("parses client identity and rejects malformed rows", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc("/dev/pts/4\t42\t$1\towned\t@2\n"));
+    expect(await tmuxFor("owned").listClients()).toEqual([
+      { name: "/dev/pts/4", pid: 42, sessionId: "$1", sessionName: "owned", windowId: "@2" },
+    ]);
+    mockSpawn.mockReturnValueOnce(createMockProc("malformed"));
+    await expect(tmuxFor("owned").listClients()).rejects.toThrow();
+  });
+
+  it("preserves raw history whitespace and requests all lines", async () => {
+    mockSpawn.mockReturnValue(createMockProc("  history  \n\n"));
+    expect(await tmuxFor("owned").capturePaneHistory("%2")).toBe("  history  \n\n");
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-L",
+      "owned",
+      "capture-pane",
+      "-t",
+      "%2",
+      "-p",
+      "-N",
+      "-S",
+      "-",
     ]);
   });
 });
