@@ -674,6 +674,70 @@ describe("DaemonServer", () => {
       },
     );
 
+    it.each(["detach", "close", "error", "resubscribe"])(
+      "never lets an old subscribe ACK authorize a replacement after %s",
+      async (removal) => {
+        await server.start("/tmp/test.sock");
+        const session = await server.create({
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          tmuxSession: "main",
+          originPane: "%0",
+        });
+        session.config.unavailableServices = new Map();
+        const { default: net } = await import("node:net");
+        const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+        const listener = z
+          .custom<(socket: Socket) => void>((value) => typeof value === "function")
+          .parse(mockServer._connectionHandler);
+        const socket = net.createConnection("/tmp/test.sock");
+        const callbacks: (() => void)[] = [];
+        const responses: string[] = [];
+        // eslint-disable-next-line prefer-await-to-callbacks -- test controls socket flush
+        const write = vi.fn((line: string, flushed?: (failure?: Error | null) => void) => {
+          responses.push(line);
+          if (flushed) {
+            callbacks.push(() => flushed());
+          }
+          return true;
+        });
+        Object.assign(socket, { writable: true, destroyed: false, write });
+        listener(socket);
+        const request = async (method: string, params?: unknown) => {
+          const count = responses.length + 1;
+          socket.emit(
+            "data",
+            Buffer.from(
+              `${JSON.stringify({ id: String(count), method, session: session.id, params })}\n`,
+            ),
+          );
+          await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(count));
+          return responses[count - 1];
+        };
+        await request("subscribe", { events: [] });
+        const [acknowledgeOld] = callbacks;
+        if (removal === "detach") {
+          await request("session.detach");
+        } else if (removal !== "resubscribe") {
+          socket.emit(removal, new Error("connection lost"));
+        }
+        await request("subscribe", { events: [] });
+        const acknowledgeReplacement = callbacks.at(-1);
+        const early = await request("session.attach", { ui: true });
+        expect(early).toContain("invalid_request");
+        acknowledgeOld();
+        const stale = await request("session.attach", { ui: true });
+        expect(stale).toContain("invalid_request");
+        expect(session.getUiBinding(socket)).toBeUndefined();
+        acknowledgeReplacement?.();
+        const accepted = await request("session.attach", { ui: true });
+        expect(accepted).not.toContain("error");
+        expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+        session.removeSubscriber(socket);
+        server.stop();
+      },
+    );
+
     it("handles daemon.ping", async () => {
       await server.start("/tmp/test.sock");
       const netModule = await import("node:net");

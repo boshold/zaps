@@ -136,6 +136,7 @@ export class Session {
   public readonly originPane: string;
   public readonly subscribers = new Set<net.Socket>();
   private readonly acknowledgedSubscribers = new Set<net.Socket>();
+  private readonly subscriptionRegistrations = new Map<net.Socket, symbol>();
   private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
   public readonly taskExecution: TaskExecutionService;
@@ -472,6 +473,7 @@ export class Session {
     this.taskExecution.close();
     this.uiBindings.clear();
     this.acknowledgedSubscribers.clear();
+    this.subscriptionRegistrations.clear();
     await this.withOpLock(async () => {
       if (this.destroyed) {
         if (this.destroyFailure) {
@@ -518,16 +520,28 @@ export class Session {
    * Register a subscriber socket and arm the staleness poll on the 0→1 edge.
    */
   public addSubscriber(socket: net.Socket): void {
+    this.acknowledgedSubscribers.delete(socket);
+    this.uiBindings.delete(socket);
+    this.subscriptionRegistrations.set(socket, Symbol());
     this.subscribers.add(socket);
     if (!this.staleTimer && !this.destroyed) {
       this.startStalePoll();
     }
   }
 
-  public acknowledgeSubscriber(socket: net.Socket): void {
-    if (this.subscribers.has(socket) && !socket.destroyed && this.taskExecution.accepting) {
-      this.acknowledgedSubscribers.add(socket);
-    }
+  public subscriberAcknowledgement(socket: net.Socket): () => void {
+    const registration = this.subscriptionRegistrations.get(socket);
+    return () => {
+      if (
+        registration !== undefined &&
+        this.subscriptionRegistrations.get(socket) === registration &&
+        this.subscribers.has(socket) &&
+        !socket.destroyed &&
+        this.taskExecution.accepting
+      ) {
+        this.acknowledgedSubscribers.add(socket);
+      }
+    };
   }
 
   public bindUi(socket: net.Socket): void {
@@ -548,6 +562,7 @@ export class Session {
   public removeSubscriber(socket: net.Socket): void {
     this.uiBindings.delete(socket);
     this.acknowledgedSubscribers.delete(socket);
+    this.subscriptionRegistrations.delete(socket);
     this.subscribers.delete(socket);
     if (this.subscribers.size === 0) {
       this.stopStalePoll();

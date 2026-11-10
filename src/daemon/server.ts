@@ -488,19 +488,26 @@ class DaemonServer implements SessionStore {
       return;
     }
 
-    const response = await this.routeRequest(req, socket);
+    const subscription: { acknowledge?: () => void } = {};
+    const response = await this.routeRequest(req, socket, (acknowledge) => {
+      subscription.acknowledge = acknowledge;
+    });
     if (socket.destroyed || !socket.writable) {
       return;
     }
     // eslint-disable-next-line prefer-await-to-callbacks -- acknowledgement follows socket flush
     socket.write(`${JSON.stringify(response)}\n`, (error) => {
       if (!error && req.method === "subscribe" && response.error === undefined && req.session) {
-        this.get(req.session)?.acknowledgeSubscriber(socket);
+        subscription.acknowledge?.();
       }
     });
   }
 
-  private async routeRequest(req: IpcRequest, socket: net.Socket): Promise<IpcResponse> {
+  private async routeRequest(
+    req: IpcRequest,
+    socket: net.Socket,
+    onSubscription: (acknowledge: () => void) => void,
+  ): Promise<IpcResponse> {
     // Daemon-level handlers
     const dHandler = daemonHandlers[req.method];
     if (dHandler) {
@@ -531,7 +538,13 @@ class DaemonServer implements SessionStore {
           }
           session.updateContext(parseRequestContext(req.context).env);
         }
-        return await session.runWithContext(async () => sHandler(req, this, socket));
+        return await session.runWithContext(async () => {
+          const response = sHandler(req, this, socket);
+          if (req.method === "subscribe") {
+            onSubscription(session.subscriberAcknowledgement(socket));
+          }
+          return response;
+        });
       } catch (error) {
         return ipcErr(req.id, error instanceof Error ? error.message : String(error));
       }

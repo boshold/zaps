@@ -172,7 +172,7 @@ describe("Session", () => {
       session.addSubscriber(socket);
       const response2 = await attach();
       expect(response2.error).toBe("invalid_request");
-      session.acknowledgeSubscriber(socket);
+      session.subscriberAcknowledgement(socket)();
       const response3 = await attach(session, otherSocket);
       expect(response3.error).toBe("invalid_request");
       const response4 = await attach(other);
@@ -183,7 +183,7 @@ describe("Session", () => {
       other.addSubscriber(socket);
       const response6 = await attach(other);
       expect(response6.error).toBe("invalid_request");
-      other.acknowledgeSubscriber(socket);
+      other.subscriberAcknowledgement(socket)();
       const response7 = await attach(other);
       expect(response7.error).toBeUndefined();
       await sessionHandlers["session.detach"](
@@ -203,12 +203,12 @@ describe("Session", () => {
     it("rejects closed sockets and requires fresh ACKs after removal", () => {
       const socket = new Socket();
       session.addSubscriber(socket);
-      session.acknowledgeSubscriber(socket);
+      session.subscriberAcknowledgement(socket)();
       session.bindUi(socket);
       session.removeSubscriber(socket);
       session.addSubscriber(socket);
       expect(() => session.bindUi(socket)).toThrow("invalid_request");
-      session.acknowledgeSubscriber(socket);
+      session.subscriberAcknowledgement(socket)();
       session.bindUi(socket);
       socket.destroy();
       expect(() => session.bindUi(socket)).toThrow("invalid_request");
@@ -220,7 +220,7 @@ describe("Session", () => {
     it("closes binding admission immediately when destroy begins", async () => {
       const socket = new Socket();
       session.addSubscriber(socket);
-      session.acknowledgeSubscriber(socket);
+      session.subscriberAcknowledgement(socket)();
       session.bindUi(socket);
       const destruction = session.destroy();
       expect(session.getUiBinding(socket)).toBeUndefined();
