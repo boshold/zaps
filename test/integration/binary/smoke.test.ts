@@ -5,8 +5,9 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { killSession, newSession, sendKeys } from "#src/lib/tmux.js";
+import { killSession, newSession, sendKeys, setEnv } from "#src/lib/tmux.js";
 
+import { runZaps } from "../helpers/managed.js";
 import { reservePort } from "../helpers/port.js";
 import { hasBinary, hasTmux, isCI } from "../helpers/skip.js";
 
@@ -54,8 +55,13 @@ async function pollUntil(
 describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 90_000 }, () => {
   let sessionName: string;
   let tmpDir: string;
+  let runtimeDir: string;
 
   afterEach(async () => {
+    if (runtimeDir) {
+      // The test owns this daemon; stopping it destroys the zaps session too.
+      await runZaps(["daemon", "stop"], tmpDir, runtimeDir);
+    }
     if (sessionName) {
       try {
         await killSession(sessionName);
@@ -72,6 +78,9 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 9
   it("starts services and TUI is visible", async () => {
     cleanStaleConfigs();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-smoke-"));
+    // Private daemon: never register sessions on the developer's daemon.
+    runtimeDir = path.join(tmpDir, "run");
+    fs.mkdirSync(runtimeDir);
     const { port, release } = await reservePort();
 
     // Write a .zaps.mts config (discovery supports .mts/.ts only)
@@ -92,12 +101,14 @@ describe.skipIf(!hasBinary() || !hasTmux() || isCI)("binary smoke", { timeout: 9
     // Create a tmux session and launch zaps inside it
     sessionName = `zaps-smoke-${Date.now()}`;
     const initialPane = await newSession(sessionName);
+    // Service panes inherit the session env, so `exec-service` reaches the same daemon.
+    await setEnv(sessionName, "XDG_RUNTIME_DIR", runtimeDir);
 
     // Release the reserved port just before launching zaps (minimizes race window)
     await release();
 
     // Need to run inside tmux, so zaps dev is run from within this session
-    await sendKeys(initialPane, `cd ${tmpDir} && ${binaryPath} up`);
+    await sendKeys(initialPane, `cd ${tmpDir} && XDG_RUNTIME_DIR=${runtimeDir} ${binaryPath} up`);
 
     // Let tmux process the command before polling
     await sleep(2000);

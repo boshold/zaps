@@ -131,8 +131,10 @@ describe.skipIf(!hasTmux())("session.create dedupe / liveness / staleness", () =
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
 
     const events: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["session.*"], (event) => {
-      events.push(event);
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["session.*"], {
+      onEvent: (event) => {
+        events.push(event);
+      },
     });
     // Confirm the subscription is live (and the staleness poll is armed).
     await ipcRequest(daemon.socketPath, "daemon.ping");

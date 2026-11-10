@@ -5,10 +5,11 @@ conventions we follow.
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org) >= 22
+- [Node.js](https://nodejs.org) >= 22.22 for development
 - [pnpm](https://pnpm.io) (the repo pins a version via `packageManager`)
-- [Bun](https://bun.sh) — used to build the native binary
-- [tmux](https://github.com/tmux/tmux/wiki) >= 3.5 — ZAPS runs inside tmux (it starts its own session when you aren't in one)
+- [Bun](https://bun.sh), pinned in `.bun-version`, for native builds
+- [tmux](https://github.com/tmux/tmux/wiki) >= 3.5 for service orchestration and integration tests
+- [Docker](https://www.docker.com/) with Compose >= 2.21 for Docker integration tests
 
 ## Setup
 
@@ -38,6 +39,10 @@ pnpm check          # typecheck + lint:fix + build + build:native + test:coverag
 ```
 
 Coverage has a global gate of 85% (lines/functions/statements/branches).
+Run `pnpm test:integration` separately after building the native binary.
+Each integration run uses a private tmux socket directory.
+CI builds and releases on Node 26, tests Node 22 and 26, and runs integration tests
+on tmux 3.5a and 3.8.
 
 ## Pull requests
 
@@ -55,11 +60,12 @@ service manager, TUI, config, MCP) and key patterns.
 
 ## Releasing
 
-Maintainers release from the Actions tab: **Release → Run workflow** on `main`, pick
+Maintainers release from the Actions tab: **Release > Run workflow** on `main`, pick
 `patch`, `minor` or `major`. The run tests everything, writes the next version
 into `package.json`, pushes a `chore(release): vX.Y.Z` commit with its tag,
 publishes `@bosdev/zaps` and the platform packages to npm and attaches the
-binaries and `SHA256SUMS` to the GitHub release. `dry-run` builds and packs
+binaries and `SHA256SUMS` before making the GitHub release public.
+`dry-run` builds and packs
 without pushing or publishing. Don't push version tags or edit the version by hand.
 
 ## Reporting issues

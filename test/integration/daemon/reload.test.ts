@@ -112,8 +112,10 @@ describe.skipIf(!hasTmux())("config hot-reload", () => {
     await waitForServiceState(daemon.socketPath, sid, "web", "ready");
 
     const allEvents: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["session.configReloaded"], (event) => {
-      allEvents.push(event);
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["session.configReloaded"], {
+      onEvent: (event) => {
+        allEvents.push(event);
+      },
     });
 
     // Confirm subscription is live

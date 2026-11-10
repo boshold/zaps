@@ -1,5 +1,13 @@
 /* eslint-disable class-methods-use-this -- Mock classes mimic SDK interface */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { sessionId } from "../../src/daemon/session.js";
+import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
+import { errorsParamsSchema, issuesParamsSchema } from "../../src/lib/sentra/schemas.js";
 
 // --- IPC mocks (same pattern as daemon-client tests) ---
 
@@ -88,6 +96,13 @@ const SESSION = "sess1";
 let listResponse: unknown;
 let methodResponder: () => Promise<unknown>;
 
+const mockEnsureDaemon = vi.fn<() => Promise<string>>();
+
+function subscribeHandlers(): SubscribeHandlers {
+  const [call] = mockIpcSubscribe.mock.calls;
+  return call[3];
+}
+
 function setSessionList(result: unknown): void {
   listResponse = result;
 }
@@ -107,6 +122,7 @@ describe("startMcpServer", () => {
     mockIpcSubscribe.mockReset();
     mockConnect.mockClear();
     mockSendResourceUpdated.mockClear();
+    mockEnsureDaemon.mockReset();
     mcpServerCtorArgs = [];
     registeredTools.clear();
     registeredResources.clear();
@@ -117,7 +133,7 @@ describe("startMcpServer", () => {
       method === "session.list" ? listResponse : methodResponder(),
     );
 
-    await startMcpServer(SOCK);
+    await startMcpServer(SOCK, undefined, { ensureDaemon: mockEnsureDaemon });
   });
 
   afterEach(() => {
@@ -134,8 +150,8 @@ describe("startMcpServer", () => {
       ]);
     });
 
-    it("registers all 11 tools", () => {
-      expect(registeredTools.size).toBe(11);
+    it("registers all 14 tools", () => {
+      expect(registeredTools.size).toBe(14);
       const expected = [
         "services_list",
         "services_details",
@@ -148,6 +164,9 @@ describe("startMcpServer", () => {
         "logs_snapshot",
         "tasks_list",
         "tasks_run",
+        "sentra_errors",
+        "sentra_issues",
+        "sentra_show",
       ];
       for (const name of expected) {
         expect(registeredTools.has(name)).toBe(true);
@@ -617,22 +636,28 @@ describe("startMcpServer", () => {
     });
 
     it("ipcSubscribe log.lines event triggers sendResourceUpdated", () => {
-      expect(mockIpcSubscribe).toHaveBeenCalledWith(
-        SOCK,
-        SESSION,
-        ["log.lines"],
-        expect.any(Function),
-      );
+      expect(mockIpcSubscribe).toHaveBeenCalledWith(SOCK, SESSION, ["log.lines"], {
+        onEvent: expect.any(Function),
+      });
 
-      const eventHandler = mockIpcSubscribe.mock.calls[0][3] as (event: unknown) => void;
-      eventHandler({ event: "log.lines", data: { service: "api" } });
+      const eventHandler = subscribeHandlers().onEvent;
+      eventHandler({
+        session: SESSION,
+        event: "log.lines",
+        data: { service: "api", lines: ["x"] },
+      });
 
       expect(mockSendResourceUpdated).toHaveBeenCalledWith({ uri: "zaps://logs/api" });
     });
 
+    it("ipcSubscribe ignores malformed log.lines payloads", () => {
+      subscribeHandlers().onEvent({ session: SESSION, event: "log.lines", data: { lines: [] } });
+      expect(mockSendResourceUpdated).not.toHaveBeenCalled();
+    });
+
     it("ipcSubscribe ignores non-log.lines events", () => {
-      const eventHandler = mockIpcSubscribe.mock.calls[0][3] as (event: unknown) => void;
-      eventHandler({ event: "service.stateChange", data: { name: "api" } });
+      const eventHandler = subscribeHandlers().onEvent;
+      eventHandler({ session: SESSION, event: "service.stateChange", data: { name: "api" } });
 
       expect(mockSendResourceUpdated).not.toHaveBeenCalled();
     });
@@ -661,6 +686,12 @@ describe("startMcpServer", () => {
       );
     });
 
+    it("request() wraps non-Error throws", async () => {
+      setMethodError("plain string");
+
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow("plain string");
+    });
+
     it("request() re-throws unknown errors", async () => {
       setMethodError(new Error("unexpected"));
 
@@ -684,6 +715,229 @@ describe("startMcpServer", () => {
         content: [{ type: "text", text: "Error: Stream broke" }],
         isError: true,
       });
+    });
+  });
+
+  // --- Sentra tools ---
+
+  describe("sentra tools", () => {
+    const ROW = {
+      id: "01928f3a-6c1e-7b2a-9f4d-2c8e1a7b5d10",
+      receivedAt: "2026-10-03T14:02:11.204Z",
+      service: "web",
+      kind: "error",
+      level: "error",
+      title: "TypeError: boom",
+      location: "a.ts:1",
+      issueId: "i1",
+    };
+
+    function sentraCall(method: string): unknown[] | undefined {
+      return mockIpcRequest.mock.calls.findLast(([, name]) => name === method);
+    }
+
+    it("are read-only and describe the time-window pattern", () => {
+      for (const name of ["sentra_errors", "sentra_issues", "sentra_show"]) {
+        const meta = registeredTools.get(name)!.meta as {
+          annotations: unknown;
+          description: string;
+        };
+        expect(meta.annotations).toEqual({ readOnlyHint: true });
+        if (name !== "sentra_show") {
+          expect(meta.description).toContain(
+            "Use `from` = ISO timestamp taken before reproducing/testing.",
+          );
+        }
+      }
+    });
+
+    it.each([
+      ["sentra_errors", errorsParamsSchema],
+      ["sentra_issues", issuesParamsSchema],
+    ])("%s accepts every daemon filter", (name, schema) => {
+      const meta = registeredTools.get(name)!.meta as { inputSchema: Record<string, unknown> };
+      const daemonKeys = Object.keys(schema.shape).filter((key) => key !== "sessionId");
+      expect(Object.keys(meta.inputSchema).toSorted()).toEqual(daemonKeys.toSorted());
+    });
+
+    it("sentra_errors returns TOON with hasMore and passes sessionId as a param", async () => {
+      setMethodResult({ id: "r1", result: { errors: [ROW], hasMore: true } });
+      const res = await registeredTools.get("sentra_errors")!.cb({ since: "10m", limit: 1 });
+      expect(res).toEqual({
+        content: [
+          {
+            type: "text",
+            text: expect.stringMatching(
+              /^errors\[1\]\{id,receivedAt,service,kind,level,title,location,issueId\}:\n.*TypeError: boom.*\nhasMore: true$/s,
+            ),
+          },
+        ],
+      });
+      expect(JSON.stringify(res)).not.toContain("next:");
+      expect(sentraCall("sentra.errors")).toEqual([
+        SOCK,
+        "sentra.errors",
+        { since: "10m", limit: 1, sessionId: SESSION },
+        30_000,
+        undefined,
+      ]);
+    });
+
+    it("sentra_issues returns TOON", async () => {
+      setMethodResult({ id: "r1", result: { issues: [], hasMore: false } });
+      const res = await registeredTools.get("sentra_issues")!.cb({ minLevel: "error" });
+      expect(res).toEqual({ content: [{ type: "text", text: "issues[0]:\nhasMore: false" }] });
+      expect(sentraCall("sentra.issues")?.[2]).toEqual({ minLevel: "error", sessionId: SESSION });
+    });
+
+    it("sentra_show returns markdown", async () => {
+      setMethodResult({
+        id: "r1",
+        result: { type: "item", item: { id: "x" }, markdown: "# TypeError: boom" },
+      });
+      const res = await registeredTools.get("sentra_show")!.cb({ id: "x" });
+      expect(res).toEqual({ content: [{ type: "text", text: "# TypeError: boom" }] });
+    });
+
+    it.each([
+      [
+        'sentra_disabled: Sentra is not enabled for this project. Add a "sentra" block to the ZAPS config.',
+        'Sentra is not enabled for this project. Add a "sentra" block to the ZAPS config.',
+      ],
+      ["sentra_unavailable: port busy", "Sentra is unavailable: port busy"],
+      [
+        'not_found: No Sentra record or issue "x" in session sess1.',
+        'No Sentra record or issue "x" in session sess1.',
+      ],
+      [
+        "Unknown method: sentra.show",
+        "This daemon is older than the CLI. Run `zaps daemon stop` and start again.",
+      ],
+    ])("maps daemon error %j to isError", async (daemonError, text) => {
+      setMethodResult({ id: "r1", error: daemonError });
+      const res = await registeredTools.get("sentra_show")!.cb({ id: "x" });
+      expect(res).toEqual({ content: [{ type: "text", text }], isError: true });
+    });
+
+    const refused = () =>
+      Object.assign(new Error("connect ECONNREFUSED"), {
+        code: "ECONNREFUSED",
+        syscall: "connect",
+      });
+
+    function daemonDown(): { up: () => void } {
+      let running = false;
+      mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) => {
+        if (!running) {
+          throw refused();
+        }
+        return method === "session.list" ? listResponse : methodResponder();
+      });
+      return {
+        up: () => {
+          running = true;
+        },
+      };
+    }
+
+    it("starts a stopped daemon once and returns the result", async () => {
+      const daemon = daemonDown();
+      mockEnsureDaemon.mockImplementation(async () => {
+        daemon.up();
+        return SOCK;
+      });
+      setMethodResult({ id: "r1", result: { errors: [ROW], hasMore: false } });
+      const res = await registeredTools.get("sentra_errors")!.cb({});
+      expect(mockEnsureDaemon).toHaveBeenCalledOnce();
+      expect(JSON.stringify(res)).toContain("TypeError: boom");
+      expect(res).not.toHaveProperty("isError");
+      expect(sentraCall("sentra.errors")?.[2]).toEqual({ sessionId: SESSION });
+    });
+
+    it("reports a failed daemon start as isError", async () => {
+      daemonDown();
+      mockEnsureDaemon.mockRejectedValue(new Error("Daemon failed to start. See daemon.log"));
+      const res = await registeredTools.get("sentra_show")!.cb({ id: "x" });
+      expect(res).toEqual({
+        content: [{ type: "text", text: "Daemon failed to start. See daemon.log" }],
+        isError: true,
+      });
+    });
+
+    it.each(["EPERM", "EACCES"])(
+      "reports socket %s as a permission error without auto-start",
+      async (code) => {
+        mockIpcRequest.mockRejectedValue(
+          Object.assign(new Error(`connect ${code}`), { code, syscall: "connect" }),
+        );
+        const res = await registeredTools.get("sentra_errors")!.cb({});
+        expect(res).toEqual({
+          content: [
+            {
+              type: "text",
+              text: `Cannot access zaps daemon socket (${code}). Check permissions; if sandboxed, rerun outside the sandbox.`,
+            },
+          ],
+          isError: true,
+        });
+        expect(mockEnsureDaemon).not.toHaveBeenCalled();
+      },
+    );
+
+    it("leaves the other tools without auto-start", async () => {
+      daemonDown();
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running",
+      );
+      expect(mockEnsureDaemon).not.toHaveBeenCalled();
+    });
+
+    it("reports list failures and connection errors as isError", async () => {
+      setSessionList({ id: "L", error: "boom" });
+      const listError = await registeredTools.get("sentra_errors")!.cb({});
+      expect(listError).toEqual({ content: [{ type: "text", text: "boom" }], isError: true });
+
+      mockIpcRequest.mockImplementation(async () => {
+        throw new Error("socket gone");
+      });
+      const connError = await registeredTools.get("sentra_errors")!.cb({});
+      expect(connError).toEqual({
+        content: [{ type: "text", text: "socket gone" }],
+        isError: true,
+      });
+    });
+
+    it("falls back to the cwd config id when no session runs", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-mcp-sentra-"));
+      const configPath = path.join(dir, ".zaps.mts");
+      fs.writeFileSync(
+        configPath,
+        'export function config({ define }) {\n  return define({ name: "x", services: { web: { start: "true" } } });\n}\n',
+      );
+      vi.spyOn(process, "cwd").mockReturnValue(dir);
+      setSessionList({ id: "L", result: [] });
+      setMethodResult({ id: "r1", result: { errors: [], hasMore: false } });
+      try {
+        await registeredTools.get("sentra_errors")!.cb({});
+        expect(sentraCall("sentra.errors")?.[2]).toEqual({
+          sessionId: sessionId(configPath, dir),
+        });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("returns the no-config error as isError", async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-mcp-noconf-"));
+      vi.spyOn(process, "cwd").mockReturnValue(dir);
+      setSessionList({ id: "L", result: [] });
+      try {
+        const res = await registeredTools.get("sentra_errors")!.cb({});
+        expect(res).toMatchObject({ isError: true });
+        expect(JSON.stringify(res)).toContain("No .zaps.mts config found");
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });

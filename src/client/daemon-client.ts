@@ -41,11 +41,13 @@ export class DaemonClient extends EventEmitter {
       this.socketPath,
       this.sessionId,
       ["service.*", "log.*", "task.*", "session.*", "config.*"],
-      (event: DaemonEvent) => {
-        this.handleEvent(event);
-      },
-      () => {
-        this.emit("disconnect");
+      {
+        onEvent: (event: DaemonEvent) => {
+          this.handleEvent(event);
+        },
+        onClose: () => {
+          this.emit("disconnect");
+        },
       },
     );
   }

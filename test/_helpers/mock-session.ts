@@ -1,12 +1,20 @@
+import os from "node:os";
+import path from "node:path";
+
 import { vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 import type { SessionStore } from "../../src/daemon/server.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
+import type { SentraDeps } from "../../src/lib/sentra/config.js";
+import { ErrorCounter } from "../../src/lib/sentra/counter.js";
+import { SentraHost } from "../../src/lib/sentra/host.js";
 import type { PaneRunInfo } from "../../src/lib/task/run-in-pane.js";
 import { tmuxFor } from "../../src/lib/tmux.js";
 import type { TmuxHandle } from "../../src/lib/tmux.js";
+
+const MOCK_PORT_STATE_PATH = path.join(os.tmpdir(), `zaps-mock-sentra-${process.pid}.json`);
 
 export interface MockSession {
   id: string;
@@ -18,6 +26,7 @@ export interface MockSession {
       name: string;
       services: Record<string, unknown>;
       tasks?: Record<string, unknown>;
+      sentra?: { enabled?: boolean; env: Record<string, string> };
     };
     projectDir: string;
     configPath: string;
@@ -54,7 +63,7 @@ export interface MockSession {
   subscribers: Set<unknown>;
   createdAt: number;
   taskHistory: unknown[];
-  deps: { zapsCommand: string; sessionId: string };
+  deps: { zapsCommand: string; sessionId: string; sentra?: SentraDeps };
   attachSnapshot: ReturnType<typeof vi.fn>;
   startAll: ReturnType<typeof vi.fn>;
   reload: ReturnType<typeof vi.fn>;
@@ -150,6 +159,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
 
 export function createMockStore(sessions: MockSession[] = []): SessionStore {
   const sessionMap = new Map(sessions.map((s) => [s.id, s]));
+  const host = new SentraHost({ dbPath: ":memory:", portStatePath: MOCK_PORT_STATE_PATH });
   return {
     list: () => [...sessionMap.values()] as unknown as Session[],
     get: (id: string) => sessionMap.get(id) as unknown as Session | undefined,
@@ -157,5 +167,7 @@ export function createMockStore(sessions: MockSession[] = []): SessionStore {
       [...sessionMap.values()].find((s) => s.projectDir === dir) as unknown as Session | undefined,
     create: vi.fn().mockImplementation(async () => sessions[0]),
     destroy: vi.fn().mockResolvedValue(undefined),
+    sentra: host,
+    sentraCounter: new ErrorCounter(host),
   };
 }

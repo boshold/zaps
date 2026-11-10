@@ -7,6 +7,7 @@ import type { Session } from "#src/daemon/session.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
@@ -67,7 +68,13 @@ async function runPopupTaskNonInteractive(
 
   const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
   const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
-  const resolvedEnv = resolveEnv(task.env, serviceCtx);
+  const sentraEnv = await sentraEnvFor(
+    session.deps.sentra,
+    config.project.sentra,
+    task.sentra,
+    key,
+  );
+  const resolvedEnv = { ...sentraEnv, ...resolveEnv(task.env, serviceCtx) };
   const taskCwd = task.cwd ?? config.projectDir;
 
   try {
@@ -85,6 +92,14 @@ async function runPopupTaskNonInteractive(
   } catch {
     return false;
   }
+}
+
+/** Copy, so the manager's live status never carries a stale count. */
+function withErrorCount(
+  status: ServiceStatus,
+  errorCount: number | null,
+): ServiceStatus & { sentra: boolean; errorCount: number | null } {
+  return { ...status, sentra: status.sentra ?? false, errorCount };
 }
 
 export const sessionHandlers: Record<
@@ -143,7 +158,17 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    return ipcOk(req.id, session.manager.getAllStatuses());
+    const statuses = session.manager
+      .getAllStatuses()
+      .map((status) =>
+        withErrorCount(
+          status,
+          status.sentra
+            ? (store.sentraCounter.get(session.id, sanitizeSegment(status.name)) ?? 0)
+            : null,
+        ),
+      );
+    return ipcOk(req.id, statuses);
   },
 
   async "services.details"(req, store) {
@@ -354,6 +379,8 @@ export const sessionHandlers: Record<
           projectDir: session.config.projectDir,
           services: session.config.project.services,
           tmux: session.tmux,
+          sentra: session.deps.sentra,
+          sentraConfig: session.config.project.sentra,
           onLine: (_taskKey, line) => {
             session.taskOutput.append(runId, line);
             send(socket, { id: req.id, event: "line", data: line });
@@ -440,7 +467,13 @@ export const sessionHandlers: Record<
     // Stash the resolve info the exec-task wrapper will fetch over IPC, plus the
     // Metadata needed to complete the run when the wrapper reports its exit.
     const cwd = task.cwd ?? session.config.projectDir;
-    const env = resolveEnv(task.env, serviceCtx);
+    const sentraEnv = await sentraEnvFor(
+      session.deps.sentra,
+      session.config.project.sentra,
+      task.sentra,
+      key,
+    );
+    const env = { ...sentraEnv, ...resolveEnv(task.env, serviceCtx) };
     session.paneRunInfo.set(runId, {
       command: joinTaskCommands(resolvedCommands),
       cwd,

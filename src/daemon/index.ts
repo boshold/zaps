@@ -18,6 +18,7 @@ import {
 } from "#src/daemon/lifecycle.js";
 import { DaemonServer } from "#src/daemon/server.js";
 import { registerShutdownHook } from "#src/daemon/shutdown.js";
+import { SentraHost } from "#src/lib/sentra/host.js";
 
 const IDLE_TIMEOUT_MS = 30_000;
 
@@ -73,6 +74,7 @@ interface ShutdownTarget {
   list(): { id: string }[];
   destroy(id: string): Promise<void>;
   stop(): void;
+  sentra: { close(): Promise<void> };
 }
 
 /**
@@ -108,6 +110,11 @@ function createShutdownAll(
         log(`error destroying session ${id}: ${formatReason(error)}`);
       }
     }
+    try {
+      await server.sentra.close();
+    } catch (error) {
+      log(`error closing sentra: ${formatReason(error)}`);
+    }
     server.stop();
     finalize();
   };
@@ -142,7 +149,7 @@ async function runDaemon(): Promise<void> {
 
   log(`daemon started pid=${process.pid}`);
 
-  const server = new DaemonServer();
+  const server = new DaemonServer({ sentraHost: new SentraHost({ logger: log }), log });
 
   // Reap detached children orphaned by a previous daemon (crash/SIGKILL) before
   // Anything new starts, so leftover pane-less children don't hold ports (R10).

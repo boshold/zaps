@@ -1,5 +1,10 @@
+import { z } from "zod";
+
 import type { ConfigNotice } from "#src/config/types.js";
 import type { RequestContext } from "#src/lib/request-context.js";
+
+/** Payload of the `log.lines` daemon event. */
+export const logLinesDataSchema = z.object({ service: z.string(), lines: z.array(z.string()) });
 
 export interface IpcRequest {
   id: string;

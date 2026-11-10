@@ -11,6 +11,9 @@ import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
+import { sanitizeSegment } from "#src/lib/sentra/config.js";
+import { ErrorCounter } from "#src/lib/sentra/counter.js";
+import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { createLayout } from "#src/lib/tmux-layout.js";
@@ -68,6 +71,16 @@ interface SessionStore {
   getByProjectDir(dir: string): Session | undefined;
   create(params: CreateParams): Promise<Session>;
   destroy(id: string): Promise<void>;
+  /** Daemon-wide Sentra host (one per daemon, started lazily). */
+  readonly sentra: SentraHost;
+  /** Per-session error counts and live `sentra.*` broadcast. */
+  readonly sentraCounter: ErrorCounter;
+}
+
+interface DaemonServerOptions {
+  sentraHost?: SentraHost;
+  /** Daemon log line writer. */
+  log?: (msg: string) => void;
 }
 
 /**
@@ -103,6 +116,15 @@ class DaemonServer implements SessionStore {
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
+  public readonly sentra: SentraHost;
+  public readonly sentraCounter: ErrorCounter;
+  private readonly log?: (msg: string) => void;
+
+  public constructor(options: DaemonServerOptions = {}) {
+    this.sentra = options.sentraHost ?? new SentraHost({ logger: options.log });
+    this.sentraCounter = new ErrorCounter(this.sentra);
+    this.log = options.log;
+  }
 
   public async start(socketPath: string): Promise<void> {
     try {
@@ -318,6 +340,25 @@ class DaemonServer implements SessionStore {
         }
         await ref.session.reflowRemove(name);
       },
+      sentra: {
+        host: this.sentra,
+        get project() {
+          return sanitizeSegment((ref.session?.config ?? config).project.name);
+        },
+        session: id,
+        projectDir: config.projectDir,
+        log: this.log,
+        onEnvBuilt: () => {
+          try {
+            this.sentraCounter.attach(id, (event) => ref.session?.broadcast(event));
+          } catch (error) {
+            this.log?.(`sentra: cannot subscribe session ${id}: ${String(error)}`);
+          }
+        },
+        onServiceStart: (service: string, startedAt: number) => {
+          this.sentraCounter.reset(id, service, startedAt);
+        },
+      },
     };
 
     // Create ServiceManager
@@ -365,7 +406,11 @@ class DaemonServer implements SessionStore {
       return;
     }
 
-    await session.destroy();
+    try {
+      await session.destroy();
+    } finally {
+      this.sentraCounter.detach(id);
+    }
 
     // Kill non-origin, non-TUI panes
     for (const paneId of Object.values(session.paneMap)) {

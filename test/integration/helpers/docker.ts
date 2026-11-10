@@ -5,6 +5,17 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * Pinned compose project for a test dir. zaps runs every compose command with
+ * `-p`, so `composeDown` must use the same name or it tears down nothing.
+ */
+function composeProjectName(tmpDir: string): string {
+  return path
+    .basename(tmpDir)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/gu, "-");
+}
+
 export async function writeComposeFile(
   tmpDir: string,
   services: Record<string, { image: string; ports?: string[] }>,
@@ -17,14 +28,14 @@ export async function writeComposeFile(
     return block;
   });
 
-  const content = `services:\n${svcEntries.join("\n")}`;
+  const content = `name: ${composeProjectName(tmpDir)}\nservices:\n${svcEntries.join("\n")}`;
   const filePath = path.join(tmpDir, "docker-compose.yml");
   await writeFile(filePath, content, "utf8");
   return filePath;
 }
 
 export async function composeDown(tmpDir: string, file?: string): Promise<void> {
-  const args = ["compose"];
+  const args = ["compose", "-p", composeProjectName(tmpDir)];
   if (file) {
     args.push("-f", file);
   }

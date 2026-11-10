@@ -197,9 +197,9 @@ describe.skipIf(!hasTmux())("multi-service operations", () => {
 
   it("subscribe receives log.lines events for a service", async () => {
     const logEvents: DaemonEvent[] = [];
-    const sub = ipcSubscribe(daemon.socketPath, sid, ["log.lines"], (event) =>
-      logEvents.push(event),
-    );
+    const sub = ipcSubscribe(daemon.socketPath, sid, ["log.lines"], {
+      onEvent: (event) => logEvents.push(event),
+    });
 
     // Wait for subscription to establish
     await new Promise((resolve) => setTimeout(resolve, 300));

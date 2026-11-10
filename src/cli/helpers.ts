@@ -1,11 +1,14 @@
-import path from "node:path";
-
 import { discoverConfig } from "#src/config/discovery.js";
 import { socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcStream } from "#src/lib/ipc/client.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
+import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
+import type { SessionInfo } from "#src/lib/session/resolve.js";
+
+export { CliError, findSessionByDir, resolveTargetSession };
+export type { SessionInfo };
 
 /**
  * Single source of truth for the "no daemon" error. Reused by every
@@ -13,13 +16,6 @@ import type { IpcResponse } from "#src/lib/ipc/protocol.js";
  * identical everywhere (E7, P05-V01).
  */
 export const DAEMON_NOT_RUNNING = "Daemon not running.";
-
-export class CliError extends Error {
-  public constructor(message: string) {
-    super(message);
-    this.name = "CliError";
-  }
-}
 
 export function daemonConnectionError(error: unknown): CliError | null {
   if (!(error instanceof Error) || !("code" in error) || !("syscall" in error)) {
@@ -51,23 +47,6 @@ export async function requestDaemon(
   } catch (error) {
     throw daemonConnectionError(error) ?? error;
   }
-}
-
-export interface SessionInfo {
-  id: string;
-  name: string;
-  projectDir: string;
-  configPath?: string;
-  /**
-   * Tmux session hosting the panes — powers the `zaps ls` location column.
-   * Optional at runtime: a daemon from an older release omits it, and the CLI
-   * must degrade (blank location) rather than crash mid-command.
-   */
-  tmuxSession?: string;
-  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
-  managed?: boolean;
-  /** `%N` of the TUI pane, or null when the layout has none (re-attach target). */
-  tuiPane?: string | null;
 }
 
 export interface SessionIpc {
@@ -120,59 +99,6 @@ export function resolveRuntime(): string {
     return "native";
   }
   return "source";
-}
-
-/**
- * Match a session by directory (E12): exact `projectDir === dir`, else the
- * deepest projectDir that `dir` sits inside (path.sep guard so `/foo` never
- * matches `/foobar`). Returns undefined when nothing matches. Shared by the CLI
- * (resolveTargetSession) and the MCP server so both resolve cwd identically.
- */
-export function findSessionByDir(sessions: SessionInfo[], dir: string): SessionInfo | undefined {
-  const exact = sessions.find((s) => s.projectDir === dir);
-  if (exact) {
-    return exact;
-  }
-  const prefixMatches = sessions.filter((s) => dir.startsWith(`${s.projectDir}${path.sep}`));
-  if (prefixMatches.length === 0) {
-    return undefined;
-  }
-  const [deepest] = prefixMatches.toSorted((a, b) => b.projectDir.length - a.projectDir.length);
-  return deepest;
-}
-
-export function resolveTargetSession(sessions: SessionInfo[], sessionArg?: string): SessionInfo {
-  if (sessionArg) {
-    // Priority: exact id → exact name → id prefix → name prefix
-    const exactId = sessions.find((s) => s.id === sessionArg);
-    if (exactId) {
-      return exactId;
-    }
-    const exactName = sessions.find((s) => s.name === sessionArg);
-    if (exactName) {
-      return exactName;
-    }
-    const prefixMatches = sessions.filter(
-      (s) => s.id.startsWith(sessionArg) || s.name.startsWith(sessionArg),
-    );
-    if (prefixMatches.length === 1) {
-      return prefixMatches[0];
-    }
-    if (prefixMatches.length > 1) {
-      const lines = prefixMatches.map((s) => `  ${s.id}  ${s.name}  ${s.projectDir}`).join("\n");
-      throw new CliError(`Ambiguous session "${sessionArg}". Matches:\n${lines}`);
-    }
-    throw new CliError(`Session not found: ${sessionArg}`);
-  }
-  if (sessions.length === 1) {
-    return sessions[0];
-  }
-  const match = findSessionByDir(sessions, process.cwd());
-  if (match) {
-    return match;
-  }
-  const lines = sessions.map((s) => `  ${s.id}  ${s.name}  ${s.projectDir}`).join("\n");
-  throw new CliError(`Multiple sessions running. Specify one:\n${lines}`);
 }
 
 export function resolveSessionId(): { configPath: string; id: string } {

@@ -77,6 +77,7 @@ vi.mock("../../src/daemon/server.js", () => {
         list: vi.fn(() => []),
         destroy: vi.fn().mockResolvedValue(undefined),
         reapDetachedOrphans: vi.fn(),
+        sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
         requestShutdown: undefined,
@@ -87,6 +88,7 @@ vi.mock("../../src/daemon/server.js", () => {
 
 const { createShutdownAll, ensureDaemon, runDaemon } = await import("../../src/daemon/index.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
+const { SentraHost } = await import("../../src/lib/sentra/host.js");
 const { runShutdownHook } = await import("../../src/daemon/shutdown.js");
 
 describe("ensureDaemon", () => {
@@ -279,6 +281,7 @@ describe("runDaemon", () => {
         list: vi.fn(() => []),
         destroy: vi.fn().mockResolvedValue(undefined),
         reapDetachedOrphans: vi.fn(),
+        sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
         requestShutdown: undefined,
@@ -308,6 +311,7 @@ describe("runDaemon", () => {
       sessionCount: number;
       onSessionChange?: (count: number) => void;
       requestShutdown?: () => void;
+      sentra: { close: ReturnType<typeof vi.fn> };
     };
   }
 
@@ -407,7 +411,13 @@ describe("runDaemon", () => {
 
     // Re-entry guard: the server is stopped and the process exits exactly once.
     expect(server.stop).toHaveBeenCalledTimes(1);
+    expect(server.sentra.close).toHaveBeenCalledTimes(1);
     expect(process.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes a SentraHost into the DaemonServer", async () => {
+    await runDaemon();
+    expect(vi.mocked(DaemonServer).mock.calls.at(-1)?.[0]?.sentraHost).toBeInstanceOf(SentraHost);
   });
 
   it("shuts down on SIGTERM", async () => {
@@ -447,6 +457,7 @@ describe("runDaemon", () => {
     await runDaemon();
     vi.mocked(fs.unlinkSync).mockClear();
     signalHandler("SIGTERM")();
+    await vi.advanceTimersByTimeAsync(0);
 
     // Both daemon.sock and daemon.pid are unlinked.
     const targets = vi.mocked(fs.unlinkSync).mock.calls.map(([p]) => String(p));
@@ -461,6 +472,7 @@ describe("runDaemon", () => {
     await runDaemon();
     vi.mocked(fs.unlinkSync).mockClear();
     signalHandler("SIGTERM")();
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(fs.unlinkSync).not.toHaveBeenCalled();
   });
@@ -529,6 +541,11 @@ describe("createShutdownAll", () => {
         destroyed.push(id);
       },
       stop: () => order.push("stop"),
+      sentra: {
+        close: async () => {
+          order.push("sentra");
+        },
+      },
     };
     const finalize = () => order.push("finalize");
     const shutdownAll = createShutdownAll(server, vi.fn(), finalize);
@@ -536,8 +553,8 @@ describe("createShutdownAll", () => {
     await shutdownAll();
 
     expect(destroyed).toEqual(["a", "b", "c"]);
-    // Server is stopped and finalize runs only after all sessions are destroyed.
-    expect(order).toEqual(["stop", "finalize"]);
+    // Sentra closes, then the server stops and finalize runs, all after sessions are destroyed.
+    expect(order).toEqual(["sentra", "stop", "finalize"]);
   });
 
   it("isolates a failing session destroy: others, stop and finalize still run", async () => {
@@ -556,6 +573,7 @@ describe("createShutdownAll", () => {
       stop: () => {
         stopped = true;
       },
+      sentra: { close: vi.fn().mockResolvedValue(undefined) },
     };
     const shutdownAll = createShutdownAll(
       server,
@@ -579,6 +597,7 @@ describe("createShutdownAll", () => {
     let destroyCalls = 0;
     let stopCalls = 0;
     let finalizeCalls = 0;
+    let sentraCloseCalls = 0;
     const server = {
       list: () => [{ id: "a" }],
       destroy: async () => {
@@ -586,6 +605,11 @@ describe("createShutdownAll", () => {
       },
       stop: () => {
         stopCalls += 1;
+      },
+      sentra: {
+        close: async () => {
+          sentraCloseCalls += 1;
+        },
       },
     };
     const shutdownAll = createShutdownAll(server, vi.fn(), () => {
@@ -598,6 +622,40 @@ describe("createShutdownAll", () => {
     expect(destroyCalls).toBe(1);
     expect(stopCalls).toBe(1);
     expect(finalizeCalls).toBe(1);
+    expect(sentraCloseCalls).toBe(1);
+  });
+
+  it("logs a failing sentra close and still stops and finalizes", async () => {
+    const logs: string[] = [];
+    let stopped = false;
+    let finalized = false;
+    const server = {
+      list: () => [],
+      destroy: vi.fn().mockResolvedValue(undefined),
+      stop: () => {
+        stopped = true;
+      },
+      sentra: {
+        close: async () => {
+          throw new Error("sqlite busy");
+        },
+      },
+    };
+    const shutdownAll = createShutdownAll(
+      server,
+      (m) => logs.push(m),
+      () => {
+        finalized = true;
+      },
+    );
+
+    await shutdownAll();
+
+    expect(logs.some((m) => m.includes("error closing sentra") && m.includes("sqlite busy"))).toBe(
+      true,
+    );
+    expect(stopped).toBe(true);
+    expect(finalized).toBe(true);
   });
 });
 

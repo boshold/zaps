@@ -1,5 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 import type { Plugin } from "esbuild";
 import { build } from "esbuild";
@@ -13,6 +14,20 @@ const externalNativeBabel: Plugin = {
     pluginBuild.onResolve({ filter: /native-babel(?:\.js)?$/ }, () => ({
       path: "./native-babel.js",
       external: true,
+    }));
+  },
+};
+
+/**
+ * Bundle sentra-core so installs never pull its optional `better-sqlite3` addon.
+ * Resolved from the importer; `pluginBuild.resolve` would return it as external.
+ * `createRequire` needs a `require` or `default` export condition in the package.
+ */
+const bundleSentraCore: Plugin = {
+  name: "bundle-sentra-core",
+  setup(pluginBuild) {
+    pluginBuild.onResolve({ filter: /^@bosdev\/sentra-core(?:\/|$)/ }, (args) => ({
+      path: createRequire(args.importer).resolve(args.path),
     }));
   },
 };
@@ -42,7 +57,7 @@ await build({
   format: "esm",
   outfile: "./dist/cli.mjs",
   packages: "external",
-  plugins: [externalNativeBabel],
+  plugins: [externalNativeBabel, bundleSentraCore],
   define: {
     __VERSION__: JSON.stringify(resolveVersion()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

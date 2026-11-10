@@ -23,11 +23,15 @@ import {
 } from "./cli/helpers.js";
 import {
   isCodingAgent,
+  parseServiceList,
   primeAgentPrompt,
   resolveFormat,
+  sentraColumnEnabled,
+  serviceRows,
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
@@ -38,9 +42,11 @@ import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import type { IpcSubscription } from "./lib/ipc/client.js";
+import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
 import { installResizeReset } from "./lib/screen-reset.js";
+import { computeProjectSessionId } from "./lib/sentra/session-id.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
 
@@ -303,20 +309,17 @@ async function runDetachedStartAll(sock: string, sid: string, sessionName: strin
       finish(() => resolve());
     };
 
-    ctl.sub = ipcSubscribe(
-      sock,
-      sid,
-      ["service.stateChange", "log.lines"],
-      () => {
+    ctl.sub = ipcSubscribe(sock, sid, ["service.stateChange", "log.lines"], {
+      onEvent: () => {
         arm();
       },
-      () => {
+      onClose: () => {
         finish(() => reject(new CliError("error: daemon connection closed")));
       },
-      (err) => {
+      onError: (err) => {
         finish(() => reject(new CliError(`Error starting services: ${err}`)));
       },
-    );
+    });
     arm();
     void drive().catch((error: unknown) => {
       finish(() => reject(error instanceof Error ? error : new Error(String(error))));
@@ -589,31 +592,28 @@ const psCommand = command(
     const opts = parsed.flags;
     try {
       await withDaemon(async (ipc) => {
-        const res = await ipc.request("services.list");
+        const format = resolveFormat(opts);
+        const [res, status] = await Promise.all([
+          ipc.request("services.list"),
+          format === "text"
+            ? ipc.request("sentra.status", { sessionId: ipc.sessionId })
+            : Promise.resolve(null),
+        ]);
         if (res.error) {
           process.stderr.write(`Error: ${res.error}\n`);
           process.exit(1);
         }
-        const format = resolveFormat(opts);
         if (format !== "text") {
           writeData(res.result, format);
           return;
         }
-        const statuses = res.result as {
-          name: string;
-          state: string;
-          ports: number[];
-          url?: string;
-        }[];
+        const statuses = parseServiceList(res.result);
         if (statuses.length === 0) {
           process.stdout.write("No services configured.\n");
           return;
         }
-        const rows = [["NAME", "STATE", "PORTS", "URL"]];
-        for (const s of statuses) {
-          rows.push([s.name, s.state, s.ports.join(",") || "-", s.url ?? "-"]);
-        }
-        process.stdout.write(`${formatTable(rows)}\n`);
+        const sentraEnabled = sentraColumnEnabled(status?.result, statuses);
+        process.stdout.write(`${formatTable(serviceRows(statuses, sentraEnabled))}\n`);
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
@@ -804,26 +804,23 @@ const logsCommand = command(
         // Follow mode: subscribe to log events
         const sock = socketPath();
         let userClosed = false;
-        const sub = ipcSubscribe(
-          sock,
-          ipc.sessionId,
-          ["log.lines"],
-          (event: DaemonEvent) => {
-            const data = event.data as { service: string; lines: string[] };
-            if (targetServices.includes(data.service)) {
-              for (const line of data.lines) {
-                process.stdout.write(`${formatLine(data.service, line)}\n`);
+        const sub = ipcSubscribe(sock, ipc.sessionId, ["log.lines"], {
+          onEvent: (event: DaemonEvent) => {
+            const logLines = logLinesDataSchema.safeParse(event.data);
+            if (logLines.success && targetServices.includes(logLines.data.service)) {
+              for (const line of logLines.data.lines) {
+                process.stdout.write(`${formatLine(logLines.data.service, line)}\n`);
               }
             }
           },
-          () => {
+          onClose: () => {
             // Q5: the daemon closed the socket — no reconnect; report and exit 1.
             if (!userClosed) {
               process.stderr.write("error: daemon connection closed\n");
               process.exit(1);
             }
           },
-        );
+        });
 
         // Wait for ctrl+c
         await new Promise<void>((resolve) => {
@@ -923,29 +920,26 @@ const eventsCommand = command(
     const filterRe = opts.filter ? new RegExp(opts.filter) : null;
 
     let userClosed = false;
-    const sub = ipcSubscribe(
-      sock,
-      id,
-      [],
-      (event: DaemonEvent) => {
+    const sub = ipcSubscribe(sock, id, [], {
+      onEvent: (event: DaemonEvent) => {
         if (filterRe && !filterRe.test(event.event)) {
           return;
         }
         process.stdout.write(`${JSON.stringify(event)}\n`);
       },
-      () => {
+      onClose: () => {
         // Q5: the daemon closed the socket — no reconnect; report and exit 1.
         if (!userClosed) {
           process.stderr.write("error: daemon connection closed\n");
           process.exit(1);
         }
       },
-      (reason: string) => {
+      onError: (reason: string) => {
         // E8: surface a subscribe error-ack that slipped past the session.list pre-check.
         process.stderr.write(`error: ${reason}\n`);
         process.exit(1);
       },
-    );
+    });
 
     await new Promise<void>((resolve) => {
       process.on("SIGINT", () => {
@@ -1053,9 +1047,10 @@ const primeAgentCommand = command(
     rejectExcessArgs("prime-agent", parsed._, 0);
     try {
       await withDaemon(async (ipc) => {
-        const [svcRes, taskRes] = await Promise.all([
+        const [svcRes, taskRes, sentraRes] = await Promise.all([
           ipc.request("services.list"),
           ipc.request("tasks.list"),
+          ipc.request("sentra.status", { sessionId: ipc.sessionId }),
         ]);
         if (svcRes.error) {
           process.stderr.write(`Error: ${svcRes.error}\n`);
@@ -1066,7 +1061,9 @@ const primeAgentCommand = command(
           process.exit(1);
         }
 
-        process.stdout.write(primeAgentPrompt(ipc.session, svcRes.result, taskRes.result));
+        process.stdout.write(
+          primeAgentPrompt(ipc.session, svcRes.result, taskRes.result, sentraRes.result),
+        );
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {
@@ -1494,6 +1491,59 @@ const daemonGroupCommand = command({
   help: { description: "Daemon management" },
 });
 
+async function runSentraGroup(rawArgv: string[]): Promise<void> {
+  const typedArgv = process.argv.slice(2);
+  const retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  const argv = consumeLeadingSessionFlag(rawArgv);
+  process.exitCode = await runSentraCli(argv, {
+    request: createAutoStartRequest({
+      request: async (sock, method, params) => requestDaemon(sock, method, params, 30_000),
+      socket: socketPath,
+      ensureDaemon: async () => ensureDaemon(resolveCommandArgv()),
+    }),
+    cwd: () => process.cwd(),
+    configSessionId: async () => computeProjectSessionId(process.cwd()),
+    argv: typedArgv,
+    env: process.env,
+    stdout: (text) => process.stdout.write(text),
+    stderr: (text) => process.stderr.write(text),
+    sessionArg: globalSession(),
+    live: {
+      subscribe: (sessionId, handlers) =>
+        ipcSubscribe(socketPath(), sessionId, ["sentra.item", "sentra.failed"], {
+          onEvent: handlers.onEvent,
+          onClose: handlers.onEnd,
+          onError: handlers.onEnd,
+          onSubscribed: handlers.onSubscribed,
+        }),
+      request: async (method, params) => requestDaemon(socketPath(), method, params, 30_000),
+      sleep: async (ms) =>
+        new Promise((resolve) => {
+          const timer = setTimeout(() => {
+            retryTimers.delete(timer);
+            resolve();
+          }, ms);
+          retryTimers.add(timer);
+        }),
+      waitForStop: async () =>
+        new Promise((resolve) => {
+          process.once("SIGINT", () => {
+            for (const timer of retryTimers) {
+              clearTimeout(timer);
+            }
+            resolve();
+          });
+        }),
+    },
+  });
+}
+
+/** Listed in root help only; dispatch is intercepted in `runRootCli`. */
+const sentraGroupCommand = command({
+  name: "sentra",
+  help: { description: "Runtime errors collected from Sentry SDKs" },
+});
+
 const mcpCommand = command(
   {
     name: "mcp",
@@ -1540,6 +1590,7 @@ const rootCommands: Command[] = [
   execServiceCommand,
   execTaskCommand,
   daemonGroupCommand,
+  sentraGroupCommand,
   mcpCommand,
 ];
 
@@ -1555,6 +1606,10 @@ function hiddenCommandNames(): Set<string> {
 function runRootCli(argv: string[]): void {
   if (argv[0] === "daemon") {
     runDaemonCli(argv.slice(1));
+    return;
+  }
+  if (argv[0] === "sentra") {
+    void runSentraGroup(argv.slice(1));
     return;
   }
   void cli(
@@ -1625,8 +1680,23 @@ const helpCommand = command(
 );
 rootCommands.push(helpCommand);
 
-if (process.argv.length === 2) {
-  process.argv.push("up");
+// Internal: build smoke check for the bundled Sentra core (see scripts/sentra-smoke.ts).
+async function runSentraSmokeCheck(): Promise<void> {
+  try {
+    const { runSentraSmoke } = await import("./lib/sentra/smoke.js");
+    process.stdout.write(`driver=${await runSentraSmoke()}\n`);
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`${String(error)}\n`);
+    process.exit(1);
+  }
 }
 
-runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
+if (process.env.ZAPS_SENTRA_SMOKE === "1") {
+  void runSentraSmokeCheck();
+} else {
+  if (process.argv.length === 2) {
+    process.argv.push("up");
+  }
+  runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
+}

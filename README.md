@@ -56,7 +56,7 @@
 
 ## Install
 
-### npm (Node >= 22)
+### npm (Node >= 22.15)
 
 ```bash
 npm install -g @bosdev/zaps
@@ -199,11 +199,11 @@ If tmux isn't installed at all, ZAPS says so instead of starting:
 
 ### Query
 
-| Command                  | Description                                    |
-| ------------------------ | ---------------------------------------------- |
-| `zaps ps`                | List services with state, ports, URL. `--json` |
-| `zaps ls`                | List active sessions. `--json`                 |
-| `zaps inspect <service>` | Show service details. `--json`                 |
+| Command                  | Description                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `zaps ps`                | List services with state, ports, URL; `ERRORS` (Sentra errors since start) when Sentra is enabled. `--json` |
+| `zaps ls`                | List active sessions. `--json`                                                                              |
+| `zaps inspect <service>` | Show service details. `--json`                                                                              |
 
 ### Tasks & Logs
 
@@ -213,6 +213,18 @@ If tmux isn't installed at all, ZAPS says so instead of starting:
 | `zaps tasks`             | List configured tasks. `--json`                                  |
 | `zaps logs [service...]` | Dump log buffer. `-f` to stream live. `--tail <n>` (default 100) |
 | `zaps events`            | Stream daemon events as ndjson. `--filter <type>`                |
+
+### Sentry Errors
+
+Needs [Sentra](#sentry-errors-sentra) set up in the config.
+
+| Command                 | Description                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `zaps sentra errors`    | List error events, newest first. Time, filter and paging flags, `--fail-if-any`, `--json`                               |
+| `zaps sentra issues`    | List grouped issues, last seen first. `--service`, `--level`, `--min-level`, `--q`, time and paging flags, `--json`     |
+| `zaps sentra show <id>` | Show one record, issue, or Sentry event id as Markdown. `--json`                                                        |
+| `zaps sentra live`      | Stream new records until Ctrl-C. `--service`, `--level`, `--min-level`, `--kind` (error, message, log), `--q`, `--json` |
+| `zaps sentra clear`     | Delete the session's records. `--service`, `--before <time>`, `--json`                                                  |
 
 ### Config & Setup
 
@@ -566,27 +578,28 @@ isn't interruptible.
 
 ### Options
 
-| Option          | Type                                        | Default | Description                                                                                               |
-| --------------- | ------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
-| `start`         | `string \| () => string`                    | —       | Command to start the service (long-running process)                                                       |
-| `run`           | `string \| () => string`                    | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
-| `stop`          | `string \| () => string`                    | —       | Custom stop command (default: Ctrl-C)                                                                     |
-| `docker`        | `DockerConfig`                              | —       | Docker Compose service config                                                                             |
-| `ready`         | `ReadyConfig`                               | —       | How to detect the service is ready                                                                        |
-| `dependsOn`     | `string[]`                                  | `[]`    | Services that must be ready first                                                                         |
-| `env`           | `Record<string, string> \| (ctx) => Record` | —       | Environment variables                                                                                     |
-| `cwd`           | `string`                                    | —       | Working directory                                                                                         |
-| `url`           | `string \| (ctx) => string`                 | —       | URL for browser open (`o` key)                                                                            |
-| `flags`         | `{ start?: boolean, open?: boolean }`       | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
-| `detached`      | `boolean`                                   | `false` | Run outside tmux (no pane)                                                                                |
-| `lazyPane`      | `boolean`                                   | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
-| `raw`           | `boolean`                                   | `false` | Bypass the service wrapper                                                                                |
-| `restart`       | `{ maxRetries?, backoff? }`                 | —       | Auto-restart on crash                                                                                     |
-| `onBeforeStart` | `() => void \| Promise<void>`               | —       | Callback before command is sent                                                                           |
-| `onReady`       | `() => void \| Promise<void>`               | —       | Callback when service becomes ready                                                                       |
-| `onStop`        | `() => void \| Promise<void>`               | —       | Callback when service stops                                                                               |
-| `onOutput`      | `(line: string) => void \| Promise<void>`   | —       | Called for each new output line                                                                           |
-| `optional`      | `boolean \| () => Promise<boolean>`         | —       | Mark service as optional (see below)                                                                      |
+| Option          | Type                                         | Default | Description                                                                                               |
+| --------------- | -------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
+| `start`         | `string \| () => string`                     | —       | Command to start the service (long-running process)                                                       |
+| `run`           | `string \| () => string`                     | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
+| `stop`          | `string \| () => string`                     | —       | Custom stop command (default: Ctrl-C)                                                                     |
+| `docker`        | `DockerConfig`                               | —       | Docker Compose service config                                                                             |
+| `ready`         | `ReadyConfig`                                | —       | How to detect the service is ready                                                                        |
+| `dependsOn`     | `string[]`                                   | `[]`    | Services that must be ready first                                                                         |
+| `env`           | `Record<string, string> \| (ctx) => Record`  | —       | Environment variables                                                                                     |
+| `cwd`           | `string`                                     | —       | Working directory                                                                                         |
+| `url`           | `string \| (ctx) => string`                  | —       | URL for browser open (`o` key)                                                                            |
+| `flags`         | `{ start?: boolean, open?: boolean }`        | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
+| `detached`      | `boolean`                                    | `false` | Run outside tmux (no pane)                                                                                |
+| `lazyPane`      | `boolean`                                    | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
+| `raw`           | `boolean`                                    | `false` | Bypass the service wrapper                                                                                |
+| `restart`       | `{ maxRetries?, backoff? }`                  | —       | Auto-restart on crash                                                                                     |
+| `onBeforeStart` | `() => void \| Promise<void>`                | —       | Callback before command is sent                                                                           |
+| `onReady`       | `() => void \| Promise<void>`                | —       | Callback when service becomes ready                                                                       |
+| `onStop`        | `() => void \| Promise<void>`                | —       | Callback when service stops                                                                               |
+| `onOutput`      | `(line: string) => void \| Promise<void>`    | —       | Called for each new output line                                                                           |
+| `optional`      | `boolean \| () => Promise<boolean>`          | —       | Mark service as optional (see below)                                                                      |
+| `sentra`        | `boolean \| { env: Record<string, string> }` | —       | Send Sentry SDK errors to ZAPS (see [Sentry Errors](#sentry-errors-sentra))                               |
 
 ### Optional Services
 
@@ -983,17 +996,18 @@ tasks: {
 
 ### Task Options
 
-| Option        | Type                                             | Default | Description                                                     |
-| ------------- | ------------------------------------------------ | ------- | --------------------------------------------------------------- |
-| `name`        | `string`                                         | —       | Display name in the TUI                                         |
-| `description` | `string`                                         | —       | Description shown in the task picker                            |
-| `commands`    | `string \| string[]`                             | —       | Shell command(s) to run                                         |
-| `run`         | `(ctx: TaskRunContext) => void \| Promise<void>` | —       | Programmatic task function (mutually exclusive with `commands`) |
-| `cwd`         | `string`                                         | —       | Working directory                                               |
-| `env`         | `Record<string, string>`                         | —       | Environment variables                                           |
-| `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                       |
-| `shortcut`    | `string`                                         | —       | Hint key shown beside the task in the picker                    |
-| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run in tmux popup window (commands only)                        |
+| Option        | Type                                             | Default | Description                                                                 |
+| ------------- | ------------------------------------------------ | ------- | --------------------------------------------------------------------------- |
+| `name`        | `string`                                         | —       | Display name in the TUI                                                     |
+| `description` | `string`                                         | —       | Description shown in the task picker                                        |
+| `commands`    | `string \| string[]`                             | —       | Shell command(s) to run                                                     |
+| `run`         | `(ctx: TaskRunContext) => void \| Promise<void>` | —       | Programmatic task function (mutually exclusive with `commands`)             |
+| `cwd`         | `string`                                         | —       | Working directory                                                           |
+| `env`         | `Record<string, string>`                         | —       | Environment variables                                                       |
+| `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                                   |
+| `shortcut`    | `string`                                         | —       | Hint key shown beside the task in the picker                                |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run in tmux popup window (commands only)                                    |
+| `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Send Sentry SDK errors to ZAPS (see [Sentry Errors](#sentry-errors-sentra)) |
 
 Task dependencies are resolved and executed before the task itself.
 
@@ -1258,13 +1272,164 @@ services: {
 }
 ```
 
+## Sentry Errors (Sentra)
+
+ZAPS can collect runtime errors from apps that use a Sentry SDK. The daemon runs a
+small local receiver (Sentra) and hands each
+opted-in service or task its own DSN. You then read the errors with `zaps sentra`,
+`zaps ps`, `zaps prime-agent` or the MCP tools. Nothing leaves your machine.
+
+### Setup
+
+Add a top-level `sentra` block with an env template and opt services or tasks in:
+
+```typescript
+export function config({ define }: Library) {
+  return define({
+    sentra: {
+      env: { SENTRY_DSN: "{dsn}", NUXT_PUBLIC_SENTRY_DSN: "{dsn}", SENTRY_ENABLED: "true" },
+    },
+    services: {
+      web: { start: "pnpm dev", sentra: true },
+      api: { start: "pnpm api", sentra: { env: { SENTRY_DSN: "{dsn}" } } },
+      db: { docker: { service: "postgres" } },
+    },
+    tasks: {
+      e2e: { name: "E2E", commands: "pnpm test:e2e", sentra: true },
+    },
+  });
+}
+```
+
+| Option                        | Description                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------- |
+| `sentra.env`                  | Env template. `{dsn}` is replaced with the service's DSN. Values without it are passed as-is |
+| `sentra.enabled`              | Default `true`. `false` turns Sentra off for every service and task                          |
+| `sentra: true` (service/task) | Use the project template. Needs the top-level block                                          |
+| `sentra: { env }`             | Own template that replaces the project one. Works without a top-level block                  |
+
+- At least one `env` value must contain `{dsn}`, and keys must be valid env names.
+  Otherwise the config fails to load with `sentra.env must use {dsn} in at least one value`
+  or `sentra.env key '<key>' must match ^[A-Za-z_][A-Za-z0-9_]*$`.
+- `sentra: true` without a top-level block fails with
+  `services.<name>.sentra requires a top-level "sentra" block` (same for tasks).
+- Names become the DSN's `<service>` segment (characters outside `[A-Za-z0-9._-]` turn
+  into `-`). Two opted-in services or tasks that end up with the same segment, like
+  `web app` and `web-app`, fail with `... both map to Sentra service "web-app"`.
+  `--service` filters accept either spelling.
+- The DSN looks like `http://sentra@127.0.0.1:<port>/<project>/<session>/<service>/1`.
+  The port is picked once and reused across daemon restarts when it is free.
+- Env precedence (low to high): the env of the calling shell, the Sentra env, the
+  service or task `env`. Your own `env` always wins.
+- Tasks get the same env, whether they run in the daemon, in a popup or in a pane.
+- Docker services get the env too, but only the `docker compose` process sees it.
+  `127.0.0.1` inside a container is the container itself, so this only works with
+  `network_mode: host` or a compose file that passes the value on. ZAPS logs a
+  warning once per service. Combined docker services that don't own the compose pane
+  get no env, so they stay out of Sentra.
+- The receiver starts with the first opted-in service or the first `zaps sentra`
+  call. If it can't start, services still start without the Sentra env and the
+  reason is logged.
+
+### Nuxt
+
+`@sentry/nuxt` needs `enabled` set, and the browser needs the DSN through public
+runtime config. Use the template from the example above (`NUXT_PUBLIC_SENTRY_DSN`
+fills `runtimeConfig.public.sentry.dsn`):
+
+```typescript
+// nuxt.config.ts
+export default defineNuxtConfig({
+  modules: ["@sentry/nuxt/module"],
+  runtimeConfig: {
+    public: { sentry: { dsn: "" } },
+  },
+});
+```
+
+```typescript
+// sentry.client.config.ts
+import * as Sentry from "@sentry/nuxt";
+
+const dsn = useRuntimeConfig().public.sentry.dsn;
+Sentry.init({ dsn, enabled: Boolean(dsn), tracesSampleRate: 0 });
+```
+
+```typescript
+// sentry.server.config.ts
+import * as Sentry from "@sentry/nuxt";
+
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  enabled: process.env.SENTRY_ENABLED === "true",
+  tracesSampleRate: 0,
+});
+```
+
+The DSN uses `127.0.0.1`, not `localhost`: browsers may resolve `localhost` to `::1`,
+and the receiver listens on IPv4 loopback only. Keep `tracesSampleRate: 0` in dev
+unless you need traces; spans fill the database fast.
+
+### Reading errors
+
+```bash
+T0=$(date -Iseconds)                 # remember the time before you test
+# ... reproduce the bug or run tests ...
+zaps sentra errors --from "$T0"      # what failed since then
+zaps sentra show <id>                # stack trace and details as Markdown
+zaps sentra issues --since 1h        # grouped by fingerprint
+zaps sentra live --service web       # stream new errors
+```
+
+- `errors` defaults to `--kind error,message --min-level error`. Passing `--kind`,
+  `--level` or `--min-level` drops the level default. `live` defaults to
+  `--kind error,message --min-level warning` the same way.
+- Time flags take ISO 8601, epoch ms, or a duration meaning "now minus" (`10m`).
+  `--since` is a duration only and can't be combined with `--from`.
+- `--q <text>` (also `-q`, `--query`) matches the title, case-insensitive.
+- Paging: `--limit` (default 20, max 500) and `--skip`. When more rows exist, the
+  text output ends with a ready-to-run `next:` command.
+- `--fail-if-any` makes `errors` exit `1` when anything matches, handy in scripts.
+- `location` is the crashing frame. With source maps it points at your source;
+  without them it is an absolute path with line and column (`/abs/app.mjs:4:32`).
+- Text output is TOON; `--json` prints JSON (`live --json` prints one row per line).
+- Values that start with `-` need the `=` form: `--q=-foo`.
+- Exit codes: unknown flags `1`, invalid values `2`, Sentra disabled or unavailable `1`.
+- `receivedAt` is UTC. `live` prints the local time.
+
+The query commands (`errors`, `issues`, `show`, `clear`) work without a running
+session and start the daemon if needed, so you can still read errors after
+`zaps down`. `live` needs a running session and never starts the daemon. When the
+daemon goes away it prints `sentra: waiting for daemon…` once and reconnects every 2 s.
+
+`zaps ps` shows an `ERRORS` column (errors since the service last started, `-` when
+not opted in) only when Sentra is enabled. `zaps prime-agent` always adds a `sentra`
+block (`status: disabled` when off) and lists the `zaps sentra` commands only when
+Sentra is enabled.
+
+To stream errors in a pane, add a service:
+
+```typescript
+"sentra-live": { start: "zaps sentra live --service web" },
+```
+
+### Data and retention
+
+Records live in `$XDG_STATE_HOME/zaps/sentra.db` (fallback
+`~/.local/state/zaps/sentra.db`), shared by all projects and filtered by session.
+Events can hold request headers and bodies, so the directory is owner-only (0700).
+The chosen port is kept in `sentra.json` next to it. Sentra deletes a session's data
+after 30 days without new records, and spans, transactions, logs and other
+non-error records after 7 days. `zaps sentra clear` deletes the current session's records right away. Events
+sent while no daemon runs are lost.
+
 ## AI Integration
 
 ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (recommended) and **MCP**. Skills are more token-efficient since they load context on-demand, while MCP provides a protocol-level interface usable by any MCP-compatible client.
 
 ### Agent Priming
 
-Use `zaps prime-agent` to get one short agent instruction followed by a fenced TOON overview of the active project (name, session ID, folder, config), every service (state, ports, URL), every task, and the commands agents may run. The instruction tells agents to always run ZAPS commands outside the sandbox. Session and daemon lifecycle commands are intentionally omitted.
+Use `zaps prime-agent` to get one short agent instruction followed by a fenced TOON overview of the active project (name, session ID, folder, config), every service (state, ports, URL, Sentra error count), every task, the Sentra status (`disabled` when not enabled), and the commands agents may run. With Sentra enabled, the `zaps sentra errors|issues|show` commands and a hint to check errors after testing are added. The instruction tells agents to always run ZAPS commands outside the sandbox. Session and daemon lifecycle commands are intentionally omitted.
 
 If daemon socket access is denied in a sandbox, the command tells the agent to rerun outside the sandbox. A stopped daemon is reported separately as `Daemon not running.`
 
@@ -1272,10 +1437,10 @@ If daemon socket access is denied in a sandbox, the command tells the agent to r
 
 ZAPS ships two [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) in `.claude/skills/`:
 
-| Skill         | Description                                                                  |
-| ------------- | ---------------------------------------------------------------------------- |
-| `zaps-usage`  | Interact with dev sessions — start/stop services, run tasks, view logs       |
-| `zaps-config` | Author and edit ZAPS config files (`.zaps.mts`, `.zaps.ts`, `local.zaps.ts`) |
+| Skill         | Description                                                                                |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `zaps-usage`  | Interact with dev sessions — start/stop services, run tasks, view logs, read Sentry errors |
+| `zaps-config` | Author and edit ZAPS config files (`.zaps.mts`, `.zaps.ts`, `local.zaps.ts`)               |
 
 Skills are **recommended over MCP** because they load reference docs on-demand rather than occupying persistent context, resulting in significantly lower token usage.
 
@@ -1313,6 +1478,14 @@ zaps mcp --session my-app  # target specific session
 | `logs_snapshot`        | Get recent log lines for a service   |
 | `tasks_list`           | List available tasks                 |
 | `tasks_run`            | Run a task and return its output     |
+| `sentra_errors`        | List Sentra error events (TOON)      |
+| `sentra_issues`        | List grouped Sentra issues (TOON)    |
+| `sentra_show`          | Show a record or issue (Markdown)    |
+
+The `sentra_*` tools take the same filters as `zaps sentra errors|issues|show`. List
+tools end with `hasMore: true|false`. Like the CLI query commands, they start the
+daemon when it is not running, so errors of a stopped session stay readable. The other
+MCP tools need a running session.
 
 #### Resources
 

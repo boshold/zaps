@@ -1,6 +1,6 @@
 ---
 name: zaps-config
-description: Create, edit, or explain ZAPS .zaps.mts/.zaps.ts configs, including local overrides, services, tasks, dependencies, readiness, Docker, hooks, layout, and UI. Use for config changes even when the user does not name the file. For running services, use zaps-usage.
+description: Create, edit, or explain ZAPS .zaps.mts/.zaps.ts configs, including local overrides, services, tasks, dependencies, readiness, Docker, hooks, layout, UI, and Sentry error capture (sentra). Use for config changes even when the user does not name the file. For running services, use zaps-usage.
 ---
 
 # ZAPS config
@@ -19,6 +19,7 @@ Read only the references relevant to the request. Check the installed ZAPS versi
 | [Layout](references/08-layout.md)                   | Pane placement and sizing                                    |
 | [Hooks](references/09-hooks.md)                     | Lifecycle actions and cross-service restarts                 |
 | [UI](references/10-ui.md)                           | TUI options                                                  |
+| [Sentra](references/11-sentra.md)                   | Collect Sentry SDK errors: `sentra` block, opt-in, Nuxt      |
 
 ## Defaults for new configs
 

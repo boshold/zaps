@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
+
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockIpcStream = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockIpcSubscribe = vi.fn();
@@ -20,7 +22,7 @@ describe("DaemonClient", () => {
     request: ReturnType<typeof vi.fn>;
     connected: boolean;
   };
-  let eventHandler: (event: unknown) => void;
+  let eventHandler: SubscribeHandlers["onEvent"];
   let closeHandler: () => void;
 
   beforeEach(() => {
@@ -38,8 +40,7 @@ describe("DaemonClient", () => {
         _sock: string,
         _session: string,
         _events: string[],
-        onEvent: (event: unknown) => void,
-        onClose?: () => void,
+        { onEvent, onClose }: SubscribeHandlers,
       ) => {
         eventHandler = onEvent;
         closeHandler =
@@ -60,13 +61,10 @@ describe("DaemonClient", () => {
 
   it("connects via ipcSubscribe", () => {
     client.connect();
-    expect(mockIpcSubscribe).toHaveBeenCalledWith(
-      "/test.sock",
-      "sess1",
-      expect.any(Array),
-      expect.any(Function),
-      expect.any(Function),
-    );
+    expect(mockIpcSubscribe).toHaveBeenCalledWith("/test.sock", "sess1", expect.any(Array), {
+      onEvent: expect.any(Function),
+      onClose: expect.any(Function),
+    });
   });
 
   it("reports connected state", () => {
