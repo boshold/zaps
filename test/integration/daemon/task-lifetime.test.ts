@@ -201,7 +201,11 @@ describe.skipIf(!hasTmux())("session task lifetimes", () => {
     };
   }
 
-  async function create(body: string, locale = "C.UTF-8"): Promise<Session> {
+  async function create(
+    body: string,
+    locale = "C.UTF-8",
+    environment: Readonly<Record<string, string>> = {},
+  ): Promise<Session> {
     const configPath = path.join(directory, ".zaps.mts");
     fs.writeFileSync(
       configPath,
@@ -213,6 +217,7 @@ describe.skipIf(!hasTmux())("session task lifetimes", () => {
     }
     const response = await runWithEnvironment(
       captureEnvironment({
+        ...environment,
         TMPDIR: process.env.TMPDIR,
         TMUX_TMPDIR: process.env.TMUX_TMPDIR,
         HOME: process.env.HOME,
@@ -446,6 +451,58 @@ describe.skipIf(!hasTmux())("session task lifetimes", () => {
     expect(await paneExists(tail.paneId)).toBe(false);
     expect(await paneExists(long.paneId)).toBe(false);
   });
+
+  it.skipIf(!hasScriptPty())(
+    "completes a real configured popup with a full large captured environment",
+    async () => {
+      client = await attachSizedClient();
+      const report = path.join(directory, "environment.json");
+      const release = path.join(directory, "release-popup");
+      const large = "large captured environment ".repeat(2000);
+      const quoted = "quote'\" $HOME `id`; $(id)\nnext line";
+      const before = new Set(fs.readdirSync(os.tmpdir()));
+      const command = nodeCommand(
+        `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({ large: process.env.POPUP_LARGE, quoted: process.env.POPUP_QUOTED, token: process.env.LIFETIME_TOKEN, stdin: process.stdin.isTTY, stdout: process.stdout.isTTY })); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) clearInterval(timer); }, 20);`,
+        path.join(directory, "popup-environment.cjs"),
+      );
+      const current = await create(
+        `{ services: { idle: { start: "true", detached: true, flags: { start: false } } }, tasks: {
+        popup: { name: 'Popup', popup: true, commands: ${JSON.stringify(command)} }
+      }, hooks: { onBeforeStart: () => lib.task.run('popup') } }`,
+        "C.UTF-8",
+        {
+          ...captureEnvironment(),
+          POPUP_LARGE: large,
+          POPUP_QUOTED: quoted,
+        },
+      );
+      await waitFor(async () => fs.existsSync(report), Boolean);
+      expect(JSON.parse(fs.readFileSync(report, "utf8"))).toEqual({
+        large,
+        quoted,
+        token: "accepted",
+        stdin: true,
+        stdout: true,
+      });
+      const owned = fs
+        .readdirSync(os.tmpdir())
+        .filter((name) => name.startsWith("zaps-terminal-") && !before.has(name));
+      expect(owned).toHaveLength(1);
+      fs.writeFileSync(release, "release");
+      expect(
+        await waitFor(
+          async () => current.taskHistory[0]?.result,
+          (result) => result === "success",
+        ),
+      ).toBe("success");
+      expect(current.taskHistory).toHaveLength(1);
+      expect(configuredCalls.get(current.taskHistory[0]?.runId ?? "")).toBe("completed");
+      for (const name of owned) {
+        expect(fs.existsSync(path.join(os.tmpdir(), name))).toBe(false);
+      }
+      await current.destroy();
+    },
+  );
 
   it.skipIf(!hasScriptPty())(
     "popup client loss fails once without replay and leaves unrelated service operations/reload available",

@@ -212,6 +212,7 @@ class TmuxTerminalOperations {
     const id = Symbol("terminal-lease");
     let active = true;
     let presenting = false;
+    let preparing = false;
     let popupOpen = false;
     let cleanupUncertain = false;
     let popupCompleted = false;
@@ -357,17 +358,25 @@ class TmuxTerminalOperations {
         signal: controller.signal,
         popup: async (options) => {
           checkActive();
-          if (presenting) {
+          if (presenting || preparing) {
             throw new TerminalOperationError("terminal_busy");
           }
+          preparing = true;
+          const launcher = path.join(context.directory, "popup.sh");
+          await writeFile(
+            launcher,
+            `exec /usr/bin/env -- ${Object.entries(env)
+              .map(([key, value]) => shellEscape(`${key}=${value}`))
+              .join(" ")} /bin/sh -c ${shellEscape(options.command)}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          );
+          checkActive();
           const current = await this.resolveClient();
           checkActive();
           if (!sameClient(current, client)) {
             throw new TerminalOperationError("backend_unavailable");
           }
-          if (presenting) {
-            throw new TerminalOperationError("terminal_busy");
-          }
+          preparing = false;
           presenting = true;
           popupOpen = true;
           await Promise.race([
@@ -376,7 +385,7 @@ class TmuxTerminalOperations {
                 ...options,
                 client: client.name,
                 pane: this.dashboardPane,
-                env: { ...env },
+                command: `/bin/sh ${shellEscape(launcher)}`,
                 cwd,
               })
               .then(() => {

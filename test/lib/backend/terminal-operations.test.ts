@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +20,7 @@ import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, rm: vi.fn(original.rm) };
+  return { ...original, rm: vi.fn(original.rm), writeFile: vi.fn(original.writeFile) };
 });
 
 function unresolved(): never {
@@ -119,11 +119,10 @@ describe("terminal operation leases", () => {
     const f = fixture();
     const run = await pending(f);
     expect(f.tmux.displayPopup).toHaveBeenCalledWith({
-      command: "pick",
+      command: expect.stringContaining("popup.sh"),
       client: client.name,
       pane: "%3",
       cwd: "/project",
-      env: { EDITOR: "my-editor --wait", PATH: "/operation/bin" },
     });
     f.popup.resolve();
     await expect(run.result).resolves.toBe("selected");
@@ -131,6 +130,72 @@ describe("terminal operation leases", () => {
     expect(f.tmux.closePopup).not.toHaveBeenCalled();
     await f.operations.dispose();
     expect(f.tmux.closePopup).not.toHaveBeenCalled();
+  });
+
+  it("executes large captured environments and payloads through a private bounded launcher", async () => {
+    const f = fixture();
+    const env = {
+      PATH: "/bin:/usr/bin",
+      LARGE: "x".repeat(40_000),
+      QUOTED: "quote'\" $HOME `id`; $(id)\nnext line",
+      "non-shell-key": "preserved",
+    };
+    const captured = { ...env };
+    let directory = "";
+    f.tmux.displayPopup.mockImplementation(async (options) => {
+      expect(options.env).toBeUndefined();
+      expect(Buffer.byteLength(options.command)).toBeLessThan(1024);
+      expect(options.command).not.toContain(env.QUOTED);
+      const launcherStat = await stat(path.join(directory, "popup.sh"));
+      const directoryStat = await stat(directory);
+      expect(launcherStat.mode % 0o1000).toBe(0o600);
+      expect(directoryStat.mode % 0o1000).toBe(0o700);
+      const actual = execFileSync("/bin/sh", ["-c", options.command], {
+        input: "stdin preserved\n",
+        encoding: "utf8",
+        env: { ...process.env, INHERITED: "tmux environment" },
+      });
+      expect(JSON.parse(actual)).toEqual({
+        ...captured,
+        INHERITED: "tmux environment",
+        input: "stdin preserved\n",
+      });
+    });
+    await f.operations.run({ ...f.request, env }, async (operation) => {
+      ({ directory } = operation);
+      env.LARGE = "changed after capture";
+      const payload = `const fs = require("node:fs"); console.log(JSON.stringify({ PATH: process.env.PATH, LARGE: process.env.LARGE, QUOTED: process.env.QUOTED, "non-shell-key": process.env["non-shell-key"], INHERITED: process.env.INHERITED, input: fs.readFileSync(0, "utf8") }));`;
+      await operation.popup({
+        command: `${shellEscape(process.execPath)} -e ${shellEscape(payload)} # ${"large payload ".repeat(2000)}`,
+      });
+    });
+    await expect(access(directory)).rejects.toThrow();
+  });
+
+  it("does not launch after cancellation during asynchronous popup preparation", async () => {
+    const f = fixture();
+    const prepared = deferred<void>();
+    const release = deferred<void>();
+    const originalWrite =
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    vi.mocked(writeFile).mockImplementationOnce(async (...args) => {
+      await originalWrite.writeFile(...args);
+      prepared.resolve();
+      await release.promise;
+    });
+    let directory = "";
+    const result = outcome(
+      f.operations.run(f.request, async (operation) => {
+        ({ directory } = operation);
+        await operation.popup({ command: "never" });
+      }),
+    );
+    await prepared.promise;
+    f.controller.abort();
+    expect(await result).toMatchObject({ error: { code: "cancelled", launched: false } });
+    release.resolve();
+    await expect(access(directory)).rejects.toThrow();
+    expect(f.tmux.displayPopup).not.toHaveBeenCalled();
   });
 
   it("reserves a single lease across concurrent discovery and leaves the winner open", async () => {
@@ -312,20 +377,20 @@ describe("terminal operation leases", () => {
     await f.operations.run(f.request, async (context) => {
       await editOperationCapture(context, "%9", "Editor");
       content = await readFile(path.join(context.directory, "capture"), "utf8");
+      expect(await readFile(path.join(context.directory, "popup.sh"), "utf8")).toContain(
+        "my-editor --wait",
+      );
       expect(context.env).toEqual(f.request.env);
       expect(Object.isFrozen(context.env)).toBe(true);
     });
     expect(content).toBe(rawHistory);
-    expect(f.tmux.displayPopup.mock.calls[0]?.[0].command).toContain("my-editor --wait");
+    expect(f.tmux.displayPopup.mock.calls[0]?.[0].command).not.toContain("my-editor --wait");
     expect(f.tmux.displayPopup.mock.calls[0]?.[0].command).not.toContain("tmux capture-pane");
     await f.operations.run(
       { ...f.request, env: { EDITOR: "other", PATH: "/other/bin" } },
       async (context) => context.popup({ command: "other" }),
     );
-    expect(f.tmux.displayPopup.mock.calls[1]?.[0].env).toEqual({
-      EDITOR: "other",
-      PATH: "/other/bin",
-    });
+    expect(f.tmux.displayPopup.mock.calls[1]?.[0].env).toBeUndefined();
     expect(f.request.env.EDITOR).toBe("my-editor --wait");
   });
 
@@ -335,13 +400,16 @@ describe("terminal operation leases", () => {
     f.tmux.displayPopup.mockImplementation(async (options) => {
       execFileSync("sh", ["-c", options.command]);
     });
-    const result = await f.operations.run(f.request, async (operation) => {
-      ({ directory } = operation);
-      return runPopupPicker([{ key: "build", name: "Build" }], {
-        operation,
-        buildScript: (input, output) => `cat ${shellEscape(input)} > ${shellEscape(output)}`,
-      });
-    });
+    const result = await f.operations.run(
+      { ...f.request, env: { PATH: process.env.PATH ?? "/bin:/usr/bin" } },
+      async (operation) => {
+        ({ directory } = operation);
+        return runPopupPicker([{ key: "build", name: "Build" }], {
+          operation,
+          buildScript: (input, output) => `cat ${shellEscape(input)} > ${shellEscape(output)}`,
+        });
+      },
+    );
     expect(result).toBe("build");
     await expect(access(directory)).rejects.toThrow();
   });
