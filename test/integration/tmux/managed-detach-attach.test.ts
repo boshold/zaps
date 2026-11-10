@@ -17,6 +17,7 @@ import {
   serviceConfig,
 } from "../helpers/managed.js";
 import { reservePort } from "../helpers/port.js";
+import { ptyEnvironment } from "../helpers/pty.js";
 import { hasBinary, hasScriptPty, hasTmux } from "../helpers/skip.js";
 
 /**
@@ -169,7 +170,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         const raw: ChildProcess = spawn(
           "script",
           ["-qec", `tmux -L zaps attach -t =${session}`, "/dev/null"],
-          { stdio: "ignore" },
+          { env: ptyEnvironment(), stdio: "ignore" },
         );
         try {
           // Either the client shows up, or the session died under it — the
@@ -224,7 +225,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         const client: ChildProcess = spawn(
           "script",
           ["-qec", `tmux -L zaps attach -t ${session}`, "/dev/null"],
-          { stdio: "ignore" },
+          { env: ptyEnvironment(), stdio: "ignore" },
         );
         try {
           const attached = await pollUntil(async () => {

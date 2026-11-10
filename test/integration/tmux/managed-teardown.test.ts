@@ -22,6 +22,7 @@ import {
   serviceConfig,
 } from "../helpers/managed.js";
 import { reservePort } from "../helpers/port.js";
+import { ptyEnvironment } from "../helpers/pty.js";
 import { hasBinary, hasScriptPty, hasTmux } from "../helpers/skip.js";
 
 const execFileAsync = promisify(execFile);
@@ -115,7 +116,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       const { project } = await startManaged();
       const transcript = path.join(project.dir, "outer.log");
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...ptyEnvironment(),
         XDG_RUNTIME_DIR: project.runtimeDir,
         ZAPS_COMMAND: binaryPath,
       };
@@ -157,7 +158,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       const { project, port } = await startManaged();
       const transcript = path.join(project.dir, "outer-ctrl-d.log");
       const env: NodeJS.ProcessEnv = {
-        ...process.env,
+        ...ptyEnvironment(),
         XDG_RUNTIME_DIR: project.runtimeDir,
         ZAPS_COMMAND: binaryPath,
       };

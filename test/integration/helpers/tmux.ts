@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { getEnv } from "#src/lib/env.js";
 import { killSession, newSession, splitPane } from "#src/lib/tmux.js";
 
+import { ptyEnvironment } from "./pty.js";
+
 const execFileAsync = promisify(execFile);
 
 function tmuxSocketArgs(): string[] {
@@ -27,6 +29,7 @@ export async function attachClient(session: string): Promise<AttachedClient> {
   const sockArgs = tmuxSocketArgs();
   const attachCmd = ["tmux", ...sockArgs, "attach", "-t", session].join(" ");
   const proc: ChildProcess = spawn("script", ["-qec", attachCmd, "/dev/null"], {
+    env: ptyEnvironment(),
     stdio: "ignore",
   });
 
