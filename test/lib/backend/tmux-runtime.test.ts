@@ -40,6 +40,7 @@ function fixture(options: PaneCleanupOptions = { readProcessIdentity: async () =
     zapsCommand: "zaps",
     paneFor: () => "%1",
     getDescendantPids: descendants,
+    getProcessMembers: async () => [],
     ...options,
   });
   return { tmux, send, processes, wrappers, runtime, descendants };
@@ -60,8 +61,13 @@ describe("TmuxRuntime", () => {
     expect(await runtime.readOutput(handle, 1)).toEqual([]);
     expect(tmux.capturePane).not.toHaveBeenCalled();
     expect(await runtime.isRunning(handle)).toBe(true);
-    wrappers.exited({ service: "api", executionId: handle.id, code: 127, spawnError: "bad cwd" });
-    wrappers.exited({ service: "api", executionId: handle.id, code: 127 });
+    void wrappers.exited({
+      service: "api",
+      executionId: handle.id,
+      code: 127,
+      spawnError: "bad cwd",
+    });
+    void wrappers.exited({ service: "api", executionId: handle.id, code: 127 });
     expect(events.map((event) => event.kind)).toEqual(["leaderExit"]);
     await runtime.stop(handle);
     expect(events.filter((event) => event.kind !== "output")).toEqual(
@@ -87,12 +93,13 @@ describe("TmuxRuntime", () => {
         if (!executionId) {
           throw new Error("missing execution id");
         }
-        wrappers.exited({ service: "api", executionId, code: 0 });
+        void wrappers.exited({ service: "api", executionId, code: 0 });
         await new Promise<void>((resolve) => {
           acknowledge = resolve;
         });
       });
       const starting = runtime.start(spec);
+      await vi.waitFor(() => expect(send).toHaveBeenCalled());
       acknowledge();
       const handle = await starting;
       await runtime.stop(handle);
@@ -117,7 +124,7 @@ describe("TmuxRuntime", () => {
         if (!executionId) {
           throw new Error("missing execution id");
         }
-        wrappers.exited({ service: "api", executionId, code: 0 });
+        void wrappers.exited({ service: "api", executionId, code: 0 });
         await new Promise<void>((resolve) => {
           acknowledge = resolve;
         });
@@ -159,7 +166,7 @@ describe("TmuxRuntime", () => {
       runtime.subscribe((event) => events.push(event));
       const handle = await runtime.start(spec);
       descendants.mockResolvedValue([123, 124]);
-      wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
+      void wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
       expect(events.map((event) => event.kind)).toEqual(["leaderExit"]);
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
       await vi.advanceTimersByTimeAsync(100);
@@ -183,7 +190,7 @@ describe("TmuxRuntime", () => {
       runtime.subscribe((event) => events.push(event));
       const handle = await runtime.start(spec);
       descendants.mockResolvedValue([123, 124]);
-      wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
+      void wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
       await vi.advanceTimersByTimeAsync(5000);
       expect(events.filter((event) => event.kind === "exit")).toEqual([
         expect.objectContaining({
@@ -205,7 +212,7 @@ describe("TmuxRuntime", () => {
     await runtime.stop(first);
     const second = await runtime.start({ ...spec, generation: 2 });
     expect(wrappers.resolve({ service: "api", executionId: first.id })).toBeUndefined();
-    wrappers.exited({ service: "api", executionId: first.id, code: 1 });
+    void wrappers.exited({ service: "api", executionId: first.id, code: 1 });
     await runtime.stop(first);
     expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1);
     expect(await runtime.isRunning(second)).toBe(true);
@@ -244,10 +251,7 @@ describe("TmuxRuntime", () => {
     try {
       const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
       const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
-      const identities = new Map([
-        [root.pid, root],
-        [child.pid, child],
-      ]);
+      const identities = new Map([[root.pid, root]]);
       const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
         identities.delete(pid);
       });
@@ -257,6 +261,7 @@ describe("TmuxRuntime", () => {
       });
       descendants.mockImplementation(async () => [...identities.keys()]);
       const handle = await runtime.start(spec);
+      identities.set(child.pid, child);
       const stopping = runtime.stop(handle);
       await vi.advanceTimersByTimeAsync(4999);
       expect(kill).not.toHaveBeenCalled();
@@ -275,10 +280,7 @@ describe("TmuxRuntime", () => {
     try {
       const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
       const child: ProcessIdentity = { pid: 124, startTime: "original", pgid: 124, sid: 123 };
-      const identities = new Map([
-        [root.pid, root],
-        [child.pid, child],
-      ]);
+      const identities = new Map([[root.pid, root]]);
       const kill = vi.fn();
       const { runtime, descendants } = fixture({
         readProcessIdentity: async (pid) => identities.get(pid) ?? null,
@@ -286,6 +288,7 @@ describe("TmuxRuntime", () => {
       });
       descendants.mockResolvedValue([123, 124]);
       const handle = await runtime.start(spec);
+      identities.set(child.pid, child);
       const stopped = expect(runtime.stop(handle)).rejects.toThrow("identity unverifiable");
       await vi.advanceTimersByTimeAsync(2500);
       identities.set(124, { ...child, startTime: "reused" });
@@ -305,10 +308,7 @@ describe("TmuxRuntime", () => {
     try {
       const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
       const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
-      const identities = new Map([
-        [root.pid, root],
-        [child.pid, child],
-      ]);
+      const identities = new Map([[root.pid, root]]);
       const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
         identities.delete(pid);
       });
@@ -318,6 +318,7 @@ describe("TmuxRuntime", () => {
       });
       descendants.mockResolvedValue([123, 124]);
       const handle = await runtime.start(spec);
+      identities.set(child.pid, child);
       const stopping = runtime.stop(handle);
       await vi.advanceTimersByTimeAsync(100);
       vi.mocked(tmux.paneExists).mockResolvedValue(false);
@@ -340,11 +341,15 @@ describe("TmuxRuntime", () => {
         complete = resolve;
       });
       let blockAt = Infinity;
+      let launched = false;
       const kill = vi.fn();
       const { runtime, descendants } = fixture({
         readProcessIdentity: async (pid) => {
           if (pid === 123) {
             return root;
+          }
+          if (!launched) {
+            return null;
           }
           return Date.now() >= blockAt ? pending : child;
         },
@@ -352,6 +357,7 @@ describe("TmuxRuntime", () => {
       });
       descendants.mockResolvedValue([123, 124]);
       const handle = await runtime.start(spec);
+      launched = true;
       blockAt = Date.now() + 5000;
       const stopped = expect(runtime.stop(handle)).rejects.toThrow("termination deadline exceeded");
       await vi.advanceTimersByTimeAsync(6000);
@@ -403,7 +409,7 @@ describe("TmuxRuntime", () => {
       await vi.advanceTimersByTimeAsync(5000);
       await stopped;
       expect(await runtime.isRunning(handle)).toBe(true);
-      wrappers.exited({ service: "api", executionId: handle.id, code: 0 });
+      void wrappers.exited({ service: "api", executionId: handle.id, code: 0 });
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
       descendants.mockResolvedValue([123]);
       await runtime.stop(handle);
@@ -575,7 +581,7 @@ describe("TmuxRuntime", () => {
       });
       const first = await runtime.start(spec);
       await vi.advanceTimersByTimeAsync(250);
-      wrappers.exited({ service: "api", executionId: first.id, code: 0 });
+      void wrappers.exited({ service: "api", executionId: first.id, code: 0 });
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
       await vi.advanceTimersByTimeAsync(0);
       finishCapture("final old output");
@@ -617,8 +623,8 @@ describe("TmuxRuntime", () => {
     const exited = vi.fn();
     registry.registerLegacy("api", info, exited);
     expect(registry.resolve({ service: "api" })).toEqual(info);
-    registry.exited({ service: "api", code: 0 });
-    registry.exited({ service: "api", code: 0 });
+    void registry.exited({ service: "api", code: 0 });
+    void registry.exited({ service: "api", code: 0 });
     expect(exited).toHaveBeenCalledTimes(1);
     expect(
       wrapperIdentitySchema.safeParse({ service: "api", executionId: "malformed" }).success,

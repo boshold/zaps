@@ -35,6 +35,7 @@ class TmuxSessionBackend implements SessionBackend {
   private readonly options: TmuxSessionOptions;
   private paneMap: Record<string, string> = {};
   private focusPane?: string;
+  private lastPublished?: string;
   private layout?: LayoutNode;
   private readonly listeners = new Set<(view: PresentationSnapshot) => void>();
   private readonly reflow: LayoutReflow;
@@ -66,6 +67,9 @@ class TmuxSessionBackend implements SessionBackend {
     this.reflow = new LayoutReflow({
       tmux: options.tmux,
       getLayout: () => this.layout,
+      onPaneInserted: () => this.publish(),
+      onPaneRemoved: () => this.publish(),
+      onPaneInsertFailed: () => this.publish(),
       getPaneMap: () => this.paneMap,
       getWindowTarget: () => this.options.host.tmuxWindow,
     });
@@ -77,7 +81,7 @@ class TmuxSessionBackend implements SessionBackend {
     paneMap: Record<string, string>,
   ): TmuxSessionBackend {
     const backend = new TmuxSessionBackend(options);
-    backend.paneMap = paneMap;
+    backend.paneMap = { ...paneMap };
     return backend;
   }
 
@@ -288,7 +292,15 @@ class TmuxSessionBackend implements SessionBackend {
   }
 
   private publish(): void {
+    if (this.focusPane && !Object.values(this.paneMap).includes(this.focusPane)) {
+      this.focusPane = this.paneMap["@tui"];
+    }
     const view = this.getPresentation();
+    const serialized = JSON.stringify(view);
+    if (serialized === this.lastPublished) {
+      return;
+    }
+    this.lastPublished = serialized;
     for (const listener of this.listeners) {
       listener(view);
     }

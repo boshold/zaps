@@ -152,6 +152,25 @@ function sameProcess(expected: ProcessIdentity, actual: ProcessIdentity): boolea
   );
 }
 
+function includeDescendantSessions(
+  rows: readonly { pid: number; sid: ProcessSessionId }[],
+  result: Set<number>,
+  platform: NodeJS.Platform,
+): void {
+  if (platform !== "linux") {
+    return;
+  }
+  for (const row of rows) {
+    if (result.has(row.pid) && row.sid === row.pid) {
+      for (const member of rows) {
+        if (member.sid === row.sid) {
+          result.add(member.pid);
+        }
+      }
+    }
+  }
+}
+
 function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {}) {
   const deps: ProcessInspectionDeps = {
     platform: overrides.platform ?? process.platform,
@@ -269,6 +288,37 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     return rows;
   }
 
+  // Candidates only: callers must verify recorded birth identities before signalling.
+  async function getProcessMembers(identity: ProcessIdentity): Promise<ProcessIdentity[]> {
+    const members: ProcessIdentity[] = [];
+    for (const row of await processTable()) {
+      if (row.sid !== identity.sid) {
+        continue;
+      }
+      const member = await readProcessIdentity(row.pid);
+      if (member && member.pgid === identity.pgid && member.sid === identity.sid) {
+        members.push(member);
+      }
+    }
+    return members;
+  }
+
+  async function includePaneGroup(
+    rootPid: number,
+    rootSession: ProcessSessionId | undefined,
+    result: Set<number>,
+  ): Promise<void> {
+    if (deps.platform !== "linux" || rootSession === undefined || rootSession === rootPid) {
+      return;
+    }
+    const identity = await readProcessIdentity(rootPid);
+    if (identity?.pgid === rootPid) {
+      for (const member of await getProcessMembers(identity)) {
+        result.add(member.pid);
+      }
+    }
+  }
+
   async function getDescendantPids(rootPid: number): Promise<number[]> {
     const rows = await processTable();
     const result = new Set<number>();
@@ -299,22 +349,9 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
         }
       }
     }
+    includeDescendantSessions(rows, result, deps.platform);
+    await includePaneGroup(rootPid, root?.sid, result);
     return [...result];
-  }
-
-  // Candidates only: callers must verify recorded birth identities before signalling.
-  async function getProcessMembers(identity: ProcessIdentity): Promise<ProcessIdentity[]> {
-    const members: ProcessIdentity[] = [];
-    for (const row of await processTable()) {
-      if (row.sid !== identity.sid) {
-        continue;
-      }
-      const member = await readProcessIdentity(row.pid);
-      if (member && member.pgid === identity.pgid && member.sid === identity.sid) {
-        members.push(member);
-      }
-    }
-    return members;
   }
 
   async function getListeningPorts(pids: readonly number[]): Promise<number[]> {

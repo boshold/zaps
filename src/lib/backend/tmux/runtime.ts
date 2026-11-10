@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 
-import { z } from "zod";
+import type { z } from "zod";
 
 import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { TmuxOutputProducer } from "#src/lib/backend/tmux/output.js";
 import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type { PaneCleanupOptions, PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
+import {
+  execInfoSchema,
+  wrapperExitSchema,
+  wrapperIdentitySchema,
+} from "#src/lib/backend/tmux/wrapper-schema.js";
+import type { ExecInfo, WrapperExit } from "#src/lib/backend/tmux/wrapper-schema.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -15,28 +21,13 @@ import type {
 import { shellEscape } from "#src/lib/service/env.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
-const wrapperIdentitySchema = z.object({
-  service: z.string().min(1),
-  executionId: z.uuid().optional(),
-});
-const wrapperExitSchema = wrapperIdentitySchema.extend({
-  code: z.number().int(),
-  signal: z.string().nullable().optional(),
-  spawnError: z.string().optional(),
-});
-const execInfoSchema = z.object({
-  command: z.string(),
-  cwd: z.string(),
-  env: z.record(z.string(), z.string()),
-});
-type ExecInfo = z.infer<typeof execInfoSchema>;
-type WrapperExit = z.infer<typeof wrapperExitSchema>;
 interface Registration {
   handle: ExecutionHandle;
   service: string;
   legacy: boolean;
   info?: ExecInfo;
-  exited: (exit: WrapperExit) => void;
+  exited: (exit: WrapperExit) => void | Promise<void>;
+  started?: (pid: number, memberPid?: number) => Promise<void>;
 }
 
 class WrapperRegistry {
@@ -49,6 +40,7 @@ class WrapperRegistry {
     info: ExecInfo,
     exited: Registration["exited"],
     legacy = false,
+    started?: (pid: number, memberPid?: number) => Promise<void>,
   ): void {
     const parsed = execInfoSchema.parse(info);
     const previous = this.current.get(service);
@@ -62,6 +54,7 @@ class WrapperRegistry {
       info: parsed,
       exited,
       legacy,
+      started,
     });
   }
 
@@ -93,13 +86,32 @@ class WrapperRegistry {
     return info;
   }
 
-  public exited(exit: WrapperExit): void {
+  public async started(
+    identity: z.infer<typeof wrapperIdentitySchema>,
+    pid: number,
+    memberPid?: number,
+  ): Promise<void> {
+    const record = this.find(identity);
+    if (!record?.started) {
+      throw new Error("No owned wrapper launch");
+    }
+    await record.started(pid, memberPid);
+    if (this.find(identity) !== record) {
+      throw new Error("Stale wrapper launch");
+    }
+  }
+
+  public tracks(identity: z.infer<typeof wrapperIdentitySchema>): boolean {
+    return Boolean(this.find(identity)?.started);
+  }
+
+  public async exited(exit: WrapperExit): Promise<void> {
     const record = this.find(exit);
     if (!record) {
       return;
     }
     this.remove(record.handle);
-    record.exited(exit);
+    await record.exited(exit);
   }
 
   public remove(handle: ExecutionHandle): void {
@@ -208,11 +220,21 @@ class TmuxRuntime implements RuntimeDriver {
         handle,
         spec.unitId,
         { command: spec.command, cwd: spec.cwd, env: { ...spec.env } },
-        (exit) => {
+        async (exit) => {
           record.wrapperExit = exit;
           this.publishLeader(record, exit);
           if (!record.stopping) {
-            void this.finishExited(record);
+            await this.finishExited(record);
+          }
+        },
+        false,
+        async (pid, memberPid) => {
+          if (record.stopping || this.lookup(handle) !== record) {
+            throw new Error("Wrapper launch cancelled");
+          }
+          await this.cleanup.register(record.ownership, pid, memberPid);
+          if (record.stopping || this.lookup(handle) !== record) {
+            throw new Error("Wrapper launch cancelled");
           }
         },
       );
@@ -250,6 +272,7 @@ class TmuxRuntime implements RuntimeDriver {
               .map(([key, value]) => shellEscape(`${key}=${value}`))
               .join(" ")} sh -c ${shellEscape(spec.command)}`;
       }
+      await record.ownership;
       await this.options.tmux.sendKeys(pane, command);
     } catch (error) {
       if (this.lookup(handle) === record && record.output) {
@@ -333,7 +356,7 @@ class TmuxRuntime implements RuntimeDriver {
       unitId: record.handle.unitId,
       generation: record.handle.generation,
       code: exit?.code ?? null,
-      signal: exit?.signal ?? (record.stopping ? "SIGINT" : null),
+      signal: exit === undefined && record.stopping ? "SIGINT" : (exit?.signal ?? null),
       ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
     });
   }
@@ -349,7 +372,7 @@ class TmuxRuntime implements RuntimeDriver {
       unitId: record.handle.unitId,
       generation: record.handle.generation,
       code: exit?.code ?? null,
-      signal: exit?.signal ?? (record.stopping ? "SIGINT" : null),
+      signal: exit === undefined && record.stopping ? "SIGINT" : (exit?.signal ?? null),
       ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
       ...(cleanupError === undefined ? {} : { cleanupError }),
     });
@@ -404,7 +427,10 @@ class TmuxRuntime implements RuntimeDriver {
       return false;
     }
     const root = await this.options.tmux.panePid(record.pane);
-    const descendants = await this.getDescendantPids(root);
+    const descendants = await this.cleanup.candidates(
+      record.ownership,
+      await this.getDescendantPids(root),
+    );
     return descendants.some((pid) => pid !== root);
   }
 

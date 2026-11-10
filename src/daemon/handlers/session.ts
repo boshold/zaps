@@ -9,6 +9,7 @@ import {
   wrapperExitSchema,
   wrapperIdentitySchema,
 } from "#src/lib/backend/tmux/runtime.js";
+import { wrapperStartedSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
@@ -609,7 +610,25 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, `No exec info for service: ${service}`);
     }
     session.execInfo.delete(service);
-    return ipcOk(req.id, { ...info, env: { ...session.env, ...info.env } });
+    return ipcOk(req.id, {
+      ...info,
+      ...(serviceWrappers(session).tracks(parsed.data) ? { trackOwnership: true } : {}),
+      env: { ...session.env, ...info.env },
+    });
+  },
+
+  async "exec-service.started"(req, store) {
+    const session = getSession(req, store);
+    const parsed = wrapperStartedSchema.safeParse(req.params);
+    if (!session || !parsed.success) {
+      return ipcErr(req.id, "Invalid wrapper launch");
+    }
+    try {
+      await serviceWrappers(session).started(parsed.data, parsed.data.pid, parsed.data.memberPid);
+      return ipcOk(req.id, { ok: true });
+    } catch {
+      return ipcErr(req.id, "Wrapper launch ownership unavailable");
+    }
   },
 
   async "exec-service.exited"(req, store) {
@@ -621,7 +640,7 @@ export const sessionHandlers: Record<
     if (!parsed.success) {
       return ipcErr(req.id, "Invalid wrapper exit");
     }
-    serviceWrappers(session).exited(parsed.data);
+    await serviceWrappers(session).exited(parsed.data);
     return ipcOk(req.id, { ok: true });
   },
 
