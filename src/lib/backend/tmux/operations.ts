@@ -445,10 +445,17 @@ class TmuxTerminalOperations {
     this.registry.detaching.add(key);
     try {
       const lease = this.leases.get(client.name);
-      if (lease && (lease.manager !== this.manager || !sameOwner(owner, lease.owner))) {
-        throw new TerminalOperationError("backend_unavailable");
+      if (lease) {
+        const sameSessionTask =
+          lease.owner.kind === "task" && lease.owner.sessionId === owner.sessionId;
+        if (
+          lease.manager !== this.manager ||
+          (!sameOwner(owner, lease.owner) && !sameSessionTask)
+        ) {
+          throw new TerminalOperationError("backend_unavailable");
+        }
+        await settleLease(lease);
       }
-      await this.cancelOwner(owner);
       const current = await this.resolveClient();
       if (
         this.closed ||

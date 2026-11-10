@@ -12,6 +12,7 @@ import {
   TmuxTerminalLeaseRegistry,
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
+import type { OperationTmux } from "#src/lib/backend/tmux/operations.js";
 import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
@@ -1859,6 +1860,92 @@ describe("bound host detach", () => {
     expect(response.error).toBeDefined();
     expect(f.full.removeSubscriber).not.toHaveBeenCalled();
   });
+
+  it.each(["success", "moved", "close-failed"])(
+    "task popup detach %s preserves binding until success",
+    async (mode) => {
+      const f = fixture();
+      const client = {
+        name: "/dev/pts/42",
+        pid: 42,
+        sessionId: "$1",
+        sessionName: "owned",
+        windowId: "@2",
+      };
+      let finishPopup: () => void = vi.fn();
+      const popup = new Promise<void>((resolve) => {
+        finishPopup = resolve;
+      });
+      const tmux = {
+        getSocket: () => "detach-task",
+        listClients: vi.fn(async () => [{ ...client }]),
+        displayMessage: vi.fn(async () => "$1\towned\t@2"),
+        displayPopup: vi.fn(async () => popup),
+        closePopup: vi.fn(async () => {
+          if (mode === "close-failed") {
+            throw new Error("close failed");
+          }
+          if (mode === "moved") {
+            tmux.listClients.mockResolvedValue([{ ...client, windowId: "@other" }]);
+          }
+        }),
+        capturePaneHistory: vi.fn(async () => ""),
+        detachClient: vi.fn(async () => undefined),
+      } satisfies OperationTmux;
+      const operations = new TmuxTerminalOperations(
+        tmux,
+        "owned",
+        "%3",
+        new TmuxTerminalLeaseRegistry(),
+      );
+      const taskController = new AbortController();
+      const run = operations.run(
+        {
+          owner: { kind: "task", sessionId: f.full.id, runId: "hook" },
+          cwd: "/project",
+          env: {},
+          signal: taskController.signal,
+        },
+        async (context) => {
+          await context.popup({ command: "hook" });
+        },
+      );
+      const result = (async () => {
+        try {
+          return await run;
+        } catch (error) {
+          return error;
+        }
+      })();
+      await vi.waitFor(() => expect(tmux.displayPopup).toHaveBeenCalledTimes(1));
+      f.detachHost.mockImplementation(async () => {
+        await operations.detachHost(
+          { kind: "ui", sessionId: f.full.id, socketId: f.binding.socketId },
+          () => !f.binding.controller.signal.aborted,
+        );
+      });
+      const response = await f.invoke();
+      if (mode === "success") {
+        expect(response).toMatchObject({ result: { detached: true } });
+        expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+        expect(tmux.detachClient).toHaveBeenCalledExactlyOnceWith(client.name);
+      } else {
+        expect(response).toMatchObject({ errorCode: "backend_unavailable" });
+        expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+        expect(f.full.getUiBinding()).toBe(f.binding);
+        expect(f.binding.controller.signal.aborted).toBe(false);
+        expect(tmux.detachClient).not.toHaveBeenCalled();
+      }
+      expect(await result).toMatchObject({
+        code: mode === "close-failed" ? "terminal_busy" : "cancelled",
+      });
+      expect(taskController.signal.aborted).toBe(false);
+      expect(tmux.closePopup).toHaveBeenCalledExactlyOnceWith(client.name);
+      finishPopup();
+      await operations.dispose();
+      expect(tmux.displayPopup).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it.each([
     [false, false],

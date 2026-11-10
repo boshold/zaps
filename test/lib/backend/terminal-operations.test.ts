@@ -570,20 +570,51 @@ describe("managed host detach", () => {
     await f.operations.dispose();
   });
 
-  it("does not close task-owned presentation", async () => {
+  it("settles the same-session task popup once before detaching without replay", async () => {
     const f = fixture();
     const run = await pending({
       ...f,
       request: { ...f.request, owner: { kind: "task", runId: "run", sessionId: "session-a" } },
     });
-    await expect(f.operations.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
-      code: "backend_unavailable",
-    });
-    expect(f.tmux.closePopup).not.toHaveBeenCalled();
-    expect(f.tmux.detachClient).not.toHaveBeenCalled();
+    await f.operations.detachHost(f.request.owner, () => true);
+    expect(await run.outcome).toMatchObject({ error: { code: "cancelled", launched: true } });
+    expect(f.tmux.closePopup).toHaveBeenCalledExactlyOnceWith(client.name);
+    expect(f.tmux.detachClient).toHaveBeenCalledExactlyOnceWith(client.name);
+    expect(f.tmux.displayPopup).toHaveBeenCalledTimes(1);
     f.popup.resolve();
-    await run.result;
+    await f.operations.dispose();
+    expect(f.tmux.displayPopup).toHaveBeenCalledTimes(1);
+    expect(f.tmux.closePopup).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["session", "manager"])(
+    "preserves task presentation owned by another %s",
+    async (scope) => {
+      const f = fixture();
+      const run = await pending({
+        ...f,
+        request: {
+          ...f.request,
+          owner: {
+            kind: "task",
+            runId: "run",
+            sessionId: scope === "session" ? "other" : "session-a",
+          },
+        },
+      });
+      const detacher =
+        scope === "manager"
+          ? new TmuxTerminalOperations(f.tmux, "owned", "%3", f.registry)
+          : f.operations;
+      await expect(detacher.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
+        code: "backend_unavailable",
+      });
+      expect(f.tmux.closePopup).not.toHaveBeenCalled();
+      expect(f.tmux.detachClient).not.toHaveBeenCalled();
+      f.popup.resolve();
+      await run.result;
+    },
+  );
 });
 
 it("reserves the shared client while detach cleanup awaits closure", async () => {
@@ -607,4 +638,40 @@ it("reserves the shared client while detach cleanup awaits closure", async () =>
   await run.outcome;
   f.popup.resolve();
   expect(f.tmux.detachClient).toHaveBeenCalledTimes(1);
+});
+
+it("detaches the owning task popup without cancelling another session's lease", async () => {
+  const f = fixture();
+  const g = fixture();
+  g.tmux.listClients.mockResolvedValue([
+    {
+      ...client,
+      name: "/dev/pts/43",
+      pid: 43,
+      sessionId: "$2",
+      sessionName: "other",
+      windowId: "@3",
+    },
+  ]);
+  g.tmux.displayMessage.mockResolvedValue("$2\tother\t@3");
+  const other = new TmuxTerminalOperations(g.tmux, "other", "%4", f.registry);
+  const unrelated = await pending({
+    ...g,
+    operations: other,
+    request: { ...g.request, owner: { kind: "task", sessionId: "session-b", runId: "other" } },
+  });
+  const owned = await pending({
+    ...f,
+    request: { ...f.request, owner: { kind: "task", sessionId: "session-a", runId: "owned" } },
+  });
+  await f.operations.detachHost(f.request.owner, () => true);
+  expect(await owned.outcome).toMatchObject({ error: { code: "cancelled", launched: true } });
+  expect(unrelated.context.signal.aborted).toBe(false);
+  expect(g.tmux.closePopup).not.toHaveBeenCalled();
+  expect(g.tmux.detachClient).not.toHaveBeenCalled();
+  g.popup.resolve();
+  await expect(unrelated.result).resolves.toBe("selected");
+  f.popup.resolve();
+  await f.operations.dispose();
+  await other.dispose();
 });
