@@ -3,7 +3,7 @@
 ## Commands
 
 ```bash
-pnpm check                    # full CI: typecheck + lint:fix + build + build:native + test:coverage
+pnpm check                    # local gate: typecheck + lint:fix + build + build:native + test:coverage
 pnpm test                     # unit tests (vitest)
 pnpm test -- path/to/file     # single test file
 pnpm test:integration         # integration tests (sequential, 60s timeout, needs tmux)
@@ -17,13 +17,15 @@ pnpm build:native             # bun native binary → dist/zaps
 
 **Always run `pnpm check` before finishing your task.**
 
+Run `pnpm test:integration` separately to verify tmux, Docker, and native binary behavior.
+
 ## Architecture
 
 **ZAPS** (Zero Ass Pain Setup) — tmux session manager that orchestrates dev services with a React/Ink TUI.
 
 ### Core layers
 
-- **CLI** (`src/cli.tsx`) — Commander.js commands, entry point
+- **CLI** (`src/cli.tsx`): cleye commands, entry point
 - **Daemon** (`src/daemon/`) — background Unix socket IPC server managing sessions
 - **Service Manager** (`src/lib/service/manager.ts`) — lifecycle, dependency graph, ready detection, crash recovery
 - **TUI** (`src/components/`) — React/Ink terminal UI with Dashboard, LogView, TasksView
@@ -35,7 +37,7 @@ pnpm build:native             # bun native binary → dist/zaps
 
 - Path alias: `#src/*` → `./src/*`
 - IPC: JSON over Unix sockets (ndjson for log streaming)
-- JSX runtime: `react-jsx` (React 19 + Ink 7)
+- JSX runtime: `react-jsx` (React 19 + Ink 8)
 - Config discovery walks up from CWD, first match wins: `.local.zaps.mts`, `local.zaps.mts`, `.local.zaps.ts`, `local.zaps.ts`, `.zaps.mts`, `.zaps.ts`
 
 ## Skills & README
@@ -48,9 +50,9 @@ pnpm build:native             # bun native binary → dist/zaps
 
 ## Tech
 
-- TypeScript 6 (ES2023, strict, ESM)
-- React 19 + Ink 7 (TUI)
+- TypeScript 7 (ES2023, strict, ESM)
+- React 19 + Ink 8 (TUI)
 - Zod 4 (config validation)
-- Commander 15 (CLI)
-- Vitest 4 (testing), oxlint/oxfmt (lint/format)
+- cleye (CLI)
+- Vitest 5 (testing), oxlint/oxfmt (lint/format)
 - esbuild (bundle), bun (native binary)

@@ -7,9 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Can flip the dimensions and fire a "resize" the way a real terminal would.
 const fakeStdout = vi.hoisted(() => {
   const listeners = new Set<() => void>();
+  const dimensions: { columns?: unknown; rows?: unknown } = { columns: 80, rows: 24 };
   return {
-    columns: 80,
-    rows: 24,
+    ...dimensions,
     on(event: string, fn: () => void) {
       if (event === "resize") {
         listeners.add(fn);
@@ -63,8 +63,22 @@ describe("useDimensions", () => {
   });
 
   it("falls back to 80x24 when stdout has no dimensions", () => {
-    fakeStdout.columns = undefined as unknown as number;
-    fakeStdout.rows = undefined as unknown as number;
+    delete fakeStdout.columns;
+    delete fakeStdout.rows;
+    const { lastFrame } = render(<Probe />);
+    expect(lastFrame()).toContain("80x24");
+  });
+
+  it("falls back independently when only one dimension is available", () => {
+    fakeStdout.columns = 120;
+    delete fakeStdout.rows;
+    const { lastFrame } = render(<Probe />);
+    expect(lastFrame()).toContain("120x24");
+  });
+
+  it("ignores non-numeric dimensions on writable streams", () => {
+    fakeStdout.columns = "120";
+    fakeStdout.rows = "40";
     const { lastFrame } = render(<Probe />);
     expect(lastFrame()).toContain("80x24");
   });
