@@ -4,8 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { runWithEnvironment } from "#src/lib/request-context.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import { splitPane } from "#src/lib/tmux.js";
 
@@ -14,7 +15,7 @@ import { composeDown, writeComposeFile } from "../helpers/docker.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasDocker, hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { createTestSession } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -29,6 +30,38 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
   let session: TestSession;
   let mgr: ServiceManager;
   let tmpDir: string;
+
+  async function createSession(): Promise<TestSession> {
+    const created = await createTestSession();
+    await execFileAsync("tmux", [
+      "-L",
+      testTmuxSocket() ?? "zaps-test",
+      "set-option",
+      "-t",
+      created.name,
+      "default-shell",
+      "/bin/sh",
+    ]);
+    return created;
+  }
+
+  async function startGroup(manager: ServiceManager): Promise<void> {
+    await runWithEnvironment(
+      {
+        PATH: process.env.PATH ?? "",
+        HOME: os.homedir(),
+        ZAPS_TMUX_SOCKET: testTmuxSocket() ?? "zaps-test",
+        ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
+        ...(process.env.DOCKER_CONTEXT ? { DOCKER_CONTEXT: process.env.DOCKER_CONTEXT } : {}),
+        ...(process.env.DOCKER_CONFIG ? { DOCKER_CONFIG: process.env.DOCKER_CONFIG } : {}),
+        ...(process.env.XDG_RUNTIME_DIR ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR } : {}),
+      },
+      async () => {
+        await manager.startService("redis");
+        await manager.startService("memcached");
+      },
+    );
+  }
 
   afterEach(async () => {
     try {
@@ -46,7 +79,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
   });
 
   it("expanded services share a pane and reach ready independently", async () => {
-    session = await createTestSession();
+    session = await createSession();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-expand-"));
 
     const composeFile = await writeComposeFile(tmpDir, {
@@ -77,7 +110,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
     });
 
     mgr = new ServiceManager(config, paneMap, deps, session.name);
-    await mgr.startAll();
+    await startGroup(mgr);
 
     expect(mgr.getStatus("redis").state).toBe("ready");
     expect(mgr.getStatus("memcached").state).toBe("ready");
@@ -88,7 +121,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
   });
 
   it("stops individual container without killing pane", async () => {
-    session = await createTestSession();
+    session = await createSession();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-expand-"));
 
     const composeFile = await writeComposeFile(tmpDir, {
@@ -118,7 +151,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
     });
 
     mgr = new ServiceManager(config, paneMap, deps, session.name);
-    await mgr.startAll();
+    await startGroup(mgr);
 
     // Stop memcached only — redis should remain ready
     await mgr.stopService("memcached");
@@ -127,8 +160,8 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
     expect(mgr.getStatus("redis").state).toBe("ready");
   });
 
-  it("restarts individual container in group", async () => {
-    session = await createTestSession();
+  it("preserves one shared command across owner and non-owner controls", async () => {
+    session = await createSession();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-expand-"));
 
     const composeFile = await writeComposeFile(tmpDir, {
@@ -157,13 +190,86 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
-    await mgr.startAll();
-
-    // Restart memcached — should use docker compose restart
-    await mgr.restartService("memcached");
-
+    let launches = 0;
+    let disposals = 0;
+    const logs = vi.fn();
+    config.project.services.memcached.onOutput = logs;
+    mgr = new ServiceManager(
+      config,
+      paneMap,
+      {
+        ...deps,
+        runtime: (targets) => {
+          const runtime = deps.runtime(targets);
+          const start = runtime.start.bind(runtime);
+          const stop = runtime.stop.bind(runtime);
+          vi.spyOn(runtime, "start").mockImplementation(async (spec) => {
+            launches += 1;
+            return start(spec);
+          });
+          vi.spyOn(runtime, "stop").mockImplementation(async (handle) => {
+            disposals += 1;
+            return stop(handle);
+          });
+          return runtime;
+        },
+      },
+      session.name,
+    );
+    await startGroup(mgr);
+    const ids = async () => {
+      const { stdout } = await execFileAsync(
+        "docker",
+        ["compose", "-f", composeFile, "ps", "-q", "memcached"],
+        { cwd: tmpDir },
+      );
+      return stdout.trim();
+    };
+    const siblingId = await ids();
+    expect(siblingId).not.toBe("");
+    await mgr.restartService("redis");
+    await mgr.stopService("redis");
     expect(mgr.getStatus("memcached").state).toBe("ready");
-    expect(mgr.getStatus("redis").state).toBe("ready");
+    expect(await ids()).toBe(siblingId);
+    const logMarker = `owner-stopped-${Date.now()}`;
+    await execFileAsync(
+      "docker",
+      [
+        "compose",
+        "-f",
+        composeFile,
+        "exec",
+        "-T",
+        "memcached",
+        "sh",
+        "-c",
+        `echo ${logMarker} > /proc/1/fd/1`,
+      ],
+      { cwd: tmpDir },
+    );
+    await vi.waitFor(() => expect(logs).toHaveBeenCalledWith(expect.stringContaining(logMarker)), {
+      timeout: 10_000,
+    });
+    config.project.services.redis.ready = async () => {
+      throw new Error("member readiness failed");
+    };
+    await mgr.startService("redis");
+    expect(mgr.getStatus("redis")).toMatchObject({
+      state: "error",
+      lastError: "member readiness failed",
+    });
+    expect(mgr.getStatus("memcached").state).toBe("ready");
+    expect(await ids()).toBe(siblingId);
+    delete config.project.services.redis.ready;
+    await mgr.startService("redis");
+    await mgr.restartService("memcached");
+    await mgr.stopService("memcached");
+    await mgr.startService("memcached");
+    expect(launches).toBe(1);
+    expect(disposals).toBe(0);
+    await mgr.stopAll();
+    expect(disposals).toBe(1);
+    expect(mgr.getStatus("redis").state).toBe("stopped");
+    expect(mgr.getStatus("memcached").state).toBe("stopped");
   });
 });

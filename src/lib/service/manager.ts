@@ -50,6 +50,7 @@ interface OwnedExecution {
   requestedStop: boolean;
   leaderExited: boolean;
   finalized: boolean;
+  stoppedMembers?: Set<string>;
 }
 
 interface StartTarget {
@@ -214,6 +215,8 @@ export class ServiceManager extends EventEmitter {
   private readonly runtime: RuntimeDriver;
   private readonly executions = new Map<string, OwnedExecution>();
   private readonly unitGenerations = new Map<string, number>();
+  private readonly memberUnits = new Map<string, string>();
+  private readonly unitMembers = new Map<string, string[]>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -270,6 +273,14 @@ export class ServiceManager extends EventEmitter {
       const status = createServiceStatus(name);
       status.state = "unavailable";
       this.statuses.set(name, status);
+    }
+
+    for (const [name, service] of Object.entries(config.project.services)) {
+      const members = service._combined?.allServices ?? [name];
+      const unitId =
+        members.find((member) => config.project.services[member]?._combined?.isOwner) ?? name;
+      this.memberUnits.set(name, unitId);
+      this.unitMembers.set(unitId, members);
     }
 
     this.restartWithMap = buildRestartWithMap(config.project.services);
@@ -643,28 +654,41 @@ export class ServiceManager extends EventEmitter {
 
     const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
 
+    await this.startExecution(name, serviceConfig, status, controller, sentraEnv);
+    return { noop: false };
+  }
+
+  private async startExecution(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    controller: AbortController,
+    sentraEnv: Record<string, string>,
+  ): Promise<void> {
     const combined = serviceConfig._combined;
-    if (combined && !combined.isOwner) {
-      const [ownerName] = combined.allServices;
-      const ownerStatus = this.statuses.get(ownerName);
-      if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
-        await this.deps.exec(
-          "docker",
-          buildDockerComposeArgs(
-            "start",
-            name,
-            serviceConfig.docker?.file,
-            this.dockerProjectArgs(serviceConfig),
-          ),
-          serviceConfig.cwd ?? this.config.projectDir,
-        );
+    const unitId = this.memberUnits.get(name) ?? name;
+    const execution = this.executions.get(unitId);
+    if (combined && execution) {
+      if (execution.finalized || execution.leaderExited || execution.requestedStop) {
+        throw new Error(`Execution cleanup required for group "${combined.group}"`);
       }
-      await this.finishRuntimeStart(name, ownerName, serviceConfig, status, controller);
+      await this.deps.exec(
+        "docker",
+        buildDockerComposeArgs(
+          "start",
+          name,
+          serviceConfig.docker?.file,
+          this.dockerProjectArgs(serviceConfig),
+        ),
+        serviceConfig.cwd ?? this.config.projectDir,
+      );
+      execution.stoppedMembers?.delete(name);
+      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
+    } else if (combined && !combined.isOwner) {
+      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
     } else {
       await this.launchRuntimeService(name, serviceConfig, status, controller, sentraEnv);
     }
-
-    return { noop: false };
   }
 
   private async launchRuntimeService(
@@ -777,9 +801,7 @@ export class ServiceManager extends EventEmitter {
     if (!execution || execution.generation !== event.generation || execution.finalized) {
       return;
     }
-    const members = this.config.project.services[event.unitId]?._combined?.allServices ?? [
-      event.unitId,
-    ];
+    const members = this.unitMembers.get(event.unitId) ?? [event.unitId];
     if (event.kind === "output") {
       this.handleRuntimeOutput(event, execution, members);
       return;
@@ -802,12 +824,13 @@ export class ServiceManager extends EventEmitter {
     execution: OwnedExecution,
     members: string[],
   ): void {
-    if (execution.leaderExited || execution.requestedStop) {
+    const shared = this.config.project.services[event.unitId]?._combined !== undefined;
+    if (!shared && (execution.leaderExited || execution.requestedStop)) {
       return;
     }
     for (const member of members) {
       const state = this.statuses.get(member)?.state;
-      if (state === "starting" || state === "ready") {
+      if (shared || state === "starting" || state === "ready") {
         this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
       }
     }
@@ -821,22 +844,24 @@ export class ServiceManager extends EventEmitter {
     if (execution.requestedStop) {
       return;
     }
-    const status = this.statuses.get(event.unitId);
-    if (!status) {
-      return;
-    }
+    const members = this.unitMembers.get(event.unitId) ?? [event.unitId];
     if (event.cleanupError) {
-      this.publishCleanupFailure(event.unitId, event.cleanupError);
+      for (const member of members) {
+        this.publishCleanupFailure(member, event.cleanupError);
+      }
       return;
     }
     this.executions.delete(event.unitId);
-    if (status.state === "starting") {
-      status.state = transition(status.state, "error");
-      status.lastError = event.spawnError ?? "Process exited before becoming ready";
-      delete status.readySince;
-      this.emit("stateChange", event.unitId, status);
-    } else if (status.state === "ready") {
-      void this.handleCrash(event.unitId, this.config.project.services[event.unitId], status);
+    for (const member of members) {
+      const status = this.statuses.get(member);
+      if (status?.state === "starting") {
+        status.state = transition(status.state, "error");
+        status.lastError = event.spawnError ?? "Process exited before becoming ready";
+        delete status.readySince;
+        this.emit("stateChange", member, status);
+      } else if (status?.state === "ready") {
+        void this.handleCrash(member, this.config.project.services[member], status);
+      }
     }
   }
 
@@ -887,12 +912,12 @@ export class ServiceManager extends EventEmitter {
       }
       controller.abort();
       let message = error instanceof Error ? error.message : String(error);
-      if (!serviceConfig._combined) {
-        try {
-          await this.stopRuntimeExecution(name);
-        } catch (cleanupError) {
-          message += `; cleanup failed: ${String(cleanupError)}`;
-        }
+      try {
+        await (serviceConfig._combined
+          ? this.stopCombinedService(name, serviceConfig, serviceConfig._combined)
+          : this.stopRuntimeExecution(name));
+      } catch (cleanupError) {
+        message += `; cleanup failed: ${String(cleanupError)}`;
       }
       if (this.lifecycleEpochs.get(name) !== epoch) {
         return;
@@ -1056,7 +1081,7 @@ export class ServiceManager extends EventEmitter {
     // Terminal rows can still own a live execution.
     if (
       status.state === "unavailable" ||
-      (!this.executions.has(name) &&
+      (!this.executions.has(this.memberUnits.get(name) ?? name) &&
         (status.state === "stopped" || status.state === "stopping" || status.state === "error"))
     ) {
       return { noop: true };
@@ -1129,10 +1154,19 @@ export class ServiceManager extends EventEmitter {
 
   /**
    * Stop one member of a combined docker group via `docker compose stop`, then —
-   * once every sibling is stopped — Ctrl-C the owner's pane to tear down the
-   * group's `docker compose up` (E10).
+   * once every sibling is stopped, dispose the shared command.
    */
   private async stopCombinedService(
+    name: string,
+    serviceConfig: ServiceConfig,
+    combined: CombinedServiceMeta,
+  ): Promise<void> {
+    await this.withServiceLock(`@unit:${this.memberUnits.get(name) ?? name}`, async () => {
+      await this.stopCombinedMember(name, serviceConfig, combined);
+    });
+  }
+
+  private async stopCombinedMember(
     name: string,
     serviceConfig: ServiceConfig,
     combined: CombinedServiceMeta,
@@ -1148,21 +1182,26 @@ export class ServiceManager extends EventEmitter {
       serviceConfig.cwd ?? this.config.projectDir,
     );
 
+    const execution = this.executions.get(this.memberUnits.get(name) ?? name);
+    if (execution) {
+      execution.stoppedMembers ??= new Set();
+      execution.stoppedMembers.add(name);
+    }
     const allStopped = combined.allServices.every((sib) => {
       if (sib === name) {
         return true;
       }
       const sibStatus = this.statuses.get(sib);
-      return !sibStatus || sibStatus.state === "stopped" || sibStatus.state === "error";
+      return (
+        execution?.stoppedMembers?.has(sib) ||
+        !sibStatus ||
+        sibStatus.state === "stopped" ||
+        sibStatus.state === "error"
+      );
     });
 
     if (allStopped) {
-      const owner = combined.allServices.find(
-        (member) => this.config.project.services[member]?._combined?.isOwner,
-      );
-      if (owner) {
-        await this.stopRuntimeExecution(owner);
-      }
+      await this.stopRuntimeExecution(this.memberUnits.get(name) ?? name);
     }
   }
 
@@ -1200,10 +1239,10 @@ export class ServiceManager extends EventEmitter {
     const serviceConfig = this.config.project.services[name];
     const combined = serviceConfig?._combined;
 
-    // For combined non-owner: use docker compose restart directly
+    // Live shared commands survive every member restart.
     if (
       combined &&
-      !combined.isOwner &&
+      this.executions.has(this.memberUnits.get(name) ?? name) &&
       (status.state === "ready" || status.state === "starting")
     ) {
       // Abort any pending ready poll and invalidate active monitors so the old

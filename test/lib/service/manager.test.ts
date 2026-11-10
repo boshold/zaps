@@ -2977,6 +2977,42 @@ describe("operation mutex", () => {
 
 // === Combined (expanded docker) services ===
 
+function neutralRuntime(
+  onStart?: (spec: ExecutionSpec, emit: (event: ExecutionEvent) => void) => void,
+): {
+  driver: RuntimeDriver;
+  specs: ExecutionSpec[];
+  emit: (event: ExecutionEvent) => void;
+} {
+  const listeners = new Set<(event: ExecutionEvent) => void>();
+  const specs: ExecutionSpec[] = [];
+  const emit = (event: ExecutionEvent): void => {
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
+  const driver: RuntimeDriver = {
+    start: async (spec) => {
+      specs.push(spec);
+      onStart?.(spec, emit);
+      return {
+        id: `opaque-execution/${spec.unitId}/${spec.generation}`,
+        unitId: spec.unitId,
+        generation: spec.generation,
+      };
+    },
+    stop: vi.fn<RuntimeDriver["stop"]>().mockResolvedValue(),
+    getPid: vi.fn<RuntimeDriver["getPid"]>().mockResolvedValue(4242),
+    readOutput: vi.fn<RuntimeDriver["readOutput"]>().mockResolvedValue(["ready without newline"]),
+    isRunning: vi.fn<RuntimeDriver["isRunning"]>().mockResolvedValue(true),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return { driver, specs, emit };
+}
+
 describe("combined docker services", () => {
   let dockerSpy: ReturnType<typeof vi.fn>;
 
@@ -3071,6 +3107,105 @@ describe("combined docker services", () => {
       expect.arrayContaining(["start", "redis"]),
       expect.any(String),
     );
+  });
+
+  it.each(["postgres", "redis"])(
+    "preserves shared identity and output across %s controls",
+    async (member) => {
+      const runtime = neutralRuntime();
+      vi.mocked(runtime.driver.stop).mockImplementation(async (handle) => {
+        runtime.emit({
+          kind: "output",
+          unitId: handle.unitId,
+          generation: handle.generation,
+          lines: ["final drain"],
+        });
+        runtime.emit({
+          kind: "exit",
+          unitId: handle.unitId,
+          generation: handle.generation,
+          code: 0,
+          signal: null,
+        });
+      });
+      const deps = createMockDeps();
+      deps.runtime = () => runtime.driver;
+      const config = makeCombinedConfig();
+      const sibling = member === "postgres" ? "redis" : "postgres";
+      const siblingOutput = vi.fn();
+      config.project.services[sibling].onOutput = siblingOutput;
+      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      const logs = vi.fn();
+      mgr.on("logLines", logs);
+      await mgr.startAll();
+      await mgr.restartService(member);
+      await mgr.stopService(member);
+      runtime.emit({
+        kind: "output",
+        unitId: "postgres",
+        generation: 1,
+        lines: ["still attached"],
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(logs).toHaveBeenCalledWith(member, ["still attached"]);
+      expect(siblingOutput).toHaveBeenCalledWith("still attached");
+      await mgr.startService(member);
+      expect(runtime.specs).toHaveLength(1);
+      expect(runtime.driver.stop).not.toHaveBeenCalled();
+      expect(mgr.getStatus(sibling).state).toBe("ready");
+      await mgr.stopAll();
+      expect(runtime.driver.stop).toHaveBeenCalledExactlyOnceWith({
+        id: "opaque-execution/postgres/1",
+        unitId: "postgres",
+        generation: 1,
+      });
+      expect(logs).toHaveBeenCalledWith("postgres", ["final drain"]);
+      expect(logs).toHaveBeenCalledWith("redis", ["final drain"]);
+      const batches = logs.mock.calls.length;
+      runtime.emit({
+        kind: "output",
+        unitId: "postgres",
+        generation: 1,
+        lines: ["late stale output"],
+      });
+      expect(logs).toHaveBeenCalledTimes(batches);
+      await mgr.stopAll();
+      expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("cleans failed member readiness while preserving sibling output and unit exits", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const config = makeCombinedConfig();
+    const output = vi.fn();
+    config.project.services.redis.onOutput = output;
+    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    config.project.services.postgres.ready = async () => {
+      throw new Error("member readiness failed");
+    };
+    await mgr.startService("postgres");
+    expect(mgr.getStatus("postgres")).toMatchObject({
+      state: "error",
+      lastError: "member readiness failed",
+    });
+    expect(mgr.getStatus("redis").state).toBe("ready");
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    expect(deps.exec).toHaveBeenLastCalledWith(
+      "docker",
+      expect.arrayContaining(["stop", "postgres"]),
+      expect.any(String),
+    );
+    runtime.emit({ kind: "output", unitId: "postgres", generation: 1, lines: ["healthy sibling"] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(output).toHaveBeenCalledWith("healthy sibling");
+    runtime.emit({ kind: "leaderExit", unitId: "postgres", generation: 1, code: 1, signal: null });
+    runtime.emit({ kind: "exit", unitId: "postgres", generation: 1, code: 1, signal: null });
+    expect(mgr.getStatus("redis").state).toBe("error");
+    mgr.abortStartAll();
   });
 
   it("sets group on status", () => {
@@ -4212,42 +4347,6 @@ describe("startedAt", () => {
     expect(mgr.getStatus("svc").startedAt).toBeGreaterThan(firstStart ?? Infinity);
   });
 });
-
-function neutralRuntime(
-  onStart?: (spec: ExecutionSpec, emit: (event: ExecutionEvent) => void) => void,
-): {
-  driver: RuntimeDriver;
-  specs: ExecutionSpec[];
-  emit: (event: ExecutionEvent) => void;
-} {
-  const listeners = new Set<(event: ExecutionEvent) => void>();
-  const specs: ExecutionSpec[] = [];
-  const emit = (event: ExecutionEvent): void => {
-    for (const listener of listeners) {
-      listener(event);
-    }
-  };
-  const driver: RuntimeDriver = {
-    start: async (spec) => {
-      specs.push(spec);
-      onStart?.(spec, emit);
-      return {
-        id: `opaque-execution/${spec.unitId}/${spec.generation}`,
-        unitId: spec.unitId,
-        generation: spec.generation,
-      };
-    },
-    stop: vi.fn<RuntimeDriver["stop"]>().mockResolvedValue(),
-    getPid: vi.fn<RuntimeDriver["getPid"]>().mockResolvedValue(4242),
-    readOutput: vi.fn<RuntimeDriver["readOutput"]>().mockResolvedValue(["ready without newline"]),
-    isRunning: vi.fn<RuntimeDriver["isRunning"]>().mockResolvedValue(true),
-    subscribe: (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-  };
-  return { driver, specs, emit };
-}
 
 describe("neutral runtime launch", () => {
   it("serializes async output hooks across runtime batches", async () => {
