@@ -27,6 +27,7 @@ import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { Session } from "#src/daemon/session.js";
 import type { SessionCreateParams } from "#src/daemon/session.js";
+import { withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -209,7 +210,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
   const ref: { session: Session | null } = { session: null };
   const detachedChildren: FakeDetachedChild[] = [];
   let nextDetachedPid = 7000;
-  const deps: ServiceManagerDeps = {
+  const deps: ServiceManagerDeps = withServiceRuntime({
     sendKeys,
     sendCtrlC,
     panePid,
@@ -270,7 +271,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
       }
       await ref.session.reflowRemove(name);
     },
-  };
+  });
 
   const manager = new ServiceManager(config, paneMap, deps, testSession.name);
   const params: SessionCreateParams = {

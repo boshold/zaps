@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
+import { serviceRuntimeExited, withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -283,7 +284,7 @@ class DaemonServer implements SessionStore {
 
     // Late-bound ref so storeExecInfo closure can capture session before it's created
     const ref: { session: Session | null } = { session: null };
-    const deps = {
+    const deps = withServiceRuntime({
       sendKeys: tmux.sendKeys,
       sendCtrlC: tmux.sendCtrlC,
       panePid: tmux.panePid,
@@ -311,19 +312,16 @@ class DaemonServer implements SessionStore {
           throw new Error("Missing wrapper registration");
         }
         session.execInfo.set(service, info);
-        const { manager } = session;
         serviceWrappers(session).register(
           { id: executionId, unitId: service, generation },
           service,
           info,
           (exit) =>
-            manager.handleExecExited(
-              service,
-              exit.code,
-              exit.signal ?? null,
-              exit.spawnError,
-              executionId,
-            ),
+            serviceRuntimeExited(deps, executionId, {
+              code: exit.code,
+              signal: exit.signal ?? null,
+              ...(exit.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
+            }),
         );
       },
       sessionId: id,
@@ -374,7 +372,7 @@ class DaemonServer implements SessionStore {
           this.sentraCounter.reset(id, service, startedAt);
         },
       },
-    };
+    });
 
     // Create ServiceManager
     const { ServiceManager } = await import("#src/lib/service/manager.js");

@@ -1,3 +1,4 @@
+import { withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
@@ -16,7 +17,7 @@ import {
 
 import { testTmuxSocket } from "./tmux.js";
 
-export const tmuxDeps = {
+export const tmuxDeps = withServiceRuntime({
   sendKeys,
   sendCtrlC,
   panePid,
@@ -43,7 +44,7 @@ export const tmuxDeps = {
   reflowRemove: async () => {
     /* No-op */
   },
-};
+});
 
 export async function waitForState(
   mgr: ServiceManager,

@@ -65,8 +65,8 @@ export interface ServiceActionResult {
 
 // === Dependency injection interfaces ===
 export interface ReadyDeps {
-  detectPorts: (paneTarget: string) => Promise<number[]>;
-  capturePane: (target: string, lines: number) => Promise<string>;
+  detectPorts: () => Promise<number[]>;
+  readOutput: (tail: number) => Promise<string>;
   cwd?: string;
   composeFile?: string;
   dockerStatus?: (
@@ -81,3 +81,5 @@ export interface ReadyDeps {
    */
   dockerRequireRecreate?: boolean;
 }
+
+export type { DisplayPopupOptions } from "#src/lib/tmux.js";

@@ -5,10 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
+import { serviceRuntimeExited, withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
+import type {
+  ExecutionEvent,
+  ExecutionHandle,
+  ExecutionSpec,
+  RuntimeDriver,
+} from "#src/lib/backend/types.js";
 
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
+import { ProcessRunner } from "../../../src/lib/backend/runtime/process-runner.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
-import { DetachedRunner } from "../../../src/lib/service/detached.js";
 import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
@@ -28,7 +35,7 @@ const { probePort } = (await import("../../../src/lib/probe.js")) as unknown as 
 // --- Mock deps factory ---
 
 function createMockDeps(): ServiceManagerDeps {
-  return {
+  const deps = withServiceRuntime({
     sendKeys: vi.fn<ServiceManagerDeps["sendKeys"]>().mockResolvedValue(),
     sendCtrlC: vi.fn<ServiceManagerDeps["sendCtrlC"]>().mockResolvedValue(),
     panePid: vi.fn<ServiceManagerDeps["panePid"]>().mockResolvedValue(1000),
@@ -48,7 +55,9 @@ function createMockDeps(): ServiceManagerDeps {
     zapsCommand: "zaps",
     reflowInsert: vi.fn<ServiceManagerDeps["reflowInsert"]>().mockResolvedValue(),
     reflowRemove: vi.fn<ServiceManagerDeps["reflowRemove"]>().mockResolvedValue(),
-  };
+  });
+  deps.inspectPorts = vi.fn<ServiceManagerDeps["inspectPorts"]>().mockResolvedValue([]);
+  return deps;
 }
 
 // --- Config helpers ---
@@ -72,9 +81,9 @@ function makeConfig(
 }
 
 function makePaneMap(names: string[]): Record<string, string> {
-  const map: Record<string, string> = { "@tui": "%tui" };
+  const map: Record<string, string> = { "@tui": "view:tui" };
   for (const name of names) {
-    map[name] = `%${name}`;
+    map[name] = `view:${name}`;
   }
   return map;
 }
@@ -110,7 +119,7 @@ class FakeDetachedChild extends ChildProcess {
 
 const detachedManagers: ServiceManager[] = [];
 const detachedChildren: FakeDetachedChild[] = [];
-const detachedRunners = new Set<DetachedRunner>();
+const detachedRunners = new Set<ProcessRunner>();
 let restoreDetachedStart: (() => void) | undefined;
 
 async function advanceDetachedUntil(condition: () => boolean): Promise<void> {
@@ -146,12 +155,12 @@ function makeDetachedSpawn(
   spawn: NonNullable<ServiceManagerDeps["detachedSpawn"]>;
   args: { file: string; args: string[] }[];
 } {
-  const { start } = DetachedRunner.prototype;
+  const { spawnOwned } = ProcessRunner.prototype;
   const startSpy = vi
-    .spyOn(DetachedRunner.prototype, "start")
-    .mockImplementation(function trackRunner(this: DetachedRunner, opts) {
+    .spyOn(ProcessRunner.prototype, "spawnOwned")
+    .mockImplementation(function trackRunner(this: ProcessRunner, opts) {
       detachedRunners.add(this);
-      return start.call(this, opts);
+      return spawnOwned.call(this, opts);
     });
   const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
   restoreDetachedStart = () => {
@@ -243,14 +252,17 @@ describe("startAll", () => {
     });
 
     // Each detectPorts call returns the service's port (simulating ready)
-    deps.detectPorts = vi.fn(async (target: string) => {
-      if (target === "%db") {
+    deps.panePid = vi.fn(
+      async (target: string) => ({ "view:db": 1001, "view:api": 1002 })[target] ?? 1003,
+    );
+    deps.inspectPorts = vi.fn(async (target: number) => {
+      if (target === 1001) {
         return [5432];
       }
-      if (target === "%api") {
+      if (target === 1002) {
         return [3000];
       }
-      if (target === "%frontend") {
+      if (target === 1003) {
         return [8080];
       }
       return [];
@@ -267,9 +279,9 @@ describe("startAll", () => {
     await promise;
 
     // DB started first, then API, then frontend
-    expect(callOrder[0]).toBe("%db");
-    expect(callOrder[1]).toBe("%api");
-    expect(callOrder[2]).toBe("%frontend");
+    expect(callOrder[0]).toBe("view:db");
+    expect(callOrder[1]).toBe("view:api");
+    expect(callOrder[2]).toBe("view:frontend");
 
     // All should be ready
     expect(mgr.getStatus("db").state).toBe("ready");
@@ -388,7 +400,7 @@ describe("startAll", () => {
       dbReached = resolve;
     });
     deps.sendKeys = vi.fn(async (target: string) => {
-      if (target === "%db") {
+      if (target === "view:db") {
         dbReached();
         await dbReleased;
       }
@@ -402,8 +414,8 @@ describe("startAll", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", expect.anything());
-    expect(deps.sendKeys).not.toHaveBeenCalledWith("%api", expect.anything());
+    expect(deps.sendKeys).toHaveBeenCalledWith("view:db", expect.anything());
+    expect(deps.sendKeys).not.toHaveBeenCalledWith("view:api", expect.anything());
     expect(mgr.getStatus("api").state).toBe("stopped");
   });
 
@@ -423,7 +435,7 @@ describe("startAll", () => {
       dbReached = resolve;
     });
     deps.sendKeys = vi.fn(async (target: string) => {
-      if (target === "%db") {
+      if (target === "view:db") {
         dbReached();
         await dbReleased;
       }
@@ -472,13 +484,13 @@ describe("stopAll", () => {
       return [rootPid, rootPid + 100];
     });
 
-    deps.panePid = vi.fn(async (target: string) => (target === "%api" ? 1001 : 1000));
+    deps.panePid = vi.fn(async (target: string) => (target === "view:api" ? 1001 : 1000));
 
     deps.sendCtrlC = vi.fn(async (target: string) => {
-      if (target === "%api") {
+      if (target === "view:api") {
         apiStopped = true;
       }
-      if (target === "%db") {
+      if (target === "view:db") {
         dbStopped = true;
       }
     });
@@ -506,8 +518,8 @@ describe("stopAll", () => {
     await stopPromise;
 
     // API (dependent) stops before DB (dependency)
-    expect(stopOrder[0]).toBe("%api");
-    expect(stopOrder[1]).toBe("%db");
+    expect(stopOrder[0]).toBe("view:api");
+    expect(stopOrder[1]).toBe("view:db");
 
     expect(mgr.getStatus("db").state).toBe("stopped");
     expect(mgr.getStatus("api").state).toBe("stopped");
@@ -535,7 +547,7 @@ describe("stopAll", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     await stopPromise;
 
-    expect(deps.setWindowOption).toHaveBeenCalledWith("%tui", "automatic-rename", "on");
+    expect(deps.setWindowOption).toHaveBeenCalledWith("view:tui", "automatic-rename", "on");
     expect(deps.renameWindow).not.toHaveBeenCalled();
   });
 
@@ -602,11 +614,14 @@ describe("startService", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
 
-    deps.detectPorts = vi.fn(async (target: string) => {
-      if (target === "%db") {
+    deps.panePid = vi.fn(
+      async (target: string) => ({ "view:db": 1001, "view:api": 1002 })[target] ?? 1003,
+    );
+    deps.inspectPorts = vi.fn(async (target: number) => {
+      if (target === 1001) {
         return [5432];
       }
-      if (target === "%api") {
+      if (target === 1002) {
         return [3000];
       }
       return [];
@@ -636,7 +651,7 @@ describe("startService", () => {
       expect.any(Number),
     );
     const apiCall = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.find(
-      (call: unknown[]) => (call[0] as string) === "%api",
+      (call: unknown[]) => (call[0] as string) === "view:api",
     );
     expect(apiCall).toBeDefined();
     expect(apiCall?.[1]).toEqual(
@@ -664,13 +679,13 @@ describe("startService", () => {
       expect.objectContaining({
         command: "npm run dev",
         cwd: "/test",
-        env: { PORT: "3000" },
+        env: expect.objectContaining({ PORT: "3000" }),
       }),
       expect.any(String),
       expect.any(Number),
     );
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
+      "view:svc",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -791,7 +806,7 @@ describe("startService", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
+      "view:svc",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -907,7 +922,7 @@ describe("startService", () => {
 
     expect(result).toEqual({ noop: false });
     expect(mgr.getStatus("svc").state).toBe("stopped");
-    expect(deps.sendCtrlC).toHaveBeenCalledWith("%svc");
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("view:svc");
   });
 
   it("uses run field when start is not set", async () => {
@@ -924,7 +939,7 @@ describe("startService", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
+      "view:svc",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -951,7 +966,7 @@ describe("startService", () => {
       expect.any(Number),
     );
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%svc",
+      "view:svc",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -972,7 +987,7 @@ describe("startService", () => {
     await promise;
 
     expect(deps.storeExecInfo).not.toHaveBeenCalled();
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "cd \"/test\" && PORT='3000' npm run dev");
+    expect(deps.sendKeys).toHaveBeenCalledWith("view:svc", expect.stringContaining("PORT='3000'"));
   });
 });
 
@@ -1020,7 +1035,7 @@ describe("stopService", () => {
     await vi.advanceTimersByTimeAsync(6000);
     await stopPromise;
 
-    expect(deps.sendCtrlC).toHaveBeenCalledWith("%svc");
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("view:svc");
     expect(events).toEqual([
       { name: "svc", state: "stopping" },
       { name: "svc", state: "stopped" },
@@ -1655,8 +1670,11 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn(async (target: string) => {
-      if (target === "%db") {
+    deps.panePid = vi.fn(
+      async (target: string) => ({ "view:db": 1001, "view:api": 1002 })[target] ?? 1003,
+    );
+    deps.inspectPorts = vi.fn(async (target: number) => {
+      if (target === 1001) {
         return [5432];
       }
       return [3000];
@@ -1682,7 +1700,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([3000]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     probePort.mockResolvedValueOnce("http://localhost:3000");
@@ -1702,7 +1720,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([3000]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     // First call (onServiceReady) fails, second call (monitorUrl) succeeds
@@ -1736,7 +1754,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     probePort.mockResolvedValue(undefined);
@@ -1757,7 +1775,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     const dockerModule = await import("../../../src/lib/docker.js");
@@ -1782,7 +1800,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
@@ -1801,7 +1819,7 @@ describe("url resolution", () => {
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
-    deps.detectPorts = vi.fn().mockResolvedValue([3000]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([3000]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     // Always fail
@@ -1867,7 +1885,7 @@ describe("docker ready detection", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
     // DetectPorts would return nothing (docker daemon PIDs aren't descendants)
-    deps.detectPorts = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     // Mock getContainerInfo via module mock
     const dockerModule = await import("../../../src/lib/docker.js");
@@ -1890,7 +1908,7 @@ describe("docker ready detection", () => {
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
     // DetectPorts should NOT have been called since docker returned ports
-    expect(deps.detectPorts).not.toHaveBeenCalled();
+    expect(deps.inspectPorts).not.toHaveBeenCalled();
 
     spy.mockRestore();
   });
@@ -1902,7 +1920,7 @@ describe("docker ready detection", () => {
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
 
     const dockerModule = await import("../../../src/lib/docker.js");
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
@@ -1916,7 +1934,7 @@ describe("docker ready detection", () => {
 
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
-    expect(deps.detectPorts).toHaveBeenCalled();
+    expect(deps.inspectPorts).toHaveBeenCalled();
 
     spy.mockRestore();
   });
@@ -1954,7 +1972,7 @@ describe("docker config", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%db",
+      "view:db",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'db' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -1987,7 +2005,7 @@ describe("docker config", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%db",
+      "view:db",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'db' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -2484,13 +2502,13 @@ describe("onOutput monitoring", () => {
     const broadcasts = vi.fn();
     const monitor = new LogMonitor(
       { capturePane: capture },
-      new Map([["%group", buffer]]),
+      new Map([["view:group", buffer]]),
       broadcasts,
     );
-    monitor.start("%group", "%group", 100);
+    monitor.start("view:group", "view:group", 100);
     const manager = new ServiceManager(
       config,
-      { "@tui": "%tui", owner: "%group", member: "%group" },
+      { "@tui": "view:tui", owner: "view:group", member: "view:group" },
       deps,
       "session",
     );
@@ -2504,7 +2522,7 @@ describe("onOutput monitoring", () => {
     expect(ownerHook.mock.calls).toEqual([["new line"], ["partial"]]);
     expect(memberHook.mock.calls).toEqual(ownerHook.mock.calls);
     expect(buffer.snapshot()).toEqual(["baseline", "new line", "partial"]);
-    expect(broadcasts).toHaveBeenLastCalledWith("%group", ["new line", "partial"]);
+    expect(broadcasts).toHaveBeenLastCalledWith("view:group", ["new line", "partial"]);
     manager.abortStartAll();
     monitor.stopAll();
   });
@@ -2772,8 +2790,8 @@ describe("cascadeRestart", () => {
     const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
       (c: string[]) => c[0],
     );
-    expect(targets).toContain("%db");
-    expect(targets).toContain("%api");
+    expect(targets).toContain("view:db");
+    expect(targets).toContain("view:api");
   });
 
   it("restart cache → api stays (no restartWith for cache)", async () => {
@@ -2802,8 +2820,8 @@ describe("cascadeRestart", () => {
     const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
       (c: string[]) => c[0],
     );
-    expect(targets).toContain("%cache");
-    expect(targets).not.toContain("%api");
+    expect(targets).toContain("view:cache");
+    expect(targets).not.toContain("view:api");
   });
 
   it("skips stopped services during cascade", async () => {
@@ -2831,8 +2849,8 @@ describe("cascadeRestart", () => {
     const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
       (c: string[]) => c[0],
     );
-    expect(targets).toContain("%db");
-    expect(targets).not.toContain("%api");
+    expect(targets).toContain("view:db");
+    expect(targets).not.toContain("view:api");
   });
 
   it("no double-cascade in nested restarts", async () => {
@@ -2861,9 +2879,9 @@ describe("cascadeRestart", () => {
     const targets = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.map(
       (c: string[]) => c[0],
     );
-    expect(targets.filter((t: string) => t === "%db")).toHaveLength(1);
-    expect(targets.filter((t: string) => t === "%api")).toHaveLength(1);
-    expect(targets.filter((t: string) => t === "%frontend")).toHaveLength(1);
+    expect(targets.filter((t: string) => t === "view:db")).toHaveLength(1);
+    expect(targets.filter((t: string) => t === "view:api")).toHaveLength(1);
+    expect(targets.filter((t: string) => t === "view:frontend")).toHaveLength(1);
   });
 });
 
@@ -2968,7 +2986,7 @@ describe("combined docker services", () => {
   it("owner sends docker compose up with all services", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -2981,7 +2999,7 @@ describe("combined docker services", () => {
     expect(storedExecInfo?.command).toContain("postgres");
     expect(storedExecInfo?.command).toContain("redis");
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%infra",
+      "view:infra",
       expect.stringMatching(
         /^zaps -s 'test-session-id' exec-service 'postgres' --execution-id '[a-f0-9-]+'$/,
       ),
@@ -2991,7 +3009,7 @@ describe("combined docker services", () => {
   it("non-owner skips sendKeys when owner is not running", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3005,7 +3023,7 @@ describe("combined docker services", () => {
   it("non-owner calls exec when owner is ready", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3029,7 +3047,7 @@ describe("combined docker services", () => {
   it("sets group on status", () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const statuses = mgr.getAllStatuses();
@@ -3040,7 +3058,7 @@ describe("combined docker services", () => {
   it("stop combined uses docker compose stop", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3069,7 +3087,7 @@ describe("combined docker services", () => {
   it("stop last sibling Ctrl-C's pane", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3088,13 +3106,13 @@ describe("combined docker services", () => {
       expect.arrayContaining(["stop", "postgres"]),
       expect.any(String),
     );
-    expect(deps.sendCtrlC).toHaveBeenCalledWith("%infra");
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("view:infra");
   });
 
   it("restart combined non-owner uses docker compose restart", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3123,7 +3141,7 @@ describe("combined docker services", () => {
   it("bumps the monitor generation when restarting a combined non-owner (C7)", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const p1 = mgr.startService("postgres");
@@ -3147,7 +3165,7 @@ describe("combined docker services", () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();
     // Group not referenced in layout → each child got its OWN pane.
-    const paneMap = { "@tui": "%tui", postgres: "%postgres", redis: "%redis" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:postgres", redis: "view:redis" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     const p1 = mgr.startService("postgres");
@@ -3168,8 +3186,8 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(5500);
     await pStopRedis;
 
-    expect(deps.sendCtrlC).toHaveBeenCalledWith("%postgres");
-    expect(deps.sendCtrlC).not.toHaveBeenCalledWith("%redis");
+    expect(deps.sendCtrlC).toHaveBeenCalledWith("view:postgres");
+    expect(deps.sendCtrlC).not.toHaveBeenCalledWith("view:redis");
   });
 
   it("crash monitor checks docker container status for combined services", async () => {
@@ -3180,7 +3198,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     // Keep processes alive initially
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3219,7 +3237,7 @@ describe("combined docker services", () => {
     });
     const deps = createMockDeps();
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
-    const paneMap = { "@tui": "%tui", postgres: "%infra", redis: "%infra" };
+    const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3314,7 +3332,7 @@ describe("unavailable services", () => {
     // Start api service to trigger title update
     deps.panePid = vi.fn(async () => 1000);
     deps.getDescendantPids = vi.fn(async () => [1000, 1100]);
-    deps.detectPorts = vi.fn(async () => [3000]);
+    deps.inspectPorts = vi.fn(async () => [3000]);
     await mgr.startService("api");
     await vi.advanceTimersByTimeAsync(2000);
 
@@ -3339,7 +3357,7 @@ describe("detached services (E4)", () => {
     const children: FakeDetachedChild[] = [];
     const { spawn, args } = makeDetachedSpawn(children);
     deps.detachedSpawn = spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([4000]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([4000]);
 
     const mgr = makeDetachedManager(config, paneMap, deps);
     await mgr.startService("worker");
@@ -3358,7 +3376,7 @@ describe("detached services (E4)", () => {
       "node w.js",
     ]);
     // Detached port detection is PID-based, not pane-based.
-    expect(deps.detectPortsForPid).toHaveBeenCalledWith(7000);
+    expect(deps.inspectPorts).toHaveBeenCalledWith(7000);
     expect(deps.recordDetached).toBeUndefined(); // Optional dep not wired in this mock
   });
 
@@ -3367,7 +3385,7 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     const seen: [string, string[]][] = [];
@@ -3385,7 +3403,7 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
@@ -3409,7 +3427,7 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
@@ -3432,7 +3450,7 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     await mgr.startService("worker");
     await advanceDetachedUntil(() => children[0].gate.writableFinished);
@@ -3458,7 +3476,7 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
     const startPromise = mgr.startService("worker");
@@ -3483,8 +3501,8 @@ describe("detached services (E4)", () => {
     const deps = createMockDeps();
     const children: FakeDetachedChild[] = [];
     deps.detachedSpawn = makeDetachedSpawn(children).spawn;
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
-    deps.detectPorts = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
 
     const mgr = makeDetachedManager(config, paneMap, deps);
     await mgr.startAll();
@@ -3513,10 +3531,10 @@ describe("lazy-pane lifecycle", () => {
     // Ran first (no `paneMap[name]`). The wrapper inserts the pane first,
     // Populating paneMap; then the locked body succeeds.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" }; // No worker pane.
+    const paneMap: Record<string, string> = { "@tui": "view:tui" }; // No worker pane.
     const deps = createMockDeps();
     deps.reflowInsert = vi.fn(async (name: string) => {
-      paneMap[name] = "%worker";
+      paneMap[name] = "view:worker";
     });
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3529,7 +3547,7 @@ describe("lazy-pane lifecycle", () => {
     // The service actually started — proves insert ran first (otherwise
     // StartServiceInternal would have thrown `Unknown service`).
     expect(mgr.getStatus("worker").state).toBe("ready");
-    expect(paneMap.worker).toBe("%worker");
+    expect(paneMap.worker).toBe("view:worker");
   });
 
   it("startService is NOT a reflowInsert when service already has a pane", async () => {
@@ -3566,7 +3584,7 @@ describe("lazy-pane lifecycle", () => {
     // It throws, the lock-guarded body never ran — no state transition, no
     // `starting` event, no pane mutation.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
     deps.reflowInsert = vi.fn().mockRejectedValue(new Error("forced split failure"));
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
@@ -3634,14 +3652,14 @@ describe("lazy-pane lifecycle", () => {
 
     expect(deps.reflowRemove).not.toHaveBeenCalled();
     // Non-lazy: pane survives stop.
-    expect(paneMap.api).toBe("%api");
+    expect(paneMap.api).toBe("view:api");
   });
 
   it("stopService skips reflowRemove for a lazy service with no pane", async () => {
     // Never-started lazy service: stopService is a no-op AND must not call
     // ReflowRemove (no pane to remove).
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" }; // No worker pane.
+    const paneMap: Record<string, string> = { "@tui": "view:tui" }; // No worker pane.
     const deps = createMockDeps();
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3673,7 +3691,7 @@ describe("lazy-pane lifecycle", () => {
 
     expect(deps.reflowRemove).not.toHaveBeenCalled();
     // Pane survives the crash for the restart loop.
-    expect(paneMap.worker).toBe("%worker");
+    expect(paneMap.worker).toBe("view:worker");
   });
 
   it("stopAll skips reflowRemove for every lazy service (shuttingDown guard, deadlock fix)", async () => {
@@ -3733,7 +3751,7 @@ describe("lazy-pane lifecycle", () => {
     // RunStopAll sets it BEFORE iterating, so every hook-driven start during
     // Reload sees it.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     // Simulate the shutdown phase (what runStopAll sets at line 496).
@@ -3753,7 +3771,7 @@ describe("lazy-pane lifecycle", () => {
     // Hook-reachable (config/builder.ts:49-53), so the wrapper carries the
     // Same shuttingDown short-circuit.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" };
+    const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
@@ -3792,10 +3810,10 @@ describe("lazy-pane lifecycle", () => {
     // WithServiceLock). The running-restart case (next test) does NOT fire
     // ReflowInsert because `paneMap[name]` already exists.
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
-    const paneMap: Record<string, string> = { "@tui": "%tui" }; // Worker stopped + pane-less.
+    const paneMap: Record<string, string> = { "@tui": "view:tui" }; // Worker stopped + pane-less.
     const deps = createMockDeps();
     deps.reflowInsert = vi.fn(async (name: string) => {
-      paneMap[name] = "%worker";
+      paneMap[name] = "view:worker";
     });
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
@@ -3805,7 +3823,7 @@ describe("lazy-pane lifecycle", () => {
     await vi.advanceTimersByTimeAsync(500);
 
     expect(deps.reflowInsert).toHaveBeenCalledWith("worker");
-    expect(paneMap.worker).toBe("%worker");
+    expect(paneMap.worker).toBe("view:worker");
   });
 
   it("restartService never calls the reflow hooks (pane kept by design)", async () => {
@@ -3835,7 +3853,7 @@ describe("lazy-pane lifecycle", () => {
 
     expect(deps.reflowInsert).not.toHaveBeenCalled();
     expect(deps.reflowRemove).not.toHaveBeenCalled();
-    expect(paneMap.worker).toBe("%worker");
+    expect(paneMap.worker).toBe("view:worker");
   });
 });
 
@@ -3876,7 +3894,9 @@ describe("sentra env injection", () => {
     });
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "web",
-      expect.objectContaining({ env: { SENTRY_DSN: DSN_WEB, SHARED: "service" } }),
+      expect.objectContaining({
+        env: expect.objectContaining({ SENTRY_DSN: DSN_WEB, SHARED: "service" }),
+      }),
       expect.any(String),
       expect.any(Number),
     );
@@ -3932,7 +3952,7 @@ describe("sentra env injection", () => {
     await promise;
 
     expect(deps.sendKeys).toHaveBeenCalledWith(
-      "%web",
+      "view:web",
       `cd "/test" && SENTRY_DSN='${DSN_WEB}' REQ='1' SHARED='service' pnpm dev`,
     );
   });
@@ -3949,7 +3969,7 @@ describe("sentra env injection", () => {
       spawnEnvs.push(opts.env ?? {});
       return spawn(file, argv, opts);
     };
-    deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([]);
     deps.sentra = fakeSentra();
 
     const mgr = makeDetachedManager(config, makePaneMap([]), deps);
@@ -3976,7 +3996,9 @@ describe("sentra env injection", () => {
     expect(mgr.getStatus("web").sentra).toBe(false);
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "web",
-      expect.objectContaining({ env: {} }),
+      expect.objectContaining({
+        env: expect.not.objectContaining({ SENTRY_DSN: expect.any(String) }),
+      }),
       expect.any(String),
       expect.any(Number),
     );
@@ -4002,7 +4024,7 @@ describe("sentra env injection", () => {
     expect(mgr.getStatus("web").sentra).toBeUndefined();
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "web",
-      expect.objectContaining({ env: { A: "1" } }),
+      expect.objectContaining({ env: expect.objectContaining({ A: "1" }) }),
       expect.any(String),
       expect.any(Number),
     );
@@ -4048,7 +4070,7 @@ describe("sentra env injection", () => {
     deps.sentra = sentra;
     const mgr = new ServiceManager(
       config,
-      { "@tui": "%tui", postgres: "%infra", redis: "%infra" },
+      { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" },
       deps,
       "test-session",
     );
@@ -4075,7 +4097,7 @@ describe("sentra env injection", () => {
     });
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    deps.detectPorts = vi.fn().mockResolvedValue([5432]);
+    deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     const sentra = fakeSentra();
     deps.sentra = sentra;
     const dockerModule = await import("../../../src/lib/docker.js");
@@ -4155,5 +4177,208 @@ describe("startedAt", () => {
 
     expect(mgr.getStatus("svc").retryCount).toBe(1);
     expect(mgr.getStatus("svc").startedAt).toBeGreaterThan(firstStart ?? Infinity);
+  });
+});
+
+function neutralRuntime(
+  onStart?: (spec: ExecutionSpec, emit: (event: ExecutionEvent) => void) => void,
+): {
+  driver: RuntimeDriver;
+  specs: ExecutionSpec[];
+  emit: (event: ExecutionEvent) => void;
+} {
+  const listeners = new Set<(event: ExecutionEvent) => void>();
+  const specs: ExecutionSpec[] = [];
+  const emit = (event: ExecutionEvent): void => {
+    for (const listener of listeners) {
+      listener(event);
+    }
+  };
+  const driver: RuntimeDriver = {
+    start: async (spec) => {
+      specs.push(spec);
+      onStart?.(spec, emit);
+      return {
+        id: `opaque-execution/${spec.unitId}/${spec.generation}`,
+        unitId: spec.unitId,
+        generation: spec.generation,
+      };
+    },
+    stop: vi.fn<RuntimeDriver["stop"]>().mockResolvedValue(),
+    getPid: vi.fn<RuntimeDriver["getPid"]>().mockResolvedValue(4242),
+    readOutput: vi.fn<RuntimeDriver["readOutput"]>().mockResolvedValue(["ready without newline"]),
+    isRunning: vi.fn<RuntimeDriver["isRunning"]>().mockResolvedValue(true),
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return { driver, specs, emit };
+}
+
+describe("neutral runtime launch", () => {
+  it("routes matching wrapper exits through the compatibility runtime during launch", async () => {
+    const deps = createMockDeps();
+    let executionId = "";
+    deps.storeExecInfo = (_service, _info, id) => {
+      executionId = id ?? "";
+    };
+    deps.sendKeys = async () => {
+      serviceRuntimeExited(deps, "stale-execution", { code: 1, signal: null });
+      serviceRuntimeExited(deps, executionId, {
+        code: 127,
+        signal: null,
+        spawnError: "command unavailable",
+      });
+    };
+    const manager = new ServiceManager(
+      makeConfig({ svc: { start: "missing" } }),
+      makePaneMap(["svc"]),
+      deps,
+      "compat-session",
+    );
+    await manager.startService("svc");
+    expect(manager.getStatus("svc")).toMatchObject({
+      state: "error",
+      lastError: "command unavailable",
+    });
+  });
+
+  it("keeps dependency order, hooks, ports and Sentra env in shared core", async () => {
+    const order: string[] = [];
+    const runtime = neutralRuntime((spec) => {
+      order.push(spec.unitId);
+    });
+    runtime.driver.getPid = async (handle) => (handle.unitId === "db" ? 4242 : 4343);
+    const config = sentraConfig({
+      db: {
+        start: "database",
+        onReady: () => {
+          order.push("db ready");
+        },
+      },
+      web: {
+        start: "serve",
+        dependsOn: ["db"],
+        sentra: true,
+        env: (ctx) => ({ DB_PORT: String(ctx.services.db?.port) }),
+      },
+    });
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    deps.inspectPorts = async (pid) => (pid === 4242 ? [5432] : [8080]);
+    deps.sentra = fakeSentra();
+    const manager = new ServiceManager(config, {}, deps, "neutral-session");
+    await manager.startAll();
+    expect(order).toEqual(["db", "db ready", "web"]);
+    expect(runtime.specs[1]?.env).toMatchObject({ DB_PORT: "5432", SENTRY_DSN: DSN_WEB });
+    expect(manager.getStatus("web")).toMatchObject({ state: "ready", sentra: true, ports: [8080] });
+    manager.abortStartAll();
+  });
+
+  it.each([false, true])("owns one opaque handle with detached=%s", async (detached) => {
+    const onOutput = vi.fn();
+    const runtime = neutralRuntime((spec, emit) =>
+      emit({
+        kind: "output",
+        unitId: spec.unitId,
+        generation: spec.generation,
+        lines: ["early line"],
+      }),
+    );
+    const config = makeConfig({
+      svc: {
+        start: "serve",
+        detached,
+        cwd: "/captured",
+        env: { OWN: "service" },
+        ready: { output: /ready without newline/ },
+        onOutput,
+      },
+    });
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    deps.inspectPorts = vi.fn().mockResolvedValue([8080]);
+    const manager = new ServiceManager(config, {}, deps, "neutral-session");
+    const logs = vi.fn();
+    manager.on("logLines", logs);
+    await runWithEnvironment({ REQUEST: "captured", OWN: "request" }, async () =>
+      manager.startService("svc"),
+    );
+    expect(runtime.specs).toEqual([
+      expect.objectContaining({
+        unitId: "svc",
+        generation: 1,
+        placement: detached ? "background" : "default",
+        cwd: "/captured",
+        env: { REQUEST: "captured", OWN: "service" },
+      }),
+    ]);
+    expect(config.project.services.svc.detached).toBe(detached);
+    expect(manager.getStatus("svc")).toMatchObject({ state: "ready", pid: 4242, ports: [8080] });
+    expect(logs).toHaveBeenCalledWith("svc", ["early line"]);
+    expect(onOutput).toHaveBeenCalledWith("early line");
+    const expectedHandle: ExecutionHandle = {
+      id: "opaque-execution/svc/1",
+      unitId: "svc",
+      generation: 1,
+    };
+    expect(runtime.driver.readOutput).toHaveBeenCalledWith(expectedHandle, 200);
+    expect(deps.inspectPorts).toHaveBeenCalledWith(4242);
+    expect(deps.sendKeys).not.toHaveBeenCalled();
+    runtime.emit({ kind: "leaderExit", unitId: "svc", generation: 0, code: 1, signal: null });
+    expect(manager.getStatus("svc").state).toBe("ready");
+    manager.abortStartAll();
+  });
+
+  it("observes exit before start returns and ignores following output", async () => {
+    const onReady = vi.fn();
+    const runtime = neutralRuntime((spec, emit) => {
+      emit({
+        kind: "leaderExit",
+        unitId: spec.unitId,
+        generation: spec.generation,
+        code: 2,
+        signal: null,
+      });
+      emit({ kind: "output", unitId: spec.unitId, generation: spec.generation, lines: ["stale"] });
+    });
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const manager = new ServiceManager(
+      makeConfig({ svc: { start: "serve", onReady } }),
+      {},
+      deps,
+      "neutral-session",
+    );
+    const logs = vi.fn();
+    manager.on("logLines", logs);
+    await manager.startService("svc");
+    expect(manager.getStatus("svc")).toMatchObject({
+      state: "error",
+      lastError: "Process exited before becoming ready",
+    });
+    expect(onReady).not.toHaveBeenCalled();
+    expect(logs).not.toHaveBeenCalled();
+  });
+
+  it("surfaces unavailable process probes through readiness", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    deps.inspectPorts = vi
+      .fn()
+      .mockRejectedValue(new processInspection.ProcessInspectionError("ss", "unavailable"));
+    const manager = new ServiceManager(
+      makeConfig({ svc: { start: "serve", ready: { port: true } } }),
+      {},
+      deps,
+      "neutral-session",
+    );
+    await manager.startService("svc");
+    expect(manager.getStatus("svc")).toMatchObject({
+      state: "error",
+      lastError: "Process inspection ss: unavailable",
+    });
   });
 });

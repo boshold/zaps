@@ -42,9 +42,9 @@ async function poll(
 }
 
 /** Best-effort tail of the pane/log output, appended to enriched errors. */
-async function capturePaneTail(deps: ReadyDeps, paneTarget: string): Promise<string> {
+async function readOutputTail(deps: ReadyDeps): Promise<string> {
   try {
-    const output = await deps.capturePane(paneTarget, TAIL_LINES);
+    const output = await deps.readOutput(TAIL_LINES);
     return output.trimEnd();
   } catch {
     return "";
@@ -62,7 +62,6 @@ function isTerminalState(state: string): boolean {
 
 async function waitForDocker(
   config: { docker: string | string[]; file?: string },
-  paneTarget: string,
   signal: AbortSignal,
   deps: ReadyDeps,
 ): Promise<number[]> {
@@ -110,7 +109,7 @@ async function waitForDocker(
         if (Date.now() - terminalSince > TERMINAL_GRACE) {
           throw withTail(
             `Docker service '${terminal.svc}' exited (state: ${terminal.state}) before becoming ready`,
-            await capturePaneTail(deps, paneTarget),
+            await readOutputTail(deps),
           );
         }
       } else {
@@ -142,7 +141,7 @@ async function waitForDocker(
     async () =>
       withTail(
         `Docker ready check timed out after 60s${lastState ? ` (last container state: ${lastState})` : ""}`,
-        await capturePaneTail(deps, paneTarget),
+        await readOutputTail(deps),
       ),
   );
 
@@ -156,7 +155,6 @@ async function waitForDocker(
  */
 export async function waitForReady(
   config: ReadyConfig | undefined,
-  paneTarget: string,
   signal: AbortSignal,
   deps: ReadyDeps,
 ): Promise<number[]> {
@@ -165,17 +163,17 @@ export async function waitForReady(
   }
 
   const timeoutError = async (): Promise<Error> =>
-    withTail("Ready check timed out after 60s", await capturePaneTail(deps, paneTarget));
+    withTail("Ready check timed out after 60s", await readOutputTail(deps));
 
   if (isReadyDocker(config)) {
-    return waitForDocker(config, paneTarget, signal, deps);
+    return waitForDocker(config, signal, deps);
   }
 
   if (isReadyPort(config)) {
     if (config.port === true) {
       await poll(
         async () => {
-          const ports = await deps.detectPorts(paneTarget);
+          const ports = await deps.detectPorts();
           return ports.length > 0;
         },
         signal,
@@ -185,7 +183,7 @@ export async function waitForReady(
       const expectedPort = typeof config.port === "function" ? config.port() : config.port;
       await poll(
         async () => {
-          const ports = await deps.detectPorts(paneTarget);
+          const ports = await deps.detectPorts();
           return ports.includes(expectedPort);
         },
         signal,
@@ -207,7 +205,7 @@ export async function waitForReady(
     // Candidate ports (debugger/HMR ports skipped) — never lock onto ports[0].
     // Full-URL mode probes the URL directly.
     const probePath = async (): Promise<boolean> => {
-      const ports = selectProbeCandidates(await deps.detectPorts(paneTarget));
+      const ports = selectProbeCandidates(await deps.detectPorts());
       for (const port of ports) {
         // A service may bind only IPv4 or only IPv6 loopback (e.g. Nuxt/Nitro
         // Binds `[::1]` only), so probe both hosts (B8).
@@ -248,7 +246,7 @@ export async function waitForReady(
   if (isReadyOutput(config)) {
     await poll(
       async () => {
-        const output = await deps.capturePane(paneTarget, 200);
+        const output = await deps.readOutput(200);
         const lines = output.split("\n");
         const matcher = config.output;
         if (matcher instanceof RegExp) {

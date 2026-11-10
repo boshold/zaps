@@ -4,12 +4,12 @@ import { waitForReady } from "../../../src/lib/service/ready.js";
 import type { ReadyConfig, ReadyDeps } from "../../../src/lib/service/types.js";
 
 const mockDetectPorts = vi.fn<ReadyDeps["detectPorts"]>();
-const mockCapturePane = vi.fn<ReadyDeps["capturePane"]>();
+const mockReadOutput = vi.fn<ReadyDeps["readOutput"]>();
 
 function createDeps(): ReadyDeps {
   return {
     detectPorts: mockDetectPorts,
-    capturePane: mockCapturePane,
+    readOutput: mockReadOutput,
   };
 }
 
@@ -25,7 +25,7 @@ afterEach(() => {
 describe("waitForReady", () => {
   it("resolves immediately when config is undefined and returns empty ports", async () => {
     const controller = new AbortController();
-    const ports = await waitForReady(undefined, "%0", controller.signal, createDeps());
+    const ports = await waitForReady(undefined, controller.signal, createDeps());
     expect(ports).toEqual([]);
   });
 
@@ -42,7 +42,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: 3000 };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     // Advance through poll intervals
     await vi.advanceTimersByTimeAsync(500);
@@ -66,7 +66,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: true };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -81,7 +81,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: 9999 };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     // Consume rejection to prevent unhandled rejection during timer advancement
     const guarded = promise.catch(() => {
@@ -97,7 +97,7 @@ describe("waitForReady", () => {
 
   it("resolves on output mode (regex) when match found on 2nd call", async () => {
     let callCount = 0;
-    mockCapturePane.mockImplementation(async () => {
+    mockReadOutput.mockImplementation(async () => {
       callCount += 1;
       if (callCount >= 2) {
         return "some log\nready on port 3000\nmore logs";
@@ -108,7 +108,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { output: /ready on/ };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -120,20 +120,20 @@ describe("waitForReady", () => {
   it("matches deterministically even if a global-flag regex slips through", async () => {
     // Defensive: lastIndex must be reset per test, or a stray /g flag would make
     // Matching stateful and intermittently miss across multiple lines/polls (C10).
-    mockCapturePane.mockResolvedValue("line one\nlistening\nline three");
+    mockReadOutput.mockResolvedValue("line one\nlistening\nline three");
 
     const controller = new AbortController();
     // eslint-disable-next-line require-unicode-regexp -- exercising a stateful global flag
     const config: ReadyConfig = { output: /listening/g };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
     await vi.advanceTimersByTimeAsync(500);
     await expect(promise).resolves.toEqual([]);
   });
 
   it("resolves on output mode (function) when fn returns true", async () => {
     let callCount = 0;
-    mockCapturePane.mockImplementation(async () => {
+    mockReadOutput.mockImplementation(async () => {
       callCount += 1;
       if (callCount >= 2) {
         return "server started";
@@ -144,7 +144,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { output: (line: string) => line.includes("server started") };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -162,7 +162,7 @@ describe("waitForReady", () => {
 
     const controller = new AbortController();
 
-    const promise = waitForReady(checkFn, "%0", controller.signal, createDeps());
+    const promise = waitForReady(checkFn, controller.signal, createDeps());
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -176,7 +176,7 @@ describe("waitForReady", () => {
     controller.abort();
 
     const config: ReadyConfig = { port: 3000 };
-    await expect(waitForReady(config, "%0", controller.signal, createDeps())).resolves.toEqual([]);
+    await expect(waitForReady(config, controller.signal, createDeps())).resolves.toEqual([]);
   });
 
   it("handles port as function", async () => {
@@ -185,7 +185,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: () => 5432 };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     await vi.advanceTimersByTimeAsync(500);
 
@@ -206,7 +206,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: 3000 };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
 
     // After 1 interval, should have called at least once more
     await vi.advanceTimersByTimeAsync(500);
@@ -238,7 +238,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
 
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -259,7 +259,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
 
     const ports = await promise;
@@ -282,7 +282,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     const guarded = promise.catch(() => {
       /* Intentional no-op */
     });
@@ -306,7 +306,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    await expect(waitForReady(config, "%0", controller.signal, deps)).resolves.toEqual([]);
+    await expect(waitForReady(config, controller.signal, deps)).resolves.toEqual([]);
   });
 
   it("passes config.file to dockerStatus", async () => {
@@ -321,7 +321,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
     await promise;
 
@@ -341,7 +341,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
     await promise;
 
@@ -360,7 +360,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
     await promise;
 
@@ -371,7 +371,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { docker: "postgres" };
 
-    await expect(waitForReady(config, "%0", controller.signal, createDeps())).rejects.toThrow(
+    await expect(waitForReady(config, controller.signal, createDeps())).rejects.toThrow(
       "Docker status dependency not provided",
     );
   });
@@ -406,7 +406,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: "/health" };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
 
       // Port detection phase
       await vi.advanceTimersByTimeAsync(500);
@@ -438,7 +438,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: "/health" };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
       await vi.advanceTimersByTimeAsync(500);
 
       const ports = await promise;
@@ -459,7 +459,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: "http://localhost:4000/health" };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
       await vi.advanceTimersByTimeAsync(500);
 
       const ports = await promise;
@@ -484,7 +484,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: { url: "http://127.0.0.1:3000/health", status: 200 } };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
 
       await vi.advanceTimersByTimeAsync(500);
       await vi.advanceTimersByTimeAsync(500);
@@ -500,7 +500,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: "http://127.0.0.1:3000/health" };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
       await vi.advanceTimersByTimeAsync(500);
 
       await promise;
@@ -512,7 +512,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: "http://127.0.0.1:3000/health" };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
       const guarded = promise.catch(() => {
         /* Intentional no-op */
       });
@@ -529,9 +529,7 @@ describe("waitForReady", () => {
 
       const config: ReadyConfig = { http: "http://127.0.0.1:3000/health" };
 
-      await expect(waitForReady(config, "%0", controller.signal, createDeps())).resolves.toEqual(
-        [],
-      );
+      await expect(waitForReady(config, controller.signal, createDeps())).resolves.toEqual([]);
     });
 
     it("object form with path uses port detection", async () => {
@@ -541,7 +539,7 @@ describe("waitForReady", () => {
       const controller = new AbortController();
       const config: ReadyConfig = { http: { url: "/api/health", status: 200 } };
 
-      const promise = waitForReady(config, "%0", controller.signal, createDeps());
+      const promise = waitForReady(config, controller.signal, createDeps());
       await vi.advanceTimersByTimeAsync(500);
       await vi.advanceTimersByTimeAsync(500);
 
@@ -559,7 +557,7 @@ describe("waitForReady", () => {
     const controller = new AbortController();
     const config: ReadyConfig = { port: 3000 };
 
-    const promise = waitForReady(config, "%0", controller.signal, createDeps());
+    const promise = waitForReady(config, controller.signal, createDeps());
     await vi.advanceTimersByTimeAsync(500);
 
     const ports = await promise;
@@ -585,7 +583,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
 
     const ports = await promise;
@@ -619,7 +617,7 @@ describe("waitForReady", () => {
       dockerRequireRecreate: true,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
     await vi.advanceTimersByTimeAsync(500);
@@ -642,7 +640,7 @@ describe("waitForReady", () => {
     const config: ReadyConfig = { docker: "postgres" };
     const deps: ReadyDeps = { ...createDeps(), dockerStatus: mockDockerStatus };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     await vi.advanceTimersByTimeAsync(500);
 
     expect(await promise).toEqual([5432]);
@@ -651,13 +649,13 @@ describe("waitForReady", () => {
   it("fails fast with state and pane tail when a container stays exited (B2)", async () => {
     const mockDockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>();
     mockDockerStatus.mockResolvedValue({ state: "exited", health: "", ports: [], ids: ["x"] });
-    mockCapturePane.mockResolvedValue("Bind for 0.0.0.0:5432 failed: port is already allocated");
+    mockReadOutput.mockResolvedValue("Bind for 0.0.0.0:5432 failed: port is already allocated");
 
     const controller = new AbortController();
     const config: ReadyConfig = { docker: "postgres" };
     const deps: ReadyDeps = { ...createDeps(), dockerStatus: mockDockerStatus };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     const guarded = promise.catch(() => {
       /* Intentional no-op */
     });
@@ -688,7 +686,7 @@ describe("waitForReady", () => {
       dockerStatus: mockDockerStatus,
     };
 
-    const promise = waitForReady(config, "%0", controller.signal, deps);
+    const promise = waitForReady(config, controller.signal, deps);
     const guarded = promise.catch(() => {
       /* Intentional no-op */
     });

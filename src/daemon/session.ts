@@ -312,6 +312,10 @@ export class Session {
     // (no pane to poll), so append to the service's buffer + broadcast here, the
     // Same shape the pane LogMonitor produces (D2/E4).
     manager.on("logLines", (svcName: string, lines: string[]) => {
+      // Pane logs retain the existing shared LogMonitor until P02-T08.
+      if (this.paneMap[svcName] !== undefined) {
+        return;
+      }
       this.logBuffers.get(svcName)?.appendLines(lines);
       this.broadcast({
         session: this.id,

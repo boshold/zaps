@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import type {
@@ -7,8 +6,7 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
-import { acquireTmuxOutput, cachedTmuxOutput, diffOutput } from "#src/lib/backend/tmux/output.js";
-import { serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
+import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
   buildDockerCommand,
   composeProjectArgs,
@@ -27,15 +25,15 @@ import {
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 
-import { DetachedRunner } from "./detached.js";
 import type { SpawnFn } from "./detached.js";
-import { buildServiceContext, formatEnvForShell, resolveEnv, shellEscape } from "./env.js";
+import { buildServiceContext, resolveEnv } from "./env.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
+import { diffOutput } from "./output.js";
 import { waitForReady } from "./ready.js";
 import { canTransition, createServiceStatus, transition } from "./state.js";
 import type {
+  DisplayPopupOptions,
   ExecInfo,
   ReadyConfig,
   ReadyDeps,
@@ -46,13 +44,9 @@ import type {
 
 type PaneMap = Record<string, string>;
 
-/** Ready-detection + port-detection inputs that differ between pane and detached. */
 interface StartTarget {
-  /** `capturePane`/`ready` target — a pane id, or "" for detached (buffer-backed). */
-  readyTarget: string;
   readyDeps: ReadyDeps;
   detectPorts: () => Promise<number[]>;
-  detached: boolean;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -108,15 +102,13 @@ function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
 
 function buildReadyDeps(
   serviceConfig: ServiceConfig,
-  deps: ServiceManagerDeps,
+  inputs: Pick<ReadyDeps, "detectPorts" | "readOutput">,
   projectDir: string,
 ): ReadyDeps {
   const { docker } = serviceConfig;
   const projectArgs = docker ? composeProjectArgs(serviceConfig.cwd ?? projectDir, docker) : [];
   return {
-    detectPorts: deps.detectPorts,
-    capturePane: async (target, lines) =>
-      cachedTmuxOutput(deps.capturePane, target, lines).join("\n"),
+    ...inputs,
     cwd: serviceConfig.cwd ?? projectDir,
     composeFile: docker?.file,
     dockerStatus: async (svc, cwd, composeFile) =>
@@ -200,8 +192,8 @@ export class ServiceManager extends EventEmitter {
   private readonly wrapperIds = new Map<string, string>();
   private readonly outputSubscriptions = new Map<string, () => void>();
   private readonly monitorGenerations = new Map<string, number>();
-  /** Runs pane-less `detached: true` services (E4). */
-  private readonly detachedRunner: DetachedRunner;
+  private readonly runtime: RuntimeDriver;
+  private readonly executions = new Map<string, { generation: number; handle?: ExecutionHandle }>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -235,17 +227,8 @@ export class ServiceManager extends EventEmitter {
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
-    this.detachedRunner = new DetachedRunner({
-      onLines: (service, lines) => {
-        this.handleDetachedLines(service, lines);
-      },
-      onExit: (service, generation) => {
-        this.handleDetachedExit(service, generation);
-      },
-      record: async (pid) => deps.recordDetached?.(pid),
-      unrecord: async (pid) => deps.removeDetached?.(pid),
-      spawn: deps.detachedSpawn,
-    });
+    this.runtime = deps.runtime(paneMap);
+    this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
 
     // Initialize statuses for all services
     for (const [name, svc] of Object.entries(config.project.services)) {
@@ -590,12 +573,9 @@ export class ServiceManager extends EventEmitter {
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    // A detached service has no pane; the missing pane is only fatal for the
-    // Pane-based start path (E4).
-    if (!serviceConfig || !status || (!serviceConfig.detached && !paneTarget)) {
+    if (!serviceConfig || !status) {
       throw new Error(`Unknown service: ${name}`);
     }
 
@@ -640,28 +620,67 @@ export class ServiceManager extends EventEmitter {
 
     const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
 
-    if (serviceConfig.detached) {
-      await this.startDetachedService(name, serviceConfig, status, controller, sentraEnv);
+    const combined = serviceConfig._combined;
+    if (combined && !combined.isOwner) {
+      const [ownerName] = combined.allServices;
+      const ownerStatus = this.statuses.get(ownerName);
+      if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
+        await this.deps.exec(
+          "docker",
+          buildDockerComposeArgs(
+            "start",
+            name,
+            serviceConfig.docker?.file,
+            this.dockerProjectArgs(serviceConfig),
+          ),
+          serviceConfig.cwd ?? this.config.projectDir,
+        );
+      }
+      await this.finishRuntimeStart(name, ownerName, serviceConfig, status, controller);
     } else {
-      this.outputSubscriptions.get(name)?.();
-      const output = acquireTmuxOutput(this.deps.capturePane, paneTarget);
-      this.outputSubscriptions.set(name, output.release);
-      if (!serviceConfig._combined || serviceConfig._combined.isOwner) {
-        output.producer.reset();
-      }
-      await this.sendStartCommand(name, serviceConfig, paneTarget, sentraEnv);
-      if (!serviceConfig._combined || serviceConfig._combined.isOwner) {
-        await output.producer.poll();
-      }
-      await this.finishStart(name, serviceConfig, status, controller, {
-        readyTarget: paneTarget,
-        readyDeps: buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
-        detectPorts: async () => this.deps.detectPorts(paneTarget),
-        detached: false,
-      });
+      await this.launchRuntimeService(name, serviceConfig, status, controller, sentraEnv);
     }
 
     return { noop: false };
+  }
+
+  private async launchRuntimeService(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    controller: AbortController,
+    sentraEnv: Record<string, string>,
+  ): Promise<void> {
+    const ctx = buildServiceContext(
+      this.statuses,
+      this.config.projectDir,
+      this.config.project.services,
+    );
+    const command = resolveCommand(serviceConfig, ctx);
+    const cwd = serviceConfig.cwd ?? this.config.projectDir;
+    const env = { ...captureEnvironment(), ...sentraEnv, ...resolveEnv(serviceConfig.env, ctx) };
+    if (serviceConfig.docker) {
+      await this.warnLegacyDockerProject(serviceConfig, cwd);
+    }
+    const generation = (this.monitorGenerations.get(name) ?? 0) + 1;
+    this.monitorGenerations.set(name, generation);
+    const execution: { generation: number; handle?: ExecutionHandle } = { generation };
+    this.executions.set(name, execution);
+    const handle = await this.runtime.start({
+      unitId: name,
+      generation,
+      command,
+      cwd,
+      env,
+      placement: serviceConfig.detached ? "background" : "default",
+      raw: serviceConfig.raw ?? false,
+    });
+    execution.handle = handle;
+    this.wrapperIds.set(name, handle.id);
+    if (!controller.signal.aborted) {
+      status.pid = await this.runtime.getPid(handle);
+      await this.finishRuntimeStart(name, name, serviceConfig, status, controller);
+    }
   }
 
   /**
@@ -695,52 +714,58 @@ export class ServiceManager extends EventEmitter {
     return env ?? {};
   }
 
-  /**
-   * Spawn a `detached: true` service pane-less and wait for it to become ready.
-   * Ready/port detection are PID-based (no pane); `ready.output` reads the
-   * runner's buffered child output instead of a pane capture (E4).
-   */
-  private async startDetachedService(
+  private async finishRuntimeStart(
     name: string,
+    unitId: string,
     serviceConfig: ServiceConfig,
     status: ServiceStatus,
     controller: AbortController,
-    sentraEnv: Record<string, string>,
   ): Promise<void> {
-    const ctx = buildServiceContext(
-      this.statuses,
-      this.config.projectDir,
-      this.config.project.services,
-    );
-    const command = resolveCommand(serviceConfig, ctx);
-    const cwd = serviceConfig.cwd ?? this.config.projectDir;
-    // Detached children inherit the daemon env plus the service's resolved env
-    // (pane services get this additively via a shell prefix).
-    const env: NodeJS.ProcessEnv = {
-      ...captureEnvironment(),
-      ...sentraEnv,
-      ...resolveEnv(serviceConfig.env, ctx),
+    const execution = this.executions.get(unitId);
+    const currentHandle = (): ExecutionHandle | undefined =>
+      this.executions.get(unitId) === execution ? execution?.handle : undefined;
+    const detectPorts = async (): Promise<number[]> => {
+      const handle = currentHandle();
+      const pid = handle && (await this.runtime.getPid(handle));
+      return pid === undefined ? [] : this.deps.inspectPorts(pid);
     };
-    const generation = this.monitorGenerations.get(name) ?? 0;
-
-    const pid = this.detachedRunner.start({ service: name, command, cwd, env, generation });
-    // Surface the real child pid so `services.list` carries it (was always
-    // Undefined) and orphan/crash tooling can target the process group.
-    status.pid = pid;
-
-    const detectPorts = async (): Promise<number[]> => this.deps.detectPortsForPid?.(pid) ?? [];
-    const readyDeps: ReadyDeps = {
-      ...buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
-      detectPorts,
-      capturePane: async () => this.detachedRunner.getLines(name).join("\n"),
+    const readOutput = async (tail: number): Promise<string> => {
+      const handle = currentHandle();
+      const lines = handle ? await this.runtime.readOutput(handle, tail) : [];
+      return lines.join("\n");
     };
-
     await this.finishStart(name, serviceConfig, status, controller, {
-      readyTarget: "",
-      readyDeps,
+      readyDeps: buildReadyDeps(serviceConfig, { detectPorts, readOutput }, this.config.projectDir),
       detectPorts,
-      detached: true,
     });
+  }
+
+  private handleRuntimeEvent(event: ExecutionEvent): void {
+    const execution = this.executions.get(event.unitId);
+    if (
+      !execution ||
+      execution.generation !== event.generation ||
+      this.monitorGenerations.get(event.unitId) !== event.generation
+    ) {
+      return;
+    }
+    if (event.kind === "output") {
+      const members = this.config.project.services[event.unitId]?._combined?.allServices ?? [
+        event.unitId,
+      ];
+      for (const member of members) {
+        const state = this.statuses.get(member)?.state;
+        if (state === "starting" || state === "ready") {
+          this.handleDetachedLines(member, [...event.lines]);
+        }
+      }
+    } else if (event.kind === "exit" || this.statuses.get(event.unitId)?.state === "starting") {
+      if (event.spawnError) {
+        this.handleExecExited(event.unitId, event.code ?? 1, event.signal, event.spawnError);
+      } else {
+        this.handleDetachedExit(event.unitId, event.generation);
+      }
+    }
   }
 
   /**
@@ -758,7 +783,6 @@ export class ServiceManager extends EventEmitter {
     try {
       const readyPorts = await waitForReady(
         resolveReadyConfig(serviceConfig),
-        target.readyTarget,
         controller.signal,
         target.readyDeps,
       );
@@ -778,7 +802,7 @@ export class ServiceManager extends EventEmitter {
         this.config.projectDir,
         this.config.project.services,
       );
-      await this.onServiceReady(name, serviceConfig, status, ports, ctx, target.detached);
+      await this.onServiceReady(name, serviceConfig, status, ports, ctx);
     } catch (error) {
       if (controller.signal.aborted) {
         return;
@@ -841,87 +865,6 @@ export class ServiceManager extends EventEmitter {
     void this.handleCrash(name, config, status);
   }
 
-  /**
-   * Send the start command for a service — handles combined vs regular.
-   */
-  private async sendStartCommand(
-    name: string,
-    serviceConfig: ServiceConfig,
-    paneTarget: string,
-    sentraEnv: Record<string, string>,
-  ): Promise<void> {
-    const combined = serviceConfig._combined;
-
-    if (combined && !combined.isOwner) {
-      // Combined non-owner: start individual container via docker compose
-      const [ownerName] = combined.allServices;
-      const ownerStatus = this.statuses.get(ownerName);
-      if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
-        await this.deps.exec(
-          "docker",
-          buildDockerComposeArgs(
-            "start",
-            name,
-            serviceConfig.docker?.file,
-            this.dockerProjectArgs(serviceConfig),
-          ),
-          serviceConfig.cwd ?? this.config.projectDir,
-        );
-      }
-      // If owner not running, skip — the owner will start all containers
-      return;
-    }
-
-    // Regular or combined owner: send command to pane
-    const ctx = buildServiceContext(
-      this.statuses,
-      this.config.projectDir,
-      this.config.project.services,
-    );
-    // Precedence (low → high): request env < Sentra env < service env.
-    const serviceEnv = { ...sentraEnv, ...resolveEnv(serviceConfig.env, ctx) };
-    const requestEnv = this.deps.environment ? captureEnvironment() : {};
-    const env = { ...requestEnv, ...serviceEnv };
-    const resolvedCommand = resolveCommand(serviceConfig, ctx);
-    const cwd = serviceConfig.cwd ?? this.config.projectDir;
-
-    // One-time best-effort migration warning when containers linger under the
-    // Pre-pinning project name (B5). Never blocks start.
-    if (serviceConfig.docker) {
-      await this.warnLegacyDockerProject(serviceConfig, cwd);
-    }
-
-    if (serviceConfig.raw) {
-      const envFile = this.deps.environmentFile?.(env);
-      const envPrefix = formatEnvForShell(env);
-      const command = envFile
-        ? `cd ${JSON.stringify(cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} sh -c ${shellEscape(resolvedCommand)}`
-        : `cd ${JSON.stringify(cwd)} && ${envPrefix ? `${envPrefix} ` : ""}${resolvedCommand}`;
-      try {
-        await this.deps.sendKeys(paneTarget, command);
-      } catch (error) {
-        if (envFile) {
-          this.deps.removeEnvironmentFile?.(envFile);
-        }
-        throw error;
-      }
-    } else {
-      // Wrapper mode: store exec info, send wrapper command
-      const executionId = randomUUID();
-      this.wrapperIds.set(name, executionId);
-      this.deps.storeExecInfo(
-        name,
-        { command: resolvedCommand, cwd, env: serviceEnv },
-        executionId,
-        this.monitorGenerations.get(name) ?? 0,
-      );
-      await this.deps.sendKeys(
-        paneTarget,
-        serviceWrapperCommand(this.deps.zapsCommand, this.deps.sessionId, name, executionId),
-      );
-    }
-  }
-
   /** Resolve the compose `-p` project args for a docker service ([] otherwise). */
   private dockerProjectArgs(serviceConfig: ServiceConfig): string[] {
     return serviceConfig.docker
@@ -955,7 +898,6 @@ export class ServiceManager extends EventEmitter {
     status: ServiceStatus,
     ports: number[],
     ctx: ServiceContext,
-    detached = false,
   ): Promise<void> {
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
     if (explicitUrl === false || serviceConfig.docker) {
@@ -980,18 +922,8 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
     }
 
-    // Start crash monitor in background with current generation. Detached
-    // Services are driven by the child `exit` event and their own output stream,
-    // So the pane-based crash/output monitors don't apply (E4).
     const gen = this.monitorGenerations.get(name) ?? 0;
-    if (!detached) {
-      void this.monitorCrash(name, gen);
-
-      // Start output monitor if onOutput is configured
-      if (serviceConfig.onOutput) {
-        this.monitorOutput(name, gen);
-      }
-    }
+    void this.monitorCrash(name, gen);
   }
 
   /**
@@ -1064,12 +996,12 @@ export class ServiceManager extends EventEmitter {
 
     if (serviceConfig?.detached) {
       // Detached service: signal the process group (SIGTERM, then SIGKILL).
-      await this.detachedRunner.stop(name);
+      await this.stopRuntimeExecution(name);
     } else if (combined) {
       await this.stopCombinedService(name, serviceConfig, combined, paneTarget);
     } else {
       // Regular service: Ctrl-C and wait for exit
-      await this.deps.sendCtrlC(paneTarget);
+      await this.stopRuntimeExecution(name, paneTarget);
       await this.waitForPaneExit(paneTarget);
     }
 
@@ -1088,6 +1020,15 @@ export class ServiceManager extends EventEmitter {
     }
 
     return { noop: false };
+  }
+
+  private async stopRuntimeExecution(name: string, unownedTarget?: string): Promise<void> {
+    const handle = this.executions.get(name)?.handle;
+    if (handle) {
+      await this.runtime.stop(handle);
+    } else if (unownedTarget) {
+      await this.deps.sendCtrlC(unownedTarget);
+    }
   }
 
   /**
@@ -1372,10 +1313,8 @@ export class ServiceManager extends EventEmitter {
         );
         crashed = !info || info.state !== "running";
       } else {
-        const rootPid = await this.deps.panePid(this.paneMap[name]);
-        const descendants = await this.deps.getDescendantPids(rootPid);
-        // If only shell PID left (no child), service has crashed
-        crashed = descendants.length <= 1;
+        const handle = this.executions.get(name)?.handle;
+        crashed = !handle || !(await this.runtime.isRunning(handle));
       }
 
       if (crashed) {
@@ -1418,49 +1357,6 @@ export class ServiceManager extends EventEmitter {
       }
     }
   }
-  /**
-   * Monitor service output and call onOutput for each new line.
-   */
-  private monitorOutput(name: string, generation: number): void {
-    const status = this.statuses.get(name);
-    const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
-    if (!status || !serviceConfig?.onOutput || !paneTarget) {
-      return;
-    }
-
-    const output = acquireTmuxOutput(this.deps.capturePane, paneTarget);
-    if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
-      output.release();
-      return;
-    }
-    let pending = Promise.resolve();
-    const unsubscribe = output.producer.subscribe((lines) => {
-      const deliver = async (): Promise<void> => {
-        for (const line of lines) {
-          if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
-            return;
-          }
-          if (line.trim()) {
-            try {
-              await serviceConfig.onOutput?.(line);
-            } catch {
-              /* Hooks are isolated. */
-            }
-          }
-        }
-      };
-      // eslint-disable-next-line promise/prefer-await-to-then -- serialize event batches
-      pending = pending.then(deliver);
-    });
-    const previous = this.outputSubscriptions.get(name);
-    this.outputSubscriptions.set(name, () => {
-      unsubscribe();
-      output.release();
-      previous?.();
-    });
-  }
-
   private updateWindowTitle(): void {
     if (this.shuttingDown) {
       return;
@@ -1646,6 +1542,8 @@ export interface ServiceManagerEvents {
 }
 
 export interface ServiceManagerDeps {
+  runtime: (targets: Record<string, string>) => RuntimeDriver;
+  inspectPorts: (rootPid: number) => Promise<number[]>;
   sendKeys: (target: string, keys: string) => Promise<void>;
   sendCtrlC: (target: string) => Promise<void>;
   panePid: (target: string) => Promise<number>;

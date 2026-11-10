@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import {
@@ -23,7 +24,7 @@ import type { TestSession } from "../helpers/tmux.js";
 import { buildTestPaneMap, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 import { waitFor } from "../helpers/wait.js";
 
-const deps = {
+const deps = withServiceRuntime({
   sendKeys,
   sendCtrlC,
   panePid,
@@ -50,7 +51,7 @@ const deps = {
   reflowRemove: async () => {
     /* No-op */
   },
-};
+});
 
 describe.skipIf(!hasTmux())("window-title integration", () => {
   let session: TestSession;
