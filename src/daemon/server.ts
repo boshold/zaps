@@ -290,12 +290,8 @@ class DaemonServer implements SessionStore {
       detectPortsForPid,
       capturePane: tmux.capturePane,
       getDescendantPids,
-      recordDetached: (pid: number) => {
-        void this.detachedRegistry.record(pid);
-      },
-      removeDetached: (pid: number) => {
-        void this.detachedRegistry.remove(pid);
-      },
+      recordDetached: async (pid: number) => this.detachedRegistry.record(pid),
+      removeDetached: async (pid: number) => this.detachedRegistry.remove(pid),
       renameWindow: tmux.renameWindow,
       getWindowName: tmux.getWindowName,
       getWindowOption: tmux.getWindowOption,

@@ -287,8 +287,8 @@ export class ServiceManager extends EventEmitter {
       onExit: (service, generation) => {
         this.handleDetachedExit(service, generation);
       },
-      record: (pid) => deps.recordDetached?.(pid),
-      unrecord: (pid) => deps.removeDetached?.(pid),
+      record: async (pid) => deps.recordDetached?.(pid),
+      unrecord: async (pid) => deps.removeDetached?.(pid),
       spawn: deps.detachedSpawn,
     });
 
@@ -1656,9 +1656,9 @@ export interface ServiceManagerDeps {
   capturePane: (target: string, lines: number) => Promise<string>;
   getDescendantPids: (rootPid: number) => Promise<number[]>;
   /** Record a spawned detached child PID for orphan protection (R10). */
-  recordDetached?: (pid: number) => void;
+  recordDetached?: (pid: number) => void | Promise<void>;
   /** Drop a recorded detached child PID on clean stop/exit (R10). */
-  removeDetached?: (pid: number) => void;
+  removeDetached?: (pid: number) => void | Promise<void>;
   /** Overridable spawn for detached children (tests inject a fake) (E4). */
   detachedSpawn?: SpawnFn;
   renameWindow: (target: string, name: string) => Promise<void>;

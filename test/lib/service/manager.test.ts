@@ -1,4 +1,5 @@
-import { EventEmitter } from "node:events";
+import { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,6 +9,8 @@ import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { SENTRA_BLOCK, fakeSentra } from "../../_helpers/fake-sentra.js";
+
+const processInspection = await import("../../../src/lib/backend/runtime/process-inspection.js");
 
 vi.mock("../../../src/lib/probe.js", async (importActual) => ({
   ...(await importActual<typeof import("../../../src/lib/probe.js")>()),
@@ -77,7 +80,10 @@ beforeEach(() => {
   vi.useFakeTimers();
 });
 
+let restoreDetachedInspection: (() => void) | undefined;
 afterEach(() => {
+  restoreDetachedInspection?.();
+  restoreDetachedInspection = undefined;
   vi.useRealTimers();
 });
 
@@ -3099,14 +3105,24 @@ describe("unavailable services", () => {
 // Detached services (E4)
 // =============================================================================
 
-class FakeDetachedChild extends EventEmitter {
-  public readonly stdout = new EventEmitter();
-  public readonly stderr = new EventEmitter();
-  public readonly pid: number;
-
+class FakeDetachedChild extends ChildProcess {
+  public override readonly stdout = new PassThrough();
+  public override readonly stderr = new PassThrough();
+  public override readonly stdio: ChildProcess["stdio"] = [
+    null,
+    this.stdout,
+    this.stderr,
+    new PassThrough(),
+    null,
+  ];
+  public override readonly pid: number;
+  public exited = false;
   public constructor(pid: number) {
     super();
     this.pid = pid;
+    this.once("exit", () => {
+      this.exited = true;
+    });
   }
 }
 
@@ -3114,18 +3130,34 @@ function makeDetachedSpawn(
   children: FakeDetachedChild[],
   basePid = 7000,
 ): {
-  spawn: ServiceManagerDeps["detachedSpawn"];
+  spawn: NonNullable<ServiceManagerDeps["detachedSpawn"]>;
   args: { file: string; args: string[] }[];
 } {
+  const inspection = processInspection.createProcessInspection();
+  const readProcessIdentity = async (pid: number) => {
+    const child = children.find((candidate) => candidate.pid === pid && !candidate.exited);
+    return child ? { pid, startTime: `birth-${pid}`, pgid: pid, sid: pid } : null;
+  };
+  const spy = vi.spyOn(processInspection, "createProcessInspection").mockReturnValue({
+    ...inspection,
+    readProcessIdentity,
+    getProcessMembers: async (identity) => {
+      const member = await readProcessIdentity(identity.pid);
+      return member ? [member] : [];
+    },
+  });
+  restoreDetachedInspection = () => {
+    spy.mockRestore();
+  };
   const args: { file: string; args: string[] }[] = [];
   let pid = basePid;
-  const spawn = ((file: string, argv: string[]) => {
+  const spawn = (file: string, argv: string[]) => {
     const child = new FakeDetachedChild(pid);
     pid += 1;
     children.push(child);
     args.push({ file, args: argv });
     return child;
-  }) as unknown as ServiceManagerDeps["detachedSpawn"];
+  };
   return { spawn, args };
 }
 
@@ -3152,7 +3184,13 @@ describe("detached services (E4)", () => {
     // The real child pid is surfaced on the status (was always undefined).
     expect(status.pid).toBe(7000);
     expect(status.ports).toEqual([4000]);
-    expect(args[0]).toEqual({ file: "sh", args: ["-c", "node w.js"] });
+    expect(args[0]?.file).toBe("sh");
+    expect(args[0]?.args).toEqual([
+      "-c",
+      expect.stringContaining('exec sh -c "$1"'),
+      "zaps",
+      "node w.js",
+    ]);
     // Detached port detection is PID-based, not pane-based.
     expect(deps.detectPortsForPid).toHaveBeenCalledWith(7000);
     expect(deps.recordDetached).toBeUndefined(); // Optional dep not wired in this mock
@@ -3190,9 +3228,10 @@ describe("detached services (E4)", () => {
     const stopPromise = mgr.stopService("worker");
     // Let the per-service lock run stopServiceInternal → runner.stop (SIGTERM).
     await vi.advanceTimersByTimeAsync(1);
-    expect(kill).toHaveBeenCalledWith(-7000, "SIGTERM");
+    expect(kill).toHaveBeenCalledWith(7000, "SIGTERM");
 
     children[0].emit("exit", null, "SIGTERM");
+    await vi.advanceTimersByTimeAsync(25);
     await stopPromise;
     expect(mgr.getStatus("worker").state).toBe("stopped");
   });
@@ -3710,10 +3749,12 @@ describe("sentra env injection", () => {
     });
     const deps = createMockDeps();
     const spawnEnvs: NodeJS.ProcessEnv[] = [];
-    deps.detachedSpawn = ((_file: string, _argv: string[], opts: { env: NodeJS.ProcessEnv }) => {
-      spawnEnvs.push(opts.env);
-      return new FakeDetachedChild(7000);
-    }) as unknown as ServiceManagerDeps["detachedSpawn"];
+    const children: FakeDetachedChild[] = [];
+    const { spawn } = makeDetachedSpawn(children);
+    deps.detachedSpawn = (file, argv, opts) => {
+      spawnEnvs.push(opts.env ?? {});
+      return spawn(file, argv, opts);
+    };
     deps.detectPortsForPid = vi.fn().mockResolvedValue([]);
     deps.sentra = fakeSentra();
 
