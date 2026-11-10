@@ -57,9 +57,11 @@ export class OwnedCommandExecutor implements CommandExecutor {
           return;
         }
         if (event.kind === "output") {
-          for (const line of event.lines) {
-            output.push(line);
-            options.onLine?.(line);
+          for (const rawLine of event.lines) {
+            for (const line of rawLine.replace(/\r$/u, "").split("\r")) {
+              output.push(line);
+              options.onLine?.(line);
+            }
           }
         } else if (event.kind === "exit") {
           unsubscribe();

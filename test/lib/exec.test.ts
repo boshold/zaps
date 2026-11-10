@@ -155,6 +155,18 @@ describe("execCommandWithResult", () => {
 });
 
 describe("owned exec compatibility", () => {
+  it("preserves readline framing in captured output and callbacks", async () => {
+    const lines: string[] = [];
+    const result = await execCommandWithResult(String.raw`printf 'alpha\r\nbeta\rgamma\n'`, {
+      cwd: "/tmp",
+      onLine: (line) => {
+        lines.push(line);
+      },
+    });
+    expect(result.output).toEqual(["alpha", "beta", "gamma"]);
+    expect(lines).toEqual(result.output);
+  });
+
   it("preserves caller environment precedence", async () => {
     const result = await execCommandWithResult('printf "%s" "$PATH"', {
       cwd: "/tmp",

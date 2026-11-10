@@ -1,3 +1,6 @@
+import { ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { OwnedCommandExecutor } from "../../../src/lib/backend/runtime/command-executor.js";
@@ -23,6 +26,62 @@ function harness() {
 }
 
 describe("OwnedCommandExecutor", () => {
+  describe.each(["stdout", "stderr"] as const)("%s readline framing", (stream) => {
+    it.each([
+      { chunks: ["alpha\r\nbeta\rgamma\n"], expected: ["alpha", "beta", "gamma"] },
+      { chunks: ["alpha\r", "\nbeta\r", "gamma\n"], expected: ["alpha", "beta", "gamma"] },
+      { chunks: ["alpha\r", "\n"], expected: ["alpha"] },
+      { chunks: ["alpha\r"], expected: ["alpha"] },
+      { chunks: ["alpha", "\r", "\r", "\n"], expected: ["alpha", ""] },
+      { chunks: ["\r", "\n", "\r", "\n"], expected: ["", ""] },
+      { chunks: ["alpha\r", "beta"], expected: ["alpha", "beta"] },
+      { chunks: [""], expected: [] },
+    ])("frames $chunks without duplicate or missing lines", async ({ chunks, expected }) => {
+      const child = new ChildProcess();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      Object.defineProperties(child, {
+        stdout: { value: stdout },
+        stderr: { value: stderr },
+        stdio: { value: [null, stdout, stderr, null] },
+      });
+      const runnerLines: string[] = [];
+      const runner = new ProcessRunner({
+        spawn: () => child,
+        onLines: (_unitId, lines) => {
+          runnerLines.push(...lines);
+        },
+        onExit: vi.fn(),
+      });
+      const lines: string[] = [];
+      try {
+        const result = new OwnedCommandExecutor(runner).execute("test", {
+          cwd: process.cwd(),
+          env: {},
+          onLine: (line) => {
+            lines.push(line);
+          },
+        });
+        const target = stream === "stdout" ? stdout : stderr;
+        for (const chunk of chunks) {
+          target.write(chunk);
+        }
+        stdout.end();
+        stderr.end();
+        child.emit("exit", 0, null);
+        expect(await result).toEqual({ success: true, exitCode: 0, output: expected });
+        expect(lines).toEqual(expected);
+        const rawLines = chunks.join("").split("\n");
+        if (rawLines.at(-1) === "") {
+          rawLines.pop();
+        }
+        expect(runnerLines).toEqual(rawLines);
+      } finally {
+        await runner.dispose();
+      }
+    });
+  });
+
   it("captures cwd/env at admission, output tails and exit status", async () => {
     const h = harness();
     const lines: string[] = [];
