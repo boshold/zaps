@@ -2,21 +2,19 @@ import { useApp as useInkApp, useInput } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { DockerConfig, NoticeLevel, UiTaskMode } from "#src/config/types.js";
-import { useConnection } from "#src/hooks/useConnection.js";
+import type { SessionSnapshot } from "#src/daemon/session.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useOverlay } from "#src/hooks/useOverlay.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
-import { useServices } from "#src/hooks/useServices.js";
 import { useToasts } from "#src/hooks/useToasts.js";
 import { useZaps } from "#src/hooks/useZaps.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
 import { detachManagedClient } from "#src/lib/managed-detach.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
 import { outputPopupAvailable, showOutputPopup } from "#src/lib/task/output-popup.js";
 import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
@@ -37,22 +35,16 @@ import type { TaskRunRecord } from "./TaskRunRecord.js";
 const MAX_HISTORY = 50;
 
 export function Router({
-  initialStatuses,
   initialTaskHistory,
   autoStart,
 }: {
-  initialStatuses: ServiceStatus[];
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }) {
   const { view, logTarget, goToLogs, goToDashboard } = useRouter();
-  const { client, paneMap, tasks, servicesMeta, ui } = useZaps();
+  const { client, paneMap, tasks, servicesMeta, ui, statuses, connected, retry } = useZaps();
   // In-app notification surface: success → transient toast, failure → sticky.
   const { notify, ackAll, toasts, dismiss } = useToasts();
-  // First consumer of the daemon disconnect/connected surface. While offline the
-  // Poll is gated (deliberate freeze of last-known state, not a silent catch).
-  const { connected, retry } = useConnection(client);
-  const statuses = useServices(client, initialStatuses, connected);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Sort once here (unavailable services to the bottom) and feed the SAME array to
@@ -88,7 +80,9 @@ export function Router({
   // Running-task state for the palette's background-run guard. Set optimistically
   // On dispatch + by the task.start event; cleared by task.complete (F4). The
   // Picker's per-key duplicate guard derives in-flight keys from taskHistory.
-  const [runningTask, setRunningTask] = useState<string | null>(null);
+  const [runningTask, setRunningTask] = useState<string | null>(
+    () => initialTaskHistory.find((record) => record.result === "running")?.taskKey ?? null,
+  );
 
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => {
@@ -149,9 +143,19 @@ export function Router({
         notifyFailure(taskName, ui.notifications);
       }
     }
+    function handleSnapshot(snapshot: SessionSnapshot) {
+      setTaskHistory(snapshot.taskHistory);
+      setRunningTask(
+        snapshot.taskHistory.find((record) => record.result === "running")?.taskKey ?? null,
+      );
+    }
+    client.on("session.snapshot", handleSnapshot);
+    client.on("session.configReloaded", handleSnapshot);
     client.on("task.start", handleTaskStart);
     client.on("task.complete", handleTaskComplete);
     return () => {
+      client.off("session.snapshot", handleSnapshot);
+      client.off("session.configReloaded", handleSnapshot);
       client.off("task.start", handleTaskStart);
       client.off("task.complete", handleTaskComplete);
     };
@@ -169,6 +173,7 @@ export function Router({
       });
     }
     client.on("config.notice", handleConfigNotice);
+    client.deliverUpgradeNotice();
     return () => {
       client.off("config.notice", handleConfigNotice);
     };
@@ -506,7 +511,7 @@ export function Router({
         return;
       }
       // While disconnected the UI is inert except `r` (manual re-attach). No
-      // Auto-reconnect — `r` re-invokes client.connect(). The overlay-opening keys
+      // Auto-reconnect — `r` repeats the UI handshake. The overlay-opening keys
       // Below are gated behind this so a disconnect can't push an overlay that the
       // Force-pop effect would then immediately clear (one-frame flash).
       if (!connected) {

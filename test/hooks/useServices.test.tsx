@@ -8,6 +8,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import type { ProjectedServiceStatus } from "../../src/daemon/session.js";
 import { useServices } from "../../src/hooks/useServices.js";
+import { deferred } from "../_helpers/deferred.js";
+import { makeSessionSnapshot } from "../_helpers/session-snapshot.js";
 
 function createMockClient(statuses: ProjectedServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
@@ -97,7 +99,7 @@ describe("useServices", () => {
     // Emit config reload with new service set
     const newStatuses = [makeStatus("web", "stopped"), makeStatus("worker", "stopped")];
     act(() => {
-      client.emit("session.configReloaded", { statuses: newStatuses });
+      client.emit("session.configReloaded", makeSessionSnapshot({ statuses: newStatuses }));
     });
 
     expect(lastFrame()).toContain("web:stopped");
@@ -165,6 +167,43 @@ describe("useServices", () => {
 
       expect(lastFrame()).toContain("db:ready");
       expect(lastFrame()).not.toContain("db:starting");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps action-only updates and rejects a pre-reconnect poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = makeStatus("api", "ready");
+      const client = createMockClient([initial]);
+      const oldPoll = deferred<ProjectedServiceStatus[]>();
+      vi.mocked(client.listServices).mockReturnValueOnce(oldPoll.promise);
+      function Wrapper() {
+        const statuses = useServices(client, [initial]);
+        return <Text>{statuses.map((s) => `${s.name}:${String(s.actions.focus)}`).join(",")}</Text>;
+      }
+      const { lastFrame } = render(<Wrapper />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      const withFocus = { ...initial, actions: { ...initial.actions, focus: true } };
+      act(() => {
+        client.emit("service.stateChange", "api", withFocus);
+      });
+      expect(lastFrame()).toContain("api:true");
+      act(() => {
+        client.emit("disconnect");
+        client.emit(
+          "session.snapshot",
+          makeSessionSnapshot({ statuses: [{ ...withFocus, name: "fresh" }] }),
+        );
+      });
+      await act(async () => {
+        oldPoll.resolve([initial]);
+      });
+      expect(lastFrame()).toContain("fresh:true");
+      expect(lastFrame()).not.toContain("api:");
     } finally {
       vi.useRealTimers();
     }

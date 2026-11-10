@@ -4,7 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { isValidElement } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { runTui } from "../src/cli/run-tui.js";
+import { App } from "../src/components/App.js";
+import { unavailableCapabilities } from "../src/lib/backend/wire.js";
+import type { IpcResponse } from "../src/lib/ipc/protocol.js";
+
+import { deferred } from "./_helpers/deferred.js";
+import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
 
 // Mock all external dependencies before importing the module under test
 
@@ -154,31 +163,110 @@ describe("CLI — up command", () => {
     await mockSendKeys(tuiPaneId, "zaps ui --start; exit");
     expect(mockSendKeys).toHaveBeenCalledWith("%1", "zaps ui --start; exit");
   });
+});
 
-  it("outer flow calls runTui directly when @tui is origin pane", async () => {
-    // Simulate the outer flow: originPane == tuiPaneId → direct call (no sendKeys)
-    mockDiscoverConfig.mockReturnValue("/fake/.zaps.ts");
-    mockLoadConfig.mockResolvedValue({
-      project: {
-        name: "test-proj",
-        services: { api: { start: "npm dev" } },
+const mockIpcRequest = vi.fn();
+const mockIpcSubscribe = vi.fn();
+const mockLoadYoga = vi.fn();
+
+vi.mock("../src/lib/ipc/client.js", () => ({
+  ipcRequest: (...args: unknown[]) => mockIpcRequest(...args),
+  ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
+}));
+vi.mock("yoga-layout", () => ({ default: mockLoadYoga() }));
+
+const { render: renderInk } = await import("ink");
+
+describe("CLI — runTui", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadYoga.mockReturnValue({});
+    mockWaitUntilExit.mockResolvedValue();
+    mockIpcRequest.mockResolvedValue({
+      id: "status",
+      result: { pid: 1, sessions: [], supportedBackends: ["tmux", "shell"] },
+    });
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("loads Yoga independently and renders only after the two ACKs on the UI socket", async () => {
+    const subscribed = deferred<void>();
+    const attached = deferred<IpcResponse>();
+    const request = vi.fn(async () => attached.promise);
+    const close = vi.fn();
+    mockIpcSubscribe.mockReturnValue({
+      subscribed: subscribed.promise,
+      request,
+      send: vi.fn(),
+      connected: true,
+      close,
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const snapshot = makeSessionSnapshot({
+      capabilities: { ...unavailableCapabilities, panes: true },
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [],
+          retryCount: 0,
+          actions: { focus: true, zoom: false, editOutput: false },
+        },
+      ],
+    });
+
+    const tui = runTui({ socketPath: "/test.sock", sessionId: "sess1" });
+    await vi.waitFor(() => expect(mockLoadYoga).toHaveBeenCalledOnce());
+    expect(mockIpcSubscribe).toHaveBeenCalledOnce();
+    expect(request).not.toHaveBeenCalled();
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    subscribed.resolve();
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenCalledExactlyOnceWith("session.attach", { ui: true }),
+    );
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+
+    attached.resolve({ id: "attach", result: snapshot });
+    await tui;
+    expect(renderInk).toHaveBeenCalledOnce();
+    const rendered = vi.mocked(renderInk).mock.calls[0]?.[0];
+    expect(isValidElement(rendered) && rendered.type === App).toBe(true);
+    expect(rendered).toMatchObject({
+      props: {
+        backend: "tmux",
+        capabilities: snapshot.capabilities,
+        initialStatuses: snapshot.statuses,
       },
-      configPath: "/fake/.zaps.ts",
-      projectDir: "/fake",
     });
-    mockCreateLayout.mockResolvedValue({
-      paneMap: { "@tui": "%0", api: "%1" },
-      focusPane: "%0",
+    expect(mockIpcRequest).toHaveBeenCalledExactlyOnceWith(
+      "/test.sock",
+      "daemon.status",
+      undefined,
+      30_000,
+      "sess1",
+    );
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes the subscription without painting when the initial attach fails", async () => {
+    const close = vi.fn();
+    mockIpcSubscribe.mockReturnValue({
+      subscribed: Promise.resolve(),
+      request: vi.fn().mockResolvedValue({ id: "attach", error: "attach failed" }),
+      send: vi.fn(),
+      connected: true,
+      close,
     });
-    mockSetEnv.mockResolvedValue();
-
-    const originPane = "%0";
-    const paneMap = { "@tui": "%0", api: "%1" };
-    const tuiPaneId = paneMap["@tui"];
-
-    // Same pane: should NOT use sendKeys
-    expect(tuiPaneId).toBe(originPane);
-    expect(mockSendKeys).not.toHaveBeenCalled();
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await expect(runTui({ socketPath: "/test.sock", sessionId: "sess1" })).rejects.toThrow(
+      "attach failed",
+    );
+    expect(renderInk).not.toHaveBeenCalled();
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 

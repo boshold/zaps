@@ -10,6 +10,7 @@ import { Router } from "../../src/components/Router.js";
 import type { OverlayApi } from "../../src/hooks/useOverlay.js";
 import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
+import { parseServiceStatus } from "../../src/lib/backend/wire.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 vi.mock("../../src/lib/open.js", () => ({ openInBrowser: vi.fn() }));
@@ -27,6 +28,8 @@ function createMockClient(): DaemonClient {
     connect: vi.fn(),
     disconnect: vi.fn(),
     connected: true,
+    uiBound: true,
+    deliverUpgradeNotice: vi.fn(),
     restartService: vi.fn().mockResolvedValue(undefined),
     listServices: vi.fn().mockResolvedValue([]),
     restartAll: vi.fn().mockResolvedValue(undefined),
@@ -52,9 +55,16 @@ function OverlayController() {
 function renderWithOverlay(client: DaemonClient, statuses: ServiceStatus[]) {
   return render(
     <OverlayProvider>
-      <AppProvider client={client} paneMap={{}} projectName="proj" tasks={[]} servicesMeta={[]}>
+      <AppProvider
+        client={client}
+        paneMap={{}}
+        projectName="proj"
+        tasks={[]}
+        servicesMeta={[]}
+        statuses={statuses.map((status) => parseServiceStatus(status))}
+      >
         <OverlayController />
-        <Router initialStatuses={statuses} initialTaskHistory={[]} />
+        <Router initialTaskHistory={[]} />
         <OverlayHost />
       </AppProvider>
     </OverlayProvider>,

@@ -45,6 +45,7 @@ export interface DaemonClientEvents {
   "task.start": (key: string, name: string, runId?: string) => void;
   "task.complete": (key: string, name: string, result: "success" | "error", runId?: string) => void;
   "session.destroyed": () => void;
+  "session.snapshot": (snapshot: SessionSnapshot) => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
   "session.configStale": () => void;
   "session.paneMap": (paneMap: Record<string, string>) => void;
@@ -65,6 +66,8 @@ export class DaemonClient extends EventEmitter {
   private managedHost = true;
   private advertised = false;
   private upgradeNoticed = false;
+  private connectionEpoch = 0;
+  private upgradePending = false;
   private readonly supportsHostDetach: () => boolean;
 
   public constructor(
@@ -84,16 +87,29 @@ export class DaemonClient extends EventEmitter {
 
   public connect(): void {
     this.disconnect();
+    this.openSubscription();
+  }
+
+  private openSubscription(): void {
+    const epoch = this.connectionEpoch;
     this.sub = ipcSubscribe(
       this.socketPath,
       this.sessionId,
       ["service.*", "log.*", "task.*", "session.*", "config.*"],
       {
         onEvent: (event: DaemonEvent) => {
+          if (epoch !== this.connectionEpoch) {
+            return;
+          }
           this.handleEvent(event);
         },
         onClose: () => {
+          if (epoch !== this.connectionEpoch) {
+            return;
+          }
+          this.connectionEpoch += 1;
           this.boundSubscription = null;
+          this.sub = null;
           this.emit("disconnect");
         },
       },
@@ -101,12 +117,14 @@ export class DaemonClient extends EventEmitter {
   }
 
   public disconnect(): void {
+    this.connectionEpoch += 1;
     this.boundSubscription = null;
     if (this.sub) {
       // Send detach before closing
-      this.sub.send("session.detach");
-      this.sub.close();
+      const subscription = this.sub;
       this.sub = null;
+      subscription.send("session.detach");
+      subscription.close();
     }
   }
 
@@ -131,33 +149,51 @@ export class DaemonClient extends EventEmitter {
     return this.sub !== null && this.boundSubscription === this.sub && this.sub.connected;
   }
 
-  public async bindUi(): Promise<void> {
+  public async connectUi(): Promise<SessionSnapshot> {
+    this.disconnect();
+    const epoch = this.connectionEpoch;
+    const response = await this.request("daemon.status");
+    if (epoch !== this.connectionEpoch) {
+      throw new Error("daemon connection replaced");
+    }
+    if (response.error !== undefined) {
+      throw new DaemonRequestError(response.error, response.errorCode);
+    }
+    this.advertised = parseDaemonStatus(response.result).advertised;
+    this.openSubscription();
+    try {
+      return await this.bindUi();
+    } catch (error) {
+      if (epoch === this.connectionEpoch) {
+        this.disconnect();
+      }
+      throw error;
+    }
+  }
+
+  public async bindUi(): Promise<SessionSnapshot> {
     const subscription = this.sub;
     if (!subscription) {
       throw new Error("Not connected");
     }
+    const epoch = this.connectionEpoch;
     await subscription.subscribed;
-    if (this.sub !== subscription || !subscription.connected) {
+    if (epoch !== this.connectionEpoch || this.sub !== subscription || !subscription.connected) {
       throw new Error("daemon connection closed");
     }
     const response = await subscription.request("session.attach", { ui: true });
     if (response.error !== undefined) {
       throw new DaemonRequestError(response.error, response.errorCode);
     }
-    if (this.sub !== subscription || !subscription.connected) {
+    if (epoch !== this.connectionEpoch || this.sub !== subscription || !subscription.connected) {
       throw new Error("daemon connection closed");
     }
-    const snapshot = z
-      .object({ managed: z.boolean().optional() })
-      .passthrough()
-      .parse(response.result);
-    const metadata = z.record(z.string(), z.unknown()).parse(response.result);
-    if (Object.hasOwn(metadata, "backend") || Object.hasOwn(metadata, "capabilities")) {
-      parseSessionSnapshot(response.result, this.advertised);
-    }
-    this.managedHost = metadata.backend !== "shell" && snapshot.managed !== false;
-    this.noticeUpgrade();
+    const snapshot = parseSessionSnapshot(response.result, this.advertised);
+    this.managedHost = snapshot.backend === "tmux" && snapshot.managed;
     this.boundSubscription = subscription;
+    this.emit("session.snapshot", snapshot);
+    this.noticeUpgrade();
+    return snapshot;
   }
 
   public async detach(options: { detachHost?: boolean } = {}): Promise<void> {
@@ -179,6 +215,7 @@ export class DaemonClient extends EventEmitter {
     if (this.sub !== subscription || !subscription.connected) {
       throw new Error("daemon connection closed");
     }
+    this.connectionEpoch += 1;
     this.boundSubscription = null;
     this.sub = null;
     subscription.close();
@@ -362,13 +399,22 @@ export class DaemonClient extends EventEmitter {
 
   private noticeUpgrade(): void {
     if (!this.advertised && !this.upgradeNoticed) {
-      this.upgradeNoticed = true;
-      this.emit(
-        "config.notice",
-        "warn",
-        "Daemon capabilities unavailable. Restart the daemon to upgrade; detach managed tmux manually.",
-      );
+      this.upgradePending = true;
     }
+    this.deliverUpgradeNotice();
+  }
+
+  public deliverUpgradeNotice(): void {
+    if (!this.upgradePending || this.listenerCount("config.notice") === 0) {
+      return;
+    }
+    this.upgradePending = false;
+    this.upgradeNoticed = true;
+    this.emit(
+      "config.notice",
+      "warn",
+      "Daemon capabilities unavailable. Restart the daemon to upgrade; detach managed tmux manually.",
+    );
   }
 
   private handleEvent(event: DaemonEvent): void {
@@ -407,6 +453,7 @@ export class DaemonClient extends EventEmitter {
         break;
       }
       case "session.destroyed": {
+        this.disconnect();
         this.emit("session.destroyed");
         break;
       }

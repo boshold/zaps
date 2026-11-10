@@ -35,9 +35,9 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
-import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
@@ -49,7 +49,6 @@ import type { IpcSubscription } from "./lib/ipc/client.js";
 import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
-import { installResizeReset } from "./lib/screen-reset.js";
 import { computeProjectSessionId } from "./lib/sentra/session-id.js";
 import type { ServiceStatus } from "./lib/service/types.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
@@ -129,127 +128,6 @@ function rejectExcessArgs(name: string, args: readonly string[], expected: numbe
     );
     process.exit(1);
   }
-}
-
-// --- TUI ---
-
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function readStdoutSize(): string {
-  return `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
-}
-
-/**
- * Wait until the terminal size stops changing before the first Ink paint.
- *
- * Inside tmux, `zaps up` splits its service/log panes around launch, so the
- * `@tui` pane keeps resizing for a few hundred ms. Ink only clears the screen on
- * a width *decrease* (see ink `resized`/`shouldClearTerminalForFrame`), so a
- * first frame painted mid-resize — typically while the pane is still *growing*
- * into its final width — is left on screen as residue until a manual tmux resize
- * triggers a clear. Settling the size first lets us paint exactly once at the
- * final dimensions. Resolves fast (~150ms) when the size is already stable.
- */
-async function waitForStableSize(maxMs = 1000, stableMs = 150, stepMs = 50): Promise<void> {
-  if (!process.stdout.isTTY) {
-    return;
-  }
-  let prev = readStdoutSize();
-  let stableFor = 0;
-  for (let waited = 0; waited < maxMs; waited += stepMs) {
-    await sleep(stepMs);
-    const cur = readStdoutSize();
-    if (cur === prev) {
-      stableFor += stepMs;
-      if (stableFor >= stableMs) {
-        return;
-      }
-    } else {
-      stableFor = 0;
-      prev = cur;
-    }
-  }
-}
-
-async function runTui(opts: {
-  sessionId: string;
-  socketPath: string;
-  autoStart?: boolean;
-}): Promise<void> {
-  const client = new DaemonClient(opts.socketPath, opts.sessionId);
-  client.connect();
-
-  // Parallel: load yoga + attach to daemon (no config loading needed)
-  const [yogaMod, snapshot] = await Promise.all([import("yoga-layout"), client.attach()]);
-  await (yogaMod.default as unknown as Record<string, unknown>).__yogaReady;
-
-  // Skip splash on reattach (services already running)
-  const allStopped = snapshot.statuses.every((s) => s.state === "stopped");
-  const showSplash = Boolean(opts.autoStart) && allStopped;
-
-  process.stdout.write("\x1b[?1049h");
-
-  if (showSplash) {
-    const { managedSplashHint, renderSplash } = await import("./components/logo.js");
-    const { resolveIconTier } = await import("./components/theme/IconTheme.js");
-    const { listPanes } = await import("./lib/tmux.js");
-    const splashTier = resolveIconTier(snapshot.ui?.icons);
-    const hint = managedSplashHint(getEnv("ZAPS_MANAGED_TMUX"));
-    const tmuxSession = await currentSession();
-    const panes = await listPanes(tmuxSession);
-    const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
-    if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier, hint);
-    } else {
-      renderSplash(undefined, splashTier, hint);
-    }
-  }
-
-  // Parallel: load ink + App component
-  const [{ render }, { App }] = await Promise.all([import("ink"), import("./components/App.js")]);
-
-  // Let the pane size settle (after zaps' own pane splits), then clear so the
-  // First frame paints once, clean, at the final size — no splash or mid-resize
-  // Residue left behind for a manual tmux resize to mop up.
-  await waitForStableSize();
-  if (process.stdout.isTTY) {
-    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-  }
-
-  // Zaps keeps splitting/resizing the @tui pane after mount. Ink only force-
-  // Clears on a width *decrease*, so growing into the final size leaves frame
-  // Residue. Mop up the cases Ink misses; the live reflow then repaints clean.
-  const stopResizeReset = installResizeReset(process.stdout);
-
-  const { waitUntilExit } = render(
-    <App
-      client={client}
-      paneMap={snapshot.paneMap}
-      projectName={snapshot.name}
-      tasks={snapshot.tasks ?? []}
-      servicesMeta={snapshot.servicesMeta ?? []}
-      initialStatuses={snapshot.statuses}
-      initialTaskHistory={snapshot.taskHistory ?? []}
-      autoStart={showSplash}
-      configStale={snapshot.configStale}
-      ui={snapshot.ui}
-    />,
-    {
-      patchConsole: false,
-      // On a real pty, paint frames even when CI env vars leak into the pane
-      // (a tmux server started on CI hands CI=true to every pane, and Ink's
-      // Is-in-ci check would then skip every frame until unmount).
-      interactive: process.stdout.isTTY ? true : undefined,
-    },
-  );
-
-  await waitUntilExit();
-
-  stopResizeReset();
-  process.stdout.write("\x1b[?1049l");
-  client.disconnect();
 }
 
 const DETACH_INACTIVITY_MS = 120_000;

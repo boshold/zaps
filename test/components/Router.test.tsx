@@ -15,7 +15,9 @@ import type { ServiceMeta, TaskInfo } from "../../src/daemon/session.js";
 import type { OverlayApi } from "../../src/hooks/useOverlay.js";
 import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
+import { parseServiceStatus } from "../../src/lib/backend/wire.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
+import { makeSessionSnapshot } from "../_helpers/session-snapshot.js";
 
 // ── mocks ──────────────────────────────────────────────────────────────
 
@@ -47,6 +49,8 @@ function createMockClient(): DaemonClient {
     connect: vi.fn(),
     disconnect: vi.fn(),
     connected: true,
+    uiBound: true,
+    deliverUpgradeNotice: vi.fn(),
     session: "test",
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
@@ -116,14 +120,11 @@ function renderRouter(
         projectName="test-project"
         tasks={tasks}
         servicesMeta={servicesMeta}
+        statuses={statuses.map((status) => parseServiceStatus(status))}
         ui={opts.ui}
       >
         <OverlayController />
-        <Router
-          initialStatuses={statuses}
-          initialTaskHistory={taskHistory}
-          autoStart={opts.autoStart}
-        />
+        <Router initialTaskHistory={taskHistory} autoStart={opts.autoStart} />
         <OverlayHost />
       </AppProvider>
     </OverlayProvider>,
@@ -662,6 +663,39 @@ describe("Router", () => {
   });
 
   // ── onTaskComplete via daemon events ─────────────────────────
+
+  it("replaces stale running task history from the reattached snapshot", () => {
+    const { client, lastFrame } = renderRouter({
+      taskHistory: [
+        {
+          runId: "old",
+          taskKey: "build",
+          taskName: "OldBuild",
+          result: "running",
+          timestamp: 1,
+        },
+      ],
+    });
+    expect(lastFrame()).toContain("OldBuild");
+    act(() => {
+      client.emit(
+        "session.snapshot",
+        makeSessionSnapshot({
+          taskHistory: [
+            {
+              runId: "new",
+              taskKey: "test",
+              taskName: "NewTest",
+              result: "success",
+              timestamp: 2,
+            },
+          ],
+        }),
+      );
+    });
+    expect(lastFrame()).toContain("NewTest");
+    expect(lastFrame()).not.toContain("OldBuild");
+  });
 
   it("handles task.start event", async () => {
     const client = createMockClient();

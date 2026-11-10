@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 
+import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,8 +33,23 @@ vi.mock("../src/lib/open.js", () => ({
 
 import type { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
-import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
+import { resolveUiConfig } from "../src/config/index.js";
+import type {
+  ProjectedServiceStatus,
+  ServiceMeta,
+  SessionSnapshot,
+  TaskInfo,
+} from "../src/daemon/session.js";
+import { AppProvider, useZaps } from "../src/hooks/useZaps.js";
+import {
+  parseServiceStatus,
+  unavailableActions,
+  unavailableCapabilities,
+} from "../src/lib/backend/wire.js";
 import type { ServiceStatus } from "../src/lib/service/types.js";
+
+import { deferred } from "./_helpers/deferred.js";
+import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
 
 // ANSI escape sequences for special keys
 const ARROW_UP = "\x1B[A";
@@ -51,9 +67,11 @@ async function pressEscape(stdin: { write: (data: string) => void }) {
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
-    connect: vi.fn(),
+    connectUi: vi.fn(),
     disconnect: vi.fn(),
     connected: true,
+    uiBound: true,
+    deliverUpgradeNotice: vi.fn(),
     session: "test",
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
@@ -77,7 +95,7 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
 }
 
 function renderApp(opts: {
-  statuses?: ServiceStatus[];
+  statuses?: (ServiceStatus & { actions?: ProjectedServiceStatus["actions"] })[];
   projectName?: string;
   tasks?: TaskInfo[];
   servicesMeta?: ServiceMeta[];
@@ -95,7 +113,7 @@ function renderApp(opts: {
         projectName={opts.projectName ?? "test-project"}
         tasks={opts.tasks ?? []}
         servicesMeta={opts.servicesMeta ?? []}
-        initialStatuses={statuses}
+        initialStatuses={statuses.map((status) => parseServiceStatus(status))}
         initialTaskHistory={[]}
         // Keep these single-column assertions in the narrow layout (the detail
         // Pane has its own dedicated tests).
@@ -129,6 +147,106 @@ describe("App", () => {
     expect(lastFrame()).toContain("[q]uit/detach");
   });
 
+  it("refreshes context metadata, actions and UI on reload and manual retry", async () => {
+    const client = createMockClient();
+    const initial = makeSessionSnapshot({
+      capabilities: { ...unavailableCapabilities, panes: true },
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [],
+          retryCount: 0,
+          actions: { ...unavailableActions, focus: true },
+        },
+      ],
+      ui: { icons: "ascii" },
+    });
+    const reload = makeSessionSnapshot({
+      ...initial,
+      capabilities: { ...initial.capabilities, popups: true },
+      ui: { icons: "unicode" },
+    });
+    const { tmuxSession: _session, managed: _managed, originPane: _origin, ...common } = reload;
+    const reattach: SessionSnapshot = {
+      ...common,
+      backend: "shell",
+      paneMap: {},
+      capabilities: unavailableCapabilities,
+      statuses: [
+        { name: "fresh", state: "stopped", ports: [], retryCount: 0, actions: unavailableActions },
+      ],
+      tasks: [{ key: "new-task", name: "New task", description: null }],
+      configStale: true,
+      ui: { icons: "nerd" },
+    };
+    const pending = deferred<void>();
+    vi.mocked(client.connectUi).mockImplementation(async () => {
+      await pending.promise;
+      client.emit("session.snapshot", reattach);
+      return reattach;
+    });
+    let retry: (() => void) | undefined;
+    function Probe() {
+      const ctx = useZaps();
+      ({ retry } = ctx);
+      return (
+        <Text>
+          {[
+            ctx.backend,
+            ctx.ui.icons,
+            ctx.capabilities.popups,
+            ctx.statuses[0]?.name,
+            ctx.statuses[0]?.actions.focus,
+            ctx.tasks[0]?.key,
+            ctx.configStale,
+            ctx.connected,
+          ]
+            .map(String)
+            .join(":")}
+        </Text>
+      );
+    }
+    const { lastFrame } = render(
+      <AppProvider
+        client={client}
+        paneMap={initial.paneMap}
+        projectName={initial.name}
+        tasks={initial.tasks}
+        servicesMeta={initial.servicesMeta}
+        backend={initial.backend}
+        capabilities={initial.capabilities}
+        statuses={initial.statuses}
+        ui={resolveUiConfig(initial.ui)}
+      >
+        <Probe />
+      </AppProvider>,
+    );
+    expect(lastFrame()).toContain("tmux:ascii:false:api:true:undefined:false:true");
+    act(() => {
+      client.emit("session.configReloaded", reload);
+    });
+    expect(lastFrame()).toContain("tmux:unicode:true:api:true:undefined:false:true");
+    act(() => {
+      client.emit("disconnect");
+      retry?.();
+    });
+    expect(lastFrame()).toContain("tmux:unicode:true:api:true:undefined:false:false");
+    await act(async () => {
+      pending.resolve();
+    });
+    expect(lastFrame()).toContain("shell:nerd:false:fresh:false:new-task:true:true");
+  });
+
+  it("surfaces the pending legacy upgrade hint when the dashboard mounts", () => {
+    const client = createMockClient();
+    vi.mocked(client.deliverUpgradeNotice).mockImplementationOnce(() => {
+      client.emit("config.notice", "warn", "Restart the daemon to upgrade");
+    });
+    const { lastFrame } = renderApp({ client });
+    expect(lastFrame()).toContain("Restart the daemon to upgrade");
+  });
+
   it("shows the reload hint on session.configStale and clears it on reload", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
@@ -143,12 +261,7 @@ describe("App", () => {
     expect(lastFrame()).toContain("config changed — press c to reload");
 
     act(() => {
-      client.emit("session.configReloaded", {
-        paneMap: {},
-        name: "test-project",
-        tasks: [],
-        servicesMeta: [],
-      } as never);
+      client.emit("session.configReloaded", makeSessionSnapshot());
     });
     expect(lastFrame()).not.toContain("config changed");
   });

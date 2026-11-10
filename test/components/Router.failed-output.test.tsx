@@ -14,6 +14,7 @@ import { OverlayProvider, useOverlay } from "../../src/hooks/useOverlay.js";
 import type { ToastApi } from "../../src/hooks/useToasts.js";
 import { ToastProvider, useToasts } from "../../src/hooks/useToasts.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
+import { unavailableActions } from "../../src/lib/backend/wire.js";
 import type { ServiceStatus } from "../../src/lib/service/types.js";
 
 vi.mock("../../src/lib/open.js", () => ({ openInBrowser: vi.fn() }));
@@ -42,6 +43,8 @@ function createMockClient(): DaemonClient {
     connect: vi.fn(),
     disconnect: vi.fn(),
     connected: true,
+    uiBound: true,
+    deliverUpgradeNotice: vi.fn(),
     session: "test",
     listServices: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
@@ -88,6 +91,7 @@ function AppWrap({ client, children }: { client: DaemonClient; children: ReactNo
       projectName="test-project"
       tasks={[]}
       servicesMeta={[]}
+      statuses={[{ ...makeStatus(), actions: unavailableActions }]}
     >
       {children}
     </AppProvider>
@@ -99,7 +103,7 @@ function renderRouter(client: DaemonClient) {
     <Providers>
       <AppWrap client={client}>
         <Probes />
-        <Router initialStatuses={[makeStatus()]} initialTaskHistory={[]} />
+        <Router initialTaskHistory={[]} />
         <OverlayHost />
       </AppWrap>
     </Providers>,

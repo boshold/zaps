@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { unavailableActions, unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
+import { makeSessionSnapshot as wireSnapshot } from "../_helpers/session-snapshot.js";
 
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 const mockIpcStream = vi.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -12,28 +13,6 @@ vi.mock("../../src/lib/ipc/client.js", () => ({
   ipcStream: async (...args: unknown[]) => mockIpcStream(...args),
   ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
 }));
-
-function wireSnapshot() {
-  return {
-    id: "sess1",
-    name: "test",
-    backend: "tmux",
-    capabilities: { ...unavailableCapabilities },
-    tmuxSession: "main",
-    managed: false,
-    originPane: "%0",
-    paneMap: {},
-    statuses: [],
-    logSnapshots: {},
-    configPath: "/project/.zaps.mts",
-    projectDir: "/project",
-    tasks: [],
-    servicesMeta: [],
-    taskHistory: [],
-    unavailableServices: [],
-    configStale: false,
-  };
-}
 
 const { DaemonClient } = await import("../../src/client/daemon-client.js");
 
@@ -124,7 +103,7 @@ describe("DaemonClient", () => {
   describe("awaitable detach", () => {
     it("legacy binding ACK does not prove managed host detach support", async () => {
       client.connect();
-      mockSub.request.mockResolvedValue({ id: "a", result: { managed: true } });
+      mockSub.request.mockResolvedValue({ id: "a", result: wireSnapshot({ managed: true }) });
       await client.bindUi();
       await expect(client.detach({ detachHost: true })).rejects.toThrow("restart the daemon");
       expect(mockSub.request).toHaveBeenCalledTimes(1);
@@ -134,7 +113,7 @@ describe("DaemonClient", () => {
 
     it("legacy personal UI can unsubscribe", async () => {
       client.connect();
-      mockSub.request.mockResolvedValueOnce({ id: "a", result: { managed: false } });
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: wireSnapshot() });
       await client.bindUi();
       mockSub.request.mockResolvedValueOnce({ id: "d", result: { detached: true } });
       await client.detach({ detachHost: true });
@@ -146,7 +125,7 @@ describe("DaemonClient", () => {
     it("trusted support awaits bound RPC and retains binding on failure", async () => {
       client = new DaemonClient("/test.sock", "sess1", { supportsHostDetach: () => true });
       client.connect();
-      mockSub.request.mockResolvedValueOnce({ id: "a", result: { managed: true } });
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: wireSnapshot({ managed: true }) });
       await client.bindUi();
       mockSub.request.mockResolvedValueOnce({
         id: "d",
@@ -183,7 +162,7 @@ describe("DaemonClient", () => {
       });
       mockSub.request.mockReturnValue(
         new Promise((resolve) => {
-          acknowledgements.attach = () => resolve({ id: "attach", result: {} });
+          acknowledgements.attach = () => resolve({ id: "attach", result: wireSnapshot() });
         }),
       );
       client.connect();
@@ -196,7 +175,7 @@ describe("DaemonClient", () => {
       );
       expect(client.uiBound).toBe(false);
       acknowledgements.attach?.();
-      await binding;
+      await expect(binding).resolves.toEqual(wireSnapshot());
       expect(client.uiBound).toBe(true);
       expect(mockIpcRequest).not.toHaveBeenCalled();
       client.disconnect();
@@ -235,7 +214,7 @@ describe("DaemonClient", () => {
       const acknowledgements: { attach?: () => void } = {};
       mockSub.request.mockReturnValue(
         new Promise((resolve) => {
-          acknowledgements.attach = () => resolve({ id: "a", result: {} });
+          acknowledgements.attach = () => resolve({ id: "a", result: wireSnapshot() });
         }),
       );
       client.connect();
@@ -248,18 +227,100 @@ describe("DaemonClient", () => {
     });
 
     it("requires a fresh subscribe and attach handshake on reconnect", async () => {
-      mockSub.request.mockResolvedValue({ id: "a", result: {} });
+      mockSub.request.mockResolvedValue({ id: "a", result: wireSnapshot() });
       client.connect();
       await client.bindUi();
       expect(client.uiBound).toBe(true);
       closeHandler();
       expect(client.uiBound).toBe(false);
-      mockSub = { ...mockSub, request: vi.fn().mockResolvedValue({ id: "b", result: {} }) };
+      mockSub = {
+        ...mockSub,
+        request: vi.fn().mockResolvedValue({ id: "b", result: wireSnapshot() }),
+      };
       client.connect();
       expect(client.uiBound).toBe(false);
       await client.bindUi();
       expect(mockSub.request).toHaveBeenCalledOnce();
       expect(client.uiBound).toBe(true);
+    });
+  });
+
+  describe("UI attachment lifecycle", () => {
+    it("refreshes advertisement on reconnect and ignores old callbacks", async () => {
+      const modern = wireSnapshot({ capabilities: { ...unavailableCapabilities, panes: true } });
+      mockIpcRequest.mockResolvedValueOnce({
+        id: "s",
+        result: { pid: 1, sessions: [], supportedBackends: ["tmux", "shell"] },
+      });
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: modern });
+      await expect(client.connectUi()).resolves.toEqual(modern);
+      const oldClose = closeHandler;
+      const oldEvent = eventHandler;
+      const disconnected = vi.fn();
+      const reloaded = vi.fn();
+      client.on("disconnect", disconnected);
+      client.on("session.configReloaded", reloaded);
+
+      const { backend: _backend, capabilities: _caps, ...legacy } = modern;
+      mockIpcRequest.mockResolvedValueOnce({ id: "s", result: { pid: 2, sessions: [] } });
+      mockSub = {
+        ...mockSub,
+        request: vi.fn().mockResolvedValue({
+          id: "a",
+          result: {
+            ...legacy,
+            statuses: [{ name: "web", state: "ready", ports: [], retryCount: 0 }],
+          },
+        }),
+      };
+      const fresh = await client.connectUi();
+      expect(fresh.backend).toBe("tmux");
+      expect(fresh.capabilities).toEqual(unavailableCapabilities);
+      expect(fresh.statuses[0]?.actions).toEqual(unavailableActions);
+
+      oldClose();
+      oldEvent({ session: "sess1", event: "session.configReloaded", data: modern });
+      expect(disconnected).not.toHaveBeenCalled();
+      expect(reloaded).not.toHaveBeenCalled();
+      expect(client.uiBound).toBe(true);
+
+      const notice = vi.fn();
+      client.on("config.notice", notice);
+      client.deliverUpgradeNotice();
+      client.deliverUpgradeNotice();
+      expect(notice).toHaveBeenCalledExactlyOnceWith(
+        "warn",
+        expect.stringContaining("Restart the daemon"),
+      );
+    });
+
+    it("revokes terminal actions when the current session is destroyed", async () => {
+      client.connect();
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: wireSnapshot() });
+      await client.bindUi();
+      eventHandler({ session: "sess1", event: "session.destroyed" });
+      expect(client.uiBound).toBe(false);
+      expect(mockSub.close).toHaveBeenCalledOnce();
+      await expect(client.terminalAction({ action: "taskPicker" })).rejects.toMatchObject({
+        code: "invalid_request",
+      });
+    });
+
+    it("rejects malformed shell metadata without publishing a snapshot or hint", async () => {
+      mockIpcRequest.mockResolvedValueOnce({ id: "s", result: { pid: 1, sessions: [] } });
+      mockSub.request.mockResolvedValueOnce({
+        id: "a",
+        result: { ...wireSnapshot(), backend: "shell" },
+      });
+      const snapshot = vi.fn();
+      const notice = vi.fn();
+      client.on("session.snapshot", snapshot);
+      client.on("config.notice", notice);
+      await expect(client.connectUi()).rejects.toThrow();
+      expect(client.uiBound).toBe(false);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(notice).not.toHaveBeenCalled();
+      expect(mockSub.close).toHaveBeenCalledOnce();
     });
   });
 
@@ -273,7 +334,7 @@ describe("DaemonClient", () => {
     });
 
     it("uses the bound socket without timeout beyond ordinary RPC duration", async () => {
-      mockSub.request.mockResolvedValueOnce({ id: "attach", result: {} });
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
       client.connect();
       await client.bindUi();
       vi.useFakeTimers();
@@ -305,7 +366,7 @@ describe("DaemonClient", () => {
     });
 
     it("preserves busy errors without fallback and rejects socket loss", async () => {
-      mockSub.request.mockResolvedValueOnce({ id: "attach", result: {} });
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
       client.connect();
       await client.bindUi();
       mockSub.request.mockResolvedValueOnce({
@@ -346,7 +407,7 @@ describe("DaemonClient", () => {
       client.connect();
       mockSub.request.mockResolvedValueOnce({
         id: "a",
-        result: { managed: false, backend: undefined },
+        result: { ...wireSnapshot(), backend: undefined },
       });
       await expect(client.bindUi()).rejects.toThrow();
       expect(client.uiBound).toBe(false);
