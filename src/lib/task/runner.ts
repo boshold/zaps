@@ -1,4 +1,5 @@
 import type { SentraConfig, TaskConfig } from "#src/config/types.js";
+import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { execCommand, execCommandWithResult } from "#src/lib/exec.js";
 import { sentraEnvFor } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
@@ -12,6 +13,11 @@ type RunnerTmux = Pick<TmuxHandle, "displayPopup">;
 
 interface TaskRunnerDeps {
   tasks: Record<string, TaskConfig>;
+  assertAdmission?: () => void;
+  /** Legacy direct callers migrate in P03-T02; standalone fixtures in P06-T04. */
+  commandExecutor?: CommandExecutor;
+  env?: Record<string, string>;
+  mode?: "background" | "configured";
   statuses: Map<string, ServiceStatus>;
   projectDir: string;
   services?: Record<string, { cwd?: string }>;
@@ -26,6 +32,8 @@ interface TaskRunnerDeps {
 
 interface ExecuteContext {
   taskCwd: string;
+  commandExecutor?: CommandExecutor;
+  mode?: "background" | "configured";
   resolvedEnv: Record<string, string>;
   envSpread: { env?: Record<string, string> };
   emitLine: (line: string) => void;
@@ -38,7 +46,9 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
   if (t.run) {
     await t.run({
       async exec(cmd, opts) {
-        return execCommandWithResult(cmd, {
+        const execute =
+          ctx.commandExecutor?.execute.bind(ctx.commandExecutor) ?? execCommandWithResult;
+        return execute(cmd, {
           cwd: opts?.cwd ?? ctx.taskCwd,
           env: opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
           onLine: ctx.emitLine,
@@ -62,7 +72,7 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
       typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd,
     );
 
-    if (t.popup) {
+    if (t.popup && ctx.mode !== "background") {
       const popupCfg = typeof t.popup === "object" ? t.popup : {};
       const joined = resolvedCommands.join(" && ");
       const wrapped = `${joined}; echo; echo 'Press Enter to close...'; read`;
@@ -76,11 +86,22 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
       });
     } else {
       for (const resolved of resolvedCommands) {
-        await execCommand(resolved, {
-          cwd: ctx.taskCwd,
-          ...ctx.envSpread,
-          onLine: ctx.emitLine,
-        });
+        if (ctx.commandExecutor) {
+          const result = await ctx.commandExecutor.execute(resolved, {
+            cwd: ctx.taskCwd,
+            env: ctx.resolvedEnv,
+            onLine: ctx.emitLine,
+          });
+          if (!result.success) {
+            throw new Error(`Command failed with code ${result.exitCode}`);
+          }
+        } else {
+          await execCommand(resolved, {
+            cwd: ctx.taskCwd,
+            ...ctx.envSpread,
+            onLine: ctx.emitLine,
+          });
+        }
       }
     }
   }
@@ -120,14 +141,17 @@ export async function runTaskWithDeps(
   // Resolve env
   const serviceCtx = buildServiceContext(deps.statuses, deps.projectDir, deps.services);
   const sentraEnv = await sentraEnvFor(deps.sentra, deps.sentraConfig, t.sentra, key);
-  const resolvedEnv = { ...sentraEnv, ...resolveEnv(t.env, serviceCtx) };
+  const resolvedEnv = { ...deps.env, ...sentraEnv, ...resolveEnv(t.env, serviceCtx) };
   const taskCwd = t.cwd ?? deps.projectDir;
   const envSpread = Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {};
   const emitLine = (line: string) => deps.onLine?.(key, line);
 
   try {
+    deps.assertAdmission?.();
     await executeTask(t, {
       taskCwd,
+      commandExecutor: deps.commandExecutor,
+      mode: deps.mode,
       resolvedEnv,
       envSpread,
       emitLine,

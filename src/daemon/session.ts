@@ -23,9 +23,7 @@ import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
-import { TaskOutputStore } from "./task-output-store.js";
-
-const MAX_TASK_HISTORY = 50;
+import { TaskExecutionService } from "./task-execution.js";
 
 /** How often a subscribed session re-stats its root config for staleness (A4). */
 const STALE_POLL_MS = 10_000;
@@ -132,7 +130,11 @@ export class Session {
   public readonly originPane: string;
   public readonly subscribers = new Set<net.Socket>();
   public readonly createdAt = Date.now();
-  public readonly taskHistory: TaskRunRecord[] = [];
+  public readonly taskExecution: TaskExecutionService;
+
+  public get taskHistory(): TaskRunRecord[] {
+    return this.taskExecution.history;
+  }
   public readonly execInfo = new Map<string, ExecInfo>();
   /** `runId → paneId` for run-in-pane runs, so the pane can later be addressed
    * (`paneExists`/`killPane`). Pane is left open on completion (Q13). */
@@ -141,7 +143,9 @@ export class Session {
    * `exec-task` wrapper over IPC (parallel to `execInfo` for services). */
   public readonly paneRunInfo = new Map<string, PaneRunInfo>();
   /** Retained per-run task output for post-mortem inspection (`tasks.output`). */
-  public readonly taskOutput = new TaskOutputStore();
+  public get taskOutput() {
+    return this.taskExecution.output;
+  }
   public readonly deps: ServiceManagerDeps;
   /** Tmux server socket hosting this session (`null` = the user's default server). */
   public readonly tmuxSocket: string | null;
@@ -253,6 +257,8 @@ export class Session {
 
     this.reflow = this.backend.legacyReflow;
 
+    this.taskExecution = new TaskExecutionService(this);
+    this.taskExecution.bindManager(manager);
     this.wireManagerEvents(manager);
   }
 
@@ -338,28 +344,7 @@ export class Session {
   }
 
   public pushTaskRecord(record: TaskRunRecord): void {
-    if (record.result === "running") {
-      this.taskHistory.unshift(record);
-      if (this.taskHistory.length > MAX_TASK_HISTORY) {
-        this.taskHistory.length = MAX_TASK_HISTORY;
-      }
-      return;
-    }
-    // Match the in-flight record by runId so concurrent runs of the same task
-    // Key resolve independently (Q12). taskKey is kept as a secondary guard for
-    // The manager/hook path, where a run's sub-task completions share its runId
-    // But must not replace the top-level "running" record.
-    const runningIdx = this.taskHistory.findIndex(
-      (r) => r.runId === record.runId && r.taskKey === record.taskKey && r.result === "running",
-    );
-    if (runningIdx !== -1) {
-      this.taskHistory[runningIdx] = record;
-    } else {
-      this.taskHistory.unshift(record);
-      if (this.taskHistory.length > MAX_TASK_HISTORY) {
-        this.taskHistory.length = MAX_TASK_HISTORY;
-      }
-    }
+    this.taskExecution.pushRecord(record);
   }
 
   /**
@@ -475,6 +460,7 @@ export class Session {
     this.paneBuffers = pipeline.paneBuffers;
     this.paneMembers = pipeline.paneMembers;
 
+    this.taskExecution.bindManager(newManager);
     this.wireManagerEvents(newManager);
 
     // 8. Broadcast reload event with full snapshot.
@@ -499,6 +485,7 @@ export class Session {
    * the same abort-then-await protocol (A5).
    */
   public async destroy(): Promise<void> {
+    this.taskExecution.close();
     await this.withOpLock(async () => {
       if (this.destroyed) {
         if (this.destroyFailure) {
@@ -522,6 +509,7 @@ export class Session {
       };
       await attempt(async () => this.manager.stopAll());
       this.manager.disposeObservers();
+      await attempt(async () => this.taskExecution.dispose());
 
       // Notify subscribers of session destruction
       this.broadcast({ session: this.id, event: "session.destroyed", data: null });

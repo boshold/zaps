@@ -321,6 +321,42 @@ describe("Session", () => {
     });
   });
 
+  it("keeps one task owner and its sinks through manager replacement", async () => {
+    const owner = session.taskExecution;
+    const output = session.taskOutput;
+    const history = session.taskHistory;
+    let finish: () => void = () => {
+      throw new Error("not started");
+    };
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    session.config.project.tasks = {
+      build: {
+        name: "Build",
+        run: async (ctx) => {
+          await pending;
+          ctx.stdout.write("after replacement\n");
+        },
+      },
+    };
+    const run = owner.run("build", {
+      config: session.config,
+      cwd: session.projectDir,
+      env: session.env,
+      mode: "background",
+    });
+    manager.removeAllListeners();
+    session.manager = createMockManager();
+    finish();
+    const result = await run;
+    expect(session.taskExecution).toBe(owner);
+    expect(session.taskOutput).toBe(output);
+    expect(session.taskHistory).toBe(history);
+    expect(output.get(result.runId)?.lines).toEqual(["after replacement"]);
+    expect(history[0]).toMatchObject({ runId: result.runId, result: "success" });
+  });
+
   describe("reload", () => {
     it("rejects with 'session destroyed' after the session was destroyed", async () => {
       await session.destroy();

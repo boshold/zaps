@@ -1,6 +1,11 @@
 import { EventEmitter } from "node:events";
 
-import type { DockerConfig, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
+import type {
+  DockerConfig,
+  LibraryActions,
+  ResolvedConfig,
+  ServiceConfig,
+} from "#src/config/types.js";
 import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
   buildDockerCommand,
@@ -192,6 +197,7 @@ async function tryAutoOpen(
 }
 
 export class ServiceManager extends EventEmitter {
+  private runStopHook: (hook: () => void | Promise<void>) => Promise<void> = fireHook;
   private readonly statuses: Map<string, ServiceStatus>;
   private readonly abortControllers: Map<string, AbortController>;
   private readonly config: ResolvedConfig;
@@ -325,6 +331,15 @@ export class ServiceManager extends EventEmitter {
       isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
     });
     this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
+  }
+
+  /** Session composition bridge; standalone managers retain legacy bindings (P06-T04). */
+  public bindTaskExecution(
+    actions: LibraryActions,
+    runStopHook: (hook: () => void | Promise<void>) => Promise<void>,
+  ): void {
+    this.config.bindActions?.(actions);
+    this.runStopHook = runStopHook;
   }
 
   /**
@@ -497,7 +512,9 @@ export class ServiceManager extends EventEmitter {
       );
     }
 
-    await fireHook(hooks?.onStop);
+    if (hooks?.onStop) {
+      await this.runStopHook(hooks.onStop);
+    }
 
     if (failures.length > 0) {
       throw new AggregateError(failures, "Service cleanup incomplete");
@@ -1220,7 +1237,9 @@ export class ServiceManager extends EventEmitter {
     this.emit("stateChange", name, status);
 
     try {
-      await serviceConfig.onStop?.();
+      if (serviceConfig.onStop) {
+        await this.runStopHook(serviceConfig.onStop);
+      }
     } catch (error) {
       // Log but don't fail the service stop
       status.lastError = `onStop hook failed: ${error instanceof Error ? error.message : String(error)}`;
