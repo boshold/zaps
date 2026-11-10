@@ -1,10 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { z } from "zod";
 
+import {
+  createProcessInspection,
+  sameProcess,
+} from "#src/lib/backend/runtime/process-inspection.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 
@@ -61,7 +67,8 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     fs.mkdirSync(directory, { mode: 0o700 });
   }
   fs.writeFileSync(sentinelLog, "");
-  fs.writeFileSync(sentinelPath, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${sentinelLog}'\nexit 97\n`, {
+  const quotedLogPath = `'${sentinelLog.replaceAll("'", String.raw`'\''`)}'`;
+  fs.writeFileSync(sentinelPath, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${quotedLogPath}\nexit 97\n`, {
     mode: 0o700,
   });
   const env: Record<string, string> = {};
@@ -98,6 +105,8 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     } });
   }\n`,
   );
+  const inspection = createProcessInspection();
+  const execFileAsync = promisify(execFile);
   const children = new Set<ReturnType<typeof spawnCommand>>();
   let cleanupPromise: Promise<void> | undefined;
   let sentinelCalls = "";
@@ -149,9 +158,69 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     void result.catch(() => {
       // Observed by callers and cleanup.
     });
+    const members = new Map<number, ProcessIdentity>();
+    let identity: ProcessIdentity | null = null;
+    let ownershipError: unknown;
+    let monitor: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
+    async function refreshOwnership(): Promise<ProcessIdentity[]> {
+      if (!identity) {
+        if (child.pid === undefined) {
+          return [];
+        }
+        identity = await inspection.readProcessIdentity(child.pid);
+        if (!identity || identity.pgid !== child.pid) {
+          throw new Error(`Missing fixture process identity: ${child.pid}`);
+        }
+        members.set(identity.pid, identity);
+      }
+      const live: ProcessIdentity[] = [];
+      for (const member of members.values()) {
+        const actual = await inspection.readProcessIdentity(member.pid);
+        if (actual && sameProcess(member, actual)) {
+          live.push(actual);
+        }
+      }
+      const candidates = await inspection.getProcessMembers(identity);
+      const [anchor] = live;
+      if (anchor) {
+        for (const member of candidates) {
+          members.set(member.pid, member);
+        }
+      } else if (candidates.some((candidate) => !members.has(candidate.pid))) {
+        throw new Error(`Unverified fixture descendants: ${JSON.stringify(candidates)}`);
+      }
+      return [...members.values()];
+    }
+    let tracking = Promise.resolve();
+    async function track(): Promise<void> {
+      try {
+        await refreshOwnership();
+        ownershipError = undefined;
+      } catch (error) {
+        ownershipError = error;
+      } finally {
+        if (!stopped) {
+          monitor = setTimeout(() => {
+            tracking = track();
+          }, 10);
+        }
+      }
+    }
+    tracking = track();
     const handle = {
       child,
       result,
+      members,
+      refreshOwnership,
+      async stopTracking() {
+        stopped = true;
+        clearTimeout(monitor);
+        await tracking;
+        if (ownershipError) {
+          throw ownershipError;
+        }
+      },
       get stdout() {
         return stdout;
       },
@@ -177,11 +246,43 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     }
   }
 
-  function signalOwnedChildren(signal: NodeJS.Signals): void {
-    for (const { child } of children) {
-      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+  async function liveOwnedMembers(): Promise<ProcessIdentity[]> {
+    const live: ProcessIdentity[] = [];
+    for (const handle of children) {
+      for (const expected of await handle.refreshOwnership()) {
+        const actual = await inspection.readProcessIdentity(expected.pid);
+        if (actual && sameProcess(expected, actual)) {
+          const { stdout } = await execFileAsync(
+            "ps",
+            ["-o", "stat=", "-p", String(expected.pid)],
+            { timeout: 1000 },
+          ).catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === 1 &&
+              "stdout" in error &&
+              error.stdout === ""
+            ) {
+              return { stdout: "" };
+            }
+            throw error;
+          });
+          if (stdout.trim() && !stdout.trim().startsWith("Z")) {
+            live.push(actual);
+          }
+        }
+      }
+    }
+    return live;
+  }
+
+  async function signalOwnedChildren(signal: NodeJS.Signals): Promise<void> {
+    for (const expected of await liveOwnedMembers()) {
+      const actual = await inspection.readProcessIdentity(expected.pid);
+      if (actual && sameProcess(expected, actual)) {
         try {
-          process.kill(-child.pid, signal);
+          process.kill(expected.pid, signal);
         } catch (error) {
           if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
             throw error;
@@ -191,35 +292,41 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     }
   }
 
+  async function ownedProcessesStopped(): Promise<boolean> {
+    const live = await liveOwnedMembers();
+    return live.length === 0;
+  }
+
   async function cleanupOwnedResources(): Promise<void> {
     try {
-      signalOwnedChildren("SIGTERM");
-      await waitForCondition(
-        () =>
-          [...children].every(
-            ({ child }) =>
-              child.pid === undefined || child.exitCode !== null || child.signalCode !== null,
-          ),
-        2000,
-      ).catch(() => {
-        signalOwnedChildren("SIGKILL");
+      await Promise.all([...children].map(async (handle) => handle.stopTracking()));
+      await signalOwnedChildren("SIGTERM");
+      await waitForCondition(ownedProcessesStopped, 2000).catch(async () => {
+        await signalOwnedChildren("SIGKILL");
       });
-      await waitForCondition(() =>
-        [...children].every(
-          ({ child }) =>
-            child.pid === undefined || child.exitCode !== null || child.signalCode !== null,
-        ),
-      );
+      await waitForCondition(ownedProcessesStopped, 2000);
       for (const { child } of children) {
         child.stdin.destroy();
         child.stdout.destroy();
         child.stderr.destroy();
       }
       await Promise.allSettled([...children].map(async ({ result }) => result));
+    } catch (error) {
+      const diagnostics: ProcessIdentity[] = [];
+      for (const handle of children) {
+        for (const member of handle.members.values()) {
+          diagnostics.push(member);
+        }
+      }
+      fs.writeFileSync(
+        path.join(rootDir, "cleanup-error.txt"),
+        `${String(error)}\n${JSON.stringify(diagnostics)}`,
+      );
+      throw error;
     } finally {
       readTmuxCalls();
-      fs.rmSync(rootDir, { recursive: true, force: true });
     }
+    fs.rmSync(rootDir, { recursive: true, force: true });
   }
 
   return {

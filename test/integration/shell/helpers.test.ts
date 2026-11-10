@@ -1,11 +1,18 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { loadConfig } from "#src/config/loader.js";
 import { socketPath as daemonSocketPath } from "#src/daemon/lifecycle.js";
+import {
+  createProcessInspection,
+  sameProcess,
+} from "#src/lib/backend/runtime/process-inspection.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 
 import { createShellTestEnvironment, waitForCondition } from "./helpers.js";
@@ -193,6 +200,66 @@ describe("shell integration harness", () => {
       expect(result.signal).toBe("SIGKILL");
       expect(fs.existsSync(fixture.runtimeDir)).toBe(false);
     });
+  });
+
+  it.each([false, true])(
+    "cleans verified descendants after launcher exit (resistant=%s)",
+    async (resistant) => {
+      await withFixture(async (fixture) => {
+        const childProgram = `if (${resistant}) process.on('SIGTERM', () => {}); process.send('ready'); setInterval(() => {}, 1000)`;
+        const launcher = fixture.spawn([
+          "-e",
+          `
+        const { fork } = require('node:child_process');
+        const child = fork('-e', [${JSON.stringify(childProgram)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+        child.once('message', () => { console.log(child.pid); child.disconnect(); process.exit(0); });
+      `,
+        ]);
+        await waitForCondition(
+          () => launcher.child.exitCode !== null && launcher.stdout.trim() !== "",
+        );
+        const pid = z.coerce.number().int().positive().parse(launcher.stdout.trim());
+        const inspection = createProcessInspection();
+        const before = await inspection.readProcessIdentity(pid);
+        expect(before).not.toBeNull();
+        expect(launcher.members.has(pid)).toBe(true);
+        const launcherResult = await launcher.result;
+        expect(launcherResult.code).toBe(0);
+        await fixture.cleanup();
+        const after = await inspection.readProcessIdentity(pid);
+        if (after && before && sameProcess(before, after)) {
+          const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
+          expect(stdout.trim().startsWith("Z")).toBe(true);
+        }
+        expect(fs.existsSync(fixture.rootDir)).toBe(false);
+      });
+    },
+  );
+
+  it("records sentinel calls under an apostrophe-containing TMPDIR", async () => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-shell-quoted-'"));
+    const previousTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = parent;
+    const fixture = createShellTestEnvironment({ command });
+    if (previousTmpdir === undefined) {
+      delete process.env.TMPDIR;
+    } else {
+      process.env.TMPDIR = previousTmpdir;
+    }
+    try {
+      expect(fixture.sentinelLog).toContain("'");
+      const result = await fixture.run([
+        "-e",
+        `const result = require('node:child_process').spawnSync('tmux', ['quoted path']); console.log(result.status)`,
+      ]);
+      expect(result.stdout).toBe("97\n");
+      expect(fixture.readTmuxCalls()).toBe("quoted path\n");
+      expect(() => fixture.assertNoTmux()).toThrow("Unexpected tmux");
+    } finally {
+      await fixture.cleanup();
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+    expect(() => fixture.assertNoTmux()).toThrow("Unexpected tmux");
   });
 
   it("rejects ownership path overrides", async () => {
