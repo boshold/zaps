@@ -1,5 +1,7 @@
 import type { Socket } from "node:net";
 
+import { z } from "zod";
+
 import type { Command, DockerConfig } from "#src/config/types.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
@@ -10,7 +12,6 @@ import {
   wrapperIdentitySchema,
 } from "#src/lib/backend/tmux/runtime.js";
 import { wrapperStartedSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
-import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
@@ -19,7 +20,6 @@ import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
-import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -54,51 +54,6 @@ function completePaneRun(
     event: "task.complete",
     data: { key: taskKey, name: taskName, result, runId },
   });
-}
-
-async function runPopupTaskNonInteractive(
-  reqId: string,
-  key: string,
-  session: Session,
-  socket: Socket,
-  runId: string,
-): Promise<boolean> {
-  const { config, manager } = session;
-  const tasks = config.project.tasks ?? {};
-  const task = tasks[key];
-  if (!task?.commands) {
-    return false;
-  }
-
-  const statuses = new Map(manager.getAllStatuses().map((s) => [s.name, s]));
-  const serviceCtx = buildServiceContext(statuses, config.projectDir, config.project.services);
-
-  const commands = Array.isArray(task.commands) ? task.commands : [task.commands];
-  const resolved = commands.map((cmd) => (typeof cmd === "function" ? cmd(serviceCtx) : cmd));
-  const sentraEnv = await sentraEnvFor(
-    session.deps.sentra,
-    config.project.sentra,
-    task.sentra,
-    key,
-  );
-  const resolvedEnv = { ...sentraEnv, ...resolveEnv(task.env, serviceCtx) };
-  const taskCwd = task.cwd ?? config.projectDir;
-
-  try {
-    for (const cmd of resolved) {
-      await execCommand(cmd, {
-        cwd: taskCwd,
-        ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
-        onLine: (line) => {
-          session.taskOutput.append(runId, line);
-          send(socket, { id: reqId, event: "line", data: line });
-        },
-      });
-    }
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Copy, so the manager's live status never carries a stale count. */
@@ -345,87 +300,29 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, "Unknown session");
     }
 
-    const { key } = req.params as { key: string };
+    const { key } = z.object({ key: z.string() }).parse(req.params);
     const tasks = session.config.project.tasks ?? {};
     if (!tasks[key]) {
       return ipcErr(req.id, `Unknown task: ${key}`);
     }
 
-    const task = tasks[key];
-    const taskName = task.name;
-    const isPopup = Boolean(task.popup) && task.commands && !task.run;
-
-    // One runId per run correlates this run's start/complete + output buffer,
-    // So concurrent runs of the same key stay independent (Q12).
-    const runId = newRunId();
-
-    // Begin retaining this run's output for post-mortem (tasks.output).
-    session.taskOutput.start(runId, key, Date.now());
-
-    // Record + broadcast task.start to all subscribers
-    session.pushTaskRecord({
-      runId,
-      taskKey: key,
-      taskName,
-      result: "running",
-      timestamp: Date.now(),
+    const outcome = await session.taskExecution.run(key, {
+      config: session.config,
+      cwd: session.config.projectDir,
+      env: session.env,
       mode: "background",
+      onLine: (line) => {
+        if (!socket.destroyed && socket.writable) {
+          send(socket, { id: req.id, event: "line", data: line });
+        }
+      },
+      onProgress: (taskKey, result) => {
+        if (!socket.destroyed && socket.writable) {
+          send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
+        }
+      },
     });
-    session.broadcast({
-      session: session.id,
-      event: "task.start",
-      data: { key, name: taskName, runId },
-    });
-
-    let success = false;
-    if (isPopup) {
-      success = await runPopupTaskNonInteractive(req.id, key, session, socket, runId);
-    } else {
-      const visited = new Set<string>();
-      const results = new Map<string, "success" | "error">();
-      success = await runTaskWithDeps(
-        key,
-        {
-          tasks,
-          statuses: new Map(
-            session.manager.getAllStatuses().map((s) => [s.name, s] as [string, ServiceStatus]),
-          ),
-          projectDir: session.config.projectDir,
-          services: session.config.project.services,
-          tmux: session.tmux,
-          sentra: session.deps.sentra,
-          sentraConfig: session.config.project.sentra,
-          onLine: (_taskKey, line) => {
-            session.taskOutput.append(runId, line);
-            send(socket, { id: req.id, event: "line", data: line });
-          },
-          onProgress: (taskKey, result) => {
-            send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
-          },
-        },
-        visited,
-        results,
-      );
-    }
-
-    // Settle the retained output buffer with the run's outcome.
-    session.taskOutput.finish(runId, success ? "success" : "error", Date.now());
-
-    // Record + broadcast task.complete to all subscribers
-    session.pushTaskRecord({
-      runId,
-      taskKey: key,
-      taskName,
-      result: success ? "success" : "error",
-      timestamp: Date.now(),
-    });
-    session.broadcast({
-      session: session.id,
-      event: "task.complete",
-      data: { key, name: taskName, result: success ? "success" : "error", runId },
-    });
-
-    return ipcOk(req.id, { success, runId });
+    return ipcOk(req.id, outcome);
   },
 
   async "tasks.runInPane"(req, store) {

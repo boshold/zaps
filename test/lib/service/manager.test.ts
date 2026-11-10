@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
+import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type {
@@ -2317,8 +2318,13 @@ describe("per-service hooks", () => {
 // BindActions
 // =============================================================================
 
+const taskOwners: TaskExecutionService[] = [];
+afterEach(async () => {
+  await Promise.all(taskOwners.splice(0).map(async (owner) => owner.dispose()));
+});
+
 describe("bindActions", () => {
-  it("emits taskComplete when runTask succeeds", async () => {
+  it("completes the root once through the bound task service", async () => {
     let capturedActions: LibraryActions | undefined;
     const config = makeConfig({
       db: { start: "start-db" },
@@ -2340,32 +2346,40 @@ describe("bindActions", () => {
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
+    const broadcast = vi.fn();
+    const owner = new TaskExecutionService({
+      id: "test-session",
+      config,
+      env: {},
+      manager: mgr,
+      deps,
+      taskPresentation: {
+        popup: async ({ commands, key: _key, ...request }) => {
+          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+        },
+      },
+      broadcast: (event) => {
+        broadcast(event);
+      },
+    });
+    taskOwners.push(owner);
+    owner.bindManager(mgr);
     if (!capturedActions) {
       throw new Error("bindActions was not called");
     }
 
-    const startEvents: { runId: string; taskKey: string; taskName: string }[] = [];
-    mgr.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
-      startEvents.push({ runId, taskKey, taskName });
-    });
-    const events: { runId: string; taskKey: string; taskName: string; result: string }[] = [];
-    mgr.on("taskComplete", (runId: string, taskKey: string, taskName: string, result: string) => {
-      events.push({ runId, taskKey, taskName, result });
-    });
-
     await capturedActions.runTask("migrate");
 
-    expect(startEvents).toHaveLength(1);
-    expect(startEvents[0]).toMatchObject({ taskKey: "migrate", taskName: "Run migrations" });
-    expect(startEvents[0].runId).toEqual(expect.any(String));
-    // The completion is correlated to the same run.
-    expect(events).toEqual([
-      {
-        runId: startEvents[0].runId,
+    expect(broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
+    expect(owner.history).toEqual([
+      expect.objectContaining({
         taskKey: "migrate",
         taskName: "Run migrations",
         result: "success",
-      },
+      }),
     ]);
   });
 
@@ -2384,6 +2398,24 @@ describe("bindActions", () => {
     const mgr = new ServiceManager(config, makePaneMap(["db"]), deps, "test-session");
     expect(mgr).toBeDefined();
 
+    const broadcast = vi.fn();
+    const owner = new TaskExecutionService({
+      id: "test-session",
+      config,
+      env: {},
+      manager: mgr,
+      deps,
+      taskPresentation: {
+        popup: async ({ commands, key: _key, ...request }) => {
+          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+        },
+      },
+      broadcast: (event) => {
+        broadcast(event);
+      },
+    });
+    taskOwners.push(owner);
+    owner.bindManager(mgr);
     if (!capturedActions) {
       throw new Error("bindActions was not called");
     }
@@ -2394,7 +2426,7 @@ describe("bindActions", () => {
     );
   });
 
-  it("emits taskComplete with error when runTask fails", async () => {
+  it("reports root failure through the bound task service", async () => {
     let capturedActions: LibraryActions | undefined;
     const config = makeConfig({
       db: { start: "start-db" },
@@ -2416,31 +2448,36 @@ describe("bindActions", () => {
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
+    const broadcast = vi.fn();
+    const owner = new TaskExecutionService({
+      id: "test-session",
+      config,
+      env: {},
+      manager: mgr,
+      deps,
+      taskPresentation: {
+        popup: async ({ commands, key: _key, ...request }) => {
+          await deps.displayPopup({ ...request, command: commands.join(" && ") });
+        },
+      },
+      broadcast: (event) => {
+        broadcast(event);
+      },
+    });
+    taskOwners.push(owner);
+    owner.bindManager(mgr);
     if (!capturedActions) {
       throw new Error("bindActions was not called");
     }
 
-    const startEvents: { runId: string; taskKey: string; taskName: string }[] = [];
-    mgr.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
-      startEvents.push({ runId, taskKey, taskName });
-    });
-    const events: { runId: string; taskKey: string; taskName: string; result: string }[] = [];
-    mgr.on("taskComplete", (runId: string, taskKey: string, taskName: string, result: string) => {
-      events.push({ runId, taskKey, taskName, result });
-    });
-
     await expect(capturedActions.runTask("broken")).rejects.toThrow("Task 'broken' failed");
 
-    expect(startEvents).toHaveLength(1);
-    expect(startEvents[0]).toMatchObject({ taskKey: "broken", taskName: "Broken task" });
-    expect(startEvents[0].runId).toEqual(expect.any(String));
-    expect(events).toEqual([
-      {
-        runId: startEvents[0].runId,
-        taskKey: "broken",
-        taskName: "Broken task",
-        result: "error",
-      },
+    expect(broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
+    expect(owner.history).toEqual([
+      expect.objectContaining({ taskKey: "broken", taskName: "Broken task", result: "error" }),
     ]);
   });
 

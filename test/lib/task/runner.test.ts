@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { TaskConfig, TaskRunContext } from "../../../src/config/types.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
@@ -15,19 +16,14 @@ vi.mock("#src/lib/exec.js", () => ({
   })),
 }));
 
-vi.mock("#src/lib/tmux.js", () => ({
-  displayPopup: vi.fn().mockResolvedValue(undefined),
-}));
-
 import { execCommand, execCommandWithResult } from "../../../src/lib/exec.js";
 import type { TaskRunnerDeps } from "../../../src/lib/task/runner.js";
 import { runTaskWithDeps } from "../../../src/lib/task/runner.js";
-import { displayPopup } from "../../../src/lib/tmux.js";
 import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sentra.js";
 
 const mockExecCommand = vi.mocked(execCommand);
 const mockExecCommandWithResult = vi.mocked(execCommandWithResult);
-const mockDisplayPopup = vi.mocked(displayPopup);
+const mockDisplayPopup = vi.fn().mockResolvedValue(undefined);
 
 function makeDeps(
   tasks: Record<string, TaskConfig>,
@@ -35,6 +31,23 @@ function makeDeps(
 ): TaskRunnerDeps {
   return {
     tasks,
+    commandExecutor: {
+      execute: async (command, options) => {
+        const env = z.record(z.string(), z.string()).parse(options.env);
+        await mockExecCommand(command, {
+          ...options,
+          env,
+          onLine:
+            options.onLine ??
+            (() => {
+              /* Noop */
+            }),
+        });
+        return mockExecCommandWithResult(command, { ...options, env });
+      },
+    },
+    mode: "configured",
+    presentation: { popup: mockDisplayPopup },
     statuses: new Map<string, ServiceStatus>(),
     projectDir: "/test",
     ...overrides,
@@ -229,7 +242,9 @@ describe("runTaskWithDeps", () => {
     expect(mockExecCommand).not.toHaveBeenCalled();
     expect(mockDisplayPopup).toHaveBeenCalledWith({
       cwd: "/test",
-      command: "npm test; echo; echo 'Press Enter to close...'; read",
+      key: "test",
+      commands: ["npm test"],
+      env: {},
       title: "Test",
       width: "80%",
       height: "80%",
@@ -261,9 +276,19 @@ describe("runTaskWithDeps", () => {
 
     expect(mockDisplayPopup).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: "build && push; echo; echo 'Press Enter to close...'; read",
+        commands: ["build", "push"],
       }),
     );
+  });
+
+  it("runs configured popup commands in background when no presenter is supplied", async () => {
+    const deps = makeDeps(
+      { root: { name: "Root", popup: true, commands: "root" } },
+      { presentation: undefined },
+    );
+    expect(await runTaskWithDeps("root", deps, new Set(), new Map())).toBe(true);
+    expect(mockExecCommand).toHaveBeenCalledWith("root", expect.anything());
+    expect(mockDisplayPopup).not.toHaveBeenCalled();
   });
 
   it("reports error when popup task fails", async () => {
@@ -432,10 +457,7 @@ describe("runTaskWithDeps sentra", () => {
     );
 
     expect(await runTaskWithDeps("e2e", deps, new Set(), new Map())).toBe(true);
-    expect(mockExecCommand).toHaveBeenCalledWith(
-      "pnpm e2e",
-      expect.not.objectContaining({ env: expect.anything() }),
-    );
+    expect(mockExecCommand).toHaveBeenCalledWith("pnpm e2e", expect.objectContaining({ env: {} }));
   });
 
   it("ignores sentra without deps", async () => {
@@ -445,9 +467,6 @@ describe("runTaskWithDeps sentra", () => {
     );
 
     expect(await runTaskWithDeps("e2e", deps, new Set(), new Map())).toBe(true);
-    expect(mockExecCommand).toHaveBeenCalledWith(
-      "pnpm e2e",
-      expect.not.objectContaining({ env: expect.anything() }),
-    );
+    expect(mockExecCommand).toHaveBeenCalledWith("pnpm e2e", expect.objectContaining({ env: {} }));
   });
 });

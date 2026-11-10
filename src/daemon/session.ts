@@ -17,6 +17,7 @@ import {
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
+import type { TaskPresentation } from "#src/lib/task/runner.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 import type { LayoutReflow } from "#src/lib/tmux-reflow.js";
 import { tmuxFor } from "#src/lib/tmux.js";
@@ -131,6 +132,7 @@ export class Session {
   public readonly subscribers = new Set<net.Socket>();
   public readonly createdAt = Date.now();
   public readonly taskExecution: TaskExecutionService;
+  public taskPresentation?: TaskPresentation;
 
   public get taskHistory(): TaskRunRecord[] {
     return this.taskExecution.history;
@@ -257,6 +259,16 @@ export class Session {
 
     this.reflow = this.backend.legacyReflow;
 
+    // P03-T06 replaces this injected bridge with the owned terminal driver.
+    const { displayPopup } = this.deps;
+    this.taskPresentation = {
+      popup: async ({ commands, key: _key, ...request }) => {
+        await displayPopup({
+          ...request,
+          command: `${commands.join(" && ")}; echo; echo 'Press Enter to close...'; read`,
+        });
+      },
+    };
     this.taskExecution = new TaskExecutionService(this);
     this.taskExecution.bindManager(manager);
     this.wireManagerEvents(manager);
@@ -306,41 +318,6 @@ export class Session {
         data: { service: svcName, lines },
       });
     });
-
-    manager.on("taskStart", (runId: string, taskKey: string, taskName: string) => {
-      this.taskOutput.start(runId, taskKey, Date.now());
-      this.pushTaskRecord({
-        runId,
-        taskKey,
-        taskName,
-        result: "running",
-        timestamp: Date.now(),
-        mode: "background",
-      });
-      this.broadcast({
-        session: this.id,
-        event: "task.start",
-        data: { key: taskKey, name: taskName, runId },
-      });
-    });
-
-    // Hook-path task output (manager-driven runs): retain lines for post-mortem.
-    manager.on("taskLine", (runId: string, line: string) => {
-      this.taskOutput.append(runId, line);
-    });
-
-    manager.on(
-      "taskComplete",
-      (runId: string, taskKey: string, taskName: string, result: "success" | "error") => {
-        this.taskOutput.finish(runId, result, Date.now());
-        this.pushTaskRecord({ runId, taskKey, taskName, result, timestamp: Date.now() });
-        this.broadcast({
-          session: this.id,
-          event: "task.complete",
-          data: { key: taskKey, name: taskName, result, runId },
-        });
-      },
-    );
   }
 
   public pushTaskRecord(record: TaskRunRecord): void {
@@ -724,7 +701,11 @@ export class Session {
       if (sock.destroyed) {
         this.subscribers.delete(sock);
       } else {
-        sock.write(line);
+        try {
+          sock.write(line);
+        } catch {
+          this.subscribers.delete(sock);
+        }
       }
     }
   }

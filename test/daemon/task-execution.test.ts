@@ -7,6 +7,7 @@ import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
+import type { TaskPopupRequest } from "#src/lib/task/runner.js";
 
 import { fakeSentra } from "../_helpers/fake-sentra.js";
 
@@ -49,12 +50,21 @@ afterEach(async () => {
 
 function setup(tasks: Record<string, TaskConfig>, sentra?: SentraDeps) {
   const config = makeConfig(tasks);
+  const displayPopup = vi.fn().mockResolvedValue(undefined);
   const session = {
+    taskPresentation: {
+      popup: async ({ commands, key: _key, ...request }: TaskPopupRequest) => {
+        await displayPopup({
+          ...request,
+          command: `${commands.join(" && ")}; echo; echo 'Press Enter to close...'; read`,
+        });
+      },
+    },
     id: "session",
     config,
     env: { TOKEN: "accepted" },
     manager: makeManager(),
-    deps: { displayPopup: vi.fn().mockResolvedValue(undefined), sentra },
+    deps: { displayPopup, sentra },
     broadcast: vi.fn(),
   };
   const execute = vi
@@ -397,5 +407,94 @@ describe("private stop-hook cleanup admission", () => {
       await expect(lateExec?.("expired")).rejects.toThrow("session_closing");
     });
     expect(execute).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(["background", "configured"] as const)("%s DAG lifecycle", (mode) => {
+  it("orders nested popups and shared dependencies, retains callback output and settles only the root", async () => {
+    const release = deferred<void>();
+    const entered = deferred<void>();
+    const order: string[] = [];
+    const { owner, session, options, execute } = setup({
+      shared: { name: "Shared", popup: true, commands: "shared" },
+      nested: { name: "Nested", popup: true, commands: "nested", dependsOn: ["shared"] },
+      callback: {
+        name: "Callback",
+        dependsOn: ["shared"],
+        run: async (ctx) => {
+          ctx.stdout.write("callback output\n");
+          await ctx.exec("callback");
+          entered.resolve(undefined);
+          await release.promise;
+        },
+      },
+      root: { name: "Root", popup: true, commands: "root", dependsOn: ["nested", "callback"] },
+    });
+    options.mode = mode;
+    execute.mockImplementation(async (command, opts) => {
+      order.push(command);
+      opts.onLine?.(`${command} output`);
+      return { success: true, exitCode: 0, output: [] };
+    });
+    session.deps.displayPopup.mockImplementation(async (request) => {
+      order.push(request.title.toLowerCase());
+    });
+    const progress = vi.fn();
+    options.onProgress = progress;
+    const pending = owner.run("root", options);
+    await entered.promise;
+    const runId = owner.history[0]?.runId ?? "missing";
+    expect(owner.history).toEqual([
+      expect.objectContaining({ taskKey: "root", result: "running" }),
+    ]);
+    expect(owner.output.get(runId)?.result).toBe("running");
+    expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual(["task.start"]);
+    release.resolve(undefined);
+    expect(await pending).toEqual({ success: true, runId });
+    expect(order).toEqual(["shared", "nested", "callback", "root"]);
+    expect(progress.mock.calls).toEqual([
+      ["shared", "success"],
+      ["nested", "success"],
+      ["callback", "success"],
+      ["root", "success"],
+    ]);
+    expect(owner.output.get(runId)?.lines).toContain("callback output");
+    expect(owner.output.get(runId)?.result).toBe("success");
+    expect(owner.history).toEqual([
+      expect.objectContaining({ taskKey: "root", result: "success" }),
+    ]);
+    expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
+    expect(session.deps.displayPopup).toHaveBeenCalledTimes(mode === "configured" ? 3 : 0);
+  });
+
+  it("suppresses a popup root after prerequisite failure and completes once", async () => {
+    const { owner, session, options, execute } = setup({
+      dep: { name: "Dep", popup: true, commands: "fail" },
+      root: { name: "Root", popup: true, dependsOn: ["dep"], commands: "root" },
+    });
+    options.mode = mode;
+    execute.mockResolvedValue({ success: false, exitCode: 1, output: [] });
+    session.deps.displayPopup.mockRejectedValue(new Error("presentation failed"));
+    options.onProgress = () => {
+      throw new Error("closed progress sink");
+    };
+    const result = await owner.run("root", options);
+    expect(result.success).toBe(false);
+    expect(owner.output.get(result.runId)?.result).toBe("error");
+    expect(owner.history).toEqual([expect.objectContaining({ taskKey: "root", result: "error" })]);
+    expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
+    if (mode === "background") {
+      expect(execute.mock.calls.map(([command]) => command)).toEqual(["fail"]);
+      expect(session.deps.displayPopup).not.toHaveBeenCalled();
+    } else {
+      expect(session.deps.displayPopup).toHaveBeenCalledOnce();
+      expect(execute).not.toHaveBeenCalled();
+    }
   });
 });

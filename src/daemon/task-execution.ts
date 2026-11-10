@@ -16,6 +16,7 @@ import { runWithEnvironment } from "#src/lib/request-context.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
+import type { TaskPresentation, TaskRunMode } from "#src/lib/task/runner.js";
 
 import { TaskOutputStore } from "./task-output-store.js";
 
@@ -30,7 +31,8 @@ interface TaskSession {
     ServiceManager,
     "startService" | "restartService" | "stopService" | "getAllStatuses"
   >;
-  deps: Pick<ServiceManagerDeps, "displayPopup" | "sentra">;
+  deps: Pick<ServiceManagerDeps, "sentra">;
+  taskPresentation?: TaskPresentation;
   broadcast(event: DaemonEvent): void;
 }
 
@@ -38,7 +40,7 @@ interface TaskRunOptions {
   config: ResolvedConfig;
   cwd: string;
   env: Record<string, string>;
-  mode: "background" | "configured";
+  mode: TaskRunMode;
   onLine?: (line: string) => void;
   onProgress?: (key: string, result: "success" | "error") => void;
 }
@@ -212,6 +214,13 @@ class TaskExecutionService {
     if (!task) {
       throw new Error(`Unknown task: ${key}`);
     }
+    const statuses = new Map(
+      this.session.manager
+        .getAllStatuses()
+        .map((status) => [status.name, { ...status, ports: [...status.ports] }]),
+    );
+    const { sentra } = this.session.deps;
+    const { taskPresentation: presentation } = this.session;
     const run: AcceptedRun = { runId: newRunId(), key, name: task.name, context };
     this.activeRuns.set(run.runId, run);
     this.output.start(run.runId, key, Date.now());
@@ -244,19 +253,15 @@ class TaskExecutionService {
           key,
           {
             tasks,
-            statuses: new Map(
-              this.session.manager
-                .getAllStatuses()
-                .map((status) => [status.name, { ...status, ports: [...status.ports] }]),
-            ),
+            statuses,
             projectDir: context.cwd,
             services: context.services,
             env: context.env,
             commandExecutor,
             mode: context.mode,
             assertAdmission: () => this.assertAdmission(authority),
-            tmux: { displayPopup: this.session.deps.displayPopup },
-            sentra: this.session.deps.sentra,
+            presentation,
+            sentra,
             sentraConfig: context.sentraConfig,
             onLine: (_key, line) => {
               this.output.append(run.runId, line);

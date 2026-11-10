@@ -23,8 +23,6 @@ import {
   sentraTemplateFor,
 } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
-import { newRunId } from "#src/lib/task/run-id.js";
-import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
 import type { SpawnFn } from "./detached.js";
 import { buildServiceContext, resolveEnv } from "./env.js";
@@ -286,40 +284,8 @@ export class ServiceManager extends EventEmitter {
 
     // Bind library actions so lib methods work inside hooks
     config.bindActions?.({
-      runTask: async (key) => {
-        const tasks = config.project.tasks ?? {};
-        if (!tasks[key]) {
-          throw new Error(`Unknown task: ${key}`);
-        }
-        // One runId for the whole run; every event it emits carries it so the
-        // Session can correlate history/output even across concurrent runs (Q12).
-        const runId = newRunId();
-        this.emit("taskStart", runId, key, tasks[key]?.name ?? key);
-        const visited = new Set<string>();
-        const results = new Map<string, "success" | "error">();
-        const ok = await runTaskWithDeps(
-          key,
-          {
-            tasks,
-            statuses: this.statuses,
-            projectDir: config.projectDir,
-            services: config.project.services,
-            tmux: { displayPopup: this.deps.displayPopup },
-            sentra: this.deps.sentra,
-            sentraConfig: config.project.sentra,
-            onLine: (_taskKey, line) => {
-              this.emit("taskLine", runId, line);
-            },
-            onProgress: (taskKey, result) => {
-              this.emit("taskComplete", runId, taskKey, tasks[taskKey]?.name ?? taskKey, result);
-            },
-          },
-          visited,
-          results,
-        );
-        if (!ok) {
-          throw new Error(`Task '${key}' failed`);
-        }
+      runTask: async () => {
+        throw new Error("Task execution requires a session");
       },
       startService: async (name) => {
         await this.startService(name);
@@ -333,7 +299,7 @@ export class ServiceManager extends EventEmitter {
     this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
   }
 
-  /** Session composition bridge; standalone managers retain legacy bindings (P06-T04). */
+  /** Bind the stable session facade before running hooks. */
   public bindTaskExecution(
     actions: LibraryActions,
     runStopHook: (hook: () => void | Promise<void>) => Promise<void>,
@@ -1689,17 +1655,6 @@ export class ServiceManager extends EventEmitter {
 
 export interface ServiceManagerEvents {
   stateChange: (name: string, status: ServiceStatus) => void;
-  /** Run started; `runId` correlates this run's events/history (Q12). */
-  taskStart: (runId: string, taskKey: string, taskName: string) => void;
-  taskComplete: (
-    runId: string,
-    taskKey: string,
-    taskName: string,
-    result: "success" | "error",
-  ) => void;
-  /** A task output line from the hook-path runner; the session appends it to the
-   * run's `TaskOutputStore` buffer (keyed by `runId`). */
-  taskLine: (runId: string, line: string) => void;
   /** New detached-child log lines — the session appends + broadcasts them (E4). */
   logLines: (name: string, lines: string[]) => void;
 }

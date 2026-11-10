@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
+import { TaskExecutionService } from "#src/daemon/task-execution.js";
+import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
+import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import { createServiceStatus } from "#src/lib/service/state.js";
 
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
@@ -9,17 +14,9 @@ import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sen
 import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
-vi.mock("../../../src/lib/exec.js", () => ({
-  execCommand: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("../../../src/lib/service/env.js", () => ({
   buildServiceContext: vi.fn(() => ({})),
   resolveEnv: vi.fn(() => ({})),
-}));
-
-vi.mock("../../../src/lib/task/runner.js", () => ({
-  runTaskWithDeps: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../../../src/lib/tmux.js", () => {
@@ -36,12 +33,60 @@ vi.mock("../../../src/lib/tmux.js", () => {
 
 // `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
 
+const taskOwners: TaskExecutionService[] = [];
+
+function taskSession(tasks: Record<string, TaskConfig>) {
+  const session = createMockSession();
+  const config: ResolvedConfig = {
+    project: { name: "test", services: {}, tasks },
+    configPath: "/fake/.zaps.mts",
+    projectDir: "/fake",
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+  const execute = vi.fn<CommandExecutor["execute"]>().mockImplementation(async (_command, opts) => {
+    opts.onLine?.("command output");
+    return { success: true, exitCode: 0, output: ["command output"] };
+  });
+  const displayPopup = vi.fn().mockResolvedValue(undefined);
+  const env = { TOKEN: "session" };
+  const broadcast = vi.fn<(event: DaemonEvent) => void>();
+  const owner = new TaskExecutionService(
+    {
+      id: session.id,
+      config,
+      env,
+      manager: {
+        startService: async () => ({ noop: false }),
+        restartService: async () => {
+          /* Noop */
+        },
+        stopService: async () => ({ noop: false }),
+        getAllStatuses: () => [createServiceStatus("api")],
+      },
+      deps: {},
+      taskPresentation: { popup: displayPopup },
+      broadcast,
+    },
+    () => ({ execute }),
+  );
+  taskOwners.push(owner);
+  return {
+    session: Object.assign(session, { config, env, taskExecution: owner, broadcast }),
+    owner,
+    execute,
+    displayPopup,
+  };
+}
+
 describe("session handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(taskOwners.splice(0).map(async (owner) => owner.dispose()));
     vi.restoreAllMocks();
   });
 
@@ -714,245 +759,119 @@ describe("session handlers", () => {
 
   describe("tasks.run", () => {
     it("returns error for unknown task", async () => {
-      const session = createMockSession();
-      session.config.project.tasks = {};
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r23",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "missing" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      const { session } = taskSession({});
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "missing" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
       expect(res.error).toContain("Unknown task");
     });
 
-    it("runs regular task via runTaskWithDeps", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockResolvedValue(true);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        build: { name: "Build", run: "npm run build" },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r24",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "build" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      const result = res.result as { success: boolean; runId: string };
-      expect(result.success).toBe(true);
-      // The run's id is returned for correlation, and threaded into the records.
-      expect(result.runId).toEqual(expect.any(String));
-      expect(session.pushTaskRecord).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: result.runId, result: "running", mode: "background" }),
-      );
-      expect(session.pushTaskRecord).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: result.runId, result: "success" }),
-      );
-      expect(session.broadcast).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: "task.start",
-          data: expect.objectContaining({ runId: result.runId }),
-        }),
-      );
-    });
-
-    it("runs popup task non-interactively", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-    });
-
-    it("runs popup task with function command", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: [() => "dynamic-cmd"] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25b",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith("dynamic-cmd", expect.anything());
-    });
-
-    it("returns success: false when popup task throws", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockRejectedValue(new Error("exec failed"));
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["fail"] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25c",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: false });
-    });
-
-    it("runs task and invokes onLine/onProgress callbacks", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockImplementation(
-        (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
-          deps.onLine?.("build", "output line");
-          deps.onProgress?.("build", "success");
-          return true;
-        },
-      );
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        build: { name: "Build", commands: "npm run build" },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25f",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "build" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      // Verify socket received line and progress events
-      expect(socket.write).toHaveBeenCalled();
-      const writes = socket.write.mock.calls.map((c: string[]) => JSON.parse(c[0]));
-      expect(writes.some((w: { event?: string }) => w.event === "line")).toBe(true);
-      expect(writes.some((w: { event?: string }) => w.event === "progress")).toBe(true);
-    });
-
-    it("runs popup task with no commands uses runTaskWithDeps", async () => {
-      // Popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockResolvedValue(false);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: {
-          name: "Lint",
-          popup: true,
-          run: async () => {
-            /* Noop */
+    it.each([false, true])("runs popup DAG in background with UI binding %s", async (bound) => {
+      const { session, execute, displayPopup, owner } = taskSession({
+        shared: { name: "Shared", popup: true, commands: "shared" },
+        nested: { name: "Nested", popup: true, commands: () => "nested", dependsOn: ["shared"] },
+        callback: {
+          name: "Callback",
+          dependsOn: ["shared"],
+          run: async (ctx) => {
+            ctx.stdout.write("callback output\n");
+            await ctx.exec("callback");
           },
         },
-      };
-      const store = createMockStore([session]);
+        root: { name: "Root", popup: true, commands: "root", dependsOn: ["nested", "callback"] },
+      });
       const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25e",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      Object.assign(socket, { writable: true, destroyed: false });
+      if (bound) {
+        session.subscribers.add(socket);
+      }
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ success: true, runId: expect.any(String) });
+      expect(execute.mock.calls.map(([command]) => command)).toEqual([
+        "shared",
+        "nested",
+        "callback",
+        "root",
+      ]);
+      expect(displayPopup).not.toHaveBeenCalled();
+      expect(owner.history).toEqual([
+        expect.objectContaining({ taskKey: "root", result: "success" }),
+      ]);
+      const runId = owner.history[0]?.runId ?? "missing";
+      expect(owner.output.get(runId)?.lines).toContain("callback output");
+      expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+        "task.start",
+        "task.complete",
+      ]);
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"line"'));
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"progress"'));
+    });
+
+    it("failed popup prerequisite suppresses root and completes once", async () => {
+      const { session, execute, owner } = taskSession({
+        dep: { name: "Dep", popup: true, commands: "fail" },
+        root: { name: "Root", popup: true, commands: "root", dependsOn: ["dep"] },
+      });
+      execute.mockResolvedValue({ success: false, exitCode: 1, output: [] });
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
       expect(res.result).toMatchObject({ success: false });
+      expect(execute.mock.calls.map(([command]) => command)).toEqual(["fail"]);
+      expect(owner.history).toEqual([
+        expect.objectContaining({ taskKey: "root", result: "error" }),
+      ]);
+      expect(
+        session.broadcast.mock.calls.filter(([event]) => event.event === "task.complete"),
+      ).toHaveLength(1);
     });
 
-    it("runs popup task with custom cwd", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."], cwd: "/custom" },
-      };
-      const store = createMockStore([session]);
+    it("closed request output sinks leave execution and retention intact", async () => {
+      const { session, owner } = taskSession({ root: { name: "Root", commands: "root" } });
       const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25cwd",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith(
-        "eslint .",
-        expect.objectContaining({ cwd: "/custom" }),
+      Object.assign(socket, { writable: false, destroyed: true });
+      socket.write.mockImplementation(() => {
+        throw new Error("closed");
+      });
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        socket as never,
       );
-    });
-
-    it("runs popup task with env", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
-        resolveEnv: ReturnType<typeof vi.fn>;
-      };
-      resolveEnv.mockReturnValue({ NODE_ENV: "test" });
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25d",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
       expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith(
-        "eslint .",
-        expect.objectContaining({ env: { NODE_ENV: "test" } }),
-      );
+      expect(socket.write).not.toHaveBeenCalled();
+      expect(owner.output.get(owner.history[0]?.runId ?? "missing")?.lines).toEqual([
+        "command output",
+      ]);
     });
   });
 
   describe("tasks.runInPane", () => {
+    it("runs only root commands even when dependencies are configured", async () => {
+      const session = createMockSession();
+      const dependency = vi.fn();
+      session.config.project.tasks = {
+        dep: { name: "Dep", run: dependency },
+        root: { name: "Root", commands: "echo root", dependsOn: ["dep"] },
+      };
+      const result = await sessionHandlers["tasks.runInPane"](
+        { id: "pane", method: "tasks.runInPane", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(result.result).toMatchObject({ runId: expect.any(String) });
+      expect([...session.paneRunInfo.values()].map((info) => info.command)).toEqual(["echo root"]);
+      expect(dependency).not.toHaveBeenCalled();
+    });
+
     it("returns unknown_task for a missing key", async () => {
       const session = createMockSession();
       session.config.project.tasks = {};
@@ -1577,47 +1496,43 @@ describe("session handlers", () => {
       );
     });
 
-    it("injects the DSN into non-interactive popup runs", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-      const { session } = sentraSession();
-
+    it.each([true, false])("injects Sentra into background popup=%s runs", async (popup) => {
+      const { session, execute } = taskSession({
+        lint: { name: "Lint", popup, commands: "eslint .", sentra: true },
+      });
+      const sentra = fakeSentra();
+      session.config.project.sentra = SENTRA_BLOCK;
+      session.taskExecution = new TaskExecutionService(
+        {
+          id: session.id,
+          config: session.config,
+          env: session.env,
+          manager: {
+            startService: async () => ({ noop: false }),
+            restartService: async () => {
+              /* Noop */
+            },
+            stopService: async () => ({ noop: false }),
+            getAllStatuses: () => [createServiceStatus("api")],
+          },
+          deps: { sentra },
+          broadcast: (event) => {
+            session.broadcast(event);
+          },
+        },
+        () => ({ execute }),
+      );
+      taskOwners.push(session.taskExecution);
       await sessionHandlers["tasks.run"](
         { id: "s2", method: "tasks.run", session: session.id, params: { key: "lint" } },
         createMockStore([session]),
         createMockSocket() as never,
       );
-
-      expect(execCommand).toHaveBeenCalledWith(
+      expect(execute).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({
-          env: expect.objectContaining({
-            SENTRY_DSN: fakeSentraDsn("lint"),
-            SHARED: `sentra:${fakeSentraDsn("lint")}`,
-          }),
+          env: expect.objectContaining({ SENTRY_DSN: fakeSentraDsn("lint") }),
         }),
-      );
-    });
-
-    it("passes sentra deps and config to background task runs", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      const { session, sentra } = sentraSession();
-
-      await sessionHandlers["tasks.run"](
-        { id: "s3", method: "tasks.run", session: session.id, params: { key: "e2e" } },
-        createMockStore([session]),
-        createMockSocket() as never,
-      );
-
-      expect(runTaskWithDeps).toHaveBeenCalledWith(
-        "e2e",
-        expect.objectContaining({ sentra, sentraConfig: SENTRA_BLOCK }),
-        expect.any(Set),
-        expect.any(Map),
       );
     });
   });

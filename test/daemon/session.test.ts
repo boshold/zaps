@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -182,35 +183,70 @@ describe("Session", () => {
     );
   });
 
-  it("forwards taskStart events with runId", () => {
+  it("owns task lifecycle/output independently of manager events", async () => {
+    session.config.project.tasks = {
+      dep: {
+        name: "Dep",
+        run: async (ctx) => {
+          ctx.stdout.write("dependency output\n");
+        },
+      },
+      build: {
+        name: "Build",
+        dependsOn: ["dep"],
+        run: async (ctx) => {
+          ctx.stdout.write("root output\n");
+        },
+      },
+    };
     const broadcastSpy = vi.spyOn(session, "broadcast");
-    manager.emit("taskStart", "run_1", "build", "Build");
-    expect(broadcastSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "task.start",
-        data: { key: "build", name: "Build", runId: "run_1" },
-      }),
-    );
+    const result = await session.taskExecution.run("build", {
+      config: session.config,
+      cwd: session.projectDir,
+      env: {},
+      mode: "background",
+    });
+    expect(result.success).toBe(true);
+    expect(session.taskHistory).toEqual([
+      expect.objectContaining({ runId: result.runId, taskKey: "build", result: "success" }),
+    ]);
+    expect(session.taskOutput.get(result.runId)?.lines).toEqual([
+      "dependency output",
+      "root output",
+    ]);
+    expect(broadcastSpy.mock.calls.map(([event]) => event.event)).toEqual([
+      "task.start",
+      "task.complete",
+    ]);
   });
 
-  it("forwards taskComplete events with runId", () => {
-    const broadcastSpy = vi.spyOn(session, "broadcast");
-    manager.emit("taskComplete", "run_1", "build", "Build", "success");
-    expect(broadcastSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        event: "task.complete",
-        data: { key: "build", name: "Build", result: "success", runId: "run_1" },
-      }),
-    );
-  });
-
-  it("correlates a manager run's start→complete into one record by runId", () => {
-    manager.emit("taskStart", "run_1", "build", "Build");
-    expect(session.taskHistory).toHaveLength(1);
-    expect(session.taskHistory[0]).toMatchObject({ runId: "run_1", result: "running" });
-    manager.emit("taskComplete", "run_1", "build", "Build", "success");
-    expect(session.taskHistory).toHaveLength(1);
-    expect(session.taskHistory[0]).toMatchObject({ runId: "run_1", result: "success" });
+  it("drops a throwing subscriber without interrupting retained task completion", async () => {
+    const socket = new Socket();
+    vi.spyOn(socket, "write").mockImplementation(() => {
+      throw new Error("closed socket");
+    });
+    session.subscribers.add(socket);
+    session.config.project.tasks = {
+      root: {
+        name: "Root",
+        run: async (ctx) => {
+          ctx.stdout.write("retained output");
+        },
+      },
+    };
+    const result = await session.taskExecution.run("root", {
+      config: session.config,
+      cwd: session.projectDir,
+      env: {},
+      mode: "background",
+    });
+    expect(result.success).toBe(true);
+    expect(session.subscribers.has(socket)).toBe(false);
+    expect(session.taskOutput.get(result.runId)?.lines).toEqual(["retained output"]);
+    expect(session.taskHistory).toEqual([
+      expect.objectContaining({ taskKey: "root", result: "success" }),
+    ]);
+    socket.destroy();
   });
 
   describe("pushTaskRecord", () => {
