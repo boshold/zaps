@@ -73,10 +73,13 @@ describe("TmuxRuntime", () => {
     unsubscribe();
   });
 
-  it("does not capture after a wrapper exits during pending sendKeys", async () => {
+  it("drains early wrapper diagnostics during pending sendKeys without leaking a producer", async () => {
     vi.useFakeTimers();
     try {
       const { runtime, send, wrappers, tmux } = fixture();
+      vi.mocked(tmux.capturePane).mockResolvedValue("FATAL");
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => events.push(event));
       let acknowledge!: () => void;
       send.mockImplementationOnce(async (_target, command) => {
         const executionId = /--execution-id '(?<executionId>[^']+)'/.exec(command)?.groups
@@ -95,7 +98,9 @@ describe("TmuxRuntime", () => {
       await runtime.stop(handle);
       expect(await runtime.isRunning(handle)).toBe(false);
       await vi.advanceTimersByTimeAsync(750);
-      expect(tmux.capturePane).not.toHaveBeenCalled();
+      expect(tmux.capturePane).toHaveBeenCalledTimes(1);
+      expect(events.map((event) => event.kind)).toEqual(["leaderExit", "output", "exit"]);
+      expect(events[1]).toMatchObject({ generation: 1, lines: ["FATAL"] });
     } finally {
       vi.useRealTimers();
     }
@@ -120,26 +125,27 @@ describe("TmuxRuntime", () => {
       const retiredStart = runtime.start(spec);
       await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
       await vi.advanceTimersByTimeAsync(0);
+      vi.mocked(tmux.capturePane).mockResolvedValue("hello\nworld\nreplacement ready");
       const replacement = await runtime.start({ ...spec, generation: 2 });
       const output = vi.fn();
       runtime.subscribe(output);
       await vi.advanceTimersByTimeAsync(250);
-      expect(await runtime.readOutput(replacement, 2)).toEqual(["hello", "world"]);
+      expect(await runtime.readOutput(replacement, 2)).toEqual(["replacement ready"]);
       acknowledge();
       const retired = await retiredStart;
       expect(await runtime.isRunning(retired)).toBe(false);
-      expect(await runtime.readOutput(replacement, 2)).toEqual(["hello", "world"]);
+      expect(await runtime.readOutput(replacement, 2)).toEqual(["replacement ready"]);
       await vi.advanceTimersByTimeAsync(250);
       expect(output).toHaveBeenCalledExactlyOnceWith({
         kind: "output",
         unitId: "api",
         generation: 2,
-        lines: ["hello", "world"],
+        lines: ["replacement ready"],
       });
-      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(3);
       await runtime.stop(replacement);
       await vi.advanceTimersByTimeAsync(500);
-      expect(tmux.capturePane).toHaveBeenCalledTimes(3);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
     }
@@ -452,6 +458,54 @@ describe("TmuxRuntime", () => {
       expect.objectContaining({ command: spec.command, unitId: "api", generation: 1 }),
     );
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it("preserves pane history across restart without replaying logs or satisfying readiness", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, tmux } = fixture();
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => events.push(event));
+      vi.mocked(tmux.capturePane).mockResolvedValue("old line\nOLD_READY");
+      const first = await runtime.start(spec);
+      await vi.advanceTimersByTimeAsync(250);
+      await runtime.stop(first);
+      const second = await runtime.start({ ...spec, generation: 2 });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await runtime.readOutput(second, 500)).toEqual([]);
+      expect(events.filter((event) => event.kind === "output")).toEqual([
+        { kind: "output", unitId: "api", generation: 1, lines: ["old line", "OLD_READY"] },
+      ]);
+      vi.mocked(tmux.capturePane).mockResolvedValue("old line\nOLD_READY\nNEW_READY");
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await runtime.readOutput(second, 500)).toEqual(["NEW_READY"]);
+      expect(events.findLast((event) => event.kind === "output")).toEqual({
+        kind: "output",
+        unitId: "api",
+        generation: 2,
+        lines: ["NEW_READY"],
+      });
+      await runtime.stop(second);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases its producer after a failed command dispatch", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, send, tmux } = fixture();
+      send.mockRejectedValueOnce(new Error("dispatch failed"));
+      await expect(runtime.start(spec)).rejects.toThrow("dispatch failed");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(tmux.capturePane).not.toHaveBeenCalled();
+      const replacement = await runtime.start({ ...spec, generation: 2 });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(1);
+      await runtime.stop(replacement);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses one capture stream for output subscriptions", async () => {

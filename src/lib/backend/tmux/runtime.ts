@@ -163,6 +163,7 @@ interface PaneExecution {
 class TmuxRuntime implements RuntimeDriver {
   private readonly records = new Map<string, PaneExecution>();
   private readonly current = new Map<string, string>();
+  private readonly paneBaselines = new Map<string, string[]>();
   private readonly listeners = new Set<(event: ExecutionEvent) => void>();
 
   private readonly options: TmuxRuntimeOptions;
@@ -216,6 +217,22 @@ class TmuxRuntime implements RuntimeDriver {
         },
       );
     }
+    record.output = new TmuxOutputProducer(
+      this.options.tmux.capturePane,
+      pane,
+      250,
+      this.paneBaselines.get(pane) ?? [],
+    );
+    record.unsubscribeOutput = record.output.subscribe((lines) => {
+      if (this.lookup(handle) === record) {
+        this.publish({
+          kind: "output",
+          unitId: handle.unitId,
+          generation: handle.generation,
+          lines,
+        });
+      }
+    });
     let envFile: string | undefined = undefined;
     try {
       envFile = spec.raw ? this.options.environmentFile?.({ ...spec.env }) : undefined;
@@ -234,22 +251,12 @@ class TmuxRuntime implements RuntimeDriver {
               .join(" ")} sh -c ${shellEscape(spec.command)}`;
       }
       await this.options.tmux.sendKeys(pane, command);
-      if (this.lookup(handle) !== record || record.wrapperExit) {
-        return handle;
-      }
-      record.output = new TmuxOutputProducer(this.options.tmux.capturePane, pane, 250);
-      record.output.reset();
-      record.unsubscribeOutput = record.output.subscribe((lines) => {
-        if (this.lookup(handle) === record) {
-          this.publish({
-            kind: "output",
-            unitId: handle.unitId,
-            generation: handle.generation,
-            lines,
-          });
-        }
-      });
     } catch (error) {
+      if (this.lookup(handle) === record && record.output) {
+        this.paneBaselines.set(record.pane, record.output.snapshot());
+      }
+      record.unsubscribeOutput?.();
+      record.output?.stop();
       if (envFile) {
         this.options.removeEnvironmentFile?.(envFile);
       }
@@ -292,6 +299,9 @@ class TmuxRuntime implements RuntimeDriver {
     }
     if (record.environmentFile) {
       this.options.removeEnvironmentFile?.(record.environmentFile);
+    }
+    if (record.output) {
+      this.paneBaselines.set(record.pane, record.output.snapshot());
     }
     record.unsubscribeOutput?.();
     record.output?.stop();

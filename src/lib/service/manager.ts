@@ -909,7 +909,7 @@ export class ServiceManager extends EventEmitter {
     }
     const members = this.unitMembers.get(event.unitId) ?? [event.unitId];
     if (event.kind === "output") {
-      this.handleRuntimeOutput(event, execution, members);
+      this.handleRuntimeOutput(event, members);
       return;
     }
     if (!execution.leaderExited && !execution.requestedStop) {
@@ -925,18 +925,7 @@ export class ServiceManager extends EventEmitter {
     this.handleRuntimeExit(event, execution);
   }
 
-  private handleRuntimeOutput(
-    event: ExecutionEvent & { kind: "output" },
-    execution: OwnedExecution,
-    members: string[],
-  ): void {
-    if (
-      execution.leaderExited &&
-      !execution.handle &&
-      !this.config.project.services[event.unitId]?._combined
-    ) {
-      return;
-    }
+  private handleRuntimeOutput(event: ExecutionEvent & { kind: "output" }, members: string[]): void {
     // Keep draining owned output; hook queues independently fence lifecycle changes.
     for (const member of members) {
       this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);

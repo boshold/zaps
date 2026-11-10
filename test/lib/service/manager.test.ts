@@ -4997,8 +4997,9 @@ describe("neutral runtime launch", () => {
     manager.abortStartAll();
   });
 
-  it("observes exit before start returns and ignores following output", async () => {
+  it("retains current diagnostics after early leader exit while fencing readiness and hooks", async () => {
     const onReady = vi.fn();
+    const onOutput = vi.fn();
     const runtime = neutralRuntime((spec, emit) => {
       emit({
         kind: "leaderExit",
@@ -5007,7 +5008,7 @@ describe("neutral runtime launch", () => {
         code: 2,
         signal: null,
       });
-      emit({ kind: "output", unitId: spec.unitId, generation: spec.generation, lines: ["stale"] });
+      emit({ kind: "output", unitId: spec.unitId, generation: spec.generation, lines: ["FATAL"] });
       emit({
         kind: "exit",
         unitId: spec.unitId,
@@ -5019,7 +5020,7 @@ describe("neutral runtime launch", () => {
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
     const manager = new ServiceManager(
-      makeConfig({ svc: { start: "serve", onReady } }),
+      makeConfig({ svc: { start: "serve", onReady, onOutput } }),
       {},
       deps,
       "neutral-session",
@@ -5032,7 +5033,10 @@ describe("neutral runtime launch", () => {
       lastError: "Process exited before becoming ready",
     });
     expect(onReady).not.toHaveBeenCalled();
-    expect(logs).not.toHaveBeenCalled();
+    expect(onOutput).not.toHaveBeenCalled();
+    expect(logs).toHaveBeenCalledExactlyOnceWith("svc", ["FATAL"]);
+    runtime.emit({ kind: "output", unitId: "svc", generation: 0, lines: ["stale"] });
+    expect(logs).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces unavailable process probes through readiness", async () => {

@@ -13,10 +13,18 @@ class TmuxOutputProducer {
   private stopped = false;
   private revision = 0;
   private previous: string[] = [];
+  private readonly executionScoped: boolean;
   private capture: string[] = [];
   private complete: string[] = [];
 
-  public constructor(capturePane: CapturePane, target: string, intervalMs = 500) {
+  public constructor(
+    capturePane: CapturePane,
+    target: string,
+    intervalMs = 500,
+    baseline?: readonly string[],
+  ) {
+    this.previous = [...(baseline ?? [])];
+    this.executionScoped = baseline !== undefined;
     this.capturePane = capturePane;
     this.target = target;
     this.intervalMs = intervalMs;
@@ -73,8 +81,8 @@ class TmuxOutputProducer {
       const current = output === "" ? [] : output.split("\n");
       const lines = diffOutput(this.previous, current);
       this.previous = current;
-      this.capture = current;
-      this.complete = current.slice(0, -1);
+      this.capture = this.executionScoped ? [...this.capture, ...lines].slice(-500) : current;
+      this.complete = this.capture.slice(0, -1);
       if (lines.length) {
         for (const listener of this.listeners) {
           listener(lines);
@@ -91,6 +99,10 @@ class TmuxOutputProducer {
     } finally {
       this.pending = undefined;
     }
+  }
+
+  public snapshot(): string[] {
+    return [...this.previous];
   }
 
   public stop(): void {
