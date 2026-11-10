@@ -1,33 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock child_process and tmux
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn(),
-  spawn: vi.fn(),
+const { mockExecFile } = vi.hoisted(() => ({
+  mockExecFile:
+    vi.fn<(command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>>(),
 }));
 
-vi.mock("node:util", () => ({
-  promisify: (fn: any) => fn,
-}));
+vi.mock("node:child_process", () => ({ execFile: mockExecFile }));
+vi.mock("node:util", () => ({ promisify: () => mockExecFile }));
 
 vi.mock("../../src/lib/tmux.js", () => ({
   panePid: vi.fn(),
 }));
 
-import { execFile } from "node:child_process";
-
 import { detectPorts, getDescendantPids, getListeningPorts } from "../../src/lib/port.js";
 import { panePid } from "../../src/lib/tmux.js";
 
-const mockExecFile = vi.mocked(execFile);
 const mockPanePid = vi.mocked(panePid);
 
 function mockExecFileOutput(output: string): void {
-  (mockExecFile as any).mockResolvedValue({ stdout: output, stderr: "" });
+  mockExecFile.mockResolvedValue({ stdout: output, stderr: "" });
 }
 
 function mockExecFileError(): void {
-  (mockExecFile as any).mockRejectedValue(new Error("command not found"));
+  mockExecFile.mockRejectedValue(new Error("command not found"));
 }
 
 beforeEach(() => {
@@ -274,7 +269,7 @@ describe("detectPorts", () => {
     // First call: ps for getDescendantPids
     // Second call: ss for getListeningPorts
     let callCount = 0;
-    (mockExecFile as any).mockImplementation(async () => {
+    mockExecFile.mockImplementation(async () => {
       callCount += 1;
       if (callCount === 1) {
         // Ps output
