@@ -100,28 +100,7 @@ class TmuxSessionBackend implements SessionBackend {
 
   public async reload(config: ResolvedConfig, skip: Set<string>): Promise<void> {
     await this.mutate(async () => {
-      const errors: unknown[] = [];
-      for (const pane of new Set(Object.values(this.paneMap))) {
-        if (pane === this.options.host.originPane) {
-          continue;
-        }
-        try {
-          await this.options.tmux.killPane(pane);
-        } catch (error) {
-          if (await this.options.tmux.paneExists(pane)) {
-            errors.push(error);
-            continue;
-          }
-        }
-        for (const [name, target] of Object.entries(this.paneMap)) {
-          if (target === pane) {
-            Reflect.deleteProperty(this.paneMap, name);
-          }
-        }
-      }
-      if (errors.length) {
-        throw new AggregateError(errors, "Tmux layout cleanup incomplete");
-      }
+      await this.cleanupLayoutPanes();
       this.paneMap = { "@tui": this.options.host.originPane };
       this.layout = config.project.layout;
       this.options.services = config.project.services;
@@ -129,6 +108,34 @@ class TmuxSessionBackend implements SessionBackend {
       this.options.skip = skip;
       await this.buildLayout();
     });
+  }
+
+  private async cleanupLayoutPanes(): Promise<void> {
+    const errors: unknown[] = [];
+    for (const pane of new Set([...Object.values(this.paneMap), ...this.acquiredPanes])) {
+      if (pane === this.options.host.originPane) {
+        continue;
+      }
+      try {
+        await this.options.tmux.killPane(pane);
+      } catch (error) {
+        try {
+          await confirmAbsent(error, async () => this.options.tmux.paneExists(pane));
+        } catch (cleanupError) {
+          errors.push(cleanupError);
+          continue;
+        }
+      }
+      this.acquiredPanes.delete(pane);
+      for (const [name, target] of Object.entries(this.paneMap)) {
+        if (target === pane) {
+          Reflect.deleteProperty(this.paneMap, name);
+        }
+      }
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Tmux layout cleanup incomplete");
+    }
   }
 
   public get legacyReflow(): LayoutReflow {

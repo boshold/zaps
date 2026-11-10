@@ -6,6 +6,7 @@ import path from "node:path";
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
+import { preflightBackendCompatibility } from "#src/lib/backend/compatibility.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import type {
   BackendCapabilities,
@@ -380,6 +381,7 @@ export class Session {
     if (newConfig.projectDir !== this.projectDir) {
       throw new Error("Project cwd changed. Run zaps down, then zaps up.");
     }
+    preflightBackendCompatibility(newConfig.project.services, this.backend.capabilities);
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
@@ -439,9 +441,9 @@ export class Session {
     }
 
     // 9. Start services as a tracked promise.
-    this.startPromise = this.runWithContext(async () => {
+    this.startPromise = runWithEnvironment({ ...loaded.env }, async () => {
       try {
-        await this.startAll();
+        await newManager.startAll();
       } catch {
         /* Errors surfaced via stateChange */
       }
