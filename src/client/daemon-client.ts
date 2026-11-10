@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 
+import { z } from "zod";
+
 import type { DockerConfig, NoticeLevel } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
@@ -49,8 +51,17 @@ export class DaemonClient extends EventEmitter {
   private sub: IpcSubscription | null = null;
   private boundSubscription: IpcSubscription | null = null;
 
-  public constructor(socketPath: string, sessionId: string) {
+  private managedHost = true;
+  private readonly supportsHostDetach: () => boolean;
+
+  public constructor(
+    socketPath: string,
+    sessionId: string,
+    // Trusted protocol support, supplied by connection metadata composition.
+    options: { supportsHostDetach?: () => boolean } = {},
+  ) {
     super();
+    this.supportsHostDetach = options.supportsHostDetach ?? (() => false);
     this.socketPath = socketPath;
     this.sessionId = sessionId;
   }
@@ -120,7 +131,36 @@ export class DaemonClient extends EventEmitter {
     if (this.sub !== subscription || !subscription.connected) {
       throw new Error("daemon connection closed");
     }
+    const snapshot = z
+      .object({ managed: z.boolean().optional() })
+      .passthrough()
+      .parse(response.result);
+    this.managedHost = snapshot.managed !== false;
     this.boundSubscription = subscription;
+  }
+
+  public async detach(options: { detachHost?: boolean } = {}): Promise<void> {
+    const subscription = this.sub;
+    if (!subscription || !subscription.connected || (options.detachHost && !this.uiBound)) {
+      throw new TerminalActionError("invalid_request", "invalid_request");
+    }
+    if (options.detachHost && this.managedHost && !this.supportsHostDetach()) {
+      throw new TerminalActionError(
+        "Host detach unavailable. Detach tmux manually, then restart the daemon to upgrade.",
+        "backend_unavailable",
+      );
+    }
+    const response = await subscription.request("session.detach", options);
+    if (response.error !== undefined) {
+      throw new TerminalActionError(response.error, response.errorCode);
+    }
+    z.object({ detached: z.literal(true) }).parse(response.result);
+    if (this.sub !== subscription || !subscription.connected) {
+      throw new Error("daemon connection closed");
+    }
+    this.boundSubscription = null;
+    this.sub = null;
+    subscription.close();
   }
 
   public async terminalAction(params: TerminalActionParams): Promise<TerminalActionResult> {

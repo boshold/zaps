@@ -1772,3 +1772,101 @@ describe("terminal.action", () => {
     expect(f.full.taskOutput.get("run")?.lines).toEqual([]);
   });
 });
+
+describe("bound host detach", () => {
+  function fixture(managedTmux = true, shell = false) {
+    const socket = new Socket();
+    const session = createMockSession();
+    const binding: UiBinding = {
+      acknowledged: true,
+      socket,
+      sessionId: session.id,
+      socketId: "detach",
+      controller: new AbortController(),
+    };
+    const detachHost = vi.fn(async () => undefined);
+    const full = Object.assign(session, {
+      env: {},
+      getUiBinding: vi.fn<() => UiBinding | undefined>(() => binding),
+      removeSubscriber: vi.fn(),
+      backend: {
+        terminal: shell ? undefined : { detachHost },
+        getPresentation: () => (shell ? { kind: "shell" } : { kind: "tmux", managedTmux }),
+      },
+    });
+    const invoke = async (params: unknown = { detachHost: true }) =>
+      sessionHandlers["session.detach"](
+        { id: "detach", method: "session.detach", session: session.id, params },
+        createMockStore([full]),
+        socket,
+      );
+    return { full, socket, binding, detachHost, invoke };
+  }
+
+  it.each([undefined, { detachHost: false }])(
+    "keeps unsubscribe-only behavior %j",
+    async (params) => {
+      const f = fixture();
+      expect(await f.invoke(params ?? {})).toMatchObject({ result: { detached: true } });
+      expect(f.detachHost).not.toHaveBeenCalled();
+      expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+    },
+  );
+
+  it("awaits host detach before releasing the binding", async () => {
+    const f = fixture();
+    f.detachHost.mockImplementation(async () => {
+      expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+    });
+    expect(await f.invoke()).toMatchObject({ result: { detached: true } });
+    expect(f.detachHost).toHaveBeenCalledTimes(1);
+    expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+  });
+
+  it.each([
+    "unbound",
+    "unacknowledged",
+    "closing",
+    "closed",
+    "caller-target",
+    "failure",
+    "late-close",
+  ])("preserves subscription on %s", async (mode) => {
+    const f = fixture();
+    if (mode === "unbound") {
+      f.full.getUiBinding.mockReturnValue(undefined);
+    }
+    if (mode === "unacknowledged") {
+      f.binding.acknowledged = false;
+    }
+    if (mode === "closing") {
+      f.full.taskExecution.accepting = false;
+    }
+    if (mode === "closed") {
+      f.socket.destroy();
+    }
+    if (mode === "failure") {
+      f.detachHost.mockRejectedValue(new Error("ambiguous"));
+    }
+    if (mode === "late-close") {
+      f.detachHost.mockImplementation(async () => {
+        f.binding.controller.abort();
+      });
+    }
+    const response = await f.invoke(
+      mode === "caller-target" ? { detachHost: true, client: "other" } : { detachHost: true },
+    );
+    expect(response.error).toBeDefined();
+    expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [false, false],
+    [true, true],
+  ])("personal/no-terminal only unsubscribe %j", async (managed, shell) => {
+    const f = fixture(managed, shell);
+    expect(await f.invoke()).toMatchObject({ result: { detached: true } });
+    expect(f.detachHost).not.toHaveBeenCalled();
+    expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+  });
+});

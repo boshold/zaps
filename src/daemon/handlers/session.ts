@@ -237,6 +237,50 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
+    const fail = (code: "invalid_request" | "session_closing" | "backend_unavailable") => ({
+      ...ipcErr(req.id, code),
+      errorCode: code,
+    });
+    const params = z
+      .object({ detachHost: z.boolean().optional() })
+      .strict()
+      .optional()
+      .safeParse(req.params);
+    if (!params.success) {
+      return fail("invalid_request");
+    }
+    if (params.data?.detachHost) {
+      if (!session.taskExecution.accepting) {
+        return fail("session_closing");
+      }
+      const binding = activeUiBinding(session, socket);
+      if (!binding) {
+        return fail("invalid_request");
+      }
+      const view = session.backend.getPresentation();
+      if (view.kind === "tmux" && view.managedTmux) {
+        const { terminal } = session.backend;
+        if (!terminal?.detachHost) {
+          return fail("backend_unavailable");
+        }
+        try {
+          await terminal.detachHost(
+            {
+              id: binding.socketId,
+              cwd: session.config.projectDir,
+              env: { ...session.env },
+              signal: binding.controller.signal,
+            },
+            () => session.taskExecution.accepting && activeUiBinding(session, socket) === binding,
+          );
+        } catch {
+          return fail("backend_unavailable");
+        }
+      }
+      if (!session.taskExecution.accepting || activeUiBinding(session, socket) !== binding) {
+        return fail("backend_unavailable");
+      }
+    }
     session.removeSubscriber(socket);
     return ipcOk(req.id, { detached: true });
   },

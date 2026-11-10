@@ -116,6 +116,7 @@ type ConfiguredTaskOutcome =
   | { readonly kind: "unavailable" };
 
 interface TerminalDriver {
+  detachHost?(operation: TerminalOperation, isCurrent: () => boolean): Promise<void>;
   runConfiguredTask?(
     command: ConfiguredTaskCommand,
     operation: TerminalOperation,

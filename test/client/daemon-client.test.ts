@@ -98,6 +98,60 @@ describe("DaemonClient", () => {
     expect(spy).toHaveBeenCalled();
   });
 
+  describe("awaitable detach", () => {
+    it("legacy binding ACK does not prove managed host detach support", async () => {
+      client.connect();
+      mockSub.request.mockResolvedValue({ id: "a", result: { managed: true } });
+      await client.bindUi();
+      await expect(client.detach({ detachHost: true })).rejects.toThrow("restart the daemon");
+      expect(mockSub.request).toHaveBeenCalledTimes(1);
+      expect(client.uiBound).toBe(true);
+      expect(mockSub.close).not.toHaveBeenCalled();
+    });
+
+    it("legacy personal UI can unsubscribe", async () => {
+      client.connect();
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: { managed: false } });
+      await client.bindUi();
+      mockSub.request.mockResolvedValueOnce({ id: "d", result: { detached: true } });
+      await client.detach({ detachHost: true });
+      expect(mockSub.request).toHaveBeenLastCalledWith("session.detach", { detachHost: true });
+      expect(client.uiBound).toBe(false);
+      expect(mockSub.close).toHaveBeenCalledTimes(1);
+    });
+
+    it("trusted support awaits bound RPC and retains binding on failure", async () => {
+      client = new DaemonClient("/test.sock", "sess1", { supportsHostDetach: () => true });
+      client.connect();
+      mockSub.request.mockResolvedValueOnce({ id: "a", result: { managed: true } });
+      await client.bindUi();
+      mockSub.request.mockResolvedValueOnce({
+        id: "d",
+        error: "backend_unavailable",
+        errorCode: "backend_unavailable",
+      });
+      await expect(client.detach({ detachHost: true })).rejects.toMatchObject({
+        code: "backend_unavailable",
+      });
+      expect(client.uiBound).toBe(true);
+      expect(mockSub.close).not.toHaveBeenCalled();
+      let acknowledge: (() => void) | undefined;
+      mockSub.request.mockReturnValueOnce(
+        new Promise((resolve) => {
+          acknowledge = () => resolve({ id: "d", result: { detached: true } });
+        }),
+      );
+      const detach = client.detach({ detachHost: true });
+      expect(client.uiBound).toBe(true);
+      expect(mockSub.close).not.toHaveBeenCalled();
+      acknowledge?.();
+      await detach;
+      expect(client.uiBound).toBe(false);
+      expect(mockSub.close).toHaveBeenCalledTimes(1);
+      expect(mockIpcRequest).not.toHaveBeenCalled();
+    });
+  });
+
   describe("UI binding", () => {
     it("waits for subscribe ACK then uses the persistent socket and awaits attach ACK", async () => {
       const acknowledgements: { subscribe?: () => void; attach?: () => void } = {};

@@ -657,6 +657,14 @@ describe("resyncPaneSizes", () => {
 });
 
 describe("detachClient", () => {
+  it("targets an explicitly validated outer client", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await detachClient("/dev/pts/42");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["detach-client", "-t", "/dev/pts/42"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+
   it("detaches the current client, resolved by tmux from $TMUX", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await detachClient();

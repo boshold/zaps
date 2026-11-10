@@ -19,6 +19,7 @@ interface OperationRequest {
 
 type OperationTmux = Pick<
   TmuxHandle,
+  | "detachClient"
   | "getSocket"
   | "listClients"
   | "displayMessage"
@@ -99,6 +100,7 @@ async function settleLease(lease: Lease): Promise<void> {
 }
 
 class TmuxTerminalLeaseRegistry {
+  public readonly detaching = new Set<string>();
   private readonly servers = new Map<string | null, Map<string, Lease>>();
 
   public forServer(socket: string | null): Map<string, Lease> {
@@ -113,6 +115,8 @@ class TmuxTerminalLeaseRegistry {
 
 class TmuxTerminalOperations {
   private readonly leases: Map<string, Lease>;
+  private readonly registry: TmuxTerminalLeaseRegistry;
+  private readonly server: string;
   private readonly manager = Symbol("terminal-manager");
   private closed = false;
 
@@ -129,6 +133,8 @@ class TmuxTerminalOperations {
     pollMs = 250,
   ) {
     this.tmux = tmux;
+    this.registry = registry;
+    this.server = JSON.stringify(tmux.getSocket());
     this.leases = registry.forServer(tmux.getSocket());
     this.sessionName = sessionName;
     this.dashboardPane = dashboardPane;
@@ -176,7 +182,7 @@ class TmuxTerminalOperations {
     if (this.closed) {
       throw new TerminalOperationError("cancelled");
     }
-    if (this.leases.has(client.name)) {
+    if (this.leases.has(client.name) || this.registry.detaching.has(this.detachKey(client))) {
       throw new TerminalOperationError("terminal_busy");
     }
   }
@@ -196,7 +202,7 @@ class TmuxTerminalOperations {
     if (this.closed || request.signal.aborted) {
       throw new TerminalOperationError("cancelled");
     }
-    if (this.leases.has(client.name)) {
+    if (this.leases.has(client.name) || this.registry.detaching.has(this.detachKey(client))) {
       throw new TerminalOperationError("terminal_busy");
     }
     const controller = new AbortController();
@@ -423,6 +429,40 @@ class TmuxTerminalOperations {
       request.signal.removeEventListener("abort", onAbort);
       await cancellationState.task;
       await finish();
+    }
+  }
+
+  private detachKey(client: Client): string {
+    return JSON.stringify([this.server, client.name]);
+  }
+
+  public async detachHost(owner: TerminalOwner, isCurrent: () => boolean): Promise<void> {
+    const client = await this.resolveClient();
+    const key = this.detachKey(client);
+    if (this.closed || !isCurrent() || this.registry.detaching.has(key)) {
+      throw new TerminalOperationError("backend_unavailable");
+    }
+    this.registry.detaching.add(key);
+    try {
+      const lease = this.leases.get(client.name);
+      if (lease && (lease.manager !== this.manager || !sameOwner(owner, lease.owner))) {
+        throw new TerminalOperationError("backend_unavailable");
+      }
+      await this.cancelOwner(owner);
+      const current = await this.resolveClient();
+      if (
+        this.closed ||
+        !isCurrent() ||
+        !sameClient(client, current) ||
+        this.leases.has(client.name)
+      ) {
+        throw new TerminalOperationError("backend_unavailable");
+      }
+      await this.tmux.detachClient(client.name);
+    } catch (error) {
+      throw new TerminalOperationError("backend_unavailable", false, { cause: error });
+    } finally {
+      this.registry.detaching.delete(key);
     }
   }
 

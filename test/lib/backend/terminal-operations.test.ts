@@ -53,6 +53,7 @@ const client = {
 function fixture() {
   const popup = deferred<void>();
   const tmux = {
+    detachClient: vi.fn(async (_target?: string) => undefined),
     getSocket: () => "owned-server",
     listClients: vi.fn(async () => [{ ...client }]),
     displayMessage: vi.fn(async () => "$1\towned\t@2"),
@@ -498,4 +499,112 @@ it("settles run and concurrent disposal failures while retaining files for a suc
   await expect(f.operations.dispose()).resolves.toBeUndefined();
   await expect(access(run.context.directory)).rejects.toThrow();
   f.popup.resolve();
+});
+
+describe("managed host detach", () => {
+  it("closes only owned presentation, detaches explicitly, and remains reusable", async () => {
+    const f = fixture();
+    const run = await pending(f);
+    await f.operations.detachHost(f.request.owner, () => true);
+    expect(await run.outcome).toMatchObject({ error: { code: "cancelled" } });
+    expect(f.tmux.closePopup).toHaveBeenCalledExactlyOnceWith(client.name);
+    expect(f.tmux.detachClient).toHaveBeenCalledExactlyOnceWith(client.name);
+    f.popup.resolve();
+    await expect(f.operations.run(f.request, async () => "ok")).resolves.toBe("ok");
+    expect(f.tmux.closePopup).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [],
+    [client, { ...client, name: "second", pid: 43 }],
+    [{ ...client, windowId: "@other" }],
+  ])("rejects absent, ambiguous or moved clients %j", async (...clients) => {
+    const f = fixture();
+    f.tmux.listClients.mockResolvedValue(clients);
+    await expect(f.operations.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    expect(f.tmux.detachClient).not.toHaveBeenCalled();
+  });
+
+  it.each(["pid", "name", "window", "session", "binding"])(
+    "revalidates %s after cleanup",
+    async (change) => {
+      const f = fixture();
+      const run = await pending(f);
+      let current = true;
+      f.tmux.closePopup.mockImplementation(async () => {
+        if (change === "binding") {
+          current = false;
+        } else {
+          f.tmux.listClients.mockResolvedValue([
+            {
+              ...client,
+              ...(change === "pid" ? { pid: 99 } : {}),
+              ...(change === "name" ? { name: "replacement" } : {}),
+              ...(change === "window" ? { windowId: "@other" } : {}),
+              ...(change === "session" ? { sessionId: "$other" } : {}),
+            },
+          ]);
+        }
+      });
+      await expect(f.operations.detachHost(f.request.owner, () => current)).rejects.toMatchObject({
+        code: "backend_unavailable",
+      });
+      expect(f.tmux.detachClient).not.toHaveBeenCalled();
+      await run.outcome;
+      f.popup.resolve();
+    },
+  );
+
+  it("preserves quarantine when cleanup fails", async () => {
+    const f = fixture();
+    const run = await pending(f);
+    f.tmux.closePopup.mockRejectedValue(new Error("close failed"));
+    await expect(f.operations.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    expect(f.tmux.detachClient).not.toHaveBeenCalled();
+    await run.outcome;
+    f.popup.resolve();
+    await f.operations.dispose();
+  });
+
+  it("does not close task-owned presentation", async () => {
+    const f = fixture();
+    const run = await pending({
+      ...f,
+      request: { ...f.request, owner: { kind: "task", runId: "run", sessionId: "session-a" } },
+    });
+    await expect(f.operations.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    expect(f.tmux.closePopup).not.toHaveBeenCalled();
+    expect(f.tmux.detachClient).not.toHaveBeenCalled();
+    f.popup.resolve();
+    await run.result;
+  });
+});
+
+it("reserves the shared client while detach cleanup awaits closure", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  const closure = deferred<void>();
+  f.tmux.closePopup.mockImplementation(async () => {
+    await closure.promise;
+  });
+  const detach = f.operations.detachHost(f.request.owner, () => true);
+  await vi.waitFor(() => expect(f.tmux.closePopup).toHaveBeenCalledTimes(1));
+  const successor = new TmuxTerminalOperations(f.tmux, "owned", "%3", f.registry);
+  await expect(successor.run(f.request, async () => undefined)).rejects.toMatchObject({
+    code: "terminal_busy",
+  });
+  await expect(f.operations.detachHost(f.request.owner, () => true)).rejects.toMatchObject({
+    code: "backend_unavailable",
+  });
+  closure.resolve();
+  await detach;
+  await run.outcome;
+  f.popup.resolve();
+  expect(f.tmux.detachClient).toHaveBeenCalledTimes(1);
 });

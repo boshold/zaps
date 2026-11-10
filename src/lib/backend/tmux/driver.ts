@@ -59,6 +59,13 @@ class TmuxTerminalDriver implements TerminalDriver {
     this.options = options;
   }
 
+  public async detachHost(operation: TerminalOperation, isCurrent: () => boolean): Promise<void> {
+    await this.options.operations.detachHost(
+      { kind: "ui", socketId: operation.id, sessionId: this.options.sessionId },
+      () => !operation.signal.aborted && isCurrent(),
+    );
+  }
+
   public async reconcileLayout(plan: PresentationPlan): Promise<void> {
     await this.options.reconcile(layoutNode(plan));
   }
