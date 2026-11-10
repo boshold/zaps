@@ -6,18 +6,20 @@ import { canZoomDashboard, serviceAvailability } from "#src/lib/backend/capabili
 import type { BackendCapabilities } from "#src/lib/backend/types.js";
 import { openInBrowser } from "#src/lib/open.js";
 
+import type { BusyServices } from "./busyServices.js";
+
 /** Everything the dashboard key handler needs, owned by the Router and passed down. */
 interface DashboardInputContext {
   statuses: ProjectedServiceStatus[];
   capabilities: BackendCapabilities;
   index: number;
-  busyServices: React.RefObject<Set<string>>;
+  busyServices: Pick<BusyServices, "getSnapshot">;
   moveUp: () => void;
   moveDown: () => void;
-  restart: (name: string) => Promise<void>;
-  toggle: (name: string) => Promise<void>;
-  restartAll: () => Promise<void>;
-  reloadConfig: () => Promise<void>;
+  restart: (name: string) => void;
+  toggle: (name: string) => void;
+  restartAll: () => void;
+  reloadConfig: () => void;
   goToLogs: (name: string) => void;
   openTaskPicker: () => void;
   goToDockerRebuild: (name: string) => void;
@@ -40,30 +42,14 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
   const availability = serviceAvailability(
     ctx.capabilities,
     selected,
-    selectedName !== undefined && ctx.busyServices.current.has(selectedName),
+    selectedName !== undefined && ctx.busyServices.getSnapshot().has(selectedName),
   );
 
   if (input === "r" && selected && availability.control) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .restart(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
+    ctx.restart(selectedName);
   }
   if (input === "s" && selected && availability.control) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .toggle(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
+    ctx.toggle(selectedName);
   }
   if (input === "l" && selected && availability.logs) {
     ctx.goToLogs(selectedName);
@@ -91,31 +77,11 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
   if (input === "t") {
     ctx.openTaskPicker();
   }
-  if (input === "a" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .restartAll()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
+  if (input === "a") {
+    ctx.restartAll();
   }
-  if (input === "c" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .reloadConfig()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
+  if (input === "c") {
+    ctx.reloadConfig();
   }
 }
 

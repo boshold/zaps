@@ -393,6 +393,39 @@ describe("Router", () => {
     expect(editPaneCapture).toHaveBeenCalledWith("%1", "web");
   });
 
+  it("updates service hints immediately while edit capture is pending", async () => {
+    const edit = deferred<void>();
+    vi.mocked(editPaneCapture).mockReturnValueOnce(edit.promise);
+    const { client, stdin, lastFrame } = renderRouter({
+      capabilities: { ...fullCapabilities, zoom: false },
+      statuses: [{ ...makeStatus({ paneId: "%1", isDocker: true }), actions: liveActions }],
+    });
+    const busyHints = ["[E]dit", "[r]estart", "[R]ebuild"];
+    for (const hint of busyHints) {
+      expect(lastFrame()).toContain(hint);
+    }
+    act(() => {
+      stdin.write("E");
+      stdin.write("E");
+      stdin.write("r");
+      stdin.write("a");
+    });
+    expect(client.restartAll).not.toHaveBeenCalled();
+    expect(editPaneCapture).toHaveBeenCalledExactlyOnceWith("%1", "web");
+    expect(client.restartService).not.toHaveBeenCalled();
+    for (const hint of busyHints) {
+      expect(lastFrame()).not.toContain(hint);
+    }
+    expect(lastFrame()).toContain("[l]ogs");
+
+    await act(async () => {
+      edit.resolve(undefined);
+    });
+    for (const hint of busyHints) {
+      expect(lastFrame()).toContain(hint);
+    }
+  });
+
   // ── dashboard input: detached services disable pane actions ──
 
   it("does not zoom a detached service even if a pane is mapped", () => {

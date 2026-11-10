@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from "ink";
-import type { RefObject } from "react";
+import { useSyncExternalStore } from "react";
 
+import type { BusyServices } from "#src/components/dashboard/busyServices.js";
 import { helpKeymap } from "#src/components/hintText.js";
 import type { KeymapGroup } from "#src/components/hintText.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
@@ -41,11 +42,12 @@ function HelpOverlay({
   busyServices,
 }: {
   selectedName?: string;
-  busyServices?: RefObject<Set<string>>;
+  busyServices: Pick<BusyServices, "getSnapshot" | "subscribe">;
 }) {
   const { capabilities, statuses } = useZaps();
   const status = statuses.find(({ name }) => name === selectedName);
-  const keymap = helpKeymap(capabilities, status, status && busyServices?.current.has(status.name));
+  const busy = useSyncExternalStore(busyServices.subscribe, busyServices.getSnapshot);
+  const keymap = helpKeymap(capabilities, status, status && busy.has(status.name));
   const { cols, rows } = useDimensions();
   const { isTop, pop } = useOverlay();
 

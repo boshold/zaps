@@ -1,5 +1,13 @@
 import { useApp as useInkApp, useInput } from "ink";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import type { DockerConfig, NoticeLevel, UiTaskMode } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
@@ -26,6 +34,8 @@ import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker
 import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
+import type { BusyServices } from "./dashboard/busyServices.js";
+import { createBusyServices } from "./dashboard/busyServices.js";
 import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
 import { DisconnectBanner } from "./DisconnectBanner.js";
 import { LogView } from "./LogView.js";
@@ -69,8 +79,11 @@ export function Router({
   const selected = sortedStatuses[dashboardSel.index];
 
   const { exit } = useInkApp();
-  const busyServices = useRef(new Set<string>());
-  const selectedBusy = selected !== undefined && busyServices.current.has(selected.name);
+  const busyServicesRef = useRef<BusyServices | null>(null);
+  busyServicesRef.current ??= createBusyServices();
+  const busyServices = busyServicesRef.current;
+  const busySnapshot = useSyncExternalStore(busyServices.subscribe, busyServices.getSnapshot);
+  const selectedBusy = selected !== undefined && busySnapshot.has(selected.name);
   const globalBusyRef = useRef(false);
 
   // Logs state — now uses daemon client event stream
@@ -221,7 +234,7 @@ export function Router({
       ? state.statuses.find((entry) => entry.name === name)
       : undefined;
     return {
-      ...serviceAvailability(state.capabilities, status, busyServices.current.has(name)),
+      ...serviceAvailability(state.capabilities, status, busyServices.getSnapshot().has(name)),
       paneId: status?.paneId,
     };
   }
@@ -287,18 +300,21 @@ export function Router({
     });
   }
 
-  function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
-    if (!availabilityFor(name).control) {
-      return;
+  async function runBusyAction(names: string[], action: () => Promise<void>) {
+    busyServices.setBusy(names, true);
+    try {
+      await action();
+    } catch {
+      /* IPC error — ignore */
+    } finally {
+      busyServices.setBusy(names, false);
     }
-    busyServices.current.add(name);
-    void action(name)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.delete(name);
-      });
+  }
+
+  function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
+    if (availabilityFor(name).control) {
+      void runBusyAction([name], async () => action(name));
+    }
   }
 
   function rebuildMetadata(name: string) {
@@ -390,19 +406,10 @@ export function Router({
   }
 
   function runAllServicesAction(action: () => Promise<void>) {
-    if (busyServices.current.size > 0) {
-      return;
+    if (busyServices.getSnapshot().size === 0) {
+      const names = latest.current.statuses.map(({ name }) => name);
+      void runBusyAction(names, action);
     }
-    for (const s of sortedStatuses) {
-      busyServices.current.add(s.name);
-    }
-    void action()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.clear();
-      });
   }
 
   function zoomService(name: string) {
@@ -510,7 +517,7 @@ export function Router({
   function openPalette() {
     const commands = buildCommandRegistry({
       selected,
-      selectedBusy: selected !== undefined && busyServices.current.has(selected.name),
+      selectedBusy: selected !== undefined && busyServices.getSnapshot().has(selected.name),
       capabilities,
       tasks,
       actions: {
@@ -599,10 +606,10 @@ export function Router({
     busyServices,
     moveUp: dashboardSel.moveUp,
     moveDown: dashboardSel.moveDown,
-    restart,
-    toggle,
-    restartAll,
-    reloadConfig: async () => client.reloadConfig(),
+    restart: (name) => runGuardedServiceAction(name, restart),
+    toggle: (name) => runGuardedServiceAction(name, toggle),
+    restartAll: () => runAllServicesAction(restartAll),
+    reloadConfig: () => runAllServicesAction(async () => client.reloadConfig()),
     goToLogs,
     openTaskPicker,
     destroySession: confirmShutdown,

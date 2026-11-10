@@ -3,6 +3,7 @@ import { act, useEffect } from "react";
 import { describe, expect, it } from "vitest";
 
 import { DaemonClient } from "../../../src/client/daemon-client.js";
+import { createBusyServices } from "../../../src/components/dashboard/busyServices.js";
 import { helpKeymap } from "../../../src/components/hintText.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "../../../src/components/overlay/HelpOverlay.js";
 import { OverlayHost } from "../../../src/components/overlay/OverlayHost.js";
@@ -34,6 +35,7 @@ async function press(stdin: { write: (data: string) => void }, data: string) {
 }
 
 let overlay: OverlayApi | undefined;
+const busyServices = createBusyServices();
 
 function Probe() {
   overlay = useOverlay();
@@ -43,7 +45,7 @@ function Probe() {
 function HelpHarness() {
   const api = useOverlay();
   useEffect(() => {
-    api.push({ id: HELP_OVERLAY_ID, render: () => <HelpOverlay /> });
+    api.push({ id: HELP_OVERLAY_ID, render: () => <HelpOverlay busyServices={busyServices} /> });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only push
   }, []);
   return <OverlayHost />;
