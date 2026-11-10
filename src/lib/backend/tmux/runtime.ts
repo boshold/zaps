@@ -9,7 +9,6 @@ import type {
   ExecutionSpec,
   RuntimeDriver,
 } from "#src/lib/backend/types.js";
-import { getDescendantPids } from "#src/lib/port.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
@@ -136,12 +135,16 @@ interface TmuxRuntimeOptions {
   processes: ProcessRunner;
   authority?: ProcessAuthority;
   wrappers: WrapperRegistry;
+  getDescendantPids?: (pid: number) => Promise<number[]>;
 }
 interface PaneExecution {
   handle: ExecutionHandle;
   pane: string;
   output: string[];
   raw: boolean;
+  stop?: Promise<void>;
+  stopping?: boolean;
+  wrapperExit?: WrapperExit;
 }
 
 class TmuxRuntime implements RuntimeDriver {
@@ -150,10 +153,18 @@ class TmuxRuntime implements RuntimeDriver {
   private readonly listeners = new Set<(event: ExecutionEvent) => void>();
 
   private readonly options: TmuxRuntimeOptions;
+  private readonly getDescendantPids: (pid: number) => Promise<number[]>;
   private captureTimer?: ReturnType<typeof setTimeout>;
 
   public constructor(options: TmuxRuntimeOptions) {
     this.options = options;
+    this.getDescendantPids =
+      options.getDescendantPids ??
+      (async (pid) => {
+        const { createProcessInspection } =
+          await import("#src/lib/backend/runtime/process-inspection.js");
+        return createProcessInspection().getDescendantPids(pid);
+      });
   }
 
   public async start(spec: ExecutionSpec): Promise<ExecutionHandle> {
@@ -178,19 +189,9 @@ class TmuxRuntime implements RuntimeDriver {
         spec.unitId,
         { command: spec.command, cwd: spec.cwd, env: { ...spec.env } },
         (exit) => {
-          if (this.lookup(handle)) {
-            this.records.delete(handle.id);
-            this.current.delete(handle.unitId);
-            for (const kind of ["leaderExit", "exit"] as const) {
-              this.publish({
-                code: exit.code,
-                ...(exit.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
-                kind,
-                unitId: handle.unitId,
-                generation: handle.generation,
-                signal: exit.signal ?? null,
-              });
-            }
+          record.wrapperExit = exit;
+          if (!record.stopping) {
+            this.release(record, exit);
           }
         },
       );
@@ -228,16 +229,97 @@ class TmuxRuntime implements RuntimeDriver {
       : undefined;
   }
 
-  public async stop(handle: ExecutionHandle): Promise<void> {
-    const record = this.lookup(handle);
-    if (!record) {
-      await this.options.processes.stop(handle);
+  private release(record: PaneExecution, exit?: WrapperExit): void {
+    const { handle } = record;
+    if (this.lookup(handle) !== record) {
       return;
     }
-    await this.options.tmux.sendCtrlC(record.pane);
     this.records.delete(handle.id);
-    this.current.delete(handle.unitId);
+    if (this.current.get(handle.unitId) === handle.id) {
+      this.current.delete(handle.unitId);
+    }
     this.options.wrappers.remove(handle);
+    let signal = exit?.signal ?? null;
+    if (!exit && record.stopping) {
+      signal = "SIGINT";
+    }
+    for (const kind of ["leaderExit", "exit"] as const) {
+      this.publish({
+        kind,
+        unitId: handle.unitId,
+        generation: handle.generation,
+        code: exit?.code ?? null,
+        signal,
+        ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
+      });
+    }
+  }
+
+  // oxlint-disable-next-line promise-function-async
+  public stop(handle: ExecutionHandle): Promise<void> {
+    const record = this.lookup(handle);
+    if (!record) {
+      return this.options.processes.stop(handle);
+    }
+    record.stopping = true;
+    record.stop ??= this.stopPane(record);
+    return record.stop;
+  }
+
+  private static async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error("termination deadline exceeded");
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("termination deadline exceeded")), remaining);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async stopPane(record: PaneExecution): Promise<void> {
+    const deadline = Date.now() + 5000;
+    try {
+      await TmuxRuntime.bounded(async () => this.options.tmux.sendCtrlC(record.pane), deadline);
+      while (this.lookup(record.handle) === record) {
+        const running = await TmuxRuntime.bounded(
+          async () => this.paneHasCommand(record),
+          deadline,
+        );
+        if (!running) {
+          this.release(record, record.wrapperExit);
+          return;
+        }
+        await TmuxRuntime.bounded(
+          async () => new Promise<void>((resolve) => setTimeout(resolve, 25)),
+          deadline,
+        );
+      }
+    } catch (error) {
+      record.stop = undefined;
+      throw new Error(`Tmux cleanup incomplete for ${record.handle.unitId}: ${String(error)}`, {
+        cause: error,
+      });
+    }
+  }
+
+  private async paneHasCommand(record: PaneExecution): Promise<boolean> {
+    if (
+      !(await this.options.tmux.paneExists(record.pane)) ||
+      (await this.options.tmux.displayMessage(record.pane, "#{pane_dead}")) === "1"
+    ) {
+      return false;
+    }
+    const root = await this.options.tmux.panePid(record.pane);
+    const descendants = await this.getDescendantPids(root);
+    return descendants.some((pid) => pid !== root);
   }
 
   public async isRunning(handle: ExecutionHandle): Promise<boolean> {
@@ -252,9 +334,7 @@ class TmuxRuntime implements RuntimeDriver {
       return false;
     }
     if (record.raw) {
-      const pid = await this.options.tmux.panePid(record.pane);
-      const descendants = await getDescendantPids(pid);
-      return descendants.length > 0;
+      return this.paneHasCommand(record);
     }
     return true;
   }

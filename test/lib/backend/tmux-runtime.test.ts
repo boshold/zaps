@@ -29,6 +29,7 @@ function fixture() {
   vi.spyOn(tmux, "capturePane").mockResolvedValue("hello\nworld");
   const processes = new ProcessRunner({ onLines: vi.fn(), onExit: vi.fn() });
   const wrappers = new WrapperRegistry();
+  const descendants = vi.fn<(pid: number) => Promise<number[]>>().mockResolvedValue([123]);
   const runtime = new TmuxRuntime({
     tmux,
     processes,
@@ -36,8 +37,9 @@ function fixture() {
     sessionId: "session",
     zapsCommand: "zaps",
     paneFor: () => "%1",
+    getDescendantPids: descendants,
   });
-  return { tmux, send, processes, wrappers, runtime };
+  return { tmux, send, processes, wrappers, runtime, descendants };
 }
 
 describe("TmuxRuntime", () => {
@@ -78,6 +80,80 @@ describe("TmuxRuntime", () => {
     expect(wrappers.resolve({ service: "other", executionId: second.id })).toBeUndefined();
     expect(wrappers.resolve({ service: "api" })).toBeUndefined();
     expect(wrappers.resolve({ service: "api", executionId: second.id })).toEqual(info);
+  });
+
+  it("shares concurrent stops and cannot erase a replacement", async () => {
+    const { runtime, tmux } = fixture();
+    let acknowledge: () => void = () => {
+      throw new Error("not initialized");
+    };
+    vi.mocked(tmux.sendCtrlC).mockImplementationOnce(
+      async () =>
+        new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        }),
+    );
+    const old = await runtime.start(spec);
+    const first = runtime.stop(old);
+    const second = runtime.stop(old);
+    expect(first).toBe(second);
+    expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1);
+    await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+    acknowledge();
+    await first;
+    const replacement = await runtime.start({ ...spec, generation: 2 });
+    await second;
+    await runtime.stop(old);
+    expect(await runtime.isRunning(replacement)).toBe(true);
+  });
+
+  it("retains ownership when an interrupt-ignoring command exceeds bounded stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, descendants, wrappers } = fixture();
+      descendants.mockResolvedValue([123, 124]);
+      const handle = await runtime.start(spec);
+      const stopped = expect(runtime.stop(handle)).rejects.toThrow("Tmux cleanup incomplete");
+      await vi.advanceTimersByTimeAsync(5000);
+      await stopped;
+      expect(await runtime.isRunning(handle)).toBe(true);
+      wrappers.exited({ service: "api", executionId: handle.id, code: 0 });
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      descendants.mockResolvedValue([123]);
+      await runtime.stop(handle);
+      expect(await runtime.isRunning(handle)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled termination probe and retains ownership", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, descendants } = fixture();
+      descendants.mockImplementationOnce(
+        async () =>
+          new Promise<number[]>(() => {
+            /* Pending probe. */
+          }),
+      );
+      const handle = await runtime.start(spec);
+      const stopped = expect(runtime.stop(handle)).rejects.toThrow("termination deadline exceeded");
+      await vi.advanceTimersByTimeAsync(5000);
+      await stopped;
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("treats the persistent pane shell as idle for raw commands", async () => {
+    const { runtime, descendants } = fixture();
+    const handle = await runtime.start({ ...spec, raw: true });
+    descendants.mockResolvedValue([123]);
+    expect(await runtime.isRunning(handle)).toBe(false);
+    descendants.mockResolvedValue([123, 124]);
+    expect(await runtime.isRunning(handle)).toBe(true);
   });
 
   it("cleans pending metadata when tmux launch fails", async () => {
