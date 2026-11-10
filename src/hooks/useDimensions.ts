@@ -10,8 +10,10 @@ import { useEffect, useState } from "react";
 const WARMUP_MS = 100;
 const WARMUP_TICKS = 15;
 
-function readSize(stdout: NodeJS.WriteStream | undefined): { cols: number; rows: number } {
-  return { cols: stdout?.columns ?? 80, rows: stdout?.rows ?? 24 };
+function readSize(stdout: NodeJS.WritableStream | undefined): { cols: number; rows: number } {
+  const cols = stdout && "columns" in stdout ? stdout.columns : undefined;
+  const rows = stdout && "rows" in stdout ? stdout.rows : undefined;
+  return { cols: typeof cols === "number" ? cols : 80, rows: typeof rows === "number" ? rows : 24 };
 }
 
 export interface Dimensions {
