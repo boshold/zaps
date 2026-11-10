@@ -70,6 +70,75 @@ describe("TmuxRuntime", () => {
     unsubscribe();
   });
 
+  it("does not capture after a wrapper exits during pending sendKeys", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, send, wrappers, tmux } = fixture();
+      let acknowledge!: () => void;
+      send.mockImplementationOnce(async (_target, command) => {
+        const executionId = /--execution-id '(?<executionId>[^']+)'/.exec(command)?.groups
+          ?.executionId;
+        if (!executionId) {
+          throw new Error("missing execution id");
+        }
+        wrappers.exited({ service: "api", executionId, code: 0 });
+        await new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        });
+      });
+      const starting = runtime.start(spec);
+      acknowledge();
+      const handle = await starting;
+      expect(await runtime.isRunning(handle)).toBe(false);
+      await vi.advanceTimersByTimeAsync(750);
+      expect(tmux.capturePane).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not reset or retain a replacement producer when an old send completes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, send, wrappers, tmux } = fixture();
+      let acknowledge!: () => void;
+      send.mockImplementationOnce(async (_target, command) => {
+        const executionId = /--execution-id '(?<executionId>[^']+)'/.exec(command)?.groups
+          ?.executionId;
+        if (!executionId) {
+          throw new Error("missing execution id");
+        }
+        wrappers.exited({ service: "api", executionId, code: 0 });
+        await new Promise<void>((resolve) => {
+          acknowledge = resolve;
+        });
+      });
+      const retiredStart = runtime.start(spec);
+      const replacement = await runtime.start({ ...spec, generation: 2 });
+      const output = vi.fn();
+      runtime.subscribe(output);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(await runtime.readOutput(replacement, 2)).toEqual(["hello", "world"]);
+      acknowledge();
+      const retired = await retiredStart;
+      expect(await runtime.isRunning(retired)).toBe(false);
+      expect(await runtime.readOutput(replacement, 2)).toEqual(["hello", "world"]);
+      await vi.advanceTimersByTimeAsync(250);
+      expect(output).toHaveBeenCalledExactlyOnceWith({
+        kind: "output",
+        unitId: "api",
+        generation: 2,
+        lines: ["hello", "world"],
+      });
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      await runtime.stop(replacement);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("cannot consume or stop a replacement through an old identity", async () => {
     const { runtime, wrappers, tmux } = fixture();
     const first = await runtime.start(spec);

@@ -210,6 +210,9 @@ class TmuxRuntime implements RuntimeDriver {
             handle.id,
           );
       await this.options.tmux.sendKeys(pane, command);
+      if (this.lookup(handle) !== record) {
+        return handle;
+      }
       record.output = acquireTmuxOutput(this.options.tmux.capturePane, pane, 250);
       record.output.producer.reset();
       record.unsubscribeOutput = record.output.producer.subscribe((lines) => {
