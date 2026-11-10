@@ -1,28 +1,19 @@
 import { Box, Text } from "ink";
 
-import type { ServiceStatus } from "#src/lib/service/types.js";
-
 import { GLOBAL_HINTS } from "./hintText.js";
 
 interface HelpBarProps {
   compact?: boolean;
-  status?: ServiceStatus;
+  canControlSelected?: boolean;
 }
 
-export function HelpBar({ compact, status }: HelpBarProps) {
-  const isUnavailable = status?.state === "unavailable";
-  if (compact && status && !isUnavailable) {
-    // Compact: merge action hints + nav into one line
+export function HelpBar({ compact, canControlSelected }: HelpBarProps) {
+  if (compact && canControlSelected !== undefined) {
     return (
       <Box>
-        <Text dimColor>[r]estart [s]top [t]asks [q]uit/detach [d]own</Text>
-      </Box>
-    );
-  }
-  if (compact && isUnavailable) {
-    return (
-      <Box>
-        <Text dimColor>[t]asks [q]uit/detach [d]own</Text>
+        <Text dimColor>
+          {canControlSelected ? "[r]estart [s]top " : ""}[t]asks [q]uit/detach [d]own
+        </Text>
       </Box>
     );
   }

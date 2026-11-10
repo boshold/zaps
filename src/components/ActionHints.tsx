@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 
+import type { BackendCapabilities, ServiceActions } from "#src/lib/backend/types.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { serviceHints } from "./hintText.js";
@@ -25,7 +26,9 @@ function truncate(text: string, max: number, ellipsis: string): string {
 }
 
 interface ActionHintsProps {
-  status?: ServiceStatus;
+  status?: ServiceStatus & { actions?: ServiceActions };
+  capabilities: BackendCapabilities;
+  busy?: boolean;
   /** Column budget for the left cell; the hints truncate with an ellipsis past it. */
   maxWidth?: number;
 }
@@ -35,9 +38,9 @@ interface ActionHintsProps {
  * truncated with an ellipsis on overflow so the global hints on the right stay
  * intact and right-aligned.
  */
-export function ActionHints({ status, maxWidth }: ActionHintsProps) {
+export function ActionHints({ status, capabilities, busy, maxWidth }: ActionHintsProps) {
   const { icon } = useIcons();
-  const hints = serviceHints(status);
+  const hints = serviceHints(status, capabilities, busy);
   const text = maxWidth === undefined ? hints : truncate(hints, maxWidth, icon("ellipsis"));
   return (
     <Box width={maxWidth} marginRight={2}>

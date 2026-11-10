@@ -2,6 +2,7 @@ import { render } from "ink-testing-library";
 import { act, useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import { DaemonClient } from "../../../src/client/daemon-client.js";
 import { FailedOutputBody } from "../../../src/components/overlay/FailedOutputBody.js";
 import {
   FAILED_OUTPUT_ID,
@@ -10,6 +11,8 @@ import {
 import { OverlayHost } from "../../../src/components/overlay/OverlayHost.js";
 import type { TaskOutputSnapshot } from "../../../src/daemon/task-output-store.js";
 import { OverlayProvider, useOverlay } from "../../../src/hooks/useOverlay.js";
+import { AppProvider } from "../../../src/hooks/useZaps.js";
+import { fullCapabilities } from "../../_helpers/ui-capabilities.js";
 
 // FailedOutputOverlay renders position="absolute" (uncapturable by
 // Ink-testing-library), so its behavior is asserted via spies + the overlay
@@ -70,13 +73,26 @@ function Pusher({ cfg }: { cfg: OverlayProps }) {
   return null;
 }
 
-function renderOverlay(cfg: OverlayProps) {
-  return render(
-    <OverlayProvider>
-      <Pusher cfg={cfg} />
-      <OverlayHost />
-    </OverlayProvider>,
+function OverlayHarness({ cfg }: { cfg: OverlayProps }) {
+  return (
+    <AppProvider
+      client={new DaemonClient("/unused", "test")}
+      paneMap={{}}
+      projectName="test"
+      tasks={[]}
+      servicesMeta={[]}
+      capabilities={fullCapabilities}
+    >
+      <OverlayProvider>
+        <Pusher cfg={cfg} />
+        <OverlayHost />
+      </OverlayProvider>
+    </AppProvider>
   );
+}
+
+function renderOverlay(cfg: OverlayProps) {
+  return render(<OverlayHarness cfg={cfg} />);
 }
 
 describe("FailedOutputBody", () => {
@@ -157,22 +173,12 @@ describe("FailedOutputOverlay", () => {
   it("does not re-fetch (or reset scroll) on a re-render with a stable fetchOutput", async () => {
     const fetchOutput = vi.fn(async () => snapshot());
     const cfg: OverlayProps = { fetchOutput };
-    const { rerender } = render(
-      <OverlayProvider>
-        <Pusher cfg={cfg} />
-        <OverlayHost />
-      </OverlayProvider>,
-    );
+    const { rerender } = renderOverlay(cfg);
     await settle();
     expect(fetchOutput).toHaveBeenCalledTimes(1);
     // A re-render (what a terminal RESIZE triggers via OverlayHost) must not
     // Re-run the load effect — the fetcher identity is stable.
-    rerender(
-      <OverlayProvider>
-        <Pusher cfg={cfg} />
-        <OverlayHost />
-      </OverlayProvider>,
-    );
+    rerender(<OverlayHarness cfg={cfg} />);
     await settle();
     expect(fetchOutput).toHaveBeenCalledTimes(1);
   });

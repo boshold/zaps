@@ -1,9 +1,10 @@
 import { Box, useInput } from "ink";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useOverlay } from "#src/hooks/useOverlay.js";
+import { useZaps } from "#src/hooks/useZaps.js";
 
 import { FailedOutputBody } from "./FailedOutputBody.js";
 import type { FailedOutputState } from "./FailedOutputBody.js";
@@ -41,6 +42,8 @@ function FailedOutputOverlay({
 }: FailedOutputOverlayProps) {
   const { cols, rows } = useDimensions();
   const { isTop, pop } = useOverlay();
+  const { capabilities } = useZaps();
+  const popup = capabilities.popups ? showPopup : undefined;
   const [state, setState] = useState<FailedOutputState>("loading");
   const [lines, setLines] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -52,6 +55,18 @@ function FailedOutputOverlay({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useEffect(() => () => onCloseRef.current(), []);
+
+  const openPreferredPopup = useEffectEvent(async (output: string[]) => {
+    if (!startInPopup || !popup) {
+      return false;
+    }
+    try {
+      await popup(popupTitle, output);
+      return true;
+    } catch {
+      return false;
+    }
+  });
 
   // Fetch the buffer on open. A cancelled flag guards against setState/pop after
   // Unmount (the overlay can be popped while the request is in flight).
@@ -67,15 +82,8 @@ function FailedOutputOverlay({
         // Anchor to the tail — the failure is usually at the end of the output.
         setSelectedIndex(Math.max(0, snapshot.lines.length - 1));
         setState("ready");
-        if (startInPopup && showPopup) {
-          try {
-            await showPopup(popupTitle, snapshot.lines);
-            if (!cancelled) {
-              pop();
-            }
-          } catch {
-            /* Popup failed — stay in the overlay showing the output. */
-          }
+        if ((await openPreferredPopup(snapshot.lines)) && !cancelled) {
+          pop();
         }
       } catch (error: unknown) {
         if (cancelled) {
@@ -88,14 +96,14 @@ function FailedOutputOverlay({
     return () => {
       cancelled = true;
     };
-  }, [runId, fetchOutput, showPopup, startInPopup, popupTitle, pop]);
+  }, [runId, fetchOutput, pop]);
 
   const escalate = async () => {
-    if (!showPopup) {
+    if (!popup) {
       return;
     }
     try {
-      await showPopup(popupTitle, lines);
+      await popup(popupTitle, lines);
     } catch {
       /* Popup unavailable / tmux error — stay in the overlay. */
     }
@@ -143,7 +151,7 @@ function FailedOutputOverlay({
         lines={lines}
         selectedIndex={selectedIndex}
         maxHeight={maxHeight}
-        canEscalate={Boolean(showPopup)}
+        canEscalate={Boolean(popup)}
       />
     </Box>
   );

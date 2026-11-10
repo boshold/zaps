@@ -41,6 +41,7 @@ import type {
   TaskInfo,
 } from "../src/daemon/session.js";
 import { AppProvider, useZaps } from "../src/hooks/useZaps.js";
+import type { BackendCapabilities } from "../src/lib/backend/types.js";
 import {
   parseServiceStatus,
   unavailableActions,
@@ -50,6 +51,7 @@ import type { ServiceStatus } from "../src/lib/service/types.js";
 
 import { deferred } from "./_helpers/deferred.js";
 import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
+import { fullCapabilities, liveActions, mixedCapabilities } from "./_helpers/ui-capabilities.js";
 
 // ANSI escape sequences for special keys
 const ARROW_UP = "\x1B[A";
@@ -100,6 +102,7 @@ function renderApp(opts: {
   tasks?: TaskInfo[];
   servicesMeta?: ServiceMeta[];
   paneMap?: Record<string, string>;
+  capabilities?: BackendCapabilities;
   client?: DaemonClient;
 }) {
   const statuses = opts.statuses ?? [];
@@ -109,6 +112,7 @@ function renderApp(opts: {
     ...render(
       <App
         client={client}
+        capabilities={opts.capabilities}
         paneMap={opts.paneMap ?? {}}
         projectName={opts.projectName ?? "test-project"}
         tasks={opts.tasks ?? []}
@@ -696,7 +700,7 @@ describe("Keyboard routing — Tasks view", () => {
     ];
     const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null }];
 
-    const { stdin, client } = renderApp({ statuses, tasks });
+    const { stdin, client } = renderApp({ statuses, tasks, capabilities: mixedCapabilities });
 
     act(() => {
       stdin.write("t");
@@ -945,13 +949,24 @@ describe("Keyboard routing — Dashboard special keys", () => {
     expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("http://localhost:3000");
   });
 
-  it("z zooms pane when paneMap has entry", async () => {
+  it("z zooms pane with a live pane action", async () => {
     const { zoomPane } = await import("../src/lib/tmux.js");
-    const statuses: ServiceStatus[] = [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    const statuses: ProjectedServiceStatus[] = [
+      {
+        name: "api",
+        state: "ready",
+        ports: [3000],
+        retryCount: 0,
+        paneId: "%1",
+        actions: liveActions,
+      },
     ];
 
-    const { stdin } = renderApp({ statuses, paneMap: { api: "%1" } });
+    const { stdin } = renderApp({
+      statuses,
+      paneMap: { api: "%1" },
+      capabilities: fullCapabilities,
+    });
 
     act(() => {
       stdin.write("z");
@@ -959,13 +974,24 @@ describe("Keyboard routing — Dashboard special keys", () => {
     expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
   });
 
-  it("E edits pane capture when paneMap has entry", async () => {
+  it("E edits pane capture with a live pane action", async () => {
     const { editPaneCapture } = await import("../src/lib/tmux.js");
-    const statuses: ServiceStatus[] = [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+    const statuses: ProjectedServiceStatus[] = [
+      {
+        name: "api",
+        state: "ready",
+        ports: [3000],
+        retryCount: 0,
+        paneId: "%1",
+        actions: liveActions,
+      },
     ];
 
-    const { stdin, lastFrame } = renderApp({ statuses, paneMap: { api: "%1" } });
+    const { stdin, lastFrame } = renderApp({
+      statuses,
+      paneMap: { api: "%1" },
+      capabilities: fullCapabilities,
+    });
 
     act(() => {
       stdin.write("E");

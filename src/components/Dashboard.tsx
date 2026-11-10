@@ -30,6 +30,7 @@ interface DashboardProps {
   /** Pre-sorted in Router (single source of truth shared with the input handler, F8). */
   statuses: ServiceStatus[];
   selectedIndex: number;
+  selectedBusy?: boolean;
   taskHistory: TaskRunRecord[];
   /** Optional sticky top slot — e.g. the disconnect banner when offline. */
   banner?: ReactNode;
@@ -42,12 +43,13 @@ interface DashboardProps {
 export function Dashboard({
   statuses,
   selectedIndex,
+  selectedBusy,
   taskHistory,
   banner,
   input,
   inputActive = false,
 }: DashboardProps) {
-  const { projectName, configStale, ui } = useZaps();
+  const { projectName, configStale, ui, capabilities } = useZaps();
   const { cols, compact } = useDimensions();
   const { icon } = useIcons();
   const selected = statuses[selectedIndex];
@@ -107,7 +109,13 @@ export function Dashboard({
         <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
       )}
       {!compact && !split && rule}
-      <FooterHints compact={compact} status={selected} width={headerWidth} />
+      <FooterHints
+        compact={compact}
+        status={selected}
+        capabilities={capabilities}
+        busy={selectedBusy}
+        width={headerWidth}
+      />
     </Box>
   );
 

@@ -1,5 +1,6 @@
-import type { TaskInfo } from "#src/daemon/session.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
+import type { ProjectedServiceStatus, TaskInfo } from "#src/daemon/session.js";
+import { serviceAvailability } from "#src/lib/backend/capabilities.js";
+import type { BackendCapabilities } from "#src/lib/backend/types.js";
 
 /** Which bucket a command belongs to — used only for grouping/labelling, not ranking. */
 type CommandGroup = "context" | "global" | "task";
@@ -40,15 +41,18 @@ interface CommandActions {
 
 interface CommandRegistryContext {
   /** The currently highlighted service (dashboard selection), or undefined when the list is empty. */
-  selected?: ServiceStatus;
+  selected?: ProjectedServiceStatus;
+  selectedBusy?: boolean;
+  capabilities: BackendCapabilities;
   tasks: TaskInfo[];
   actions: CommandActions;
 }
 
 /** Context actions for the selected service — gated by that service's capabilities. */
-function contextCommands(selected: ServiceStatus, actions: CommandActions): Command[] {
+function contextCommands(selected: ProjectedServiceStatus, ctx: CommandRegistryContext): Command[] {
   const { name } = selected;
-  const available = selected.state !== "unavailable";
+  const { actions, capabilities, selectedBusy } = ctx;
+  const availability = serviceAvailability(capabilities, selected, selectedBusy);
   const running = selected.state === "ready" || selected.state === "starting";
 
   const commands: Command[] = [
@@ -56,42 +60,42 @@ function contextCommands(selected: ServiceStatus, actions: CommandActions): Comm
       id: `svc:restart:${name}`,
       title: `Restart ${name}`,
       group: "context",
-      when: () => available,
+      when: () => availability.control,
       run: () => actions.restart(name),
     },
     {
       id: `svc:toggle:${name}`,
       title: `${running ? "Stop" : "Start"} ${name}`,
       group: "context",
-      when: () => available,
+      when: () => availability.control,
       run: () => actions.toggle(name),
     },
     {
       id: `svc:logs:${name}`,
       title: `Logs: ${name}`,
       group: "context",
-      when: () => available,
+      when: () => availability.logs,
       run: () => actions.openLogs(name),
     },
     {
       id: `svc:rebuild:${name}`,
       title: `Docker rebuild: ${name}`,
       group: "context",
-      when: () => available && Boolean(selected.isDocker),
+      when: () => availability.rebuild,
       run: () => actions.rebuildDocker(name),
     },
     {
       id: `svc:zoom:${name}`,
       title: `Zoom pane: ${name}`,
       group: "context",
-      when: () => available && !selected.isDetached,
+      when: () => availability.zoom,
       run: () => actions.zoom(name),
     },
     {
       id: `svc:edit:${name}`,
       title: `Edit-capture pane: ${name}`,
       group: "context",
-      when: () => available && !selected.isDetached,
+      when: () => availability.editOutput,
       run: () => actions.editCapture(name),
     },
   ];
@@ -157,7 +161,7 @@ function buildCommandRegistry(ctx: CommandRegistryContext): Command[] {
   }));
 
   const all = [
-    ...(selected ? contextCommands(selected, actions) : []),
+    ...(selected ? contextCommands(selected, ctx) : []),
     ...globalCommands(actions),
     ...taskCommands,
   ];
