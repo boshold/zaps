@@ -6,11 +6,26 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
+import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
+import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
+import type {
+  BackendCapabilities,
+  PresentationSnapshot,
+  RuntimeDriver,
+  SessionBackend,
+} from "#src/lib/backend/types.js";
+import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+
+import { daemonHandlers } from "../../src/daemon/handlers/daemon.js";
 import { sessionHandlers } from "../../src/daemon/handlers/session.js";
 import type { SessionCreateParams } from "../../src/daemon/session.js";
 import { Session, sessionId } from "../../src/daemon/session.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { createMockStore } from "../_helpers/mock-session.js";
+import type { LegacySessionParams } from "../_helpers/session-backend.js";
+import { prepareSessionParams } from "../_helpers/session-backend.js";
 
 vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),
@@ -80,8 +95,8 @@ function createMockManager(): ServiceManager {
   }) as unknown as ServiceManager;
 }
 
-function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionCreateParams {
-  return {
+function createSessionParams(overrides?: Partial<LegacySessionParams>) {
+  return prepareSessionParams({
     configPath: "/test/.zaps.mts",
     projectDir: "/test",
     tmuxSocket: null,
@@ -113,7 +128,7 @@ function createSessionParams(overrides?: Partial<SessionCreateParams>): SessionC
       capturePane: vi.fn().mockResolvedValue(""),
     } as unknown as SessionCreateParams["deps"],
     ...overrides,
-  };
+  });
 }
 
 describe("sessionId", () => {
@@ -252,11 +267,26 @@ describe("Session", () => {
 
   it("forwards stateChange events to broadcast", () => {
     const broadcastSpy = vi.spyOn(session, "broadcast");
-    manager.emit("stateChange", "api", { name: "api", state: "ready" });
+    manager.emit("stateChange", "api", {
+      name: "api",
+      state: "ready",
+      ports: [3000],
+      retryCount: 0,
+    });
     expect(broadcastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         event: "service.stateChange",
-        data: { name: "api", status: { name: "api", state: "ready" } },
+        data: {
+          name: "api",
+          status: {
+            name: "api",
+            state: "ready",
+            ports: [3000],
+            retryCount: 0,
+            paneId: "%1",
+            actions: { focus: true, zoom: false, editOutput: false },
+          },
+        },
       }),
     );
   });
@@ -663,8 +693,8 @@ describe("Session", () => {
 
   describe("managed tmux context", () => {
     it("defaults to the user's default server", () => {
-      expect(session.tmuxSocket).toBeNull();
-      expect(session.managedTmux).toBe(false);
+      expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket: null });
+      expect(session.compatibilityProjection().managed).toBe(false);
     });
 
     it("binds its tmux handle to the session socket", async () => {
@@ -674,8 +704,8 @@ describe("Session", () => {
         createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
         createMockManager(),
       );
-      expect(managed.tmuxSocket).toBe("zaps");
-      expect(managed.managedTmux).toBe(true);
+      expect(managed.backend.getPresentation()).toMatchObject({ tmuxSocket: "zaps" });
+      expect(managed.compatibilityProjection().managed).toBe(true);
       expect(tmuxFor).toHaveBeenCalledWith("zaps");
     });
   });
@@ -690,7 +720,7 @@ describe("Session", () => {
       expect(snap.logSnapshots).toHaveProperty("api");
       expect(snap.tasks).toBeDefined();
       expect(snap.servicesMeta).toBeDefined();
-      expect(snap.tmuxSession).toBe(session.tmuxSession);
+      expect(snap.tmuxSession).toBe(session.compatibilityProjection().tmuxSession);
       expect(snap.managed).toBe(false);
     });
 
@@ -1032,36 +1062,34 @@ describe("Session dynamic pane log hooks (P03-T03)", () => {
 
 describe("Session.reflow — wired with live-getter deps", () => {
   it("constructs a LayoutReflow whose deps see post-reload field values", () => {
-    const session = new Session(createSessionParams(), createMockManager());
-    expect(session.reflow).toBeDefined();
+    const params = createSessionParams();
+    const session = new Session(params, createMockManager());
+    expect(params.backend.legacyReflow).toBeDefined();
     // Indirect proof: the reflow object is stable across a paneMap reassignment
     // (the deps are closures over `this`, not captured refs at construction).
-    const beforeReflow = session.reflow;
+    const beforeReflow = params.backend.legacyReflow;
     session.paneMap = { "@tui": "%9", api: "%10" };
-    expect(session.reflow).toBe(beforeReflow);
+    expect(params.backend.legacyReflow).toBe(beforeReflow);
   });
 
   it("targets the stored tmux window", async () => {
-    const session = new Session(
-      createSessionParams({
-        tmuxSession: "zaps-app-a1",
-        tmuxWindow: "@7",
-        paneMap: { "@tui": "%0", api: "%1" },
-        config: {
-          project: {
-            name: "test-project",
-            services: { api: { start: "npm dev" } },
-            layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "api" }] },
-          },
-          configPath: "/test/.zaps.mts",
-          projectDir: "/test",
-          groups: new Map(),
-          unavailableServices: new Map(),
-          lazyPaneByService: new Map(),
-        } as SessionCreateParams["config"],
-      }),
-      createMockManager(),
-    );
+    const params = createSessionParams({
+      tmuxSession: "zaps-app-a1",
+      tmuxWindow: "@7",
+      paneMap: { "@tui": "%0", api: "%1" },
+      config: {
+        project: {
+          name: "test-project",
+          services: { api: { start: "npm dev" } },
+          layout: { direction: "columns", children: [{ pane: "@tui" }, { pane: "api" }] },
+        },
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        groups: new Map(),
+        unavailableServices: new Map(),
+        lazyPaneByService: new Map(),
+      } as SessionCreateParams["config"],
+    });
 
     const tmux = await import("#src/lib/tmux.js");
     vi.mocked(tmux.paneIndexOrder).mockResolvedValueOnce([
@@ -1069,7 +1097,7 @@ describe("Session.reflow — wired with live-getter deps", () => {
       { index: 1, id: "%1" },
     ]);
 
-    await session.reflow.applyGeometry(new Set(["@tui", "api"]));
+    await params.backend.legacyReflow.applyGeometry(new Set(["@tui", "api"]));
 
     // One getter feeds every window-scoped call site (incl. insert/remove's
     // `windowLayout` snapshot), so pinning the geometry path pins them all.
@@ -1167,5 +1195,439 @@ describe("Session config staleness (A4)", () => {
 
     await session.destroy();
     expect(clearSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+function presentationFixture(services: Record<string, ServiceConfig>, statuses: ServiceStatus[]) {
+  const config: ResolvedConfig = {
+    project: { name: "projection", services },
+    configPath: "/test/projection.zaps.ts",
+    projectDir: "/test",
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+  const runtime: RuntimeDriver = {
+    start: vi.fn(async () => {
+      throw new Error("Unexpected execution");
+    }),
+    stop: vi.fn<RuntimeDriver["stop"]>().mockResolvedValue(undefined),
+    isRunning: vi.fn(async () => false),
+    getPid: vi.fn(async () => undefined),
+    readOutput: vi.fn(async () => []),
+    subscribe: vi.fn(() => () => undefined),
+  };
+  const unused = async () => {
+    throw new Error("Unexpected terminal dependency");
+  };
+  const deps: ServiceManagerDeps = {
+    runtime: () => runtime,
+    inspectPorts: unused,
+    sendKeys: unused,
+    sendCtrlC: unused,
+    panePid: unused,
+    detectPorts: unused,
+    capturePane: unused,
+    getDescendantPids: unused,
+    renameWindow: unused,
+    getWindowName: unused,
+    getWindowOption: unused,
+    setWindowOption: unused,
+    displayPopup: unused,
+    exec: unused,
+    preflightPorts: unused,
+    storeExecInfo: () => {
+      throw new Error("Unexpected execution");
+    },
+    sessionId: "projection",
+    zapsCommand: "zaps",
+    reflowInsert: unused,
+    reflowRemove: unused,
+  };
+  const manager = createMockManager();
+  vi.spyOn(manager, "getAllStatuses").mockReturnValue(statuses);
+  return { config, deps, manager, runtime };
+}
+
+function observedBackend(
+  runtime: RuntimeDriver,
+  capabilities: BackendCapabilities,
+  initial: PresentationSnapshot,
+) {
+  let view = initial;
+  const listeners = new Set<(next: PresentationSnapshot) => void>();
+  const backend: SessionBackend = {
+    id: "tmux",
+    capabilities,
+    runtime,
+    getPresentation: () => view,
+    subscribePresentation: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    health: async () => "alive",
+    dispose: async () => {
+      listeners.clear();
+    },
+  };
+  return {
+    backend,
+    publish(paneMap: Record<string, string>) {
+      if (view.kind !== "tmux") {
+        throw new Error("Expected terminal fixture");
+      }
+      view = { ...view, paneMap };
+      for (const listener of listeners) {
+        listener(view);
+      }
+    },
+  };
+}
+
+const mixedCapabilities: BackendCapabilities = {
+  panes: true,
+  taskPanes: true,
+  zoom: false,
+  popups: false,
+  rawInput: false,
+  layout: false,
+};
+const terminalView: PresentationSnapshot = {
+  kind: "tmux",
+  tmuxSession: "personal",
+  tmuxWindow: "private-window",
+  tmuxSocket: null,
+  originPane: "private-dashboard",
+  managedTmux: false,
+  paneMap: { api: "private/service:a", "@tui": "private-dashboard" },
+  focusPane: "private/service:a",
+};
+
+function projectedSession(
+  fixture: ReturnType<typeof presentationFixture>,
+  backend: SessionBackend,
+  extra: Partial<SessionCreateParams> = {},
+) {
+  return new Session(
+    {
+      configPath: fixture.config.configPath,
+      projectDir: fixture.config.projectDir,
+      config: fixture.config,
+      deps: fixture.deps,
+      backend,
+      shellEnv: {},
+      env: {},
+      ...extra,
+    },
+    fixture.manager,
+  );
+}
+
+describe("Session backend presentation", () => {
+  it("constructs, snapshots and disposes shell without tmux or terminal host fields", async () => {
+    const fixture = presentationFixture({ api: { start: "true", detached: false } }, [
+      {
+        name: "api",
+        state: "stopped",
+        ports: [],
+        retryCount: 0,
+        paneId: "stale",
+        isDetached: false,
+      },
+    ]);
+    const tmux = await import("#src/lib/tmux.js");
+    vi.mocked(tmux.tmuxFor).mockClear();
+    const adopt = vi.spyOn(TmuxSessionBackend, "adopt").mockImplementation(() => {
+      throw new Error("Unexpected tmux adoption");
+    });
+    const create = vi
+      .spyOn(TmuxSessionBackend, "create")
+      .mockRejectedValue(new Error("Unexpected tmux construction"));
+    const backend = await ShellSessionBackend.create({ services: fixture.config.project.services });
+    const session = projectedSession(fixture, backend);
+    try {
+      expect(session.backend).toBe(backend);
+      const snapshot = session.attachSnapshot();
+      expect(snapshot).toMatchObject({
+        backend: "shell",
+        paneMap: {},
+        statuses: [
+          {
+            name: "api",
+            isDetached: false,
+            actions: { focus: false, zoom: false, editOutput: false },
+          },
+        ],
+      });
+      for (const field of [
+        "tmuxSession",
+        "tmuxWindow",
+        "tmuxSocket",
+        "managed",
+        "managedTmux",
+        "originPane",
+        "tuiPane",
+        "focusPane",
+        "tmux",
+      ]) {
+        expect(snapshot).not.toHaveProperty(field);
+        expect(session).not.toHaveProperty(field);
+      }
+      expect(snapshot.statuses[0]).not.toHaveProperty("paneId");
+      expect(session.compatibilityProjection()).toEqual({ backend: "shell", paneMap: {} });
+      const store = createMockStore();
+      store.list = () => [session];
+      const listed = await daemonHandlers["session.list"](
+        { id: "shell-list", method: "session.list" },
+        store,
+      );
+      expect(listed.result).toEqual([
+        {
+          id: session.id,
+          name: session.name,
+          configPath: session.configPath,
+          projectDir: session.projectDir,
+          createdAt: session.createdAt,
+        },
+      ]);
+      expect(await backend.health()).toBe("alive");
+      await session.reflowInsert("api");
+      await session.reflowRemove("api");
+    } finally {
+      await session.destroy();
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      expect(adopt).not.toHaveBeenCalled();
+      expect(create).not.toHaveBeenCalled();
+      adopt.mockRestore();
+      create.mockRestore();
+    }
+    expect(await backend.health()).toBe("lost");
+  });
+
+  it("projects capabilities independently, current targets and copied lifecycle data", async () => {
+    const status: ServiceStatus = {
+      name: "api",
+      state: "stopped",
+      ports: [1234],
+      retryCount: 2,
+      paneId: "stale",
+      startedAt: 10,
+    };
+    const fixture = presentationFixture(
+      {
+        api: { start: "true" },
+        lazy: { start: "true", lazyPane: true },
+        detached: { start: "true", detached: true },
+      },
+      [
+        status,
+        { ...status, name: "lazy" },
+        { ...status, name: "detached" },
+        { ...status, name: "unknown" },
+      ],
+    );
+    const observed = observedBackend(fixture.runtime, mixedCapabilities, {
+      ...terminalView,
+      paneMap: { api: "private/service:a", detached: "stale-detached", unknown: "unknown-target" },
+    });
+    const session = projectedSession(fixture, observed.backend);
+    try {
+      const snapshot = session.attachSnapshot();
+      expect(snapshot).toMatchObject({
+        backend: "tmux",
+        tmuxSession: "personal",
+        managed: false,
+        originPane: "private-dashboard",
+      });
+      expect(snapshot).not.toHaveProperty("focusPane");
+      expect(session.compatibilityProjection().focusPane).toBe("private/service:a");
+      expect(snapshot.statuses[0]).toMatchObject({
+        state: "stopped",
+        paneId: "private/service:a",
+        actions: { focus: true, zoom: false, editOutput: false },
+      });
+      for (const projected of snapshot.statuses.slice(1)) {
+        expect(projected.actions).toEqual({ focus: false, zoom: false, editOutput: false });
+        expect(projected).not.toHaveProperty("paneId");
+      }
+      expect(status).toEqual({
+        name: "api",
+        state: "stopped",
+        ports: [1234],
+        retryCount: 2,
+        paneId: "stale",
+        startedAt: 10,
+      });
+      snapshot.statuses[0]?.ports.push(5678);
+      snapshot.paneMap.api = "tampered";
+      expect(status.ports).toEqual([1234]);
+      expect(session.paneMap.api).toBe("private/service:a");
+      expect(session.attachSnapshot().paneMap.api).toBe("private/service:a");
+      fixture.config.unavailableServices.set("api", { name: "api", reason: "missing" });
+      expect(session.projectStatus(status).actions).toEqual({
+        focus: false,
+        zoom: false,
+        editOutput: false,
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("requires pane capability before advertising zoom or popup actions", async () => {
+    const status: ServiceStatus = { name: "api", state: "ready", ports: [], retryCount: 0 };
+    const fixture = presentationFixture({ api: { start: "true" } }, [status]);
+    const observed = observedBackend(
+      fixture.runtime,
+      {
+        ...mixedCapabilities,
+        panes: false,
+        zoom: true,
+        popups: true,
+      },
+      terminalView,
+    );
+    const session = projectedSession(fixture, observed.backend);
+    try {
+      expect(session.projectStatus(status).actions).toEqual({
+        focus: false,
+        zoom: false,
+        editOutput: false,
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("refreshes full unchanged lazy/shared statuses on target insertion, replacement and removal", async () => {
+    const status: ServiceStatus = {
+      name: "api",
+      state: "stopped",
+      ports: [3000],
+      retryCount: 3,
+      startedAt: 100,
+      readySince: 200,
+    };
+    const fixture = presentationFixture(
+      {
+        api: { start: "true", lazyPane: true },
+        owner: {
+          start: "true",
+          _combined: { group: "group", allServices: ["owner", "member"], isOwner: true },
+        },
+        member: {
+          start: "true",
+          _combined: { group: "group", allServices: ["owner", "member"], isOwner: false },
+        },
+      },
+      [status, { ...status, name: "owner" }, { ...status, name: "member" }],
+    );
+    const observed = observedBackend(
+      fixture.runtime,
+      { ...mixedCapabilities, zoom: true, popups: true },
+      { ...terminalView, paneMap: {} },
+    );
+    const sharedMap: Record<string, string> = {};
+    const title = vi
+      .fn<NonNullable<SessionCreateParams["updatePresentationTitle"]>>()
+      .mockResolvedValue(undefined);
+    const session = projectedSession(fixture, observed.backend, {
+      paneMap: sharedMap,
+      updatePresentationTitle: title,
+    });
+    const broadcast = vi.spyOn(session, "broadcast");
+    const managerEmit = vi.spyOn(fixture.manager, "emit");
+    const loadedAt = session.configLoadedAt;
+    try {
+      const updates: Record<string, string>[] = [
+        { api: "private/lazy:first", owner: "private/group:first" },
+        { api: "private/lazy:second", owner: "private/group:second" },
+        {},
+      ];
+      for (const paneMap of updates) {
+        broadcast.mockClear();
+        observed.publish(paneMap);
+        expect(session.paneMap).toBe(sharedMap);
+        expect(broadcast.mock.calls[0]?.[0]).toEqual({
+          session: session.id,
+          event: "session.paneMap",
+          data: { paneMap },
+        });
+        expect(broadcast).toHaveBeenCalledTimes(4);
+        for (const original of fixture.manager.getAllStatuses()) {
+          const target = original.name === "api" ? paneMap.api : paneMap.owner;
+          expect(broadcast).toHaveBeenCalledWith({
+            session: session.id,
+            event: "service.stateChange",
+            data: {
+              name: original.name,
+              status: {
+                ...original,
+                ...(target ? { paneId: target } : {}),
+                actions: {
+                  focus: Boolean(target),
+                  zoom: Boolean(target),
+                  editOutput: Boolean(target),
+                },
+              },
+            },
+          });
+        }
+      }
+      broadcast.mockClear();
+      observed.publish({});
+      expect(broadcast).toHaveBeenCalledTimes(1);
+      expect(managerEmit).not.toHaveBeenCalled();
+      expect(title).not.toHaveBeenCalled();
+      expect(session.configLoadedAt).toBe(loadedAt);
+      expect(status).toEqual({
+        name: "api",
+        state: "stopped",
+        ports: [3000],
+        retryCount: 3,
+        startedAt: 100,
+        readySince: 200,
+      });
+    } finally {
+      await session.destroy();
+    }
+  });
+
+  it("uses the same projection for lifecycle events and snapshots, preserving callback seams", async () => {
+    const status: ServiceStatus = { name: "api", state: "ready", ports: [], retryCount: 0 };
+    const fixture = presentationFixture({ api: { start: "true" } }, [status]);
+    const observed = observedBackend(fixture.runtime, mixedCapabilities, terminalView);
+    const insert = vi
+      .fn<NonNullable<SessionCreateParams["insertPresentation"]>>()
+      .mockResolvedValue(undefined);
+    const remove = vi
+      .fn<NonNullable<SessionCreateParams["removePresentation"]>>()
+      .mockResolvedValue(undefined);
+    const title = vi
+      .fn<NonNullable<SessionCreateParams["updatePresentationTitle"]>>()
+      .mockResolvedValue(undefined);
+    const session = projectedSession(fixture, observed.backend, {
+      insertPresentation: insert,
+      removePresentation: remove,
+      updatePresentationTitle: title,
+    });
+    const broadcast = vi.spyOn(session, "broadcast");
+    try {
+      fixture.manager.emit("stateChange", "api", status);
+      expect(broadcast).toHaveBeenCalledWith({
+        session: session.id,
+        event: "service.stateChange",
+        data: { name: "api", status: session.attachSnapshot().statuses[0] },
+      });
+      expect(title).toHaveBeenCalledWith([status]);
+      await session.reflowInsert("api");
+      await session.reflowRemove("api");
+      expect(insert).toHaveBeenCalledWith("api");
+      expect(remove).toHaveBeenCalledWith("api");
+    } finally {
+      await session.destroy();
+    }
   });
 });

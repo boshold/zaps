@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LayoutNode, ResolvedConfig } from "#src/config/types.js";
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
@@ -22,6 +21,7 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { prepareSessionParams } from "../../_helpers/session-backend.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
@@ -154,7 +154,7 @@ function makeSession(
   paneMap: PaneMap,
   tmuxWindow = initialPaneId,
 ): Session {
-  const params: SessionCreateParams = {
+  const params = prepareSessionParams({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
@@ -165,7 +165,7 @@ function makeSession(
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
     deps: tmuxDeps,
-  };
+  });
   return new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmuxSession));
 }
 
@@ -468,7 +468,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap, tmuxWindow);
 
     await execFileAsync("tmux", [...tmuxSocketArgs(), "select-window", "-t", otherPane]);
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
     const originalWindowPanes = await listPaneGeoms(tmuxWindow);
     const otherWindowPanes = await listPaneGeoms(otherPane);
@@ -489,7 +489,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
     // The pane projection exists before runtime output starts.
     expect(zapsSession.paneMap.api).toBeDefined();
@@ -527,7 +527,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
     const insertMaps = broadcastSpy.mock.calls
       .map(([event]) => event)
@@ -539,7 +539,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(insertMap.api).toBe(zapsSession.paneMap.api);
 
     broadcastSpy.mockClear();
-    await zapsSession.reflow.removePane("api");
+    await zapsSession.reflowRemove("api");
 
     const removeMaps = broadcastSpy.mock.calls
       .map(([event]) => event)
@@ -558,12 +558,12 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
     const apiPaneId = zapsSession.paneMap.api;
     // Plant a history line directly (no need to wait for the monitor here).
     zapsSession.logBuffers.get("api")?.appendLines(["history-from-insert"]);
 
-    await zapsSession.reflow.removePane("api");
+    await zapsSession.reflowRemove("api");
 
     // Pane is gone.
     await waitFor(
@@ -596,8 +596,8 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
     /* eslint-disable no-await-in-loop -- sequential lifecycle test */
     for (let i = 0; i < 5; i += 1) {
-      await zapsSession.reflow.insertPane("api");
-      await zapsSession.reflow.removePane("api");
+      await zapsSession.reflowInsert("api");
+      await zapsSession.reflowRemove("api");
     }
     /* eslint-enable no-await-in-loop */
 

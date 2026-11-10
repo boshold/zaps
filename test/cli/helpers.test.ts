@@ -29,6 +29,7 @@ import {
   CliError,
   DAEMON_NOT_RUNNING,
   daemonConnectionError,
+  findSessionByDir,
   formatTable,
   parsePositiveInt,
   resolveCommand,
@@ -163,6 +164,21 @@ describe("resolveTargetSession", () => {
       tuiPane: null,
     },
   ];
+
+  it("selects shell entries without terminal fields alongside legacy tmux entries", () => {
+    const shell: SessionInfo = {
+      id: "shell123",
+      name: "shell-project",
+      projectDir: "/shell",
+      backend: "shell",
+    };
+    expect(resolveTargetSession([...sessions, shell], "shell-project")).toBe(shell);
+    expect(resolveTargetSession([shell])).toBe(shell);
+    expect(findSessionByDir([...sessions, shell], "/shell/subdir")).toBe(shell);
+    expect(resolveTargetSession([...sessions, shell], "abc123")).toBe(sessions[0]);
+    expect(shell).not.toHaveProperty("tmuxSession");
+    expect(shell).not.toHaveProperty("managed");
+  });
 
   it("returns exact id match", () => {
     expect(resolveTargetSession(sessions, "abc123")).toBe(sessions[0]);

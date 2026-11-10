@@ -27,7 +27,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { Session } from "#src/daemon/session.js";
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
@@ -44,6 +43,7 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { prepareSessionParams } from "../../_helpers/session-backend.js";
 import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
@@ -231,7 +231,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
   });
 
   const manager = new ServiceManager(config, paneMap, deps, testSession.name);
-  const params: SessionCreateParams = {
+  const params = prepareSessionParams({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
@@ -242,7 +242,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
     deps,
-  };
+  });
   const session = new Session(params, manager);
   ref.session = session;
 

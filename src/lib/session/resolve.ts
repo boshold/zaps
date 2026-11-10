@@ -1,5 +1,14 @@
 import path from "node:path";
 
+import type { BackendCapabilities } from "#src/lib/backend/types.js";
+
+interface SessionIdentity {
+  id: string;
+  name: string;
+  projectDir: string;
+  configPath?: string;
+}
+
 export class CliError extends Error {
   public constructor(message: string) {
     super(message);
@@ -7,22 +16,30 @@ export class CliError extends Error {
   }
 }
 
-export interface SessionInfo {
-  id: string;
-  name: string;
-  projectDir: string;
-  configPath?: string;
-  /**
-   * Tmux session hosting the panes — powers the `zaps ls` location column.
-   * Optional at runtime: a daemon from an older release omits it, and the CLI
-   * must degrade (blank location) rather than crash mid-command.
-   */
-  tmuxSession?: string;
-  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
-  managed?: boolean;
-  /** `%N` of the TUI pane, or null when the layout has none (re-attach target). */
-  tuiPane?: string | null;
-}
+export type SessionInfo = SessionIdentity &
+  (
+    | {
+        backend: "shell";
+        capabilities?: BackendCapabilities;
+        tmuxSession?: never;
+        managed?: never;
+        tuiPane?: never;
+      }
+    | {
+        backend?: "tmux";
+        capabilities?: BackendCapabilities;
+        /**
+         * Tmux session hosting the panes — powers the `zaps ls` location column.
+         * Optional at runtime: a daemon from an older release omits it, and the CLI
+         * must degrade (blank location) rather than crash mid-command.
+         */
+        tmuxSession?: string;
+        /** True when zaps owns the hosting tmux session (managed-tmux mode). */
+        managed?: boolean;
+        /** `%N` of the TUI pane, or null when the layout has none (re-attach target). */
+        tuiPane?: string | null;
+      }
+  );
 
 /**
  * Match a session by directory (E12): exact `projectDir === dir`, else the

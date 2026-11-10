@@ -5,6 +5,7 @@ import { vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 import type { SessionStore } from "../../src/daemon/server.js";
+import { compatibilityProjection } from "../../src/daemon/session.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
 import type { SentraDeps } from "../../src/lib/sentra/config.js";
@@ -43,7 +44,7 @@ export interface MockSession {
   paneRunInfo: Map<string, PaneRunInfo>;
   taskOutput: TaskOutputStore;
   manager: {
-    getAllStatuses: ReturnType<typeof vi.fn>;
+    getAllStatuses: ReturnType<typeof vi.fn<() => Parameters<Session["projectStatus"]>[0][]>>;
     getStatus: ReturnType<typeof vi.fn>;
     startService: ReturnType<typeof vi.fn>;
     stopService: ReturnType<typeof vi.fn>;
@@ -77,6 +78,9 @@ export interface MockSession {
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
   focusPane: string;
+  compatibilityProjection: Session["compatibilityProjection"];
+  projectStatuses: Session["projectStatuses"];
+  projectStatus: Session["projectStatus"];
 }
 
 export function createMockSession(overrides: Partial<MockSession> = {}): MockSession {
@@ -133,6 +137,26 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     subscribers,
     addSubscriber: vi.fn((socket: unknown) => subscribers.add(socket)),
     removeSubscriber: vi.fn((socket: unknown) => subscribers.delete(socket)),
+    compatibilityProjection() {
+      return compatibilityProjection({
+        kind: "tmux",
+        tmuxSession: this.tmuxSession,
+        tmuxWindow: "@1",
+        originPane: this.originPane,
+        tmuxSocket: this.tmuxSocket,
+        managedTmux: this.managedTmux,
+        paneMap: this.paneMap,
+        focusPane: this.focusPane,
+      });
+    },
+    projectStatus(status) {
+      return { ...status, actions: { focus: true, zoom: true, editOutput: true } };
+    },
+    projectStatuses() {
+      return this.manager
+        .getAllStatuses()
+        .map((status: Parameters<Session["projectStatus"]>[0]) => this.projectStatus(status));
+    },
     focusPane: "%0",
     createdAt: Date.now(),
     taskHistory: [],

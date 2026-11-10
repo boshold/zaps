@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import { sendKeys, splitPane } from "#src/lib/tmux.js";
 
+import { prepareSessionParams } from "../../_helpers/session-backend.js";
 import { makeConfig } from "../helpers/config.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
@@ -59,7 +59,7 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       },
     });
 
-    const params: SessionCreateParams = {
+    const params = prepareSessionParams({
       configPath: "/test/.zaps.mts",
       projectDir: "/test",
       config,
@@ -69,8 +69,8 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       originPane: tmux.initialPaneId,
       tmuxSocket: testTmuxSocket(),
       managedTmux: false,
-      deps: tmuxDeps as unknown as SessionCreateParams["deps"],
-    };
+      deps: tmuxDeps,
+    });
     session = new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmux.name));
 
     // Both members must resolve to one shared buffer; the group never owns one.

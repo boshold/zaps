@@ -4,11 +4,15 @@ import type net from "node:net";
 import path from "node:path";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
-import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
-import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
+import type {
+  BackendCapabilities,
+  PresentationSnapshot,
+  ServiceActions,
+  SessionBackend,
+} from "#src/lib/backend/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import {
   captureEnvironment,
@@ -19,9 +23,6 @@ import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manage
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
-import type { LayoutReflow } from "#src/lib/tmux-reflow.js";
-import { tmuxFor } from "#src/lib/tmux.js";
-import type { TmuxHandle } from "#src/lib/tmux.js";
 
 import { LogBuffer } from "./log-buffer.js";
 import { TaskExecutionService } from "./task-execution.js";
@@ -70,6 +71,40 @@ function allocateLogBuffers(config: ResolvedConfig, paneMap: PaneMap): LogAlloca
   return { buffers, paneBuffers, paneMembers };
 }
 
+type ProjectedServiceStatus = ServiceStatus & { actions: ServiceActions };
+
+type CompatibilityProjection =
+  | {
+      backend: "shell";
+      paneMap: PaneMap;
+      tmuxSession?: never;
+      managed?: never;
+      originPane?: never;
+      focusPane?: never;
+    }
+  | {
+      backend: "tmux";
+      paneMap: PaneMap;
+      tmuxSession: string;
+      managed: boolean;
+      originPane: string;
+      focusPane?: string;
+    };
+
+function compatibilityProjection(view: PresentationSnapshot): CompatibilityProjection {
+  if (view.kind === "shell") {
+    return { backend: "shell", paneMap: {} };
+  }
+  return {
+    backend: "tmux",
+    paneMap: { ...view.paneMap },
+    tmuxSession: view.tmuxSession,
+    managed: view.managedTmux,
+    originPane: view.originPane,
+    ...(view.focusPane === undefined ? {} : { focusPane: view.focusPane }),
+  };
+}
+
 export interface TaskInfo {
   key: string;
   name: string;
@@ -93,19 +128,18 @@ export interface ServiceMeta {
 }
 
 export interface SessionCreateParams {
-  backend?: TmuxSessionBackend;
+  backend: SessionBackend;
   configPath: string;
   projectDir: string;
   config: ResolvedConfig;
-  paneMap: PaneMap;
-  tmuxSession: string;
-  tmuxWindow: string;
-  originPane: string;
   deps: ServiceManagerDeps;
-  /** Tmux server socket hosting this session (`null` = the user's default server). */
-  tmuxSocket: string | null;
-  /** True when zaps spawned and owns the tmux session (teardown kills it). */
-  managedTmux: boolean;
+  /** Shared manager projection; removed by P06-T04. */
+  paneMap?: PaneMap;
+  /** Composition bridges; removed by P06-T04. */
+  reloadPresentation?: (config: ResolvedConfig) => Promise<void>;
+  insertPresentation?: (name: string) => Promise<void>;
+  removePresentation?: (name: string) => Promise<void>;
+  updatePresentationTitle?: (statuses: ServiceStatus[]) => Promise<void>;
   /** Shell environment forwarded by the CLI that created the session. */
   shellEnv?: Record<string, string>;
   /** Project .env merged with shellEnv. */
@@ -129,14 +163,16 @@ export interface UiBinding {
 }
 
 export class Session {
-  public readonly backend: TmuxSessionBackend;
+  public readonly backend: SessionBackend;
+  private presentation: PresentationSnapshot;
+  private readonly presentationCallbacks: Pick<
+    SessionCreateParams,
+    "reloadPresentation" | "insertPresentation" | "removePresentation" | "updatePresentationTitle"
+  >;
   public readonly id: string;
   public readonly configPath: string;
   public readonly projectDir: string;
   public readonly invokeDir: string;
-  public readonly tmuxSession: string;
-  public readonly tmuxWindow: string;
-  public readonly originPane: string;
   public readonly subscribers = new Set<net.Socket>();
   private readonly acknowledgedSubscribers = new Set<net.Socket>();
   private readonly subscriptionRegistrations = new Map<net.Socket, symbol>();
@@ -159,12 +195,6 @@ export class Session {
     return this.taskExecution.output;
   }
   public readonly deps: ServiceManagerDeps;
-  /** Tmux server socket hosting this session (`null` = the user's default server). */
-  public readonly tmuxSocket: string | null;
-  /** True when zaps spawned and owns the tmux session (teardown kills it). */
-  public readonly managedTmux: boolean;
-  /** Every tmux command for this session runs through this socket-bound handle. */
-  public readonly tmux: TmuxHandle;
 
   public name: string;
   public config: ResolvedConfig;
@@ -180,16 +210,12 @@ export class Session {
    * tests need to assert the lockstep without surfacing a side accessor.
    */
   public paneMembers: Map<string, string[]>;
-  /** Legacy adapter projection, removed by P06-T04. */
-  public readonly reflow: LayoutReflow;
   /** Tracked in-flight `startAll`; reload/destroy abort then await its settlement. */
   public startPromise: Promise<void> | null = null;
   /** Set once `destroy()` runs; guards the reload-after-destroy race (A5). */
   public destroyed = false;
   /** Timestamp of the last successful config load — staleness source (A4). */
   public configLoadedAt: number;
-  /** Layout focus target — returned by `session.create` only (never attach) (E14). */
-  public focusPane = "";
   public shellEnv: Record<string, string>;
   public env: Record<string, string>;
   private destroyFailure?: AggregateError;
@@ -210,43 +236,39 @@ export class Session {
     this.shellEnv = params.shellEnv ?? captureEnvironment();
     this.env = params.env ?? resolveEnvironment(this.projectDir, this.shellEnv);
     this.config = params.config;
-    this.paneMap = params.paneMap;
-    this.tmuxSession = params.tmuxSession;
-    this.tmuxWindow = params.tmuxWindow;
-    this.originPane = params.originPane;
+    this.backend = params.backend;
+    this.presentation = this.backend.getPresentation();
+    this.presentationCallbacks = {
+      reloadPresentation: params.reloadPresentation,
+      insertPresentation: params.insertPresentation,
+      removePresentation: params.removePresentation,
+      updatePresentationTitle: params.updatePresentationTitle,
+    };
+    const initialPaneMap = compatibilityProjection(this.presentation).paneMap;
+    this.paneMap = params.paneMap ?? {};
+    for (const name of Object.keys(this.paneMap)) {
+      Reflect.deleteProperty(this.paneMap, name);
+    }
+    Object.assign(this.paneMap, initialPaneMap);
     this.deps = params.deps;
-    this.tmuxSocket = params.tmuxSocket;
-    this.managedTmux = params.managedTmux;
-    this.tmux = tmuxFor(this.tmuxSocket);
     this.manager = manager;
-    this.backend =
-      params.backend ??
-      TmuxSessionBackend.adopt(
-        {
-          host: {
-            tmuxSession: this.tmuxSession,
-            tmuxWindow: this.tmuxWindow,
-            originPane: this.originPane,
-            tmuxSocket: this.tmuxSocket,
-            managedTmux: this.managedTmux,
-          },
-          tmux: this.tmux,
-          runtime: params.deps.runtime(params.paneMap),
-          layout: this.config.project.layout,
-          services: this.config.project.services,
-          groups: this.config.groups,
-        },
-        params.paneMap,
-      );
+    this.configLoadedAt = Date.now();
+
+    // Per-pane log buffers; runtime events feed ingestion.
+    const pipeline = allocateLogBuffers(this.config, this.paneMap);
+    this.logBuffers = pipeline.buffers;
+    this.paneBuffers = pipeline.paneBuffers;
+    this.paneMembers = pipeline.paneMembers;
+
     this.backend.subscribePresentation((view) => {
-      if (view.kind !== "tmux") {
-        return;
-      }
+      const previousStatuses = this.projectStatuses();
       const previous = { ...this.paneMap };
+      this.presentation = view;
+      const next = compatibilityProjection(view).paneMap;
       for (const name of Object.keys(this.paneMap)) {
         Reflect.deleteProperty(this.paneMap, name);
       }
-      Object.assign(this.paneMap, view.paneMap);
+      Object.assign(this.paneMap, next);
       for (const [name, pane] of Object.entries(previous)) {
         if (name !== "@tui" && this.paneMap[name] !== pane) {
           this.freePaneLog(name, pane);
@@ -258,16 +280,21 @@ export class Session {
         }
       }
       this.broadcastPaneMap();
+      const previousByName = new Map(previousStatuses.map((status) => [status.name, status]));
+      for (const status of this.projectStatuses()) {
+        const before = previousByName.get(status.name);
+        if (
+          before?.paneId !== status.paneId ||
+          JSON.stringify(before?.actions) !== JSON.stringify(status.actions)
+        ) {
+          this.broadcast({
+            session: this.id,
+            event: "service.stateChange",
+            data: { name: status.name, status },
+          });
+        }
+      }
     });
-    this.configLoadedAt = Date.now();
-
-    // Per-pane log buffers; runtime events feed ingestion.
-    const pipeline = allocateLogBuffers(this.config, this.paneMap);
-    this.logBuffers = pipeline.buffers;
-    this.paneBuffers = pipeline.paneBuffers;
-    this.paneMembers = pipeline.paneMembers;
-
-    this.reflow = this.backend.legacyReflow;
 
     this.taskExecution = new TaskExecutionService(this);
     this.taskExecution.bindManager(manager);
@@ -287,7 +314,7 @@ export class Session {
 
   private async updatePresentationTitle(manager: ServiceManager): Promise<void> {
     try {
-      await this.backend.updateServiceTitle(manager.getAllStatuses());
+      await this.presentationCallbacks.updatePresentationTitle?.(manager.getAllStatuses());
     } catch {
       /* Cosmetic update. */
     }
@@ -300,7 +327,7 @@ export class Session {
       this.broadcast({
         session: this.id,
         event: "service.stateChange",
-        data: { name: svcName, status },
+        data: { name: svcName, status: this.projectStatus(status) },
       });
     });
 
@@ -416,7 +443,7 @@ export class Session {
     this.manager.disposeObservers();
 
     try {
-      await this.backend.reload(newConfig, computeBootSkip(newConfig));
+      await this.presentationCallbacks.reloadPresentation?.(newConfig);
     } catch (error) {
       this.manager.resumeRuntimeObserver();
       this.wireManagerEvents(this.manager);
@@ -428,7 +455,7 @@ export class Session {
     // 6. Build the new manager + per-pane log pipeline before the swap. Reuses
     // The same allocation helper as construction so the two cannot drift.
     const { ServiceManager } = await import("#src/lib/service/manager.js");
-    const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.tmuxSession);
+    const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.id);
     const pipeline = allocateLogBuffers(newConfig, paneMap);
 
     // 7. Swap every reference atomically (single synchronous block).
@@ -673,13 +700,13 @@ export class Session {
    */
   public async reflowInsert(name: string): Promise<void> {
     await this.withOpLock(async () => {
-      await this.backend.insertPane(name);
+      await this.presentationCallbacks.insertPresentation?.(name);
     });
   }
 
   public async reflowRemove(name: string): Promise<void> {
     await this.withOpLock(async () => {
-      await this.backend.removePane(name);
+      await this.presentationCallbacks.removePresentation?.(name);
     });
   }
 
@@ -768,14 +795,13 @@ export class Session {
       }),
     );
 
+    const { focusPane: _focusPane, ...host } = this.compatibilityProjection();
     return {
       id: this.id,
       name: this.name,
-      paneMap: this.paneMap,
-      tmuxSession: this.tmuxSession,
-      managed: this.managedTmux,
-      originPane: this.originPane,
-      statuses: this.manager.getAllStatuses(),
+      ...host,
+      capabilities: { ...this.backend.capabilities },
+      statuses: this.projectStatuses(),
       logSnapshots,
       configPath: this.configPath,
       projectDir: this.projectDir,
@@ -785,6 +811,43 @@ export class Session {
       unavailableServices: [...this.config.unavailableServices.values()],
       configStale: this.isConfigStale(),
       ui: this.config.project.ui,
+    };
+  }
+
+  public compatibilityProjection(): CompatibilityProjection {
+    return compatibilityProjection(this.presentation);
+  }
+
+  public projectStatuses(): ProjectedServiceStatus[] {
+    return this.manager.getAllStatuses().map((status) => this.projectStatus(status));
+  }
+
+  public projectStatus(status: ServiceStatus): ProjectedServiceStatus {
+    const { paneId: _stalePane, ...lifecycle } = status;
+    const service = this.config.project.services[status.name];
+    const map = this.presentation.kind === "tmux" ? this.presentation.paneMap : {};
+    let pane = map[status.name];
+    if (!pane && service?._combined) {
+      const owner = service._combined.allServices.find(
+        (name) => this.config.project.services[name]?._combined?.isOwner,
+      );
+      if (owner) {
+        pane = map[owner];
+      }
+    }
+    const available = Boolean(
+      service && !service.detached && !this.config.unavailableServices.has(status.name) && pane,
+    );
+    const paneAvailable = available && this.backend.capabilities.panes;
+    return {
+      ...lifecycle,
+      ports: [...status.ports],
+      ...(available ? { paneId: pane } : {}),
+      actions: {
+        focus: paneAvailable,
+        zoom: paneAvailable && this.backend.capabilities.zoom,
+        editOutput: paneAvailable && this.backend.capabilities.popups,
+      },
     };
   }
 
@@ -804,15 +867,14 @@ export class Session {
   }
 }
 
-export interface SessionSnapshot {
+export type SessionSnapshot = (
+  | Omit<Extract<CompatibilityProjection, { backend: "shell" }>, "focusPane">
+  | Omit<Extract<CompatibilityProjection, { backend: "tmux" }>, "focusPane">
+) & {
+  capabilities: BackendCapabilities;
   id: string;
   name: string;
-  paneMap: PaneMap;
-  tmuxSession: string;
-  /** True when zaps owns the hosting tmux session (managed-tmux mode). */
-  managed: boolean;
-  originPane: string;
-  statuses: ServiceStatus[];
+  statuses: ProjectedServiceStatus[];
   logSnapshots: Record<string, string[]>;
   configPath: string;
   projectDir: string;
@@ -824,4 +886,7 @@ export interface SessionSnapshot {
   configStale: boolean;
   /** Resolved TUI presentation config (icons, notifications, thresholds). */
   ui?: UiConfig;
-}
+};
+
+export { compatibilityProjection };
+export type { ProjectedServiceStatus };

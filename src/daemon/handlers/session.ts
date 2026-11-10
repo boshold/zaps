@@ -320,8 +320,8 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const statuses = session.manager
-      .getAllStatuses()
+    const statuses = session
+      .projectStatuses()
       .map((status) =>
         withErrorCount(
           status,
@@ -340,7 +340,7 @@ export const sessionHandlers: Record<
     }
     const { name } = req.params as { name: string };
     try {
-      const status = session.manager.getStatus(name);
+      const status = session.projectStatus(session.manager.getStatus(name));
       const svcConfig = session.config.project.services[name];
       return ipcOk(req.id, {
         ...status,

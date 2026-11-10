@@ -52,18 +52,24 @@ export const daemonHandlers: Record<
   async "session.list"(req, store) {
     return ipcOk(
       req.id,
-      store.list().map((s) => ({
-        id: s.id,
-        name: s.name,
-        configPath: s.configPath,
-        projectDir: s.projectDir,
-        createdAt: s.createdAt,
-        tmuxSession: s.tmuxSession,
-        managed: s.managedTmux,
-        // Lets an unattached client (the re-attach bootstrap) find the TUI pane
-        // Without subscribing to the session.
-        tuiPane: s.paneMap["@tui"] ?? null,
-      })),
+      store.list().map((s) => {
+        const host = s.compatibilityProjection();
+        const entry = {
+          id: s.id,
+          name: s.name,
+          configPath: s.configPath,
+          projectDir: s.projectDir,
+          createdAt: s.createdAt,
+        };
+        if (host.backend === "tmux") {
+          return Object.assign(entry, {
+            tmuxSession: host.tmuxSession,
+            managed: host.managed,
+            tuiPane: host.paneMap["@tui"] ?? null,
+          });
+        }
+        return entry;
+      }),
     );
   },
 
@@ -115,11 +121,12 @@ export const daemonHandlers: Record<
         tmuxSocket,
         managedTmux,
       });
+      const host = session.compatibilityProjection();
       return ipcOk(req.id, {
         id: session.id,
         name: session.name,
-        paneMap: session.paneMap,
-        focusPane: session.focusPane,
+        paneMap: host.paneMap,
+        ...(host.focusPane === undefined ? {} : { focusPane: host.focusPane }),
       });
     } catch (error) {
       // `buildSession` loads config first (server.ts) — a throw here leaves no

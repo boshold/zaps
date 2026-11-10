@@ -235,8 +235,8 @@ describe.skipIf(!hasTmux())("session task lifetimes", () => {
     if (!session) {
       throw new Error("Session missing");
     }
-    expect(session.tmuxSocket).toBe(tmuxSocket);
-    expect(session.originPane).toBe(tmux.initialPaneId);
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket });
+    expect(session.compatibilityProjection().originPane).toBe(tmux.initialPaneId);
     return session;
   }
 

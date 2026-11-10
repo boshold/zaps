@@ -400,7 +400,7 @@ describe("DaemonServer", () => {
       originPane: "%0",
     });
     expect(session.id).toBeDefined();
-    expect(session.tmuxWindow).toBe("@1");
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxWindow: "@1" });
     expect(tmux.displayMessage).toHaveBeenCalledWith("%0", "#{window_id}");
     expect(server.sessionCount).toBe(1);
     expect(server.get(session.id)).toBe(session);
@@ -420,8 +420,8 @@ describe("DaemonServer", () => {
     });
 
     expect(tmuxFor).toHaveBeenCalledWith("zaps");
-    expect(session.tmuxSocket).toBe("zaps");
-    expect(session.managedTmux).toBe(true);
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket: "zaps" });
+    expect(session.backend.getPresentation()).toMatchObject({ managedTmux: true });
     const layoutCall = mockCreateLayout.mock.calls.at(-1);
     expect(layoutCall?.[4]).toMatchObject({ tmux: expect.any(Object) });
   });
@@ -438,8 +438,8 @@ describe("DaemonServer", () => {
     });
 
     expect(tmuxFor).toHaveBeenCalledWith(null);
-    expect(session.tmuxSocket).toBeNull();
-    expect(session.managedTmux).toBe(false);
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket: null });
+    expect(session.backend.getPresentation()).toMatchObject({ managedTmux: false });
   });
 
   it("returns existing session on duplicate create", async () => {
@@ -554,8 +554,8 @@ describe("DaemonServer", () => {
     const s1 = await server.create(params);
     tmux.paneExists.mockResolvedValue(true);
     await expect(server.create({ ...params, originPane: "%9" })).resolves.toBe(s1);
-    expect(s1.originPane).toBe("%0");
-    expect(s1.tmuxWindow).toBe("@1");
+    expect(s1.compatibilityProjection().originPane).toBe("%0");
+    expect(s1.backend.getPresentation()).toMatchObject({ tmuxWindow: "@1" });
     expect(tmux.displayMessage).toHaveBeenCalledTimes(2);
   });
 
@@ -576,8 +576,8 @@ describe("DaemonServer", () => {
 
     expect(s2).not.toBe(s1);
     expect(s1.destroyed).toBe(true);
-    expect(s2.originPane).toBe("%9");
-    expect(s2.tmuxWindow).toBe("@9");
+    expect(s2.compatibilityProjection().originPane).toBe("%9");
+    expect(s2.backend.getPresentation()).toMatchObject({ tmuxWindow: "@9" });
     expect(server.sessionCount).toBe(1);
     expect(mockCreateLayout).toHaveBeenCalledTimes(2);
   });
@@ -593,7 +593,7 @@ describe("DaemonServer", () => {
       tmuxSession: "main",
       originPane: "%0",
     });
-    expect(session.focusPane).toBe("%1");
+    expect(session.compatibilityProjection().focusPane).toBe("%1");
   });
 
   it("fires onSessionChange callback", async () => {

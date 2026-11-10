@@ -110,11 +110,15 @@ function describeTmuxContext(socket: string | null, managed: boolean): string {
 function assertSameTmuxContext(existing: Session, params: CreateParams): void {
   const requestedSocket = params.tmuxSocket ?? null;
   const requestedManaged = params.managedTmux === true;
-  if (existing.tmuxSocket === requestedSocket && existing.managedTmux === requestedManaged) {
+  const host = existing.backend.getPresentation();
+  if (host.kind !== "tmux") {
+    throw new Error("Session already running without a tmux host. Run zaps down first.");
+  }
+  if (host.tmuxSocket === requestedSocket && host.managedTmux === requestedManaged) {
     return;
   }
   throw new Error(
-    `Session already running on ${describeTmuxContext(existing.tmuxSocket, existing.managedTmux)}; ` +
+    `Session already running on ${describeTmuxContext(host.tmuxSocket, host.managedTmux)}; ` +
       `this request asked for ${describeTmuxContext(requestedSocket, requestedManaged)}. ` +
       `Run zaps down first.`,
   );
@@ -380,7 +384,6 @@ class DaemonServer implements SessionStore {
         throw new Error("Expected tmux presentation");
       }
       const paneMap = { ...view.paneMap };
-      const focusPane = view.focusPane ?? params.originPane;
 
       // Late-bound ref so storeExecInfo closure can capture session before it's created
       const deps: ServiceManagerDeps = {
@@ -470,23 +473,21 @@ class DaemonServer implements SessionStore {
 
       const sessionParams: SessionCreateParams = {
         backend,
+        paneMap,
         configPath: params.configPath,
         projectDir: params.projectDir,
         config,
-        paneMap,
-        tmuxSession: params.tmuxSession,
-        tmuxWindow,
-        originPane: params.originPane,
         deps,
-        tmuxSocket,
-        managedTmux: params.managedTmux ?? false,
+        reloadPresentation: async (candidate) =>
+          backend.reload(candidate, computeBootSkip(candidate)),
+        insertPresentation: async (name) => backend.insertPane(name),
+        removePresentation: async (name) => backend.removePane(name),
+        updatePresentationTitle: async (statuses) => backend.updateServiceTitle(statuses),
         shellEnv: params.shellEnv,
         env: loaded.env,
       };
 
       const session = new Session(sessionParams, manager);
-      // Create-response-only focus target; attach never returns it (E14).
-      session.focusPane = focusPane;
       ref.session = session;
       bindServiceWrappers(session, wrappers);
       this.sessions.set(id, session);
