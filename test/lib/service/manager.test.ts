@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
+import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
 import { serviceRuntimeExited, withServiceRuntime } from "#src/lib/backend/tmux/service-runtime.js";
 import type {
   ExecutionEvent,
@@ -34,28 +36,33 @@ const { probePort } = (await import("../../../src/lib/probe.js")) as unknown as 
 
 // --- Mock deps factory ---
 
-function createMockDeps(): ServiceManagerDeps {
-  const deps = withServiceRuntime({
-    sendKeys: vi.fn<ServiceManagerDeps["sendKeys"]>().mockResolvedValue(),
-    sendCtrlC: vi.fn<ServiceManagerDeps["sendCtrlC"]>().mockResolvedValue(),
-    panePid: vi.fn<ServiceManagerDeps["panePid"]>().mockResolvedValue(1000),
-    detectPorts: vi.fn<ServiceManagerDeps["detectPorts"]>().mockResolvedValue([]),
-    capturePane: vi.fn<ServiceManagerDeps["capturePane"]>().mockResolvedValue(""),
-    // Default: only root PID (no children) = process exited
-    getDescendantPids: vi.fn<ServiceManagerDeps["getDescendantPids"]>().mockResolvedValue([1000]),
-    renameWindow: vi.fn<ServiceManagerDeps["renameWindow"]>().mockResolvedValue(),
-    getWindowName: vi.fn<ServiceManagerDeps["getWindowName"]>().mockResolvedValue("bash"),
-    getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
-    setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
-    exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
-    preflightPorts: vi.fn<ServiceManagerDeps["preflightPorts"]>().mockResolvedValue(null),
-    displayPopup: vi.fn<ServiceManagerDeps["displayPopup"]>().mockResolvedValue(),
-    storeExecInfo: vi.fn(),
-    sessionId: "test-session-id",
-    zapsCommand: "zaps",
-    reflowInsert: vi.fn<ServiceManagerDeps["reflowInsert"]>().mockResolvedValue(),
-    reflowRemove: vi.fn<ServiceManagerDeps["reflowRemove"]>().mockResolvedValue(),
-  });
+function createMockDeps(
+  options: PaneCleanupOptions = { readProcessIdentity: async () => null },
+): ServiceManagerDeps {
+  const deps = withServiceRuntime(
+    {
+      sendKeys: vi.fn<ServiceManagerDeps["sendKeys"]>().mockResolvedValue(),
+      sendCtrlC: vi.fn<ServiceManagerDeps["sendCtrlC"]>().mockResolvedValue(),
+      panePid: vi.fn<ServiceManagerDeps["panePid"]>().mockResolvedValue(1000),
+      detectPorts: vi.fn<ServiceManagerDeps["detectPorts"]>().mockResolvedValue([]),
+      capturePane: vi.fn<ServiceManagerDeps["capturePane"]>().mockResolvedValue(""),
+      // Default: only root PID (no children) = process exited
+      getDescendantPids: vi.fn<ServiceManagerDeps["getDescendantPids"]>().mockResolvedValue([1000]),
+      renameWindow: vi.fn<ServiceManagerDeps["renameWindow"]>().mockResolvedValue(),
+      getWindowName: vi.fn<ServiceManagerDeps["getWindowName"]>().mockResolvedValue("bash"),
+      getWindowOption: vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on"),
+      setWindowOption: vi.fn<ServiceManagerDeps["setWindowOption"]>().mockResolvedValue(),
+      exec: vi.fn<ServiceManagerDeps["exec"]>().mockResolvedValue(),
+      preflightPorts: vi.fn<ServiceManagerDeps["preflightPorts"]>().mockResolvedValue(null),
+      displayPopup: vi.fn<ServiceManagerDeps["displayPopup"]>().mockResolvedValue(),
+      storeExecInfo: vi.fn(),
+      sessionId: "test-session-id",
+      zapsCommand: "zaps",
+      reflowInsert: vi.fn<ServiceManagerDeps["reflowInsert"]>().mockResolvedValue(),
+      reflowRemove: vi.fn<ServiceManagerDeps["reflowRemove"]>().mockResolvedValue(),
+    },
+    options,
+  );
   deps.inspectPorts = vi.fn<ServiceManagerDeps["inspectPorts"]>().mockResolvedValue([]);
   return deps;
 }
@@ -1059,9 +1066,21 @@ describe("stopService", () => {
     ]);
   });
 
-  it("retains ownership and reports incomplete pane cleanup", async () => {
-    const deps = createMockDeps();
-    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+  it("lets the runtime force kill verified members while preserving the pane shell", async () => {
+    const root: ProcessIdentity = { pid: 1000, startTime: "shell", pgid: 1000, sid: 1000 };
+    const child: ProcessIdentity = { pid: 2000, startTime: "command", pgid: 2000, sid: 1000 };
+    const identities = new Map([
+      [root.pid, root],
+      [child.pid, child],
+    ]);
+    const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
+      identities.delete(pid);
+    });
+    const deps = createMockDeps({
+      readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+      kill,
+    });
+    deps.getDescendantPids = vi.fn(async () => [...identities.keys()]);
     const mgr = new ServiceManager(
       makeConfig({ svc: { start: "serve" } }),
       makePaneMap(["svc"]),
@@ -1069,16 +1088,14 @@ describe("stopService", () => {
       "test-session",
     );
     await mgr.startService("svc");
-    const killSpy = vi.spyOn(process, "kill");
-    const stopped = expect(mgr.stopService("svc")).rejects.toThrow("termination deadline exceeded");
-    await vi.advanceTimersByTimeAsync(6000);
-    await stopped;
-    expect(mgr.getStatus("svc").state).toBe("error");
-    expect(killSpy).not.toHaveBeenCalled();
-    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
-    await expect(mgr.stopService("svc")).resolves.toEqual({ noop: false });
+    const stopping = mgr.stopService("svc");
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(kill).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(26);
+    await stopping;
+    expect(kill).toHaveBeenCalledExactlyOnceWith(2000, "SIGKILL");
+    expect(identities.get(1000)).toEqual(root);
     expect(mgr.getStatus("svc").state).toBe("stopped");
-    killSpy.mockRestore();
   });
 });
 
@@ -4369,6 +4386,41 @@ describe("neutral runtime launch", () => {
     await runtime.stop(handle);
     expect(events.filter((event) => event.kind === "exit")).toHaveLength(1);
     expect(await runtime.isRunning(handle)).toBe(false);
+  });
+
+  it("captures shutdown output freshly after joining a stale compatibility capture", async () => {
+    const deps = createMockDeps();
+    const runtime = deps.runtime(makePaneMap(["svc"]));
+    const events: ExecutionEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    const handle = await runtime.start({
+      unitId: "svc",
+      generation: 1,
+      command: "serve",
+      cwd: "/test",
+      env: {},
+      raw: false,
+      placement: "default",
+    });
+    let release!: (output: string) => void;
+    vi.mocked(deps.capturePane)
+      .mockImplementationOnce(
+        async () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      )
+      .mockResolvedValue("before\nFINAL");
+    await vi.advanceTimersByTimeAsync(500);
+    const stopping = runtime.stop(handle);
+    await vi.advanceTimersByTimeAsync(0);
+    release("before");
+    await stopping;
+    expect(events.filter((event) => event.kind === "output")).toEqual([
+      { kind: "output", unitId: "svc", generation: 1, lines: ["before"] },
+      { kind: "output", unitId: "svc", generation: 1, lines: ["FINAL"] },
+    ]);
+    expect(events.at(-1)?.kind).toBe("exit");
   });
 
   it("keeps dependency order, hooks, ports and Sentra env in shared core", async () => {

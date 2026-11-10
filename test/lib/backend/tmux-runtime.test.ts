@@ -4,7 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import type { PaneCleanupOptions } from "#src/lib/backend/tmux/pane-cleanup.js";
 import {
   TmuxRuntime,
   WrapperRegistry,
@@ -21,7 +23,7 @@ const spec: ExecutionSpec = {
   raw: false,
   placement: "default",
 };
-function fixture() {
+function fixture(options: PaneCleanupOptions = { readProcessIdentity: async () => null }) {
   const tmux = tmuxFor("owned-socket");
   const send = vi.spyOn(tmux, "sendKeys").mockResolvedValue();
   vi.spyOn(tmux, "sendCtrlC").mockResolvedValue();
@@ -40,6 +42,7 @@ function fixture() {
     zapsCommand: "zaps",
     paneFor: () => "%1",
     getDescendantPids: descendants,
+    ...options,
   });
   return { tmux, send, processes, wrappers, runtime, descendants };
 }
@@ -222,7 +225,7 @@ describe("TmuxRuntime", () => {
     const first = runtime.stop(old);
     const second = runtime.stop(old);
     expect(first).toBe(second);
-    expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(tmux.sendCtrlC).toHaveBeenCalledTimes(1));
     await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
     acknowledge();
     await first;
@@ -230,6 +233,160 @@ describe("TmuxRuntime", () => {
     await second;
     await runtime.stop(old);
     expect(await runtime.isRunning(replacement)).toBe(true);
+  });
+
+  it("force kills verified interrupt-ignoring members after grace and preserves the pane shell", async () => {
+    vi.useFakeTimers();
+    try {
+      const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
+      const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
+      const identities = new Map([
+        [root.pid, root],
+        [child.pid, child],
+      ]);
+      const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
+        identities.delete(pid);
+      });
+      const { runtime, descendants } = fixture({
+        readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+        kill,
+      });
+      descendants.mockImplementation(async () => [...identities.keys()]);
+      const handle = await runtime.start(spec);
+      const stopping = runtime.stop(handle);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(kill).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(26);
+      await stopping;
+      expect(kill).toHaveBeenCalledExactlyOnceWith(124, "SIGKILL");
+      expect(identities.get(123)).toEqual(root);
+      expect(await runtime.isRunning(handle)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not signal a reused member PID and retains unresolved cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
+      const child: ProcessIdentity = { pid: 124, startTime: "original", pgid: 124, sid: 123 };
+      const identities = new Map([
+        [root.pid, root],
+        [child.pid, child],
+      ]);
+      const kill = vi.fn();
+      const { runtime, descendants } = fixture({
+        readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+        kill,
+      });
+      descendants.mockResolvedValue([123, 124]);
+      const handle = await runtime.start(spec);
+      const stopped = expect(runtime.stop(handle)).rejects.toThrow("identity unverifiable");
+      await vi.advanceTimersByTimeAsync(2500);
+      identities.set(124, { ...child, startTime: "reused" });
+      await vi.advanceTimersByTimeAsync(2500);
+      await stopped;
+      expect(kill).not.toHaveBeenCalled();
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      descendants.mockResolvedValue([123]);
+      await runtime.stop(handle);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cleans recorded members even after the pane disappears during graceful stop", async () => {
+    vi.useFakeTimers();
+    try {
+      const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
+      const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
+      const identities = new Map([
+        [root.pid, root],
+        [child.pid, child],
+      ]);
+      const kill = vi.fn((pid: number, _signal: NodeJS.Signals) => {
+        identities.delete(pid);
+      });
+      const { runtime, descendants, tmux } = fixture({
+        readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+        kill,
+      });
+      descendants.mockResolvedValue([123, 124]);
+      const handle = await runtime.start(spec);
+      const stopping = runtime.stop(handle);
+      await vi.advanceTimersByTimeAsync(100);
+      vi.mocked(tmux.paneExists).mockResolvedValue(false);
+      identities.delete(123);
+      await vi.advanceTimersByTimeAsync(4925);
+      await stopping;
+      expect(kill).toHaveBeenCalledExactlyOnceWith(124, "SIGKILL");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never signals after a birth-verification deadline expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const root: ProcessIdentity = { pid: 123, startTime: "shell", pgid: 123, sid: 123 };
+      const child: ProcessIdentity = { pid: 124, startTime: "command", pgid: 124, sid: 123 };
+      let complete!: (identity: ProcessIdentity) => void;
+      const pending = new Promise<ProcessIdentity>((resolve) => {
+        complete = resolve;
+      });
+      let blockAt = Infinity;
+      const kill = vi.fn();
+      const { runtime, descendants } = fixture({
+        readProcessIdentity: async (pid) => {
+          if (pid === 123) {
+            return root;
+          }
+          return Date.now() >= blockAt ? pending : child;
+        },
+        kill,
+      });
+      descendants.mockResolvedValue([123, 124]);
+      const handle = await runtime.start(spec);
+      blockAt = Date.now() + 5000;
+      const stopped = expect(runtime.stop(handle)).rejects.toThrow("termination deadline exceeded");
+      await vi.advanceTimersByTimeAsync(6000);
+      await stopped;
+      complete(child);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(kill).not.toHaveBeenCalled();
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds pending plus fresh shutdown capture under one drain deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, tmux } = fixture();
+      let finishCapture!: (output: string) => void;
+      const handle = await runtime.start(spec);
+      vi.mocked(tmux.capturePane)
+        .mockImplementationOnce(
+          async () =>
+            new Promise<string>((resolve) => {
+              finishCapture = resolve;
+            }),
+        )
+        .mockResolvedValue("before\nFINAL");
+      await vi.advanceTimersByTimeAsync(250);
+      const stopped = expect(runtime.stop(handle)).rejects.toThrow("termination deadline exceeded");
+      await vi.advanceTimersByTimeAsync(1000);
+      await stopped;
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      finishCapture("before");
+      await vi.advanceTimersByTimeAsync(0);
+      await runtime.stop(handle);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("retains ownership when an interrupt-ignoring command exceeds bounded stop", async () => {
@@ -337,7 +494,8 @@ describe("TmuxRuntime", () => {
               finishCapture = resolve;
             }),
         )
-        .mockResolvedValue("replacement\nready fragment");
+        .mockResolvedValueOnce("final old output\nFINAL")
+        .mockResolvedValue("replacement\nline\nready fragment");
       const buffer = new LogBuffer();
       const log = vi.fn();
       const monitor = new LogMonitor(
@@ -360,16 +518,28 @@ describe("TmuxRuntime", () => {
       const second = await runtime.start({ ...spec, generation: 2 });
       expect(await runtime.readOutput(second, 5)).toEqual([]);
       await vi.advanceTimersByTimeAsync(250);
-      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(3);
       expect(events.filter((event) => event.kind === "output")).toEqual([
         { kind: "output", unitId: "api", generation: 1, lines: ["final old output"] },
-        { kind: "output", unitId: "api", generation: 2, lines: ["replacement", "ready fragment"] },
+        { kind: "output", unitId: "api", generation: 1, lines: ["FINAL"] },
+        {
+          kind: "output",
+          unitId: "api",
+          generation: 2,
+          lines: ["replacement", "line", "ready fragment"],
+        },
       ]);
-      expect(buffer.snapshot()).toEqual(["final old output", "replacement", "ready fragment"]);
-      expect(log).toHaveBeenCalledTimes(2);
-      expect(log).toHaveBeenLastCalledWith("%1", ["replacement", "ready fragment"]);
+      expect(buffer.snapshot()).toEqual([
+        "final old output",
+        "FINAL",
+        "replacement",
+        "line",
+        "ready fragment",
+      ]);
+      expect(log).toHaveBeenCalledTimes(3);
+      expect(log).toHaveBeenLastCalledWith("%1", ["replacement", "line", "ready fragment"]);
       expect(await runtime.readOutput(second, 1)).toEqual(["ready fragment"]);
-      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(3);
       await runtime.stop(second);
       monitor.stopAll();
     } finally {

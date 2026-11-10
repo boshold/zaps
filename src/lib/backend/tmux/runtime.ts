@@ -5,6 +5,8 @@ import { z } from "zod";
 import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
 import type { OutputLease } from "#src/lib/backend/tmux/output.js";
+import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
+import type { PaneCleanupOptions, PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -129,7 +131,7 @@ function serviceWrapperCommand(
   return `${command} -s ${shellEscape(sessionId)} exec-service ${shellEscape(service)} --execution-id ${shellEscape(executionId)}`;
 }
 
-interface TmuxRuntimeOptions {
+interface TmuxRuntimeOptions extends PaneCleanupOptions {
   tmux: TmuxHandle;
   sessionId: string;
   zapsCommand: string;
@@ -145,6 +147,7 @@ interface PaneExecution {
   output?: OutputLease;
   unsubscribeOutput?: () => void;
   raw: boolean;
+  ownership: Promise<PaneOwnership>;
   stop?: Promise<void>;
   stopping?: boolean;
   wrapperExit?: WrapperExit;
@@ -159,6 +162,7 @@ class TmuxRuntime implements RuntimeDriver {
 
   private readonly options: TmuxRuntimeOptions;
   private readonly getDescendantPids: (pid: number) => Promise<number[]>;
+  private readonly cleanup: PaneCleanup;
 
   public constructor(options: TmuxRuntimeOptions) {
     this.options = options;
@@ -169,6 +173,7 @@ class TmuxRuntime implements RuntimeDriver {
           await import("#src/lib/backend/runtime/process-inspection.js");
         return createProcessInspection().getDescendantPids(pid);
       });
+    this.cleanup = new PaneCleanup(this.getDescendantPids, options);
   }
 
   public async start(spec: ExecutionSpec): Promise<ExecutionHandle> {
@@ -184,7 +189,12 @@ class TmuxRuntime implements RuntimeDriver {
       generation: spec.generation,
     });
     const pane = this.options.paneFor(spec.unitId);
-    const record: PaneExecution = { handle, pane, raw: spec.raw };
+    const record: PaneExecution = {
+      handle,
+      pane,
+      raw: spec.raw,
+      ownership: this.cleanup.capture(this.options.tmux.panePid(pane)),
+    };
     this.records.set(handle.id, record);
     this.current.set(handle.unitId, handle.id);
     if (!spec.raw) {
@@ -316,44 +326,22 @@ class TmuxRuntime implements RuntimeDriver {
   }
 
   public static async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      throw new Error("termination deadline exceeded");
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined = undefined;
-    try {
-      return await Promise.race([
-        operation(),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new Error("termination deadline exceeded")), remaining);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return bounded(operation, deadline);
   }
 
   private async stopPane(record: PaneExecution): Promise<void> {
-    const deadline = Date.now() + 5000;
     try {
-      await TmuxRuntime.bounded(async () => this.options.tmux.sendCtrlC(record.pane), deadline);
-      while (this.lookup(record.handle) === record) {
-        const running = await TmuxRuntime.bounded(
-          async () => this.paneHasCommand(record),
-          deadline,
-        );
-        if (!running) {
-          if (record.output) {
-            await TmuxRuntime.bounded(async () => record.output?.producer.poll(), deadline);
-          }
-          this.release(record, record.wrapperExit);
-          return;
-        }
-        await TmuxRuntime.bounded(
-          async () => new Promise<void>((resolve) => setTimeout(resolve, 25)),
-          deadline,
-        );
+      const deadline = await this.cleanup.stop(
+        record.ownership,
+        async () => this.options.tmux.sendCtrlC(record.pane),
+        async () => this.paneHasCommand(record),
+      );
+      if (record.output) {
+        const drainDeadline = Math.min(Date.now() + 1000, deadline);
+        await bounded(async () => record.output?.producer.drain(), drainDeadline);
+        await bounded(async () => record.output?.producer.poll(), drainDeadline);
       }
+      this.release(record, record.wrapperExit);
     } catch (error) {
       record.stop = undefined;
       this.publishFinal(record, String(error));

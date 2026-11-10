@@ -4,7 +4,9 @@ import { createProcessInspection } from "#src/lib/backend/runtime/process-inspec
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
 import type { OutputLease } from "#src/lib/backend/tmux/output.js";
-import { TmuxRuntime, serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
+import { PaneCleanup, bounded } from "#src/lib/backend/tmux/pane-cleanup.js";
+import type { PaneCleanupOptions, PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
+import { serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -26,6 +28,7 @@ interface RuntimeRecord {
   target?: string;
   output?: OutputLease;
   unsubscribe?: () => void;
+  ownership?: Promise<PaneOwnership>;
   stop?: Promise<void>;
   stopping?: boolean;
   finalReported?: boolean;
@@ -39,9 +42,15 @@ class ServiceRuntime implements RuntimeDriver {
   private readonly runner: ProcessRunner;
   private readonly deps: LegacyDeps;
   private readonly targets: Readonly<Record<string, string>>;
-  public constructor(deps: LegacyDeps, targets: Readonly<Record<string, string>>) {
+  private readonly cleanup: PaneCleanup;
+  public constructor(
+    deps: LegacyDeps,
+    targets: Readonly<Record<string, string>>,
+    options: PaneCleanupOptions,
+  ) {
     this.deps = deps;
     this.targets = targets;
+    this.cleanup = new PaneCleanup(async (pid) => deps.getDescendantPids(pid), options);
     this.runner = new ProcessRunner({
       onLines: () => {
         /* Runtime events carry generation identity. */
@@ -77,6 +86,7 @@ class ServiceRuntime implements RuntimeDriver {
       throw new Error(`Unknown service: ${spec.unitId}`);
     }
     record.target = target;
+    record.ownership = this.cleanup.capture(this.deps.panePid(target));
     record.output = acquireTmuxOutput(this.deps.capturePane, target);
     record.output.producer.reset();
     await record.output.producer.poll();
@@ -186,15 +196,16 @@ class ServiceRuntime implements RuntimeDriver {
     if (record.background) {
       await this.runner.stop(handle);
     } else if (record.target) {
-      const deadline = Date.now() + 5000;
-      await TmuxRuntime.bounded(async () => this.deps.sendCtrlC(record.target ?? ""), deadline);
-      while (await TmuxRuntime.bounded(async () => this.isRunning(handle), deadline)) {
-        await TmuxRuntime.bounded(
-          async () => new Promise<void>((resolve) => setTimeout(resolve, 25)),
-          deadline,
-        );
-      }
-      await TmuxRuntime.bounded(async () => record.output?.producer.poll(), deadline);
+      const { target } = record;
+      const ownership = record.ownership ?? this.cleanup.capture(this.deps.panePid(target));
+      const deadline = await this.cleanup.stop(
+        ownership,
+        async () => this.deps.sendCtrlC(target),
+        async () => this.isRunning(handle),
+      );
+      const drainDeadline = Math.min(Date.now() + 1000, deadline);
+      await bounded(async () => record.output?.producer.drain(), drainDeadline);
+      await bounded(async () => record.output?.producer.poll(), drainDeadline);
     }
     record.unsubscribe?.();
     record.output?.release();
@@ -247,9 +258,10 @@ class ServiceRuntime implements RuntimeDriver {
 
 function withServiceRuntime<T extends LegacyDeps>(
   deps: T,
+  options: PaneCleanupOptions = {},
 ): T & Pick<ServiceManagerDeps, "runtime" | "inspectPorts"> {
   return Object.assign(deps, {
-    runtime: (targets: Record<string, string>) => new ServiceRuntime(deps, targets),
+    runtime: (targets: Record<string, string>) => new ServiceRuntime(deps, targets, options),
     inspectPorts: async (pid: number) => createProcessInspection().detectPortsForPid(pid),
   });
 }
