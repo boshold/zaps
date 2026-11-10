@@ -217,6 +217,7 @@ export class ServiceManager extends EventEmitter {
   private readonly unitGenerations = new Map<string, number>();
   private readonly memberUnits = new Map<string, string>();
   private readonly unitMembers = new Map<string, string[]>();
+  private readonly memberCleanupFailures = new Set<string>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -665,13 +666,54 @@ export class ServiceManager extends EventEmitter {
     controller: AbortController,
     sentraEnv: Record<string, string>,
   ): Promise<void> {
-    const combined = serviceConfig._combined;
-    const unitId = this.memberUnits.get(name) ?? name;
-    const execution = this.executions.get(unitId);
-    if (combined && execution) {
-      if (execution.finalized || execution.leaderExited || execution.requestedStop) {
-        throw new Error(`Execution cleanup required for group "${combined.group}"`);
+    if (serviceConfig._combined) {
+      const unitId = this.memberUnits.get(name) ?? name;
+      try {
+        await this.withServiceLock(`@unit:${unitId}`, async () =>
+          this.prepareCombinedStart(name, unitId, serviceConfig, sentraEnv),
+        );
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          status.state = transition(status.state, "error");
+          status.lastError = error instanceof Error ? error.message : String(error);
+          this.emit("stateChange", name, status);
+        }
+        throw error;
       }
+      const handle = this.executions.get(unitId)?.handle;
+      if (name === unitId && handle && !controller.signal.aborted) {
+        status.pid = await this.runtime.getPid(handle);
+      }
+      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
+      return;
+    }
+    await this.launchRuntimeExecution(name, serviceConfig, sentraEnv);
+    const handle = this.executions.get(name)?.handle;
+    if (handle && !controller.signal.aborted) {
+      status.pid = await this.runtime.getPid(handle);
+      await this.finishRuntimeStart(name, name, serviceConfig, status, controller);
+    }
+  }
+
+  private async prepareCombinedStart(
+    name: string,
+    unitId: string,
+    serviceConfig: ServiceConfig,
+    sentraEnv: Record<string, string>,
+  ): Promise<void> {
+    const members = this.unitMembers.get(unitId) ?? [name];
+    const execution = this.executions.get(unitId);
+    if (
+      members.some((member) => this.memberCleanupFailures.has(member)) ||
+      execution?.finalized ||
+      execution?.leaderExited ||
+      execution?.requestedStop
+    ) {
+      throw new Error(`Execution cleanup required for group "${serviceConfig._combined?.group}"`);
+    }
+    if (execution) {
+      execution.stoppedMembers?.delete(name);
+      this.memberCleanupFailures.add(name);
       await this.deps.exec(
         "docker",
         buildDockerComposeArgs(
@@ -682,20 +724,23 @@ export class ServiceManager extends EventEmitter {
         ),
         serviceConfig.cwd ?? this.config.projectDir,
       );
-      execution.stoppedMembers?.delete(name);
-      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
-    } else if (combined && !combined.isOwner) {
-      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
-    } else {
-      await this.launchRuntimeService(name, serviceConfig, status, controller, sentraEnv);
+      this.memberCleanupFailures.delete(name);
+      return;
     }
+    if (name !== unitId && !this.unitGenerations.has(unitId)) {
+      return;
+    }
+    const ownerConfig = this.config.project.services[unitId];
+    const env =
+      name === unitId
+        ? sentraEnv
+        : await this.resolveServiceSentraEnv(unitId, ownerConfig, this.getStatus(unitId));
+    await this.launchRuntimeExecution(unitId, ownerConfig, env);
   }
 
-  private async launchRuntimeService(
+  private async launchRuntimeExecution(
     name: string,
     serviceConfig: ServiceConfig,
-    status: ServiceStatus,
-    controller: AbortController,
     sentraEnv: Record<string, string>,
   ): Promise<void> {
     const ctx = buildServiceContext(
@@ -718,7 +763,7 @@ export class ServiceManager extends EventEmitter {
       finalized: false,
     };
     this.executions.set(name, execution);
-    const handle = await this.runtime.start({
+    execution.handle = await this.runtime.start({
       unitId: name,
       generation,
       command,
@@ -727,11 +772,6 @@ export class ServiceManager extends EventEmitter {
       placement: serviceConfig.detached ? "background" : "default",
       raw: serviceConfig.raw ?? false,
     });
-    execution.handle = handle;
-    if (!controller.signal.aborted) {
-      status.pid = await this.runtime.getPid(handle);
-      await this.finishRuntimeStart(name, name, serviceConfig, status, controller);
-    }
   }
 
   /**
@@ -1171,6 +1211,7 @@ export class ServiceManager extends EventEmitter {
     serviceConfig: ServiceConfig,
     combined: CombinedServiceMeta,
   ): Promise<void> {
+    this.memberCleanupFailures.add(name);
     await this.deps.exec(
       "docker",
       buildDockerComposeArgs(
@@ -1182,6 +1223,7 @@ export class ServiceManager extends EventEmitter {
       serviceConfig.cwd ?? this.config.projectDir,
     );
 
+    this.memberCleanupFailures.delete(name);
     const execution = this.executions.get(this.memberUnits.get(name) ?? name);
     if (execution) {
       execution.stoppedMembers ??= new Set();
@@ -1200,7 +1242,10 @@ export class ServiceManager extends EventEmitter {
       );
     });
 
-    if (allStopped) {
+    if (
+      allStopped &&
+      !combined.allServices.some((member) => this.memberCleanupFailures.has(member))
+    ) {
       await this.stopRuntimeExecution(this.memberUnits.get(name) ?? name);
     }
   }

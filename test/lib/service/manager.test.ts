@@ -3174,6 +3174,148 @@ describe("combined docker services", () => {
     },
   );
 
+  it("reserves a paused member start before final sibling cleanup", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const starting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    deps.exec = vi.fn(async (_command, args) => {
+      if (args.includes("start") && args.includes("postgres")) {
+        entered?.();
+        await gate;
+      }
+    });
+    const ownerStart = mgr.startService("postgres");
+    await starting;
+    const siblingStop = mgr.stopService("redis");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deps.exec).not.toHaveBeenCalledWith(
+      "docker",
+      expect.arrayContaining(["stop", "redis"]),
+      expect.any(String),
+    );
+    release?.();
+    await Promise.all([ownerStart, siblingStop]);
+    expect(mgr.getStatus("postgres").state).toBe("ready");
+    expect(mgr.getStatus("redis").state).toBe("stopped");
+    expect(runtime.specs).toHaveLength(1);
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    await mgr.stopAll();
+    expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])(
+    "replaces a crashed unit exactly once with owner stopped=%s",
+    async (ownerStopped) => {
+      const runtime = neutralRuntime();
+      const deps = createMockDeps();
+      deps.runtime = () => runtime.driver;
+      const config = makeCombinedConfig();
+      for (const service of Object.values(config.project.services)) {
+        service.restart = { maxRetries: 1, backoff: 1 };
+      }
+      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      await mgr.startAll();
+      if (ownerStopped) {
+        await mgr.stopService("postgres");
+      }
+      let release: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const start = runtime.driver.start.bind(runtime.driver);
+      vi.spyOn(runtime.driver, "start").mockImplementation(async (spec) => {
+        if (spec.generation === 2) {
+          await gate;
+        }
+        return start(spec);
+      });
+      runtime.emit({
+        kind: "leaderExit",
+        unitId: "postgres",
+        generation: 1,
+        code: 1,
+        signal: null,
+      });
+      runtime.emit({ kind: "exit", unitId: "postgres", generation: 1, code: 1, signal: null });
+      await vi.advanceTimersByTimeAsync(2);
+      release?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.specs).toHaveLength(2);
+      expect(runtime.specs[1]).toMatchObject({ unitId: "postgres", generation: 2 });
+      expect(runtime.specs[1]?.command).toContain("postgres redis");
+      expect(mgr.getStatus("redis").state).toBe("ready");
+      expect(mgr.getStatus("postgres").state).toBe(ownerStopped ? "stopped" : "ready");
+      runtime.emit({ kind: "exit", unitId: "postgres", generation: 1, code: 1, signal: null });
+      expect(mgr.getStatus("redis").state).toBe("ready");
+      await mgr.stopAll();
+    },
+  );
+
+  it("retains uncertain member admission after Compose start rejects", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    deps.exec = vi.fn(async (_command, args) => {
+      if (args.includes("start") && args.includes("postgres")) {
+        throw new Error("Compose start failed");
+      }
+    });
+    await expect(mgr.startService("postgres")).rejects.toThrow("Compose start failed");
+    expect(mgr.getStatus("postgres").state).toBe("error");
+    await mgr.stopService("redis");
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    await expect(mgr.startService("redis")).rejects.toThrow("Execution cleanup required");
+    expect(runtime.specs).toHaveLength(1);
+    await mgr.stopService("postgres");
+    expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains failed member cleanup ownership until container shutdown succeeds", async () => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const config = makeCombinedConfig();
+    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    await mgr.startAll();
+    await mgr.stopService("postgres");
+    let rejectStop = true;
+    deps.exec = vi.fn(async (_command, args) => {
+      if (rejectStop && args.includes("stop") && args.includes("postgres")) {
+        throw new Error("container shutdown unconfirmed");
+      }
+    });
+    config.project.services.postgres.ready = async () => {
+      throw new Error("readiness failed");
+    };
+    await mgr.startService("postgres");
+    expect(mgr.getStatus("postgres")).toMatchObject({
+      state: "error",
+      lastError: expect.stringContaining("container shutdown unconfirmed"),
+    });
+    await mgr.stopService("redis");
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    await expect(mgr.startService("redis")).rejects.toThrow("Execution cleanup required");
+    expect(runtime.specs).toHaveLength(1);
+    rejectStop = false;
+    await mgr.stopService("postgres");
+    await mgr.stopService("redis");
+    expect(runtime.driver.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("cleans failed member readiness while preserving sibling output and unit exits", async () => {
     const runtime = neutralRuntime();
     const deps = createMockDeps();
