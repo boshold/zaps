@@ -57,6 +57,7 @@ function exactWindowTarget(sessionName: string): string {
 }
 
 interface DisplayPopupOptions {
+  client?: string;
   cwd?: string;
   command: string;
   title?: string;
@@ -410,6 +411,9 @@ function createTmux(resolveSocket: () => string | null) {
   async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       const args = ["display-popup", "-EE"];
+      if (opts.client) {
+        args.push("-c", opts.client);
+      }
       if (opts.cwd) {
         args.push("-d", opts.cwd);
       }
@@ -455,6 +459,7 @@ function createTmux(resolveSocket: () => string | null) {
   }
 
   return {
+    getSocket: resolveSocket,
     capturePane,
     currentPaneId,
     currentSession,
@@ -510,6 +515,7 @@ const defaultTmux = createTmux(() => getEnv("ZAPS_TMUX_SOCKET") ?? null);
 export type { DisplayPopupOptions, PaneInfo, SplitPaneOptions, TmuxHandle };
 export { exactWindowTarget, tmuxFor };
 export const {
+  getSocket,
   capturePane,
   currentPaneId,
   currentSession,

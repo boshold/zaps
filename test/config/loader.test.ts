@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../src/config/loader.js";
 
+vi.mock("../../src/lib/tmux.js", () => {
+  throw new Error("Config loading must not import tmux runtime");
+});
+
 let tmpDir = "";
 
 beforeEach(() => {
