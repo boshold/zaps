@@ -143,6 +143,29 @@ describe("ownership journal", () => {
     expect(kill.mock.calls.every(([pid]) => pid === 300)).toBe(true);
   });
 
+  it("escalates surviving members when the leader disappears during signalling", async () => {
+    const { registry, live, kill, diagnostic } = fixture();
+    live.set(member.pid, member);
+    await registry.record(leader.pid);
+    kill.mockImplementation((pid, signal) => {
+      if (pid === leader.pid) {
+        live.delete(pid);
+        throw Object.assign(new Error("process disappeared"), { code: "ESRCH" });
+      }
+      if (signal === "SIGKILL") {
+        live.delete(pid);
+      }
+    });
+    await registry.reapOrphans();
+    expect(kill.mock.calls).toEqual([
+      [leader.pid, "SIGTERM"],
+      [member.pid, "SIGTERM"],
+      [member.pid, "SIGKILL"],
+    ]);
+    expect(readJournal()).toEqual({});
+    expect(diagnostic).not.toHaveBeenCalled();
+  });
+
   it("escalates stubborn members and retains unresolved evidence", async () => {
     const kill = vi.fn();
     const { registry, diagnostic } = fixture({ kill });
@@ -232,11 +255,16 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       },
     );
     const inspection = createProcessInspection();
+    const diagnostic = vi.fn();
+    const kill = vi.fn((target: number, signal: NodeJS.Signals) => {
+      process.kill(target, signal);
+    });
     const registry = new DetachedRegistry({
       filePath,
       termGraceMs: 50,
       killWaitMs: 50,
-      diagnostic: vi.fn(),
+      diagnostic,
+      kill,
     });
     const pid = positiveChildPid(child.pid);
     try {
@@ -252,6 +280,9 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       child.stdin.write("spawn\n");
       await spawned;
       await registry.record(pid);
+      const discovered = initial ? await inspection.getProcessMembers(initial) : [];
+      const grandchild = discovered.find((item) => item.pid !== pid);
+      const grandchildPid = positiveChildPid(grandchild?.pid);
       const exited = once(child, "exit");
       child.stdin.write("exit\n");
       await exited;
@@ -261,6 +292,19 @@ it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       // Some hosts retain orphan zombies; they must remain journaled, never claimed cleaned.
       const members = initial ? await inspection.getProcessMembers(initial) : [];
       expect(members.every((item) => item.pid !== pid)).toBe(true);
+      expect(kill).toHaveBeenCalledWith(grandchildPid, "SIGTERM");
+      if (readJournal()[String(pid)] !== undefined) {
+        const unresolved = z
+          .object({ ownedMembers: z.array(z.object({ pid: z.number() })) })
+          .parse(readJournal()[String(pid)]);
+        expect(unresolved.ownedMembers).toContainEqual(
+          expect.objectContaining({ pid: grandchildPid }),
+        );
+        expect(diagnostic).toHaveBeenCalledWith(expect.stringContaining("incomplete"));
+      } else {
+        expect(members.some((item) => item.pid === grandchildPid)).toBe(false);
+        expect(readJournal()).toEqual({});
+      }
     } finally {
       try {
         process.kill(-pid, "SIGKILL");

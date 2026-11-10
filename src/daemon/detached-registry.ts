@@ -198,7 +198,18 @@ export class DetachedRegistry {
       members.map(async (member) => {
         const actual = await this.probe(this.deps.readProcessIdentity(member.pid));
         if (actual && sameProcess(member, actual)) {
-          this.deps.kill(member.pid, signal);
+          try {
+            this.deps.kill(member.pid, signal);
+          } catch (error) {
+            if (
+              typeof error !== "object" ||
+              error === null ||
+              !("code" in error) ||
+              error.code !== "ESRCH"
+            ) {
+              throw error;
+            }
+          }
         }
       }),
     );
