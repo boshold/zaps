@@ -2,12 +2,17 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import path from "node:path";
 import { promisify } from "node:util";
 
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
+import type { ResolvedProjectContext } from "#src/config/project-context.js";
+import { backendFactories } from "#src/lib/backend/factory.js";
 import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import { normalizeLegacySessionCreateParams } from "#src/lib/backend/schemas.js";
+import type { SessionCreateParams as BackendCreateParams } from "#src/lib/backend/schemas.js";
 import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
 import {
   TmuxTerminalLeaseRegistry,
@@ -19,6 +24,7 @@ import {
   serviceWrappers,
 } from "#src/lib/backend/tmux/runtime.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
+import type { SessionBackend } from "#src/lib/backend/types.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -28,7 +34,7 @@ import { sanitizeSegment } from "#src/lib/sentra/config.js";
 import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
-import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { ServiceManager, ServiceManagerRuntimeDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo } from "#src/lib/service/types.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
@@ -63,19 +69,67 @@ const CONTEXT_MUTATING_METHODS = new Set([
   "tasks.runInPane",
 ]);
 
-interface CreateParams {
-  configPath: string;
-  /** Directory where zaps was invoked. */
-  projectDir: string;
-  /** Project root resolved by the caller. */
-  resolvedProjectDir?: string;
+type CreateParams = (
+  | BackendCreateParams
+  | Omit<Extract<BackendCreateParams, { backend: "tmux" }>, "backend">
+) & {
   shellEnv?: Record<string, string>;
-  tmuxSession: string;
-  originPane: string;
-  /** Tmux socket hosting the session; omitted/null = the user's default server. */
-  tmuxSocket?: string | null;
-  /** True when zaps owns the hosting tmux session. Validated at the IPC boundary. */
-  managedTmux?: boolean;
+};
+type CapturedCreateParams = BackendCreateParams & { shellEnv: Record<string, string> };
+type CreationIdentity =
+  | { backend: "shell" }
+  | {
+      backend: "tmux";
+      tmuxSocket: string | null;
+      managedTmux: boolean;
+    };
+interface PendingCreate {
+  identity: CreationIdentity;
+  promise: Promise<Session>;
+}
+
+class BackendConflictError extends Error {
+  public readonly code = "backend_conflict";
+  public override readonly name = "BackendConflictError";
+}
+
+function creationIdentity(params: BackendCreateParams): CreationIdentity {
+  return params.backend === "shell"
+    ? { backend: "shell" }
+    : {
+        backend: "tmux",
+        tmuxSocket: params.tmuxSocket ?? null,
+        managedTmux: params.managedTmux === true,
+      };
+}
+
+/**
+ * A cache hit must not silently hand back a session living somewhere else: the
+ * caller's panes, ports and teardown all assume the socket it asked for. Two
+ * zaps in different tmux contexts (personal vs managed) sharing a config path
+ * would otherwise "succeed" and then drive tmux commands at the wrong server.
+ */
+function describeTmuxContext(socket: string | null, managed: boolean): string {
+  const where = socket === null ? "the default tmux server" : `tmux socket '${socket}'`;
+  return managed ? `${where} (managed)` : where;
+}
+
+function assertCompatible(existing: CreationIdentity, requested: CreationIdentity): void {
+  if (existing.backend !== requested.backend) {
+    throw new BackendConflictError(
+      `Session already running with backend '${existing.backend}'; this request asked for '${requested.backend}'. Run zaps down first.`,
+    );
+  }
+  if (
+    existing.backend === "tmux" &&
+    requested.backend === "tmux" &&
+    (existing.tmuxSocket !== requested.tmuxSocket || existing.managedTmux !== requested.managedTmux)
+  ) {
+    throw new BackendConflictError(
+      `Session already running on ${describeTmuxContext(existing.tmuxSocket, existing.managedTmux)}; ` +
+        `this request asked for ${describeTmuxContext(requested.tmuxSocket, requested.managedTmux)}. Run zaps down first.`,
+    );
+  }
 }
 
 interface SessionStore {
@@ -96,41 +150,14 @@ interface DaemonServerOptions {
   log?: (msg: string) => void;
 }
 
-/**
- * A cache hit must not silently hand back a session living somewhere else: the
- * caller's panes, ports and teardown all assume the socket it asked for. Two
- * zaps in different tmux contexts (personal vs managed) sharing a config path
- * would otherwise "succeed" and then drive tmux commands at the wrong server.
- */
-function describeTmuxContext(socket: string | null, managed: boolean): string {
-  const where = socket === null ? "the default tmux server" : `tmux socket '${socket}'`;
-  return managed ? `${where} (managed)` : where;
-}
-
-function assertSameTmuxContext(existing: Session, params: CreateParams): void {
-  const requestedSocket = params.tmuxSocket ?? null;
-  const requestedManaged = params.managedTmux === true;
-  const host = existing.backend.getPresentation();
-  if (host.kind !== "tmux") {
-    throw new Error("Session already running without a tmux host. Run zaps down first.");
-  }
-  if (host.tmuxSocket === requestedSocket && host.managedTmux === requestedManaged) {
-    return;
-  }
-  throw new Error(
-    `Session already running on ${describeTmuxContext(host.tmuxSocket, host.managedTmux)}; ` +
-      `this request asked for ${describeTmuxContext(requestedSocket, requestedManaged)}. ` +
-      `Run zaps down first.`,
-  );
-}
-
 class DaemonServer implements SessionStore {
   private readonly terminalLeases = new TmuxTerminalLeaseRegistry();
   private server: net.Server | null = null;
   private readonly sessions = new Map<string, Session>();
   /** In-flight `create` promises keyed by session id — collapses concurrent
    * creates for the same config into one config-load/layout/startAll (D3). */
-  private readonly inFlightCreates = new Map<string, Promise<Session>>();
+  private readonly inFlightCreates = new Map<string, PendingCreate>();
+  private readonly preparations = new Map<string, PendingCreate>();
   /** Detached-child PID bookkeeping for orphan protection (R10). */
   private readonly detachedRegistry = new DetachedRegistry();
   public onSessionChange?: (count: number) => void;
@@ -219,64 +246,99 @@ class DaemonServer implements SessionStore {
     return undefined;
   }
 
-  public async create(params: CreateParams): Promise<Session> {
-    const id = sessionId(params.configPath, params.resolvedProjectDir ?? params.projectDir);
-
-    // Collapse concurrent creates for the same id onto one in-flight build so a
-    // Single config load / layout / startAll runs and no loser leaks panes (D3).
-    const inflight = this.inFlightCreates.get(id);
-    if (inflight) {
-      return inflight;
-    }
-
-    const promise = this.resolveCreate(id, params);
-    this.inFlightCreates.set(id, promise);
-    return promise;
-  }
-
-  /**
-   * Reuse a live cached session, else (re)build. A cache hit whose `@tui` pane
-   * was killed externally is fully destroyed and rebuilt with the caller's
-   * origin pane, so a re-`up` after closing the window starts clean (A4). The
-   * in-flight entry is cleared on settle — including failure — so a later
-   * create retries instead of joining a dead promise (D3).
-   */
-  private async resolveCreate(id: string, params: CreateParams): Promise<Session> {
-    try {
-      const existing = this.sessions.get(id);
-      if (existing) {
-        assertSameTmuxContext(existing, params);
-        if ((await existing.backend.health()) === "alive") {
-          return existing;
-        }
-        // The tmux window was closed externally — full teardown, then rebuild.
-        await this.destroy(id);
+  public async create(input: CreateParams): Promise<Session> {
+    const { shellEnv, ...request } = input;
+    const params: CapturedCreateParams = {
+      ...normalizeLegacySessionCreateParams(request),
+      shellEnv: { ...(shellEnv ?? captureEnvironment()) },
+    };
+    const identity = creationIdentity(params);
+    const key = JSON.stringify([
+      path.resolve(params.configPath),
+      path.resolve(params.projectDir),
+      params.resolvedProjectDir === undefined ? null : path.resolve(params.resolvedProjectDir),
+      Object.entries(params.shellEnv).toSorted(([left], [right]) => left.localeCompare(right)),
+    ]);
+    return DaemonServer.reserve(this.preparations, key, identity, async () => {
+      const loaded = await loadProjectContext(
+        params.configPath,
+        params.projectDir,
+        params.shellEnv,
+      );
+      const id = sessionId(params.configPath, loaded.config.projectDir);
+      if (
+        params.resolvedProjectDir !== undefined &&
+        sessionId(params.configPath, params.resolvedProjectDir) !== id
+      ) {
+        throw new Error("Resolved project directory does not match the request context");
       }
-      return await this.buildSession(id, params);
-    } finally {
-      this.inFlightCreates.delete(id);
-    }
+      return DaemonServer.reserve(this.inFlightCreates, id, identity, async () =>
+        this.resolveCreate(id, params, loaded),
+      );
+    });
   }
 
-  private async buildSession(id: string, params: CreateParams): Promise<Session> {
-    // Every tmux command for this session goes through one socket-bound handle.
-    // The Session builds an identical one from `tmuxSocket`; this one covers the
-    // Layout build that has to happen before the Session exists.
+  private static async reserve(
+    records: Map<string, PendingCreate>,
+    key: string,
+    identity: CreationIdentity,
+    action: () => Promise<Session>,
+  ): Promise<Session> {
+    const pending = records.get(key);
+    if (pending) {
+      assertCompatible(pending.identity, identity);
+      return pending.promise;
+    }
+    const record: PendingCreate = {
+      identity,
+      promise: Promise.resolve()
+        .then(action)
+        .finally(() => {
+          if (records.get(key) === record) {
+            records.delete(key);
+          }
+        }),
+    };
+    records.set(key, record);
+    return record.promise;
+  }
+
+  private async resolveCreate(
+    id: string,
+    params: CapturedCreateParams,
+    loaded: ResolvedProjectContext,
+  ): Promise<Session> {
+    const existing = this.sessions.get(id);
+    if (existing) {
+      const host = existing.backend.getPresentation();
+      assertCompatible(
+        host.kind === "shell"
+          ? { backend: "shell" }
+          : {
+              backend: "tmux",
+              tmuxSocket: host.tmuxSocket,
+              managedTmux: host.managedTmux,
+            },
+        creationIdentity(params),
+      );
+      if ((await existing.backend.health()) === "alive") {
+        return existing;
+      }
+      await this.destroy(id);
+    }
+    return this.buildSession(id, params, loaded);
+  }
+
+  private async prepareTmux(
+    id: string,
+    params: Extract<CapturedCreateParams, { backend: "tmux" }>,
+    loaded: ResolvedProjectContext,
+    ref: { session: Session | null },
+  ) {
+    const { config } = loaded;
     const tmuxSocket = params.tmuxSocket ?? null;
     const tmux = tmuxFor(tmuxSocket);
-
-    const loaded = await loadProjectContext(
-      params.configPath,
-      params.projectDir,
-      params.shellEnv ?? captureEnvironment(),
-    );
-    const { config } = loaded;
-    const resolvedId = sessionId(params.configPath, config.projectDir);
-    if (params.resolvedProjectDir !== undefined && resolvedId !== id) {
-      throw new Error("Resolved project directory does not match the request context");
-    }
     const tmuxWindow = await tmux.displayMessage(params.originPane, "#{window_id}");
-
     const wrappers = serviceWrappers({});
     const processes = new ProcessRunner({
       onLines: () => {
@@ -288,121 +350,170 @@ class DaemonServer implements SessionStore {
       record: async (pid) => this.detachedRegistry.record(pid),
       unrecord: async (pid) => this.detachedRegistry.remove(pid),
     });
-    const ref: { session: Session | null } = { session: null };
-    const operations = new TmuxTerminalOperations(
-      tmux,
-      params.tmuxSession,
-      params.originPane,
-      this.terminalLeases,
-    );
-    const backendRef: { current: TmuxSessionBackend | null } = { current: null };
-    const runtime = new TmuxRuntime({
-      tmux,
-      processes,
-      wrappers,
-      sessionId: id,
-      environmentFile: writeEnvironmentFile,
-      removeEnvironmentFile: (file) => fs.rmSync(file, { force: true }),
-      zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
-      paneFor: (name) => {
-        if (!backendRef.current) {
-          throw new Error("Backend not initialized");
+    const cleanup: (() => Promise<void>)[] = [async () => processes.dispose()];
+    let disposal: Promise<void> | undefined = undefined;
+    const disposeResources = async (): Promise<void> => {
+      disposal ??= (async () => {
+        const results = await Promise.allSettled(cleanup.map(async (dispose) => dispose()));
+        const failures = results
+          .filter((result) => result.status === "rejected")
+          .map((result) => result.reason);
+        if (failures.length) {
+          throw new AggregateError(failures, "Backend resource cleanup incomplete");
         }
-        return backendRef.current.paneFor(name);
-      },
-    });
-    const terminal = new TmuxTerminalDriver({
-      sessionId: id,
-      sessionName: params.tmuxSession,
-      taskPane: (runId, pane) => ref.session?.panesByRun.set(runId, pane),
-      tmux,
-      dashboardPane: params.originPane,
-      operations,
-      paneFor: (name) => {
-        if (!backendRef.current) {
-          throw new Error("Backend not initialized");
-        }
-        return backendRef.current.paneFor(name);
-      },
-      tasks: () =>
-        Object.entries(ref.session?.config.project.tasks ?? {}).map(([key, task]) => ({
-          key,
-          name: task.name,
-        })),
-      output: (runId) => ref.session?.taskOutput.get(runId) ?? undefined,
-      reconcile: async (layout) => {
-        if (!backendRef.current) {
-          throw new Error("Backend not initialized");
-        }
-        await backendRef.current.reconcileLayout(layout);
-      },
-    });
-    const backend = await TmuxSessionBackend.create({
-      host: {
-        tmuxSession: params.tmuxSession,
-        tmuxWindow,
-        originPane: params.originPane,
-        tmuxSocket,
-        managedTmux: params.managedTmux ?? false,
-      },
-      tmux,
-      runtime,
-      terminal,
-      disposeRuntime: async () => {
-        const errors: unknown[] = [];
-        for (const dispose of [
-          async () => operations.dispose(),
-          async () => terminal.dispose(),
-          async () => runtime.dispose(),
-        ]) {
-          try {
-            await dispose();
-          } catch (error) {
-            errors.push(error);
-          }
-        }
-        if (errors.length) {
-          throw new AggregateError(errors, "Backend resource cleanup incomplete");
-        }
-      },
-
-      layout: config.project.layout,
-      services: config.project.services,
-      groups: config.groups,
-      skip: computeBootSkip(config),
-    });
-    backendRef.current = backend;
-    backend.subscribePresentation((view) => {
-      if (view.kind === "tmux") {
-        runtime.retainPanes(new Set(Object.values(view.paneMap)));
-      }
-    });
+      })();
+      await disposal;
+    };
+    let prepared: TmuxSessionBackend | undefined = undefined;
     try {
-      await backend.activateWindowTitles();
-      const view = backend.getPresentation();
-      if (view.kind !== "tmux") {
-        throw new Error("Expected tmux presentation");
-      }
-      const paneMap = { ...view.paneMap };
+      const operations = new TmuxTerminalOperations(
+        tmux,
+        params.tmuxSession,
+        params.originPane,
+        this.terminalLeases,
+      );
+      cleanup.push(async () => operations.dispose());
+      const backendRef: { current: TmuxSessionBackend | null } = { current: null };
+      const runtime = new TmuxRuntime({
+        tmux,
+        processes,
+        wrappers,
+        sessionId: id,
+        environmentFile: writeEnvironmentFile,
+        removeEnvironmentFile: (file) => fs.rmSync(file, { force: true }),
+        zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+        paneFor: (name) => {
+          if (!backendRef.current) {
+            throw new Error("Backend not initialized");
+          }
+          return backendRef.current.paneFor(name);
+        },
+      });
+      // Runtime now owns process cleanup.
+      cleanup.shift();
+      cleanup.push(async () => runtime.dispose());
+      const terminal = new TmuxTerminalDriver({
+        sessionId: id,
+        sessionName: params.tmuxSession,
+        taskPane: (runId, pane) => ref.session?.panesByRun.set(runId, pane),
+        tmux,
+        dashboardPane: params.originPane,
+        operations,
+        paneFor: (name) => {
+          if (!backendRef.current) {
+            throw new Error("Backend not initialized");
+          }
+          return backendRef.current.paneFor(name);
+        },
+        tasks: () =>
+          Object.entries(ref.session?.config.project.tasks ?? {}).map(([key, task]) => ({
+            key,
+            name: task.name,
+          })),
+        output: (runId) => ref.session?.taskOutput.get(runId) ?? undefined,
+        reconcile: async (layout) => {
+          if (!backendRef.current) {
+            throw new Error("Backend not initialized");
+          }
+          await backendRef.current.reconcileLayout(layout);
+        },
+      });
+      cleanup.splice(-1, 0, async () => terminal.dispose());
+      const backend = await TmuxSessionBackend.create({
+        host: {
+          tmuxSession: params.tmuxSession,
+          tmuxWindow,
+          originPane: params.originPane,
+          tmuxSocket,
+          managedTmux: params.managedTmux ?? false,
+        },
+        tmux,
+        runtime,
+        terminal,
+        disposeRuntime: disposeResources,
 
-      // Late-bound ref so storeExecInfo closure can capture session before it's created
-      const deps: ServiceManagerDeps = {
-        runtime: () => runtime,
+        layout: config.project.layout,
+        services: config.project.services,
+        groups: config.groups,
+        skip: computeBootSkip(config),
+      });
+      prepared = backend;
+      backendRef.current = backend;
+      backend.subscribePresentation((view) => {
+        if (view.kind === "tmux") {
+          runtime.retainPanes(new Set(Object.values(view.paneMap)));
+        }
+      });
+      await backend.activateWindowTitles();
+      return {
+        backend,
+        wrappers,
+        deps: {
+          sendKeys: tmux.sendKeys,
+          sendCtrlC: tmux.sendCtrlC,
+          panePid: tmux.panePid,
+          detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
+          capturePane: tmux.capturePane,
+          renameWindow: tmux.renameWindow,
+          getWindowName: tmux.getWindowName,
+          getWindowOption: tmux.getWindowOption,
+          setWindowOption: tmux.setWindowOption,
+          displayPopup: tmux.displayPopup,
+        },
+        presentation: {
+          reloadPresentation: async (candidate: ResolvedProjectContext["config"]) =>
+            backend.reload(candidate, computeBootSkip(candidate)),
+          insertPresentation: async (name: string) => backend.insertPane(name),
+          removePresentation: async (name: string) => backend.removePane(name),
+          updatePresentationTitle: async (
+            statuses: Parameters<TmuxSessionBackend["updateServiceTitle"]>[0],
+          ) => backend.updateServiceTitle(statuses),
+        },
+      };
+    } catch (error) {
+      const [result] = await Promise.allSettled([
+        (async () => (prepared ? prepared.dispose() : disposeResources()))(),
+      ]);
+      if (result.status === "rejected") {
+        throw new AggregateError([error, result.reason], "Session construction cleanup failed", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private async buildSession(
+    id: string,
+    params: CapturedCreateParams,
+    loaded: ResolvedProjectContext,
+  ): Promise<Session> {
+    const { config } = loaded;
+    const ref: { session: Session | null } = { session: null };
+    const tmux =
+      params.backend === "tmux" ? await this.prepareTmux(id, params, loaded, ref) : undefined;
+    const backend: SessionBackend =
+      tmux?.backend ??
+      (await backendFactories.shell({
+        services: config.project.services,
+        layout: config.project.layout,
+        processes: {
+          record: async (pid) => this.detachedRegistry.record(pid),
+          unrecord: async (pid) => this.detachedRegistry.remove(pid),
+        },
+      }));
+    let manager: ServiceManager | undefined = undefined;
+    try {
+      const view = backend.getPresentation();
+      const paneMap = view.kind === "tmux" ? { ...view.paneMap } : {};
+      const deps: ServiceManagerRuntimeDeps = {
+        ...tmux?.deps,
+        runtime: () => backend.runtime,
         inspectPorts: async (pid) => createProcessInspection().detectPortsForPid(pid),
-        sendKeys: tmux.sendKeys,
-        sendCtrlC: tmux.sendCtrlC,
-        panePid: tmux.panePid,
-        detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
         detectPortsForPid,
-        capturePane: tmux.capturePane,
         getDescendantPids,
         recordDetached: async (pid: number) => this.detachedRegistry.record(pid),
         removeDetached: async (pid: number) => this.detachedRegistry.remove(pid),
-        renameWindow: tmux.renameWindow,
-        getWindowName: tmux.getWindowName,
-        getWindowOption: tmux.getWindowOption,
-        setWindowOption: tmux.setWindowOption,
-        displayPopup: tmux.displayPopup,
         exec: async (cmd: string, args: string[], cwd?: string) => {
           await execFileAsync(cmd, args, {
             ...(cwd ? { cwd } : {}),
@@ -428,12 +539,7 @@ class DaemonServer implements SessionStore {
             /* Already consumed or unavailable. */
           }
         },
-        // Reflow hooks late-bind to the session (same ref pattern as
-        // `storeExecInfo`). They always invoke `session.reflowInsert/Remove`,
-        // Which wrap `withOpLock` around the LIVE-getter `Session.reflow`. After
-        // A reload, `ref.session` is the same Session instance but
-        // `session.paneMap`/`session.config` have been atomically swapped — the
-        // Reflow's live getters pick that up without any reconstruction here.
+        // Session serializes adapter layout mutations against reload/destroy.
         reflowInsert: async (name: string) => {
           if (!ref.session) {
             throw new Error("reflowInsert: session not yet wired");
@@ -467,9 +573,13 @@ class DaemonServer implements SessionStore {
         },
       };
 
-      // Create ServiceManager
       const { ServiceManager } = await import("#src/lib/service/manager.js");
-      const manager = new ServiceManager(config, paneMap, deps, params.tmuxSession);
+      manager = new ServiceManager(
+        config,
+        paneMap,
+        deps,
+        params.backend === "tmux" ? params.tmuxSession : undefined,
+      );
 
       const sessionParams: SessionCreateParams = {
         backend,
@@ -478,18 +588,16 @@ class DaemonServer implements SessionStore {
         projectDir: params.projectDir,
         config,
         deps,
-        reloadPresentation: async (candidate) =>
-          backend.reload(candidate, computeBootSkip(candidate)),
-        insertPresentation: async (name) => backend.insertPane(name),
-        removePresentation: async (name) => backend.removePane(name),
-        updatePresentationTitle: async (statuses) => backend.updateServiceTitle(statuses),
+        ...tmux?.presentation,
         shellEnv: params.shellEnv,
         env: loaded.env,
       };
 
       const session = new Session(sessionParams, manager);
       ref.session = session;
-      bindServiceWrappers(session, wrappers);
+      if (tmux) {
+        bindServiceWrappers(session, tmux.wrappers);
+      }
       this.sessions.set(id, session);
       this.onSessionChange?.(this.sessions.size);
 
@@ -505,7 +613,21 @@ class DaemonServer implements SessionStore {
 
       return session;
     } catch (error) {
-      const results = await Promise.allSettled([processes.dispose(), backend.dispose()]);
+      const { session } = ref;
+      if (session && this.sessions.get(id) === session) {
+        this.sessions.delete(id);
+      }
+      const results = await Promise.allSettled([
+        (async () => this.sentraCounter.detach(id))(),
+        (async () => {
+          if (session) {
+            await session.destroy();
+          } else {
+            manager?.disposeObservers();
+          }
+        })(),
+        ...(session ? [] : [(async () => backend.dispose())()]),
+      ]);
       const failures = results
         .filter((result) => result.status === "rejected")
         .map((result) => result.reason);

@@ -19,7 +19,7 @@ import {
   resolveEnvironment,
   runWithEnvironment,
 } from "#src/lib/request-context.js";
-import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { ServiceManager, ServiceManagerRuntimeDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
@@ -132,7 +132,7 @@ export interface SessionCreateParams {
   configPath: string;
   projectDir: string;
   config: ResolvedConfig;
-  deps: ServiceManagerDeps;
+  deps: ServiceManagerRuntimeDeps;
   /** Shared manager projection; removed by P06-T04. */
   paneMap?: PaneMap;
   /** Composition bridges; removed by P06-T04. */
@@ -194,7 +194,7 @@ export class Session {
   public get taskOutput() {
     return this.taskExecution.output;
   }
-  public readonly deps: ServiceManagerDeps;
+  public readonly deps: ServiceManagerRuntimeDeps;
 
   public name: string;
   public config: ResolvedConfig;

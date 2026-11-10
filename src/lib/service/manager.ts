@@ -211,13 +211,26 @@ async function tryAutoOpen(
   }
 }
 
+type LegacyTerminalDeps =
+  | "sendKeys"
+  | "sendCtrlC"
+  | "panePid"
+  | "detectPorts"
+  | "capturePane"
+  | "renameWindow"
+  | "getWindowName"
+  | "getWindowOption"
+  | "setWindowOption"
+  | "displayPopup";
+type ServiceManagerRuntimeDeps = Omit<ServiceManagerDeps, LegacyTerminalDeps> &
+  Partial<Pick<ServiceManagerDeps, LegacyTerminalDeps>>;
+
 export class ServiceManager extends EventEmitter {
   private runStopHook: (hook: () => void | Promise<void>) => Promise<void> = fireHook;
   private readonly statuses: Map<string, ServiceStatus>;
   private readonly abortControllers: Map<string, AbortController>;
   private readonly config: ResolvedConfig;
   private readonly paneMap: PaneMap;
-  private readonly session: string;
   private shuttingDown = false;
   private startAllPromise: Promise<void> | null = null;
   private admissionClosed = false;
@@ -225,7 +238,7 @@ export class ServiceManager extends EventEmitter {
   private stopAllPromise: Promise<void> | null = null;
   /** Cooperative-abort flag for an in-flight `startAll` (reload/destroy). */
   private startAllAborted = false;
-  private readonly deps: ServiceManagerDeps;
+  private readonly deps: ServiceManagerRuntimeDeps;
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
@@ -256,14 +269,13 @@ export class ServiceManager extends EventEmitter {
   public constructor(
     config: ResolvedConfig,
     paneMap: PaneMap,
-    deps: ServiceManagerDeps,
-    session: string,
+    deps: ServiceManagerRuntimeDeps,
+    _session?: string,
   ) {
     super();
     this.config = config;
     this.paneMap = paneMap;
     this.deps = deps;
-    this.session = session;
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
@@ -1760,3 +1772,5 @@ export interface ServiceManagerDeps {
 }
 
 export { diffOutput, GroupedDockerRebuildError };
+
+export type { ServiceManagerRuntimeDeps };

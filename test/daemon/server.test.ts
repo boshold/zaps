@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { ConfigError } from "../../src/config/errors.js";
+import type { ResolvedConfig } from "../../src/config/types.js";
+import { ProcessRunner } from "../../src/lib/backend/runtime/process-runner.js";
 
 // eslint-disable-next-line no-unsafe-type-assertion -- Test boundary
 vi.mock("node:net", () => {
@@ -137,6 +139,31 @@ const { DaemonServer } = await import("../../src/daemon/server.js");
 const { SentraHost } = await import("../../src/lib/sentra/host.js");
 const { sentraEnvFor } = await import("../../src/lib/sentra/config.js");
 
+function deferred<T>() {
+  let accept: (value: T) => void = () => {
+    throw new Error("Not initialized");
+  };
+  let fail: (reason: Error) => void = () => {
+    throw new Error("Not initialized");
+  };
+  const promise = new Promise<T>((resolve, reject) => {
+    accept = resolve;
+    fail = reject;
+  });
+  return { promise, resolve: accept, reject: fail };
+}
+
+function configAt(projectDir = "/test"): ResolvedConfig {
+  return {
+    configPath: "/test/.zaps.mts",
+    projectDir,
+    project: { name: "test", services: {} },
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+}
+
 describe("DaemonServer", () => {
   let server: InstanceType<typeof DaemonServer>;
 
@@ -171,6 +198,222 @@ describe("DaemonServer", () => {
   afterEach(() => {
     server.stop();
     vi.restoreAllMocks();
+  });
+
+  describe("backend-aware creation reservations", () => {
+    const tmuxParams = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+      shellEnv: {},
+    };
+    const shellParams = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      backend: "shell",
+      shellEnv: {},
+    } satisfies Parameters<InstanceType<typeof DaemonServer>["create"]>[0];
+
+    it("captures mutable input and shares one context/build/start while loading", async () => {
+      const loading = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(loading.promise);
+      const first = { ...tmuxParams, shellEnv: { CAPTURED: "original" } };
+      const pending = server.create(first);
+      const joined = server.create({ ...first, tmuxSession: "other", originPane: "%9" });
+      first.originPane = "%mutated";
+      first.shellEnv.CAPTURED = "mutated";
+      await vi.waitFor(() => expect(mockLoadConfig).toHaveBeenCalledTimes(1));
+      await expect(
+        server.create({ ...shellParams, shellEnv: { CAPTURED: "original" } }),
+      ).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(
+        server.create({
+          ...tmuxParams,
+          shellEnv: { CAPTURED: "original" },
+          tmuxSocket: "zaps",
+          managedTmux: true,
+        }),
+      ).rejects.toMatchObject({ code: "backend_conflict" });
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      loading.resolve(configAt());
+      const session = await pending;
+      expect(await joined).toBe(session);
+      expect(session.shellEnv.CAPTURED).toBe("original");
+      expect(session.compatibilityProjection().originPane).toBe("%0");
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects incompatible and invalid requests during backend preparation", async () => {
+      const layout = deferred<Awaited<ReturnType<typeof layoutModule.createLayout>>>();
+      mockCreateLayout.mockReturnValueOnce(layout.promise);
+      const pending = server.create(tmuxParams);
+      await vi.waitFor(() => expect(mockCreateLayout).toHaveBeenCalledTimes(1));
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.create({ ...tmuxParams, tmuxSocket: "other" })).rejects.toMatchObject({
+        code: "backend_conflict",
+      });
+      const invalid = [
+        { ...tmuxParams, backend: "unknown" },
+        { ...tmuxParams, backend: undefined },
+        { ...tmuxParams, tmuxSocket: " " },
+        { ...tmuxParams, managedTmux: true },
+        { ...shellParams, managedTmux: false },
+        { ...shellParams, tmuxSocket: null },
+        { ...tmuxParams, backend: "shell" },
+      ];
+      for (const request of invalid) {
+        await expect(server.create(request)).rejects.toThrow();
+      }
+      expect(mockLoadConfig).toHaveBeenCalledTimes(1);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      layout.resolve({ paneMap: { "@tui": "%0" }, focusPane: "%0" });
+      await pending;
+    });
+
+    it("clears synchronous conflicts and checks them before lost-host recovery", async () => {
+      const session = await server.create(tmuxParams);
+      const health = vi.spyOn(session.backend, "health").mockResolvedValue("lost");
+      const destroy = vi.spyOn(session, "destroy");
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.create({ ...tmuxParams, tmuxSocket: "other" })).rejects.toMatchObject({
+        code: "backend_conflict",
+      });
+      expect(health).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
+      health.mockResolvedValue("alive");
+      expect(await server.create({ ...tmuxParams, tmuxSocket: null, managedTmux: false })).toBe(
+        session,
+      );
+    });
+
+    it("reuses idle and stopped shell sessions without tmux or new startup", async () => {
+      mockLoadConfig.mockResolvedValue(configAt());
+      const session = await server.create(shellParams);
+      await session.startPromise;
+      expect(session.backend.id).toBe("shell");
+      expect(session.paneMap).toEqual({});
+      expect(session.subscribers.size).toBe(0);
+      expect(await session.backend.health()).toBe("alive");
+      await session.manager.stopAll();
+      expect(await server.create(shellParams)).toBe(session);
+      server.list();
+      session.attachSnapshot();
+      expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      expect(tmux.displayMessage).not.toHaveBeenCalled();
+      await server.destroy(session.id);
+      const replacement = await server.create(tmuxParams);
+      expect(replacement.id).toBe(session.id);
+      expect(replacement.backend.id).toBe("tmux");
+    });
+
+    it("registers the effective ID and converges different invocations", async () => {
+      mockLoadConfig.mockResolvedValue(configAt("/effective"));
+      const [first, second] = await Promise.all([
+        server.create(tmuxParams),
+        server.create({ ...tmuxParams, projectDir: "/other" }),
+      ]);
+      expect(first).toBe(second);
+      expect(server.get(first.id)).toBe(first);
+      expect(server.getByProjectDir("/effective")).toBe(first);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      await server.destroy(first.id);
+      expect(server.sessionCount).toBe(0);
+    });
+
+    it("preserves distinct effective projects from one config", async () => {
+      mockLoadConfig.mockImplementation(async (_config, invokeDir) =>
+        configAt(`${invokeDir}/project`),
+      );
+      const [first, second] = await Promise.all([
+        server.create(shellParams),
+        server.create({ ...shellParams, projectDir: "/other" }),
+      ]);
+      expect(first.id).not.toBe(second.id);
+      expect(server.get(first.id)).toBe(first);
+      expect(server.get(second.id)).toBe(second);
+      expect(server.sessionCount).toBe(2);
+    });
+
+    it("rejects incorrect hints before host allocation and accepts corrected retry", async () => {
+      mockLoadConfig.mockResolvedValue(configAt("/effective"));
+      await expect(server.create({ ...tmuxParams, resolvedProjectDir: "/wrong" })).rejects.toThrow(
+        "Resolved project directory",
+      );
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      const session = await server.create({
+        ...tmuxParams,
+        resolvedProjectDir: "/effective/../effective",
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
+    it("cleans failed preparations and coalesces the corrected retry", async () => {
+      const loading = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(loading.promise);
+      const first = server.create(tmuxParams);
+      const joined = server.create(tmuxParams);
+      const failures = Promise.allSettled([first, joined]);
+      loading.reject(new Error("context rejected"));
+      const results = await failures;
+      expect(results.every((result) => result.status === "rejected")).toBe(true);
+      const retryLoad = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(retryLoad.promise);
+      const retry = server.create(tmuxParams);
+      const retryJoined = server.create(tmuxParams);
+      await vi.waitFor(() => expect(mockLoadConfig).toHaveBeenCalledTimes(2));
+      retryLoad.resolve(configAt());
+      expect(await retryJoined).toBe(await retry);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+    });
+
+    it("rolls back registered sessions and owned observers when count notification fails", async () => {
+      const other = await server.create(shellParams);
+      let failedSession: ReturnType<InstanceType<typeof DaemonServer>["get"]>;
+      server.onSessionChange = () => {
+        failedSession = server.list().find((session) => session !== other);
+        throw new Error("notification failed");
+      };
+      mockLoadConfig.mockResolvedValue(configAt("/other"));
+      await expect(server.create({ ...tmuxParams, projectDir: "/other" })).rejects.toThrow(
+        "notification failed",
+      );
+      expect(failedSession?.destroyed).toBe(true);
+      expect(failedSession?.manager.disposeObservers).toHaveBeenCalledTimes(1);
+      expect(failedSession?.manager.startAll).not.toHaveBeenCalled();
+      expect(server.list()).toEqual([other]);
+      expect(other.destroyed).toBe(false);
+      server.onSessionChange = undefined;
+      const retry = await server.create({ ...tmuxParams, projectDir: "/other" });
+      expect(server.get(retry.id)).toBe(retry);
+    });
+
+    it("retains an existing session when lost-host cleanup fails", async () => {
+      const session = await server.create(tmuxParams);
+      vi.spyOn(session.backend, "health").mockResolvedValue("lost");
+      const cleanup = new Error("host cleanup failed");
+      vi.spyOn(session.backend, "dispose").mockRejectedValue(cleanup);
+      await expect(server.create(tmuxParams)).rejects.toMatchObject({ errors: [cleanup] });
+      expect(server.get(session.id)).toBe(session);
+      await expect(server.create(tmuxParams)).rejects.toThrow("Session cleanup incomplete");
+      expect(server.get(session.id)).toBe(session);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes acquired process/terminal resources when backend creation rejects", async () => {
+      mockCreateLayout.mockRejectedValueOnce(new Error("layout rejected"));
+      const processes = vi.spyOn(ProcessRunner.prototype, "dispose");
+      const terminal = vi.spyOn(TmuxTerminalDriver.prototype, "dispose");
+      const operations = vi.spyOn(TmuxTerminalOperations.prototype, "dispose");
+      await expect(server.create(tmuxParams)).rejects.toThrow("layout rejected");
+      expect(processes).toHaveBeenCalled();
+      expect(terminal).toHaveBeenCalledTimes(1);
+      expect(operations).toHaveBeenCalledTimes(1);
+      expect(server.sessionCount).toBe(0);
+      expect(await server.create(tmuxParams)).toBeDefined();
+    });
   });
 
   it("tracks autostart once and never restarts on reuse, list or snapshots", async () => {
