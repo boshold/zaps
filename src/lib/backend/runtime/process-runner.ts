@@ -91,7 +91,10 @@ class ProcessAdmission {
   }
 }
 
+type ProcessChunkSink = (stream: "stdout" | "stderr", chunk: string | null) => void;
+
 interface ProcessSpawnOptions {
+  onChunk?: ProcessChunkSink;
   authority?: ProcessAuthority;
   unitId: string;
   command: string;
@@ -122,6 +125,7 @@ class CleanupDeadlineError extends Error {
 }
 
 interface OwnedProcess {
+  onChunk?: ProcessChunkSink;
   handle: ExecutionHandle;
   authority?: ProcessAuthority;
   removeAbort?: () => void;
@@ -208,6 +212,7 @@ export class ProcessRunner {
     });
     const proc: OwnedProcess = {
       handle,
+      onChunk: opts.onChunk,
       authority: opts.authority,
       child,
       pid: child.pid ?? -1,
@@ -234,6 +239,7 @@ export class ProcessRunner {
       const readable = child[stream];
       if (!readable) {
         proc.closed.add(stream);
+        proc.onChunk?.(stream, null);
         continue;
       }
       readable.on("data", (chunk: Buffer) => {
@@ -597,6 +603,7 @@ export class ProcessRunner {
     }
     this.output(proc, stream, proc[`${stream}Decoder`].end());
     proc.closed.add(stream);
+    proc.onChunk?.(stream, null);
     const trailing = proc[stream];
     proc[stream] = "";
     if (trailing) {
@@ -701,6 +708,7 @@ export class ProcessRunner {
     if (proc.finalized) {
       return;
     }
+    proc.onChunk?.(stream, chunk);
     const parts = (proc[stream] + chunk).split("\n");
     proc[stream] = parts.pop() ?? "";
     this.emitLines(proc, parts);

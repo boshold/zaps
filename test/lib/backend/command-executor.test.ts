@@ -1,4 +1,4 @@
-import { ChildProcess } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -81,6 +81,73 @@ describe("OwnedCommandExecutor", () => {
       }
     });
   });
+
+  it.each(["stdout", "stderr"] as const)(
+    "delivers live bare CR on %s before child/stream closure",
+    async (stream) => {
+      let stdoutClosed = false;
+      let stderrClosed = false;
+      let leaderExited = false;
+      const runner = new ProcessRunner({
+        spawn: (command, args, options) => {
+          const child = spawn(command, args, options);
+          child.stdout?.once("end", () => {
+            stdoutClosed = true;
+          });
+          child.stdout?.once("close", () => {
+            stdoutClosed = true;
+          });
+          child.stderr?.once("end", () => {
+            stderrClosed = true;
+          });
+          child.stderr?.once("close", () => {
+            stderrClosed = true;
+          });
+          child.once("exit", () => {
+            leaderExited = true;
+          });
+          return child;
+        },
+        onLines: vi.fn(),
+        onExit: vi.fn(),
+      });
+      const controller = new AbortController();
+      const observed: {
+        line: string;
+        stdoutClosed: boolean;
+        stderrClosed: boolean;
+        leaderExited: boolean;
+      }[] = [];
+      const command =
+        stream === "stdout"
+          ? String.raw`printf 'ready\r'; exec tail -f /dev/null`
+          : String.raw`printf 'ready\r' >&2; exec tail -f /dev/null`;
+      const result = new OwnedCommandExecutor(runner).execute(command, {
+        cwd: process.cwd(),
+        env: { ...process.env },
+        signal: controller.signal,
+        onLine: (line) => {
+          observed.push({ line, stdoutClosed, stderrClosed, leaderExited });
+          controller.abort();
+        },
+      });
+      try {
+        await vi.waitFor(() => {
+          expect(observed).toEqual([
+            { line: "ready", stdoutClosed: false, stderrClosed: false, leaderExited: false },
+          ]);
+        });
+        const final = await result;
+        expect(final.success).toBe(false);
+        expect(final.output.filter((line) => line === "ready")).toEqual(["ready"]);
+        expect(final.output).toContain("Command cancelled");
+      } finally {
+        controller.abort();
+        await runner.dispose();
+        await result;
+      }
+    },
+  );
 
   it("captures cwd/env at admission, output tails and exit status", async () => {
     const h = harness();

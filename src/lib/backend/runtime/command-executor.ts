@@ -1,8 +1,42 @@
 import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 
 import type { ExecResult } from "#src/config/types.js";
+import type { ExecutionEvent } from "#src/lib/backend/types.js";
 
 import type { ProcessAuthority, ProcessRunner } from "./process-runner.js";
+
+function captureOutput(onLine?: (line: string) => void) {
+  const output: string[] = [];
+  const inputs = { stdout: new PassThrough(), stderr: new PassThrough() };
+  const closed = Object.values(inputs).map(async (input) => {
+    const reader = createInterface({ input });
+    reader.on("line", (line) => {
+      output.push(line);
+      onLine?.(line);
+    });
+    return new Promise<void>((resolve) => {
+      reader.once("close", resolve);
+    });
+  });
+  return {
+    output,
+    onChunk: (stream: "stdout" | "stderr", chunk: string | null) => {
+      if (chunk === null) {
+        inputs[stream].end();
+      } else {
+        inputs[stream].write(chunk);
+      }
+    },
+    finish: async () => {
+      for (const input of Object.values(inputs)) {
+        input.end();
+      }
+      await Promise.all(closed);
+    },
+  };
+}
 
 export interface CommandOptions {
   cwd: string;
@@ -43,7 +77,8 @@ export class OwnedCommandExecutor implements CommandExecutor {
       return { success: false, exitCode: 1, output: ["Command cancelled"] };
     }
     const unitId = `command:${randomUUID()}`;
-    const output: string[] = [];
+    const capture = captureOutput(options.onLine);
+    const { output } = capture;
     const { cwd } = options;
     const env = { ...options.env };
     return new Promise((resolve) => {
@@ -52,34 +87,28 @@ export class OwnedCommandExecutor implements CommandExecutor {
         cancelled = true;
         void this.stop(unitId);
       };
-      const unsubscribe = this.runner.subscribe((event) => {
-        if (event.unitId !== unitId) {
-          return;
-        }
-        if (event.kind === "output") {
-          for (const rawLine of event.lines) {
-            for (const line of rawLine.replace(/\r$/u, "").split("\r")) {
-              output.push(line);
-              options.onLine?.(line);
-            }
+      const complete = async (event: Extract<ExecutionEvent, { kind: "exit" }>) => {
+        await capture.finish();
+        const aborted = cancelled || this.authority?.signal.aborted;
+        for (const diagnostic of [
+          event.spawnError,
+          event.cleanupError,
+          event.drainTimedOut ? "Output drain timed out" : undefined,
+          event.signal ? `Command terminated by ${event.signal}` : undefined,
+          aborted ? "Command cancelled" : undefined,
+        ]) {
+          if (diagnostic) {
+            output.push(diagnostic);
           }
-        } else if (event.kind === "exit") {
+        }
+        const success = event.code === 0 && !event.spawnError && !event.cleanupError && !aborted;
+        resolve({ success, exitCode: success ? 0 : event.code || 1, output });
+      };
+      const unsubscribe = this.runner.subscribe((event) => {
+        if (event.unitId === unitId && event.kind === "exit") {
           unsubscribe();
           options.signal?.removeEventListener("abort", cancel);
-          const aborted = cancelled || this.authority?.signal.aborted;
-          for (const diagnostic of [
-            event.spawnError,
-            event.cleanupError,
-            event.drainTimedOut ? "Output drain timed out" : undefined,
-            event.signal ? `Command terminated by ${event.signal}` : undefined,
-            aborted ? "Command cancelled" : undefined,
-          ]) {
-            if (diagnostic) {
-              output.push(diagnostic);
-            }
-          }
-          const success = event.code === 0 && !event.spawnError && !event.cleanupError && !aborted;
-          resolve({ success, exitCode: success ? 0 : event.code || 1, output });
+          void complete(event);
         }
       });
       try {
@@ -90,6 +119,7 @@ export class OwnedCommandExecutor implements CommandExecutor {
           cwd,
           env,
           authority: this.authority,
+          onChunk: capture.onChunk,
         });
         options.signal?.addEventListener("abort", cancel, { once: true });
         if (options.signal?.aborted) {
@@ -97,7 +127,14 @@ export class OwnedCommandExecutor implements CommandExecutor {
         }
       } catch (error) {
         unsubscribe();
-        resolve({ success: false, exitCode: 1, output: [String(error)] });
+        void complete({
+          kind: "exit",
+          unitId,
+          generation: 1,
+          code: 1,
+          signal: null,
+          spawnError: String(error),
+        });
       }
     });
   }
