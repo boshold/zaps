@@ -159,14 +159,8 @@ export class ProcessRunner {
     }
     const exited = (completed: boolean) => {
       proc.childCompleted ||= completed;
-      if (proc.finalized) {
-        if (completed && this.lookup(handle)) {
-          void this.stopObserved(handle);
-        }
-        return;
-      }
       if (proc.exited) {
-        if (!proc.gateReleased && completed) {
+        if (completed && (!proc.gateReleased || proc.finalized) && this.lookup(handle)) {
           void this.stopObserved(handle);
         }
         return;

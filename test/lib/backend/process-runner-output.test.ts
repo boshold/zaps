@@ -164,6 +164,46 @@ describe("ProcessRunner output and terminal ordering", () => {
     await h.runner.dispose();
   });
 
+  it.each(["exit", "error"])(
+    "observes a late leader %s after failed cleanup without repeating the final outcome",
+    async (event) => {
+      const h = harness();
+      await h.ready();
+      h.live.set(4242, { pid: 4242, pgid: 4242, sid: 4242, startTime: "reused" });
+      h.close();
+      await expect(h.runner.stop(h.handle)).rejects.toThrow("Unverified");
+      expect(h.events).toEqual([
+        expect.objectContaining({ kind: "exit", code: null, cleanupError: expect.any(String) }),
+      ]);
+      expect(h.runner.isRunning(h.handle)).toBe(true);
+      expect(() => h.runner.spawnOwned(spec)).toThrow("still owned");
+
+      if (event === "exit") {
+        h.child.emit("exit", 7, null);
+      } else {
+        h.child.emit("error", new Error("late leader error"));
+      }
+      expect(h.runner.isRunning(h.handle)).toBe(false);
+      expect(h.events.at(-1)).toMatchObject({
+        kind: "leaderExit",
+        code: event === "exit" ? 7 : null,
+        signal: null,
+        ...(event === "error" ? { spawnError: "late leader error" } : {}),
+      });
+      await expect(h.runner.stop(h.handle)).rejects.toThrow("Unverified");
+      expect(h.runner.getPid(h.handle)).toBe(4242);
+      expect(() => h.runner.spawnOwned(spec)).toThrow("still owned");
+
+      h.live.clear();
+      h.child.emit("exit", 7, null);
+      await h.runner.stop(h.handle);
+      expect(h.runner.getPid(h.handle)).toBe(-1);
+      expect(h.events.filter((item) => item.kind === "leaderExit")).toHaveLength(1);
+      expect(h.events.filter((item) => item.kind === "exit")).toHaveLength(1);
+      await h.runner.dispose();
+    },
+  );
+
   it("deduplicates spawn error/exit races and reports the spawn error", async () => {
     const events: ExecutionEvent[] = [];
     const runner = new ProcessRunner({ onLines: vi.fn(), onExit: vi.fn(), diagnostic: vi.fn() });
