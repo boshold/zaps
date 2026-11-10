@@ -1,13 +1,8 @@
 import { spawn } from "node:child_process";
 
 import { socketPath } from "#src/daemon/lifecycle.js";
+import { execInfoSchema } from "#src/lib/backend/tmux/runtime.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
-
-interface ExecResult {
-  command: string;
-  cwd: string;
-  env: Record<string, string>;
-}
 
 /**
  * Prefix a command with `exec` so it replaces the wrapper shell (clean signal
@@ -21,15 +16,15 @@ function wrapCommand(cmd: string): string {
   return hasMetachars || hasEnvPrefix ? cmd : `exec ${cmd}`;
 }
 
-async function execService(name: string, sessionId: string): Promise<void> {
+async function execService(name: string, sessionId: string, executionId?: string): Promise<void> {
   const socket = socketPath();
 
-  let result: ExecResult | null = null;
+  let result: ReturnType<typeof execInfoSchema.parse> | undefined = undefined;
   try {
     const res = await ipcRequest(
       socket,
       "exec-service.resolve",
-      { service: name },
+      { service: name, ...(executionId === undefined ? {} : { executionId }) },
       undefined,
       sessionId,
     );
@@ -37,11 +32,14 @@ async function execService(name: string, sessionId: string): Promise<void> {
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
     }
-    // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-    result = res.result as ExecResult;
+    result = execInfoSchema.parse(res.result);
   } catch {
     process.stderr.write("Error: Cannot connect to zaps daemon\n");
     process.exit(1);
+  }
+
+  if (!result) {
+    return;
   }
 
   // Detached → `sh` becomes a process-group leader so we can signal the whole
@@ -95,7 +93,13 @@ async function execService(name: string, sessionId: string): Promise<void> {
       await ipcRequest(
         socket,
         "exec-service.exited",
-        { service: name, code, signal, ...(spawnError === undefined ? {} : { spawnError }) },
+        {
+          service: name,
+          ...(executionId === undefined ? {} : { executionId }),
+          code,
+          signal,
+          ...(spawnError === undefined ? {} : { spawnError }),
+        },
         1000,
         sessionId,
       ).catch(() => {

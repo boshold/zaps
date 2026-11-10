@@ -461,6 +461,31 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
   );
 
   it(
+    "parses the hidden service execution identity flag",
+    () => {
+      const id = "76131720-a79e-4716-8c58-c476a52cd319";
+      const valid = runCli(["exec-service", "api", "--execution-id", id, "-s", "parser-test"]);
+      expect(valid.stderr).toContain("Cannot connect to zaps daemon");
+      expect(valid.stderr).not.toContain("Unknown flag");
+      const missing = runCli(["exec-service", "api", "--execution-id"]);
+      expect(missing.status).not.toBe(0);
+      expect(missing.stderr).toMatch(/value|argument/i);
+      const excess = runCli([
+        "exec-service",
+        "api",
+        "extra",
+        "--execution-id",
+        id,
+        "-s",
+        "parser-test",
+      ]);
+      expect(excess.status).not.toBe(0);
+      expect(excess.stderr).toContain("too many arguments");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
     "prime-agent is listed exactly once when a coding-agent env var is set",
     () => {
       const res = runCli(["--help"], { CLAUDECODE: "1", CURSOR_TRACE_DIR: "/tmp" });

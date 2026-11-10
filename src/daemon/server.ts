@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
+import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
@@ -304,8 +305,26 @@ class DaemonServer implements SessionStore {
         });
       },
       preflightPorts: checkPortPreflight,
-      storeExecInfo: (service: string, info: ExecInfo) => {
-        ref.session?.execInfo.set(service, info);
+      storeExecInfo: (service: string, info: ExecInfo, executionId?: string, generation = 0) => {
+        const { session } = ref;
+        if (!session || !executionId) {
+          throw new Error("Missing wrapper registration");
+        }
+        session.execInfo.set(service, info);
+        const { manager } = session;
+        serviceWrappers(session).register(
+          { id: executionId, unitId: service, generation },
+          service,
+          info,
+          (exit) =>
+            manager.handleExecExited(
+              service,
+              exit.code,
+              exit.signal ?? null,
+              exit.spawnError,
+              executionId,
+            ),
+        );
       },
       sessionId: id,
       zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",

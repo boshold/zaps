@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
+
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
@@ -1219,10 +1221,67 @@ describe("session handlers", () => {
     });
   });
 
+  it("validates wrapper identity before consuming replacement metadata or reporting exits", async () => {
+    const session = createMockSession();
+    const store = createMockStore([session]);
+    const socket = createMockSocket();
+    const registry = serviceWrappers(session);
+    const oldId = "27eb6438-b454-42fb-97ef-210886924d5b";
+    const newId = "342ac78f-e03a-4c23-a39d-2372acbf2749";
+    const info = { command: "new command", cwd: "/test", env: { SECRET: "new" } };
+    const exited = vi.fn();
+    registry.register({ id: oldId, unitId: "dev", generation: 1 }, "dev", info, exited);
+    registry.register({ id: newId, unitId: "dev", generation: 2 }, "dev", info, exited);
+    for (const params of [
+      { service: "dev", executionId: oldId },
+      { service: "dev" },
+      { service: "other", executionId: newId },
+      { service: "dev", executionId: 123 },
+    ]) {
+      const request = { id: "stale", session: session.id, params };
+      const resolve = await sessionHandlers["exec-service.resolve"](
+        { ...request, method: "exec-service.resolve" },
+        store,
+        socket as never,
+      );
+      expect(resolve.error).toBeDefined();
+      await sessionHandlers["exec-service.exited"](
+        { ...request, method: "exec-service.exited", params: { ...params, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(exited).not.toHaveBeenCalled();
+    }
+    const request = {
+      id: "new",
+      session: session.id,
+      params: { service: "dev", executionId: newId },
+    };
+    const resolved = await sessionHandlers["exec-service.resolve"](
+      { ...request, method: "exec-service.resolve" },
+      store,
+      socket as never,
+    );
+    expect(resolved.result).toEqual(info);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await sessionHandlers["exec-service.exited"](
+        { ...request, method: "exec-service.exited", params: { ...request.params, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(result.result).toEqual({ ok: true });
+    }
+    expect(exited).toHaveBeenCalledTimes(1);
+  });
+
   describe("exec-service.resolve", () => {
     it("returns exec info and deletes it", async () => {
       const session = createMockSession();
-      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: { DB: "x" } });
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: { DB: "x" } },
+        vi.fn(),
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1252,7 +1311,11 @@ describe("session handlers", () => {
 
     it("returns error for second resolve (one-time delete)", async () => {
       const session = createMockSession();
-      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: {} });
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        vi.fn(),
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1287,6 +1350,13 @@ describe("session handlers", () => {
   describe("exec-service.exited", () => {
     it("calls handleExecExited with correct args", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1302,6 +1372,13 @@ describe("session handlers", () => {
 
     it("defaults null signal when omitted", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1316,6 +1393,13 @@ describe("session handlers", () => {
 
     it("forwards spawnError to handleExecExited", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {

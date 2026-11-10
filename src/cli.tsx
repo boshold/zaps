@@ -1273,10 +1273,20 @@ const execServiceCommand = command(
   {
     name: "exec-service",
     parameters: ["<name>"],
-    flags: { ...sessionFlag },
+    flags: {
+      ...sessionFlag,
+      executionId: { type: String, description: "Internal execution identity" },
+    },
     help: { description: "Execute a service via wrapper (internal)" },
   },
   async (parsed) => {
+    if (
+      process.argv.some((arg) => arg === "--execution-id" || arg.startsWith("--execution-id=")) &&
+      !parsed.flags.executionId
+    ) {
+      process.stderr.write("Error: --execution-id argument missing\n");
+      process.exit(1);
+    }
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("exec-service", parsed._, 1);
     const { name } = parsed._;
@@ -1286,7 +1296,7 @@ const execServiceCommand = command(
       process.exit(1);
     }
     const { execService } = await import("./cli/exec-service.js");
-    await execService(name, session);
+    await execService(name, session, parsed.flags.executionId);
   },
 );
 

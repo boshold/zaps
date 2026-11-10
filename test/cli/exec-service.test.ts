@@ -126,6 +126,37 @@ describe("execService", () => {
     return signalHandler("SIGTERM");
   }
 
+  it("forwards execution identity through resolve and spawn failure", async () => {
+    resolveOnce();
+    const child = makeChild(222);
+    vi.mocked(spawn).mockReturnValue(child as never);
+    await execService("svc", "sess", "exec-id");
+    expect(ipcRequest).toHaveBeenCalledWith(
+      "/tmp/test.sock",
+      "exec-service.resolve",
+      { service: "svc", executionId: "exec-id" },
+      undefined,
+      "sess",
+    );
+    child.emit("error", new Error("spawn failed"));
+    child.emit("exit", 1, null);
+    await flush();
+    expect(ipcRequest).toHaveBeenLastCalledWith(
+      "/tmp/test.sock",
+      "exec-service.exited",
+      {
+        service: "svc",
+        executionId: "exec-id",
+        code: 127,
+        signal: null,
+        spawnError: "spawn failed",
+      },
+      1000,
+      "sess",
+    );
+    expect(ipcRequest).toHaveBeenCalledTimes(2);
+  });
+
   it("spawns the child detached", async () => {
     resolveOnce();
     vi.mocked(spawn).mockReturnValue(makeChild(111) as never);

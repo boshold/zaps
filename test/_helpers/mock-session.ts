@@ -50,7 +50,11 @@ export interface MockSession {
     restartService: ReturnType<typeof vi.fn>;
     startAll: ReturnType<typeof vi.fn>;
     stopAll: ReturnType<typeof vi.fn>;
-    handleExecExited: ReturnType<typeof vi.fn>;
+    handleExecExited: ReturnType<
+      typeof vi.fn<
+        (service: string, code: number, signal: string | null, spawnError?: string) => void
+      >
+    >;
     on: ReturnType<typeof vi.fn>;
     emit: ReturnType<typeof vi.fn>;
   };

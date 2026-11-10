@@ -629,12 +629,18 @@ describe("startService", () => {
         command: "start-api",
         env: expect.objectContaining({ DB_PORT: "5432" }),
       }),
+      expect.any(String),
+      expect.any(Number),
     );
     const apiCall = (deps.sendKeys as ReturnType<typeof vi.fn>).mock.calls.find(
       (call: unknown[]) => (call[0] as string) === "%api",
     );
     expect(apiCall).toBeDefined();
-    expect(apiCall?.[1]).toBe("zaps -s test-session-id exec-service api");
+    expect(apiCall?.[1]).toEqual(
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'api' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
   });
 
   it("sends correct command string to pane", async () => {
@@ -657,8 +663,15 @@ describe("startService", () => {
         cwd: "/test",
         env: { PORT: "3000" },
       }),
+      expect.any(String),
+      expect.any(Number),
     );
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
   });
 
   it("transitions through stopped -> starting -> ready and emits stateChange", async () => {
@@ -774,7 +787,12 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
   });
 
   it("guards against double-start when already starting", async () => {
@@ -902,7 +920,12 @@ describe("startService", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
   });
 
   it("uses service-level cwd instead of projectDir when set", async () => {
@@ -921,8 +944,15 @@ describe("startService", () => {
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "svc",
       expect.objectContaining({ cwd: "/custom/path" }),
+      expect.any(String),
+      expect.any(Number),
     );
-    expect(deps.sendKeys).toHaveBeenCalledWith("%svc", "zaps -s test-session-id exec-service svc");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%svc",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'svc' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
   });
 
   it("uses inline env when raw: true", async () => {
@@ -1920,7 +1950,12 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%db",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'db' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("db").ports).toEqual([5432]);
 
@@ -1948,7 +1983,12 @@ describe("docker config", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
 
-    expect(deps.sendKeys).toHaveBeenCalledWith("%db", "zaps -s test-session-id exec-service db");
+    expect(deps.sendKeys).toHaveBeenCalledWith(
+      "%db",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'db' --execution-id '[a-f0-9-]+'$/,
+      ),
+    );
 
     spy.mockRestore();
   });
@@ -2890,7 +2930,9 @@ describe("combined docker services", () => {
     expect(storedExecInfo?.command).toContain("redis");
     expect(deps.sendKeys).toHaveBeenCalledWith(
       "%infra",
-      "zaps -s test-session-id exec-service postgres",
+      expect.stringMatching(
+        /^zaps -s 'test-session-id' exec-service 'postgres' --execution-id '[a-f0-9-]+'$/,
+      ),
     );
   });
 
@@ -3783,6 +3825,8 @@ describe("sentra env injection", () => {
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "web",
       expect.objectContaining({ env: { SENTRY_DSN: DSN_WEB, SHARED: "service" } }),
+      expect.any(String),
+      expect.any(Number),
     );
     expect(mgr.getStatus("web").sentra).toBe(true);
     expect(sentra.host.addSourceRoot).toHaveBeenCalledWith("/test");
@@ -3878,7 +3922,12 @@ describe("sentra env injection", () => {
 
     expect(mgr.getStatus("web").state).toBe("ready");
     expect(mgr.getStatus("web").sentra).toBe(false);
-    expect(deps.storeExecInfo).toHaveBeenCalledWith("web", expect.objectContaining({ env: {} }));
+    expect(deps.storeExecInfo).toHaveBeenCalledWith(
+      "web",
+      expect.objectContaining({ env: {} }),
+      expect.any(String),
+      expect.any(Number),
+    );
     expect(sentra.host.getDsn).not.toHaveBeenCalled();
     expect(sentra.log).toHaveBeenCalledWith(
       "sentra: web runs without Sentra env (port bind failed)",
@@ -3902,6 +3951,8 @@ describe("sentra env injection", () => {
     expect(deps.storeExecInfo).toHaveBeenCalledWith(
       "web",
       expect.objectContaining({ env: { A: "1" } }),
+      expect.any(String),
+      expect.any(Number),
     );
   });
 

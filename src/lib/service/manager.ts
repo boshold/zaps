@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
 import type {
@@ -6,6 +7,7 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
+import { serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
 import {
   buildDockerCommand,
   composeProjectArgs,
@@ -244,6 +246,7 @@ export class ServiceManager extends EventEmitter {
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
+  private readonly wrapperIds = new Map<string, string>();
   private readonly monitorGenerations = new Map<string, number>();
   /** Runs pane-less `detached: true` services (E4). */
   private readonly detachedRunner: DetachedRunner;
@@ -407,6 +410,7 @@ export class ServiceManager extends EventEmitter {
    */
   public abortStartAll(): void {
     this.startAllAborted = true;
+    this.wrapperIds.clear();
     for (const name of this.statuses.keys()) {
       this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
     }
@@ -936,10 +940,17 @@ export class ServiceManager extends EventEmitter {
       }
     } else {
       // Wrapper mode: store exec info, send wrapper command
-      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env: serviceEnv });
+      const executionId = randomUUID();
+      this.wrapperIds.set(name, executionId);
+      this.deps.storeExecInfo(
+        name,
+        { command: resolvedCommand, cwd, env: serviceEnv },
+        executionId,
+        this.monitorGenerations.get(name) ?? 0,
+      );
       await this.deps.sendKeys(
         paneTarget,
-        `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
+        serviceWrapperCommand(this.deps.zapsCommand, this.deps.sessionId, name, executionId),
       );
     }
   }
@@ -1046,6 +1057,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
+    this.wrapperIds.delete(name);
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
@@ -1521,7 +1533,14 @@ export class ServiceManager extends EventEmitter {
     _code: number,
     _signal: string | null,
     spawnError?: string,
+    executionId?: string,
   ): void {
+    if (executionId !== undefined) {
+      if (this.wrapperIds.get(service) !== executionId) {
+        return;
+      }
+      this.wrapperIds.delete(service);
+    }
     const status = this.statuses.get(service);
     if (!status) {
       return;
@@ -1670,7 +1689,12 @@ export interface ServiceManagerDeps {
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
   /** Pre-flight expected host ports; returns a conflict message or null (B2). */
   preflightPorts: (serviceConfig: ServiceConfig, projectDir: string) => Promise<string | null>;
-  storeExecInfo: (service: string, info: ExecInfo) => void;
+  storeExecInfo: (
+    service: string,
+    info: ExecInfo,
+    executionId?: string,
+    generation?: number,
+  ) => void;
   sessionId: string;
   zapsCommand: string;
   /** Latest request-derived environment for this session. */

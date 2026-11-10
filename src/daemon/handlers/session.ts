@@ -4,6 +4,11 @@ import type { Command, DockerConfig } from "#src/config/types.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
+import {
+  serviceWrappers,
+  wrapperExitSchema,
+  wrapperIdentitySchema,
+} from "#src/lib/backend/tmux/runtime.js";
 import { execCommand } from "#src/lib/exec.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
@@ -586,8 +591,12 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const { service } = req.params as { service: string };
-    const info = session.execInfo.get(service);
+    const parsed = wrapperIdentitySchema.safeParse(req.params);
+    if (!parsed.success) {
+      return ipcErr(req.id, "Invalid wrapper identity");
+    }
+    const { service } = parsed.data;
+    const info = serviceWrappers(session).resolve(parsed.data);
     if (!info) {
       return ipcErr(req.id, `No exec info for service: ${service}`);
     }
@@ -600,13 +609,11 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const { service, code, signal, spawnError } = req.params as {
-      service: string;
-      code: number;
-      signal?: string | null;
-      spawnError?: string;
-    };
-    session.manager.handleExecExited(service, code, signal ?? null, spawnError);
+    const parsed = wrapperExitSchema.safeParse(req.params);
+    if (!parsed.success) {
+      return ipcErr(req.id, "Invalid wrapper exit");
+    }
+    serviceWrappers(session).exited(parsed.data);
     return ipcOk(req.id, { ok: true });
   },
 
