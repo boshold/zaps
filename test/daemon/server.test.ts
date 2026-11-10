@@ -390,6 +390,52 @@ describe("DaemonServer", () => {
       expect(server.get(retry.id)).toBe(retry);
     });
 
+    it("retains failed construction cleanup ownership and blocks replacement", async () => {
+      mockLoadConfig.mockResolvedValueOnce(configAt("/unrelated"));
+      const unrelated = await server.create({ ...shellParams, projectDir: "/unrelated" });
+      const notification = new Error("notification failed");
+      const cleanup = new Error("service pane survived");
+      server.onSessionChange = () => {
+        throw notification;
+      };
+      tmux.killPane.mockImplementation(async (pane) => {
+        if (pane === "%1") {
+          throw cleanup;
+        }
+      });
+      tmux.paneExists.mockResolvedValue(true);
+      await expect(server.create(tmuxParams)).rejects.toMatchObject({
+        cause: notification,
+        errors: [
+          notification,
+          expect.objectContaining({
+            errors: [expect.objectContaining({ errors: [cleanup] })],
+          }),
+        ],
+      });
+      const closing = server.list().find((session) => session !== unrelated);
+      if (!closing) {
+        throw new Error("Missing cleanup owner");
+      }
+      expect(server.get(closing.id)).toBe(closing);
+      expect(closing.destroyed).toBe(true);
+      expect(closing.manager.disposeObservers).toHaveBeenCalledTimes(1);
+      expect(closing.manager.startAll).not.toHaveBeenCalled();
+      expect(tmux.killPane).toHaveBeenCalledWith("%1");
+      expect(tmux.paneExists).toHaveBeenCalledWith("%1");
+      server.onSessionChange = undefined;
+      const health = vi.spyOn(closing.backend, "health").mockResolvedValue("alive");
+      await expect(server.create(tmuxParams)).rejects.toThrow("Session cleanup incomplete");
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.destroy(closing.id)).rejects.toThrow("Session cleanup incomplete");
+      expect(health).not.toHaveBeenCalled();
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      expect(server.get(closing.id)).toBe(closing);
+      expect(server.get(unrelated.id)).toBe(unrelated);
+      expect(unrelated.destroyed).toBe(false);
+      expect(server.sessionCount).toBe(2);
+    });
+
     it("retains an existing session when lost-host cleanup fails", async () => {
       const session = await server.create(tmuxParams);
       vi.spyOn(session.backend, "health").mockResolvedValue("lost");

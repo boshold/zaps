@@ -321,7 +321,7 @@ class DaemonServer implements SessionStore {
             },
         creationIdentity(params),
       );
-      if ((await existing.backend.health()) === "alive") {
+      if (!existing.destroyed && (await existing.backend.health()) === "alive") {
         return existing;
       }
       await this.destroy(id);
@@ -614,9 +614,6 @@ class DaemonServer implements SessionStore {
       return session;
     } catch (error) {
       const { session } = ref;
-      if (session && this.sessions.get(id) === session) {
-        this.sessions.delete(id);
-      }
       const results = await Promise.allSettled([
         (async () => this.sentraCounter.detach(id))(),
         (async () => {
@@ -635,6 +632,9 @@ class DaemonServer implements SessionStore {
         throw new AggregateError([error, ...failures], "Session construction cleanup failed", {
           cause: error,
         });
+      }
+      if (session && this.sessions.get(id) === session) {
+        this.sessions.delete(id);
       }
       throw error;
     }

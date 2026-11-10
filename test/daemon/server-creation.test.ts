@@ -250,6 +250,14 @@ describe("session creation with real shell orchestration", () => {
     });
     expect(tasks).toHaveBeenCalledTimes(1);
     expect(backend).toHaveBeenCalledTimes(1);
+    expect(server.sessionCount).toBe(1);
+    server.onSessionChange = undefined;
+    await expect(server.create(request())).rejects.toThrow("Session cleanup incomplete");
+    const [closing] = server.list();
+    expect(closing.destroyed).toBe(true);
+    // Every resource was actually disposed before these injected diagnostic failures.
+    vi.spyOn(closing, "destroy").mockResolvedValueOnce(undefined);
+    await server.destroy(closing.id);
     expect(server.sessionCount).toBe(0);
   });
 });
