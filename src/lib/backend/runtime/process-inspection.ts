@@ -2,11 +2,14 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 
+type ProcessSessionId = number | string;
+
 interface ProcessIdentity {
   readonly pid: number;
   readonly startTime: string;
   readonly pgid: number;
-  readonly sid: number;
+  // Linux SID or opaque macOS hexadecimal session token.
+  readonly sid: ProcessSessionId;
   readonly cmdline?: string;
 }
 
@@ -39,6 +42,10 @@ function errorCode(error: unknown): unknown {
 function positiveInteger(value: string | undefined): number | null {
   const number = Number(value);
   return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function parseDarwinSession(value: string | undefined): string | null {
+  return value && /^[\da-f]+$/i.test(value) ? value : null;
 }
 
 function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity {
@@ -221,7 +228,7 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     }
     const groups = groupOutput.split(/\s+/);
     const pgid = positiveInteger(groups[0]);
-    const sid = positiveInteger(groups[1]);
+    const sid = parseDarwinSession(groups[1]);
     if (pgid === null || sid === null) {
       throw new ProcessInspectionError("ps", "invalid_output");
     }
@@ -232,11 +239,11 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     return { pid, pgid, sid, startTime, cmdline };
   }
 
-  async function processTable(): Promise<{ pid: number; ppid: number; sid: number }[]> {
+  async function processTable(): Promise<{ pid: number; ppid: number; sid: ProcessSessionId }[]> {
     supported();
     const keyword = deps.platform === "darwin" ? "sess" : "sid";
     const output = await command("ps", ["-eo", `pid,ppid,${keyword}`]);
-    const rows: { pid: number; ppid: number; sid: number }[] = [];
+    const rows: { pid: number; ppid: number; sid: ProcessSessionId }[] = [];
     for (const line of output.trim().split("\n").slice(1)) {
       if (!line.trim()) {
         continue;
@@ -244,13 +251,13 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
       const fields = line.trim().split(/\s+/);
       const pid = positiveInteger(fields[0]);
       const ppid = Number(fields[1]);
-      const sid = Number(fields[2]);
+      const sid = deps.platform === "darwin" ? parseDarwinSession(fields[2]) : Number(fields[2]);
       if (
         pid === null ||
         !Number.isSafeInteger(ppid) ||
         ppid < 0 ||
-        !Number.isSafeInteger(sid) ||
-        sid < 0
+        sid === null ||
+        (typeof sid === "number" && (!Number.isSafeInteger(sid) || sid < 0))
       ) {
         throw new ProcessInspectionError("ps", "invalid_output");
       }
@@ -265,11 +272,13 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
   async function getDescendantPids(rootPid: number): Promise<number[]> {
     const rows = await processTable();
     const result = new Set<number>();
-    if (rows.some((row) => row.pid === rootPid)) {
+    const root = rows.find((row) => row.pid === rootPid);
+    if (root) {
       result.add(rootPid);
     }
+    const rootSession = deps.platform === "darwin" ? root?.sid : rootPid;
     for (const row of rows) {
-      if (row.sid === rootPid) {
+      if (row.sid === rootSession) {
         result.add(row.pid);
       }
     }
@@ -335,4 +344,4 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
 }
 
 export { createProcessInspection, ProcessInspectionError, sameProcess };
-export type { ProcessIdentity, ProcessInspectionDeps, ProbeFailure };
+export type { ProcessIdentity, ProcessInspectionDeps, ProcessSessionId, ProbeFailure };

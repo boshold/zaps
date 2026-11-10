@@ -71,13 +71,13 @@ describe("process identity", () => {
       if (args[1] === "lstart=") {
         return `  ${birth}\n`;
       }
-      return args[1] === "pgid=,sess=" ? "100 200\n" : "node renamed worker\n";
+      return args[1] === "pgid=,sess=" ? "100 a3f\n" : "node renamed worker\n";
     });
     const inspection = createProcessInspection({ platform: "darwin", exec });
     expect(await inspection.readProcessIdentity(100)).toEqual({
       pid: 100,
       pgid: 100,
-      sid: 200,
+      sid: "a3f",
       startTime: birth,
       cmdline: "node renamed worker",
     });
@@ -116,6 +116,69 @@ describe("process membership", () => {
       ]);
     },
   );
+
+  it("uses the root macOS session token for reparented members without numeric conversion", async () => {
+    const inspection = createProcessInspection({
+      platform: "darwin",
+      exec: async () =>
+        "PID PPID SESS\n100 1 ffffff123456a3f\n200 100 ffffff123456a3f\n300 1 ffffff123456a3f\n400 1 100\n500 1 ffffff123456a40",
+    });
+    expect(await inspection.getDescendantPids(100)).toEqual([100, 200, 300]);
+    expect(await inspection.getDescendantPids(999)).toEqual([]);
+  });
+
+  it("compares opaque macOS member tokens consistently with captured identities", async () => {
+    const inspection = createProcessInspection({
+      platform: "darwin",
+      exec: async (_command, args) => {
+        if (args[0] === "-eo") {
+          return "PID PPID SESS\n200 1 a3f\n300 1 a3f\n400 1 a40";
+        }
+        if (args[1] === "lstart=") {
+          return "Tue Nov 10 09:08:07 2026";
+        }
+        if (args[1] === "pgid=,sess=") {
+          return args[3] === "200" ? "100 a3f" : "300 a3f";
+        }
+        return "renamed";
+      },
+    });
+    const identity = { pid: 100, pgid: 100, sid: "a3f", startTime: "earlier" };
+    const members = await inspection.getProcessMembers(identity);
+    expect(members).toEqual([
+      {
+        pid: 200,
+        pgid: 100,
+        sid: "a3f",
+        startTime: "Tue Nov 10 09:08:07 2026",
+        cmdline: "renamed",
+      },
+    ]);
+    const member = members.at(0);
+    if (!member) {
+      throw new Error("missing member");
+    }
+    expect(sameProcess(member, { ...member, cmdline: "changed" })).toBe(true);
+    expect(sameProcess(member, { ...member, sid: "a40" })).toBe(false);
+  });
+
+  it("rejects malformed macOS session tokens in identities and process tables", async () => {
+    const inspection = createProcessInspection({
+      platform: "darwin",
+      exec: async (_command, args) => {
+        if (args[0] === "-eo") {
+          return "PID PPID SESS\n100 1 invalid";
+        }
+        return args[1] === "lstart=" ? "Tue Nov 10 09:08:07 2026" : "100 invalid";
+      },
+    });
+    await expect(inspection.readProcessIdentity(100)).rejects.toMatchObject({
+      reason: "invalid_output",
+    });
+    await expect(inspection.getDescendantPids(100)).rejects.toMatchObject({
+      reason: "invalid_output",
+    });
+  });
 
   it("does not invent a vanished root but retains surviving session members", async () => {
     const inspection = createProcessInspection({

@@ -263,6 +263,26 @@ describe("detectPorts", () => {
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
+  it("detects ports for macOS descendants and reparented session members", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockPanePid.mockResolvedValue(1000);
+    mockExecFile
+      .mockResolvedValueOnce({
+        stdout: "PID PPID SESS\n1000 1 a3f\n2000 1000 a3f\n3000 1 a3f\n4000 1 a40",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        stdout: [
+          "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME",
+          "node 2000 user 1u IPv4 123 0t0 TCP *:3000 (LISTEN)",
+          "node 3000 user 2u IPv6 124 0t0 TCP [::1]:8080 (LISTEN)",
+          "node 4000 user 3u IPv4 125 0t0 TCP *:9000 (LISTEN)",
+        ].join("\n"),
+        stderr: "",
+      });
+    expect(await detectPorts("%0", { panePid: mockPanePid })).toEqual([3000, 8080]);
+  });
+
   it("deduplicates and sorts ports", async () => {
     mockPanePid.mockResolvedValue(1000);
 
