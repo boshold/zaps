@@ -19,6 +19,7 @@ import {
   windowLayout,
 } from "#src/lib/tmux.js";
 
+import { parseTmuxLayoutRects } from "../../_helpers/tmux-layout-output.js";
 import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
 import { attachClient, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
@@ -282,39 +283,11 @@ describe.skipIf(!hasTmux())("LayoutReflow.applyGeometry — real tmux", () => {
     const reflow = makeReflow(layout, paneMap, session.name);
     await reflow.applyGeometry(new Set(["@tui", "api", "web"]));
 
-    // AC (5): Parse the live #{window_layout} and assert pane geometries match
-    // The computed rects exactly — guards checksum/format on CI tmux (~3.4)
-    // Against local tmux next-3.7.
     const live = await windowLayout(session.name);
-    expect(live).toMatch(/^[0-9a-f]{4},\d+x\d+,/u);
-
     const { width, height } = await getWindowSize(session.name);
     const expected = computeRects(layout, width, height);
-    // Leaves are `WxH,X,Y,<paneNumber>` and the pane number is followed by
-    // Structural punctuation (`,` / `}` / `]`) — never another digit-x pair, so
-    // The lookahead disambiguates leaves from the root rect's `WxH,X,Y{...`.
-    const leafRe = /(?<w>\d+)x(?<h>\d+),(?<x>\d+),(?<y>\d+),(?<pn>\d+)(?=[,\]}])/gu;
-    const leaves: { w: number; h: number; x: number; y: number }[] = [];
-    for (const match of live.matchAll(leafRe)) {
-      const groups = match.groups ?? { w: "0", h: "0", x: "0", y: "0" };
-      leaves.push({
-        w: Number.parseInt(groups.w, 10),
-        h: Number.parseInt(groups.h, 10),
-        x: Number.parseInt(groups.x, 10),
-        y: Number.parseInt(groups.y, 10),
-      });
-    }
-    const dfsRects = leaves;
     const expectedOrder = ["@tui", "api", "web"].map((name) => expected.get(name));
-    for (const [i, expectedRect] of expectedOrder.entries()) {
-      expect(expectedRect).toBeDefined();
-      expect(dfsRects[i]).toEqual({
-        w: expectedRect?.width,
-        h: expectedRect?.height,
-        x: expectedRect?.x,
-        y: expectedRect?.y,
-      });
-    }
+    expect(parseTmuxLayoutRects(live)).toEqual(expectedOrder);
   });
 });
 
@@ -335,6 +308,12 @@ describe.skipIf(!canRunAttached)("LayoutReflow.applyGeometry — attached client
   afterEach(async () => {
     client.cleanup();
     await session.cleanup();
+  });
+
+  it("rejects when a client exits before attaching to a missing session", async () => {
+    await expect(attachClient(`${session.name}-missing`)).rejects.toThrow(
+      "Tmux client exited before attaching",
+    );
   });
 
   it("delivers correct in-pane pty winsize after select-layout (attached pty)", async () => {
