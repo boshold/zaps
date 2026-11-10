@@ -1,7 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
-import type { LibraryActions, ResolvedConfig } from "#src/config/types.js";
+import type {
+  LibraryActions,
+  ResolvedConfig,
+  SentraConfig,
+  TaskConfig,
+} from "#src/config/types.js";
 import { OwnedCommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { ProcessAdmission, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
@@ -38,11 +43,47 @@ interface TaskRunOptions {
   onProgress?: (key: string, result: "success" | "error") => void;
 }
 
+interface CapturedTaskContext extends Omit<TaskRunOptions, "config"> {
+  tasks: Record<string, TaskConfig>;
+  services: Record<string, { cwd?: string }>;
+  sentraConfig?: SentraConfig;
+}
+
+function captureContext(options: TaskRunOptions): CapturedTaskContext {
+  const { project } = options.config;
+  return {
+    cwd: options.cwd,
+    env: { ...options.env },
+    mode: options.mode,
+    onLine: options.onLine,
+    onProgress: options.onProgress,
+    tasks: Object.fromEntries(
+      Object.entries(project.tasks ?? {}).map(([key, task]) => [
+        key,
+        {
+          ...task,
+          dependsOn: task.dependsOn ? [...task.dependsOn] : undefined,
+          commands: Array.isArray(task.commands) ? [...task.commands] : task.commands,
+          env: typeof task.env === "object" ? { ...task.env } : task.env,
+          popup: typeof task.popup === "object" ? { ...task.popup } : task.popup,
+          sentra: typeof task.sentra === "object" ? { env: { ...task.sentra.env } } : task.sentra,
+        },
+      ]),
+    ),
+    services: Object.fromEntries(
+      Object.entries(project.services).map(([name, service]) => [name, { cwd: service.cwd }]),
+    ),
+    sentraConfig: project.sentra
+      ? { ...project.sentra, env: { ...project.sentra.env } }
+      : undefined,
+  };
+}
+
 interface AcceptedRun {
   runId: string;
   key: string;
   name: string;
-  context: TaskRunOptions;
+  context: CapturedTaskContext;
 }
 
 class TaskExecutionService {
@@ -165,22 +206,12 @@ class TaskExecutionService {
   ): Promise<{ success: boolean; runId: string }> {
     const authority = this.cleanupContext.getStore() ?? this.admission.normal;
     this.assertAdmission(authority);
-    const tasks = Object.fromEntries(
-      Object.entries(options.config.project.tasks ?? {}).map(([taskKey, task]) => [
-        taskKey,
-        {
-          ...task,
-          dependsOn: task.dependsOn ? [...task.dependsOn] : undefined,
-          commands: Array.isArray(task.commands) ? [...task.commands] : task.commands,
-          env: typeof task.env === "object" ? { ...task.env } : task.env,
-        },
-      ]),
-    );
+    const context = captureContext(options);
+    const { tasks } = context;
     const task = tasks[key];
     if (!task) {
       throw new Error(`Unknown task: ${key}`);
     }
-    const context = { ...options, env: { ...options.env } };
     const run: AcceptedRun = { runId: newRunId(), key, name: task.name, context };
     this.activeRuns.set(run.runId, run);
     this.output.start(run.runId, key, Date.now());
@@ -219,14 +250,14 @@ class TaskExecutionService {
                 .map((status) => [status.name, { ...status, ports: [...status.ports] }]),
             ),
             projectDir: context.cwd,
-            services: context.config.project.services,
+            services: context.services,
             env: context.env,
             commandExecutor,
             mode: context.mode,
             assertAdmission: () => this.assertAdmission(authority),
             tmux: { displayPopup: this.session.deps.displayPopup },
             sentra: this.session.deps.sentra,
-            sentraConfig: context.config.project.sentra,
+            sentraConfig: context.sentraConfig,
             onLine: (_key, line) => {
               this.output.append(run.runId, line);
               try {

@@ -4,8 +4,11 @@ import type { ExecResult, ResolvedConfig, TaskConfig, TaskRunContext } from "#sr
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import type { TaskRunOptions } from "#src/daemon/task-execution.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+import type { SentraDeps } from "#src/lib/sentra/config.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
+
+import { fakeSentra } from "../_helpers/fake-sentra.js";
 
 function deferred<T>() {
   let settle: (value: T) => void = () => {
@@ -44,14 +47,14 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function setup(tasks: Record<string, TaskConfig>) {
+function setup(tasks: Record<string, TaskConfig>, sentra?: SentraDeps) {
   const config = makeConfig(tasks);
   const session = {
     id: "session",
     config,
     env: { TOKEN: "accepted" },
     manager: makeManager(),
-    deps: { displayPopup: vi.fn().mockResolvedValue(undefined) },
+    deps: { displayPopup: vi.fn().mockResolvedValue(undefined), sentra },
     broadcast: vi.fn(),
   };
   const execute = vi
@@ -133,6 +136,164 @@ it("retains captured config/cwd/env and stable output after manager replacement"
     "task.start",
     "task.complete",
   ]);
+});
+
+describe("configuration snapshots before deferred dependencies", () => {
+  it("isolates service cwd, task env/definitions and request options", async () => {
+    const entered = deferred<void>();
+    const resume = deferred<void>();
+    const env = { LOCAL: "original" };
+    const task: TaskConfig = {
+      name: "Original",
+      dependsOn: ["wait"],
+      env,
+      run: async (ctx) => {
+        expect(ctx.projectDir).toBe("/project");
+        ctx.stdout.write("original sink");
+        await ctx.exec(ctx.services.services.api?.cwd ?? "missing");
+      },
+    };
+    const { owner, session, options, execute } = setup({
+      wait: {
+        name: "Wait",
+        run: async () => {
+          entered.resolve(undefined);
+          await resume.promise;
+        },
+      },
+      root: task,
+    });
+    const service = { cwd: "/original" };
+    options.config.project.services.api = service;
+    const originalSink = vi.fn();
+    options.onLine = originalSink;
+    const pending = owner.run("root", options);
+    await entered.promise;
+    service.cwd = "/changed";
+    env.LOCAL = "changed";
+    task.name = "Changed";
+    task.dependsOn?.push("missing");
+    task.run = async () => {
+      throw new Error("changed definition");
+    };
+    options.cwd = "/changed";
+    options.env.TOKEN = "changed";
+    options.mode = "configured";
+    options.onLine = () => {
+      throw new Error("changed sink");
+    };
+    options.config = makeConfig({});
+    session.config.project.services.api = { cwd: "/replaced" };
+    resume.resolve(undefined);
+    const result = await pending;
+    expect(result.success).toBe(true);
+    expect(execute).toHaveBeenCalledWith(
+      "/original",
+      expect.objectContaining({
+        cwd: "/project",
+        env: { TOKEN: "accepted", LOCAL: "original" },
+      }),
+    );
+    expect(originalSink).toHaveBeenCalledWith("original sink");
+    expect(owner.history[0]).toMatchObject({ taskName: "Original", result: "success" });
+  });
+
+  it("isolates project and task Sentra templates and enabled state", async () => {
+    const entered = deferred<void>();
+    const resume = deferred<void>();
+    const projectSentra = { enabled: true, env: { PROJECT_DSN: "project:{dsn}" } };
+    const taskSentra = { env: { TASK_DSN: "task:{dsn}" } };
+    const { owner, options, execute } = setup(
+      {
+        wait: {
+          name: "Wait",
+          run: async () => {
+            entered.resolve(undefined);
+            await resume.promise;
+          },
+        },
+        project: { name: "Project", commands: "project", sentra: true },
+        target: { name: "Target", commands: "target", sentra: taskSentra },
+        root: { name: "Root", dependsOn: ["wait", "project", "target"] },
+      },
+      fakeSentra(),
+    );
+    options.config.project.sentra = projectSentra;
+    const pending = owner.run("root", options);
+    await entered.promise;
+    projectSentra.enabled = false;
+    projectSentra.env.PROJECT_DSN = "changed";
+    taskSentra.env.TASK_DSN = "changed";
+    resume.resolve(undefined);
+    const result = await pending;
+    expect(result.success).toBe(true);
+    expect(execute).toHaveBeenCalledWith(
+      "project",
+      expect.objectContaining({
+        env: {
+          TOKEN: "accepted",
+          PROJECT_DSN: "project:http://sentra@127.0.0.1:9000/proj/sess123/project/1",
+        },
+      }),
+    );
+    expect(execute).toHaveBeenCalledWith(
+      "target",
+      expect.objectContaining({
+        env: {
+          TOKEN: "accepted",
+          TASK_DSN: "task:http://sentra@127.0.0.1:9000/proj/sess123/target/1",
+        },
+      }),
+    );
+  });
+
+  it("isolates popup dimensions and command arrays while retaining command/env functions", async () => {
+    const entered = deferred<void>();
+    const resume = deferred<void>();
+    const popup = { width: "60%", height: "40%" };
+    const commands: NonNullable<TaskConfig["commands"]> = [
+      (ctx) => `echo ${ctx.services.api?.cwd ?? "missing"}`,
+    ];
+    const { owner, session, options, execute } = setup({
+      wait: {
+        name: "Wait",
+        run: async () => {
+          entered.resolve(undefined);
+          await resume.promise;
+        },
+      },
+      root: {
+        name: "Popup",
+        dependsOn: ["wait"],
+        popup,
+        commands,
+        env: (ctx) => ({ SERVICE_CWD: ctx.services.api?.cwd }),
+      },
+    });
+    options.mode = "configured";
+    const service = { cwd: "/original" };
+    options.config.project.services.api = service;
+    const pending = owner.run("root", options);
+    await entered.promise;
+    popup.width = "90%";
+    popup.height = "80%";
+    commands.push("changed command");
+    service.cwd = "/changed";
+    options.mode = "background";
+    resume.resolve(undefined);
+    const result = await pending;
+    expect(result.success).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(session.deps.displayPopup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.stringContaining("echo /original;"),
+        width: "60%",
+        height: "40%",
+        env: { TOKEN: "accepted", SERVICE_CWD: "/original" },
+      }),
+    );
+    expect(session.deps.displayPopup.mock.calls[0]?.[0].command).not.toContain("changed command");
+  });
 });
 
 it("captured service helpers resolve the current manager and reject starts while closing", async () => {
