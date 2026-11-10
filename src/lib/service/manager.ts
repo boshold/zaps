@@ -29,6 +29,7 @@ import { waitForReady } from "./ready.js";
 import { canTransition, createServiceStatus, transition } from "./state.js";
 import type {
   DisplayPopupOptions,
+  DockerReadinessContext,
   ExecInfo,
   ReadyConfig,
   ReadyDeps,
@@ -36,6 +37,15 @@ import type {
   ServiceContext,
   ServiceStatus,
 } from "./types.js";
+
+class GroupedDockerRebuildError extends Error {
+  public readonly code = "unsupported_config";
+
+  public constructor(name: string) {
+    super(`Rebuild is not supported for grouped Docker service '${name}'; use plain restart.`);
+    this.name = "GroupedDockerRebuildError";
+  }
+}
 
 type PaneMap = Record<string, string>;
 
@@ -108,6 +118,7 @@ function buildReadyDeps(
   serviceConfig: ServiceConfig,
   inputs: Pick<ReadyDeps, "detectPorts" | "readOutput">,
   projectDir: string,
+  dockerReadiness?: DockerReadinessContext,
 ): ReadyDeps {
   const { docker } = serviceConfig;
   const projectArgs = docker ? composeProjectArgs(serviceConfig.cwd ?? projectDir, docker) : [];
@@ -117,9 +128,7 @@ function buildReadyDeps(
     composeFile: docker?.file,
     dockerStatus: async (svc, cwd, composeFile) =>
       getContainerInfo(svc, cwd, composeFile, projectArgs),
-    dockerRequireRecreate: docker
-      ? Boolean(docker.build || docker.forceRecreate || docker.renewVolumes)
-      : undefined,
+    dockerReadiness,
   };
 }
 
@@ -638,13 +647,17 @@ export class ServiceManager extends EventEmitter {
   private async startServiceInternal(
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
+    dockerOperation?: "restart",
   ): Promise<ServiceActionResult> {
-    return this.withMemberStart(name, async () => this.runServiceStart(name, satisfiedDeps));
+    return this.withMemberStart(name, async () =>
+      this.runServiceStart(name, satisfiedDeps, dockerOperation),
+    );
   }
 
   private async runServiceStart(
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
+    dockerOperation?: "restart",
   ): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
     const status = this.statuses.get(name);
@@ -706,7 +719,14 @@ export class ServiceManager extends EventEmitter {
     const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
 
     if (!controller.signal.aborted) {
-      await this.startExecution(name, serviceConfig, status, controller, sentraEnv);
+      await this.startExecution(
+        name,
+        serviceConfig,
+        status,
+        controller,
+        sentraEnv,
+        dockerOperation,
+      );
     }
     return { noop: false };
   }
@@ -717,13 +737,21 @@ export class ServiceManager extends EventEmitter {
     status: ServiceStatus,
     controller: AbortController,
     sentraEnv: Record<string, string>,
+    dockerOperation?: "restart",
   ): Promise<void> {
     if (serviceConfig._combined) {
+      let operation: DockerReadinessContext["operation"] = "up";
       const unitId = this.memberUnits.get(name) ?? name;
       try {
         await this.withServiceLock(`@unit:${unitId}`, async () => {
           if (!controller.signal.aborted) {
-            await this.prepareCombinedStart(name, unitId, serviceConfig, sentraEnv);
+            operation = await this.prepareCombinedStart(
+              name,
+              unitId,
+              serviceConfig,
+              sentraEnv,
+              dockerOperation,
+            );
           }
         });
       } catch (error) {
@@ -738,7 +766,7 @@ export class ServiceManager extends EventEmitter {
       if (name === unitId && handle && !controller.signal.aborted) {
         status.pid = await this.runtime.getPid(handle);
       }
-      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller);
+      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller, operation);
       return;
     }
     await this.launchRuntimeExecution(name, serviceConfig, sentraEnv);
@@ -754,7 +782,8 @@ export class ServiceManager extends EventEmitter {
     unitId: string,
     serviceConfig: ServiceConfig,
     sentraEnv: Record<string, string>,
-  ): Promise<void> {
+    dockerOperation?: "restart",
+  ): Promise<DockerReadinessContext["operation"]> {
     const members = this.unitMembers.get(unitId) ?? [name];
     const execution = this.executions.get(unitId);
     if (
@@ -767,6 +796,9 @@ export class ServiceManager extends EventEmitter {
     }
     if (execution) {
       execution.stoppedMembers?.delete(name);
+      if (dockerOperation === "restart") {
+        return "restart";
+      }
       this.memberCleanupFailures.add(name);
       await this.deps.exec(
         "docker",
@@ -779,10 +811,10 @@ export class ServiceManager extends EventEmitter {
         serviceConfig.cwd ?? this.config.projectDir,
       );
       this.memberCleanupFailures.delete(name);
-      return;
+      return "start";
     }
     if (name !== unitId && !this.unitGenerations.has(unitId)) {
-      return;
+      return "up";
     }
     const ownerConfig = this.config.project.services[unitId];
     const env =
@@ -790,6 +822,7 @@ export class ServiceManager extends EventEmitter {
         ? sentraEnv
         : await this.resolveServiceSentraEnv(unitId, ownerConfig, this.getStatus(unitId));
     await this.launchRuntimeExecution(unitId, ownerConfig, env);
+    return "up";
   }
 
   private async launchRuntimeExecution(
@@ -865,6 +898,7 @@ export class ServiceManager extends EventEmitter {
     serviceConfig: ServiceConfig,
     status: ServiceStatus,
     controller: AbortController,
+    operation: DockerReadinessContext["operation"] = "up",
   ): Promise<void> {
     const execution = this.executions.get(unitId);
     const epoch = this.lifecycleEpochs.get(name);
@@ -885,7 +919,22 @@ export class ServiceManager extends EventEmitter {
       return currentHandle() === handle ? lines.join("\n") : "";
     };
     await this.finishStart(name, serviceConfig, status, controller, {
-      readyDeps: buildReadyDeps(serviceConfig, { detectPorts, readOutput }, this.config.projectDir),
+      readyDeps: buildReadyDeps(
+        serviceConfig,
+        { detectPorts, readOutput },
+        this.config.projectDir,
+        serviceConfig.docker
+          ? {
+              memberEpoch: epoch ?? 0,
+              operation,
+              effectiveLaunch: {
+                ...(operation === "up"
+                  ? this.config.project.services[unitId].docker
+                  : serviceConfig.docker),
+              },
+            }
+          : undefined,
+      ),
       detectPorts,
     });
   }
@@ -1379,7 +1428,7 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
 
       status.retryCount = 0;
-      await this.startServiceInternal(name);
+      await this.startServiceInternal(name, undefined, "restart");
     } else {
       // Stop if running
       await this.stopServiceInternal(name);
@@ -1441,6 +1490,9 @@ export class ServiceManager extends EventEmitter {
     overrides: Partial<DockerConfig>,
   ): Promise<void> {
     const serviceConfig = this.config.project.services[name];
+    if (serviceConfig?._combined) {
+      throw new GroupedDockerRebuildError(name);
+    }
     if (!serviceConfig?.docker) {
       throw new Error(`Service "${name}" is not a docker service`);
     }
@@ -1764,4 +1816,4 @@ export interface ServiceManagerDeps {
   sentra?: SentraDeps;
 }
 
-export { diffOutput };
+export { diffOutput, GroupedDockerRebuildError };

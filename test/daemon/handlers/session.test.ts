@@ -351,6 +351,71 @@ describe("session handlers", () => {
     });
   });
 
+  describe("services.rebuild", () => {
+    it.each([true, false])(
+      "rejects grouped rebuild before manager entry (owner=%s)",
+      async (isOwner) => {
+        const session = createMockSession();
+        session.config.project.services.api = {
+          docker: { service: "api", build: true },
+          _combined: { group: "infra", allServices: ["api", "db"], isOwner },
+        };
+        const manager = Object.assign(session.manager, { restartWithDockerOverrides: vi.fn() });
+        const configBefore = structuredClone(session.config.project.services);
+        const panesBefore = { ...session.paneMap };
+        const execBefore = new Map(session.execInfo);
+        const buffersBefore = new Map(session.logBuffers);
+        const store = createMockStore([session]);
+        for (const overrides of [{}, { build: true, forceRecreate: true }]) {
+          const res = await sessionHandlers["services.rebuild"](
+            {
+              id: "rebuild",
+              method: "services.rebuild",
+              session: session.id,
+              params: { name: "api", overrides },
+            },
+            store,
+            createMockSocket() as never,
+          );
+          expect(res).toEqual({
+            id: "rebuild",
+            errorCode: "unsupported_config",
+            error: "Rebuild is not supported for grouped Docker service 'api'; use plain restart.",
+          });
+        }
+        expect(manager.restartWithDockerOverrides).not.toHaveBeenCalled();
+        expect(manager.startService).not.toHaveBeenCalled();
+        expect(manager.stopService).not.toHaveBeenCalled();
+        expect(manager.restartService).not.toHaveBeenCalled();
+        expect(manager.emit).not.toHaveBeenCalled();
+        expect(session.config.project.services).toEqual(configBefore);
+        expect(session.paneMap).toEqual(panesBefore);
+        expect(session.execInfo).toEqual(execBefore);
+        expect(session.logBuffers).toEqual(buffersBefore);
+      },
+    );
+
+    it("retains standalone rebuild", async () => {
+      const session = createMockSession();
+      session.config.project.services.api = { docker: { service: "api" } };
+      const manager = Object.assign(session.manager, {
+        restartWithDockerOverrides: vi.fn().mockResolvedValue(undefined),
+      });
+      const res = await sessionHandlers["services.rebuild"](
+        {
+          id: "rebuild",
+          method: "services.rebuild",
+          session: session.id,
+          params: { name: "api", overrides: { build: true } },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toEqual({ rebuilt: "api" });
+      expect(manager.restartWithDockerOverrides).toHaveBeenCalledWith("api", { build: true });
+    });
+  });
+
   describe("services.restart", () => {
     it("restarts service", async () => {
       const session = createMockSession();

@@ -3048,6 +3048,99 @@ describe("combined docker services", () => {
     });
   }
 
+  it.each(["postgres", "redis"])("rejects %s rebuild before all effects", async (member) => {
+    const runtime = neutralRuntime();
+    const deps = createMockDeps();
+    deps.runtime = () => runtime.driver;
+    const config = makeCombinedConfig();
+    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    const buffer = new LogBuffer(20);
+    const logLines = vi.fn((_name: string, lines: string[]) => buffer.appendLines(lines));
+    mgr.on("logLines", logLines);
+    const stateChange = vi.fn();
+    mgr.on("stateChange", stateChange);
+    await mgr.startAll();
+    runtime.emit({ kind: "output", unitId: "postgres", generation: 1, lines: ["existing log"] });
+    const configBefore = structuredClone(config.project.services);
+    const dockerBefore = config.project.services[member].docker;
+    const statuses = structuredClone(mgr.getAllStatuses());
+    const specs = structuredClone(runtime.specs);
+    const logs = buffer.snapshot();
+    const container = { state: "running", health: "healthy", ports: [5432], ids: ["same-id"] };
+    dockerSpy.mockResolvedValue(container);
+    vi.clearAllMocks();
+    for (const overrides of [{}, { build: true, forceRecreate: true, renewVolumes: true }]) {
+      for (const rebuild of [
+        async () => mgr.restartWithDockerOverrides(member, overrides),
+        // oxlint-disable-next-line typescript/dot-notation -- private guard coverage
+        async () => mgr["restartWithDockerOverridesInternal"](member, overrides),
+      ]) {
+        await expect(rebuild()).rejects.toMatchObject({
+          code: "unsupported_config",
+          message: `Rebuild is not supported for grouped Docker service '${member}'; use plain restart.`,
+        });
+      }
+    }
+    expect(config.project.services).toEqual(configBefore);
+    expect(config.project.services[member].docker).toBe(dockerBefore);
+    expect(mgr.getAllStatuses()).toEqual(statuses);
+    expect(runtime.specs).toEqual(specs);
+    expect(deps.exec).not.toHaveBeenCalled();
+    expect(runtime.driver.stop).not.toHaveBeenCalled();
+    expect(deps.sendKeys).not.toHaveBeenCalled();
+    expect(deps.storeExecInfo).not.toHaveBeenCalled();
+    expect(stateChange).not.toHaveBeenCalled();
+    expect(logLines).not.toHaveBeenCalled();
+    expect(buffer.snapshot()).toEqual(logs);
+    expect(dockerSpy).not.toHaveBeenCalled();
+    expect(container.ids).toEqual(["same-id"]);
+    await mgr.stopAll();
+  });
+
+  it.each(["postgres", "redis"])(
+    "readies %s start/restart with unchanged IDs and stored flags",
+    async (member) => {
+      const runtime = neutralRuntime();
+      const deps = createMockDeps();
+      deps.runtime = () => runtime.driver;
+      const config = makeCombinedConfig();
+      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      await mgr.startAll();
+      const sibling = member === "postgres" ? "redis" : "postgres";
+      const siblingBefore = structuredClone(mgr.getStatus(sibling));
+      const { docker } = config.project.services[member];
+      if (!docker) {
+        throw new Error("Missing Docker config");
+      }
+      Object.assign(docker, { build: true, forceRecreate: true, renewVolumes: true });
+      dockerSpy.mockResolvedValue({
+        state: "running",
+        health: "healthy",
+        ports: [5432],
+        ids: ["unchanged"],
+      });
+      await mgr.restartService(member);
+      expect(mgr.getStatus(member).state).toBe("ready");
+      expect(deps.exec).toHaveBeenCalledWith(
+        "docker",
+        expect.arrayContaining(["restart", member]),
+        "/test",
+      );
+      await mgr.stopService(member);
+      await mgr.startService(member);
+      expect(mgr.getStatus(member).state).toBe("ready");
+      expect(deps.exec).toHaveBeenCalledWith(
+        "docker",
+        expect.arrayContaining(["start", member]),
+        "/test",
+      );
+      expect(mgr.getStatus(sibling)).toEqual(siblingBefore);
+      expect(runtime.specs).toHaveLength(1);
+      expect(runtime.driver.stop).not.toHaveBeenCalled();
+      await mgr.stopAll();
+    },
+  );
+
   it("owner sends docker compose up with all services", async () => {
     const config = makeCombinedConfig();
     const deps = createMockDeps();

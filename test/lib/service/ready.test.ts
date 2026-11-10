@@ -23,6 +23,31 @@ afterEach(() => {
 });
 
 describe("waitForReady", () => {
+  it.each(["start", "restart"] as const)(
+    "accepts healthy unchanged IDs after %s despite launch preferences",
+    async (operation) => {
+      const dockerStatus = vi.fn<NonNullable<ReadyDeps["dockerStatus"]>>().mockResolvedValue({
+        state: "running",
+        health: "healthy",
+        ports: [5432],
+        ids: ["unchanged"],
+      });
+      const deps: ReadyDeps = {
+        ...createDeps(),
+        dockerStatus,
+        dockerReadiness: {
+          memberEpoch: 7,
+          operation,
+          effectiveLaunch: { build: true, forceRecreate: true, renewVolumes: true },
+        },
+      };
+      await expect(
+        waitForReady({ docker: "postgres" }, new AbortController().signal, deps),
+      ).resolves.toEqual([5432]);
+      expect(dockerStatus).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("resolves immediately when config is undefined and returns empty ports", async () => {
     const controller = new AbortController();
     const ports = await waitForReady(undefined, controller.signal, createDeps());
@@ -614,7 +639,7 @@ describe("waitForReady", () => {
     const deps: ReadyDeps = {
       ...createDeps(),
       dockerStatus: mockDockerStatus,
-      dockerRequireRecreate: true,
+      dockerReadiness: { memberEpoch: 1, operation: "up", effectiveLaunch: { build: true } },
     };
 
     const promise = waitForReady(config, controller.signal, deps);

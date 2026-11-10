@@ -14,6 +14,7 @@ import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
+import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
@@ -243,10 +244,17 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, "Unknown session");
     }
     const { name, overrides } = req.params as { name: string; overrides: Partial<DockerConfig> };
+    if (session.config.project.services[name]?._combined) {
+      const error = new GroupedDockerRebuildError(name);
+      return { ...ipcErr(req.id, error.message), errorCode: error.code };
+    }
     try {
       await session.manager.restartWithDockerOverrides(name, overrides);
       return ipcOk(req.id, { rebuilt: name });
     } catch (error) {
+      if (error instanceof GroupedDockerRebuildError) {
+        return { ...ipcErr(req.id, error.message), errorCode: error.code };
+      }
       return ipcErr(req.id, error instanceof Error ? error.message : String(error));
     }
   },

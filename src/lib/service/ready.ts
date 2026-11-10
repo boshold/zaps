@@ -71,7 +71,14 @@ async function waitForDocker(
   const { dockerStatus } = deps;
   const file = config.file ?? deps.composeFile;
   const services = Array.isArray(config.docker) ? config.docker : [config.docker];
-  const requireRecreate = deps.dockerRequireRecreate ?? false;
+  const context = deps.dockerReadiness;
+  const requireRecreate =
+    context?.operation === "up" &&
+    Boolean(
+      context.effectiveLaunch.build ||
+      context.effectiveLaunch.forceRecreate ||
+      context.effectiveLaunch.renewVolumes,
+    );
   let allPorts: number[] = [];
   let firstIds: string | undefined = undefined;
   let sawNotReady = false;

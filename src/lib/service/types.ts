@@ -1,3 +1,4 @@
+import type { DockerConfig } from "#src/config/types.js";
 import type { DockerContainerInfo } from "#src/lib/docker.js";
 
 // Re-export shared types from config
@@ -63,6 +64,12 @@ export interface ServiceActionResult {
   noop: boolean;
 }
 
+export interface DockerReadinessContext {
+  memberEpoch: number;
+  operation: "up" | "start" | "restart";
+  effectiveLaunch: Pick<DockerConfig, "build" | "forceRecreate" | "renewVolumes">;
+}
+
 // === Dependency injection interfaces ===
 export interface ReadyDeps {
   detectPorts: () => Promise<number[]>;
@@ -74,12 +81,7 @@ export interface ReadyDeps {
     cwd?: string,
     composeFile?: string,
   ) => Promise<DockerContainerInfo | null>;
-  /**
-   * True for recreate-style docker starts (`build`/`forceRecreate`/
-   * `renewVolumes`): a leftover container must be replaced before ready is
-   * accepted, so the ready loop waits for the container id set to change (B4).
-   */
-  dockerRequireRecreate?: boolean;
+  dockerReadiness?: DockerReadinessContext;
 }
 
 export type { DisplayPopupOptions } from "#src/lib/tmux.js";
