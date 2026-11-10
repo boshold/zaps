@@ -164,6 +164,10 @@ class TaskExecutionService {
     }
   }
 
+  public get accepting(): boolean {
+    return this.state === "active";
+  }
+
   public close(): void {
     if (this.state === "active") {
       this.state = "closing";

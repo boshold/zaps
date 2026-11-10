@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 let mockSocket: EventEmitter & {
   write: ReturnType<typeof vi.fn>;
@@ -324,6 +325,81 @@ describe("ipcSubscribe", () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
+
+  function acknowledge(result: unknown = { subscribed: true }, error?: string): void {
+    const request = z
+      .object({ id: z.string() })
+      .parse(JSON.parse(String(mockSocket.write.mock.calls[0][0])));
+    mockSocket.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ id: request.id, result, ...(error ? { error } : {}) })}\n`),
+    );
+  }
+
+  it("keeps connection readiness separate from subscribe acceptance", async () => {
+    const onSubscribed = vi.fn();
+    const sub = ipcSubscribe("/test.sock", "sess1", [], { onEvent: vi.fn(), onSubscribed });
+    const accepted = vi.fn();
+    void sub.subscribed.then(accepted);
+    mockSocket.emit("connect");
+    await sub.ready;
+    expect(accepted).not.toHaveBeenCalled();
+    expect(sub.subscriptionAccepted).toBe(false);
+    acknowledge();
+    await sub.subscribed;
+    expect(accepted).toHaveBeenCalledOnce();
+    expect(onSubscribed).toHaveBeenCalledOnce();
+    expect(sub.subscriptionAccepted).toBe(true);
+    sub.close();
+    expect(sub.subscriptionAccepted).toBe(false);
+  });
+
+  it.each(["Unknown session", "session_closing"])(
+    "rejects failed subscribe ACK: %s",
+    async (message) => {
+      const sub = ipcSubscribe("/test.sock", "sess1", [], { onEvent: vi.fn() });
+      mockSocket.emit("connect");
+      acknowledge(undefined, message);
+      await expect(sub.subscribed).rejects.toThrow(message);
+      expect(sub.subscriptionAccepted).toBe(false);
+      sub.close();
+    },
+  );
+
+  it("supports legacy ready-and-close callers without consuming subscribe ACK", async () => {
+    const onClose = vi.fn();
+    const sub = ipcSubscribe("/test.sock", "sess1", [], { onEvent: vi.fn(), onClose });
+    mockSocket.emit("connect");
+    await sub.ready;
+    sub.close();
+    mockSocket.emit("close");
+    await Promise.resolve();
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(sub.subscriptionAccepted).toBe(false);
+  });
+
+  it("rejects malformed subscribe success", async () => {
+    const sub = ipcSubscribe("/test.sock", "sess1", [], { onEvent: vi.fn() });
+    mockSocket.emit("connect");
+    acknowledge({ subscribed: false });
+    await expect(sub.subscribed).rejects.toThrow("Invalid subscribe acknowledgement");
+    sub.close();
+  });
+
+  it.each(["close", "error"])(
+    "settles subscription and requests once on socket %s",
+    async (event) => {
+      const onClose = vi.fn();
+      const sub = ipcSubscribe("/test.sock", "sess1", [], { onEvent: vi.fn(), onClose });
+      mockSocket.emit("connect");
+      const pending = sub.request("session.attach", { ui: true });
+      mockSocket.emit(event, new Error("daemon connection closed"));
+      mockSocket.emit("close");
+      await expect(sub.subscribed).rejects.toThrow("daemon connection closed");
+      await expect(pending).rejects.toThrow("daemon connection closed");
+      expect(onClose).toHaveBeenCalledOnce();
+    },
+  );
 
   it("subscribes and receives daemon events", () => {
     const onEvent = vi.fn();

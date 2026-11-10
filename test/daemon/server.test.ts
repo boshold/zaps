@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
+import type { Socket } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ConfigError } from "../../src/config/errors.js";
 
@@ -620,6 +622,58 @@ describe("DaemonServer", () => {
   });
 
   describe("request routing", () => {
+    it.each(["close", "error"])(
+      "ACKs subscriptions before binding and revokes on %s",
+      async (event) => {
+        await server.start("/tmp/test.sock");
+        const session = await server.create({
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          tmuxSession: "main",
+          originPane: "%0",
+        });
+        const { default: net } = await import("node:net");
+        const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+        const listener = z
+          .custom<(socket: Socket) => void>((value) => typeof value === "function")
+          .parse(mockServer._connectionHandler);
+        const socket = net.createConnection("/tmp/test.sock");
+        const callbacks: (() => void)[] = [];
+        const responses: string[] = [];
+        // eslint-disable-next-line prefer-await-to-callbacks -- test controls socket flush
+        const write = vi.fn((line: string, flushed?: (failure?: Error | null) => void) => {
+          responses.push(line);
+          if (flushed) {
+            callbacks.push(() => flushed());
+          }
+          return true;
+        });
+        Object.assign(socket, { writable: true, destroyed: false, write });
+        listener(socket);
+        const send = (id: string, method: string, params?: unknown) =>
+          socket.emit(
+            "data",
+            Buffer.from(`${JSON.stringify({ id, method, session: session.id, params })}\n`),
+          );
+        send("subscribe", "subscribe", { events: [] });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+        send("early", "session.attach", { ui: true });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+        expect(responses[1]).toContain("invalid_request");
+        callbacks[0]();
+        send("attach", "session.attach", { ui: true });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
+        expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+        expect(socket.listenerCount("close")).toBe(1);
+        socket.emit(event, new Error("connection lost"));
+        expect(session.getUiBinding(socket)).toBeUndefined();
+        expect(session.subscribers.has(socket)).toBe(false);
+        callbacks[0]();
+        expect(() => session.bindUi(socket)).toThrow("invalid_request");
+        server.stop();
+      },
+    );
+
     it("handles daemon.ping", async () => {
       await server.start("/tmp/test.sock");
       const netModule = await import("node:net");
@@ -627,7 +681,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -650,7 +704,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -670,7 +724,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -690,7 +744,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -710,7 +764,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -737,7 +791,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -757,7 +811,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -782,7 +836,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -836,7 +890,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -868,7 +922,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -893,7 +947,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -928,7 +982,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 

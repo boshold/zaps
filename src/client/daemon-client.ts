@@ -29,6 +29,7 @@ export class DaemonClient extends EventEmitter {
   private readonly socketPath: string;
   private readonly sessionId: string;
   private sub: IpcSubscription | null = null;
+  private boundSubscription: IpcSubscription | null = null;
 
   public constructor(socketPath: string, sessionId: string) {
     super();
@@ -37,6 +38,7 @@ export class DaemonClient extends EventEmitter {
   }
 
   public connect(): void {
+    this.disconnect();
     this.sub = ipcSubscribe(
       this.socketPath,
       this.sessionId,
@@ -46,6 +48,7 @@ export class DaemonClient extends EventEmitter {
           this.handleEvent(event);
         },
         onClose: () => {
+          this.boundSubscription = null;
           this.emit("disconnect");
         },
       },
@@ -53,6 +56,7 @@ export class DaemonClient extends EventEmitter {
   }
 
   public disconnect(): void {
+    this.boundSubscription = null;
     if (this.sub) {
       // Send detach before closing
       this.sub.send("session.detach");
@@ -76,6 +80,29 @@ export class DaemonClient extends EventEmitter {
     if (res.error) {
       throw new Error(res.error);
     }
+  }
+
+  public get uiBound(): boolean {
+    return this.sub !== null && this.boundSubscription === this.sub && this.sub.connected;
+  }
+
+  public async bindUi(): Promise<void> {
+    const subscription = this.sub;
+    if (!subscription) {
+      throw new Error("Not connected");
+    }
+    await subscription.subscribed;
+    if (this.sub !== subscription || !subscription.connected) {
+      throw new Error("daemon connection closed");
+    }
+    const response = await subscription.request("session.attach", { ui: true });
+    if (response.error !== undefined) {
+      throw new Error(response.error);
+    }
+    if (this.sub !== subscription || !subscription.connected) {
+      throw new Error("daemon connection closed");
+    }
+    this.boundSubscription = subscription;
   }
 
   public async attach(): Promise<SessionSnapshot> {

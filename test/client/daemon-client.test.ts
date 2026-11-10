@@ -21,6 +21,7 @@ describe("DaemonClient", () => {
     close: ReturnType<typeof vi.fn>;
     request: ReturnType<typeof vi.fn>;
     connected: boolean;
+    subscribed: Promise<void>;
   };
   let eventHandler: SubscribeHandlers["onEvent"];
   let closeHandler: () => void;
@@ -33,6 +34,7 @@ describe("DaemonClient", () => {
       close: vi.fn(),
       request: vi.fn(),
       connected: true,
+      subscribed: Promise.resolve(),
     };
 
     mockIpcSubscribe.mockImplementation(
@@ -94,6 +96,94 @@ describe("DaemonClient", () => {
     client.connect();
     closeHandler();
     expect(spy).toHaveBeenCalled();
+  });
+
+  describe("UI binding", () => {
+    it("waits for subscribe ACK then uses the persistent socket and awaits attach ACK", async () => {
+      const acknowledgements: { subscribe?: () => void; attach?: () => void } = {};
+      mockSub.subscribed = new Promise<void>((resolve) => {
+        acknowledgements.subscribe = resolve;
+      });
+      mockSub.request.mockReturnValue(
+        new Promise((resolve) => {
+          acknowledgements.attach = () => resolve({ id: "attach", result: {} });
+        }),
+      );
+      client.connect();
+      const binding = client.bindUi();
+      expect(client.uiBound).toBe(false);
+      expect(mockSub.request).not.toHaveBeenCalled();
+      acknowledgements.subscribe?.();
+      await vi.waitFor(() =>
+        expect(mockSub.request).toHaveBeenCalledWith("session.attach", { ui: true }),
+      );
+      expect(client.uiBound).toBe(false);
+      acknowledgements.attach?.();
+      await binding;
+      expect(client.uiBound).toBe(true);
+      expect(mockIpcRequest).not.toHaveBeenCalled();
+      client.disconnect();
+      expect(client.uiBound).toBe(false);
+    });
+
+    it("propagates subscribe and binding failures", async () => {
+      await expect(client.bindUi()).rejects.toThrow("Not connected");
+      client.connect();
+      mockSub.subscribed = Promise.reject(new Error("subscribe failed"));
+      await expect(client.bindUi()).rejects.toThrow("subscribe failed");
+      expect(mockSub.request).not.toHaveBeenCalled();
+      mockSub.subscribed = Promise.resolve();
+      mockSub.request.mockResolvedValue({ id: "a", error: "invalid_request" });
+      await expect(client.bindUi()).rejects.toThrow("invalid_request");
+      expect(client.uiBound).toBe(false);
+    });
+
+    it("settles binding when disconnected before subscribe ACK", async () => {
+      let loseSubscription: ((reason: Error) => void) | undefined = undefined;
+      mockSub.subscribed = new Promise<void>((_resolve, reject) => {
+        loseSubscription = reject;
+      });
+      mockSub.close.mockImplementation(() =>
+        loseSubscription?.(new Error("daemon connection closed")),
+      );
+      client.connect();
+      const binding = client.bindUi();
+      client.disconnect();
+      await expect(binding).rejects.toThrow("daemon connection closed");
+      expect(mockSub.request).not.toHaveBeenCalled();
+      expect(client.uiBound).toBe(false);
+    });
+
+    it("does not bind after disconnect during attach", async () => {
+      const acknowledgements: { attach?: () => void } = {};
+      mockSub.request.mockReturnValue(
+        new Promise((resolve) => {
+          acknowledgements.attach = () => resolve({ id: "a", result: {} });
+        }),
+      );
+      client.connect();
+      const binding = client.bindUi();
+      await vi.waitFor(() => expect(mockSub.request).toHaveBeenCalled());
+      client.disconnect();
+      acknowledgements.attach?.();
+      await expect(binding).rejects.toThrow("daemon connection closed");
+      expect(client.uiBound).toBe(false);
+    });
+
+    it("requires a fresh subscribe and attach handshake on reconnect", async () => {
+      mockSub.request.mockResolvedValue({ id: "a", result: {} });
+      client.connect();
+      await client.bindUi();
+      expect(client.uiBound).toBe(true);
+      closeHandler();
+      expect(client.uiBound).toBe(false);
+      mockSub = { ...mockSub, request: vi.fn().mockResolvedValue({ id: "b", result: {} }) };
+      client.connect();
+      expect(client.uiBound).toBe(false);
+      await client.bindUi();
+      expect(mockSub.request).toHaveBeenCalledOnce();
+      expect(client.uiBound).toBe(true);
+    });
   });
 
   describe("request methods", () => {

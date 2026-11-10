@@ -68,10 +68,25 @@ export const sessionHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore, socket: Socket) => Promise<IpcResponse>
 > = {
-  async "session.attach"(req, store) {
+  async "session.attach"(req, store, socket) {
+    const params = z
+      .object({ ui: z.boolean().optional() })
+      .strict()
+      .optional()
+      .safeParse(req.params);
+    if (!params.success) {
+      return ipcErr(req.id, "invalid_request");
+    }
     const session = getSession(req, store);
     if (!session) {
       return ipcErr(req.id, "Unknown session");
+    }
+    if (params.data?.ui) {
+      try {
+        session.bindUi(socket);
+      } catch (error) {
+        return ipcErr(req.id, error instanceof Error ? error.message : String(error));
+      }
     }
     return ipcOk(req.id, session.attachSnapshot());
   },

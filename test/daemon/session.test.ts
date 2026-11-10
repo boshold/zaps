@@ -6,9 +6,11 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { sessionHandlers } from "../../src/daemon/handlers/session.js";
 import type { SessionCreateParams } from "../../src/daemon/session.js";
 import { Session, sessionId } from "../../src/daemon/session.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
+import { createMockStore } from "../_helpers/mock-session.js";
 
 vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),
@@ -145,6 +147,87 @@ describe("Session", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe("UI socket binding", () => {
+    it("requires acknowledged subscription on the same socket and session", async () => {
+      const socket = new Socket();
+      const otherSocket = new Socket();
+      const other = new Session(
+        createSessionParams({ configPath: "/other/.zaps.mts" }),
+        createMockManager(),
+      );
+      const store = {
+        ...createMockStore(),
+        get: (id: string) => [session, other].find((entry) => entry.id === id),
+      };
+      const attach = async (target = session, client = socket) =>
+        sessionHandlers["session.attach"](
+          { id: "attach", method: "session.attach", session: target.id, params: { ui: true } },
+          store,
+          client,
+        );
+      const response1 = await attach();
+      expect(response1.error).toBe("invalid_request");
+      session.addSubscriber(socket);
+      const response2 = await attach();
+      expect(response2.error).toBe("invalid_request");
+      session.acknowledgeSubscriber(socket);
+      const response3 = await attach(session, otherSocket);
+      expect(response3.error).toBe("invalid_request");
+      const response4 = await attach(other);
+      expect(response4.error).toBe("invalid_request");
+      const response5 = await attach();
+      expect(response5.error).toBeUndefined();
+      expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+      other.addSubscriber(socket);
+      const response6 = await attach(other);
+      expect(response6.error).toBe("invalid_request");
+      other.acknowledgeSubscriber(socket);
+      const response7 = await attach(other);
+      expect(response7.error).toBeUndefined();
+      await sessionHandlers["session.detach"](
+        { id: "detach", method: "session.detach", session: session.id },
+        store,
+        socket,
+      );
+      expect(session.getUiBinding(socket)).toBeUndefined();
+      expect(other.getUiBinding(socket)).toBeDefined();
+      const response8 = await attach();
+      expect(response8.error).toBe("invalid_request");
+      other.removeSubscriber(socket);
+      socket.destroy();
+      otherSocket.destroy();
+    });
+
+    it("rejects closed sockets and requires fresh ACKs after removal", () => {
+      const socket = new Socket();
+      session.addSubscriber(socket);
+      session.acknowledgeSubscriber(socket);
+      session.bindUi(socket);
+      session.removeSubscriber(socket);
+      session.addSubscriber(socket);
+      expect(() => session.bindUi(socket)).toThrow("invalid_request");
+      session.acknowledgeSubscriber(socket);
+      session.bindUi(socket);
+      socket.destroy();
+      expect(() => session.bindUi(socket)).toThrow("invalid_request");
+      session.removeSubscriber(socket);
+      expect(session.getUiBinding(socket)).toBeUndefined();
+      expect(socket.listenerCount("close")).toBe(0);
+    });
+
+    it("closes binding admission immediately when destroy begins", async () => {
+      const socket = new Socket();
+      session.addSubscriber(socket);
+      session.acknowledgeSubscriber(socket);
+      session.bindUi(socket);
+      const destruction = session.destroy();
+      expect(session.getUiBinding(socket)).toBeUndefined();
+      expect(() => session.bindUi(socket)).toThrow("session_closing");
+      await destruction;
+      expect(session.getUiBinding(socket)).toBeUndefined();
+    });
   });
 
   it("initializes with correct properties", () => {

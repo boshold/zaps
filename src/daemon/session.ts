@@ -120,6 +120,11 @@ export function sessionId(configPath: string, projectDir?: string): string {
   return hash.digest("hex").slice(0, 12);
 }
 
+export interface UiBinding {
+  readonly socket: net.Socket;
+  readonly sessionId: string;
+}
+
 export class Session {
   public readonly backend: TmuxSessionBackend;
   public readonly id: string;
@@ -130,6 +135,8 @@ export class Session {
   public readonly tmuxWindow: string;
   public readonly originPane: string;
   public readonly subscribers = new Set<net.Socket>();
+  private readonly acknowledgedSubscribers = new Set<net.Socket>();
+  private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
   public readonly taskExecution: TaskExecutionService;
   public taskPresentation?: TaskPresentation;
@@ -463,6 +470,8 @@ export class Session {
    */
   public async destroy(): Promise<void> {
     this.taskExecution.close();
+    this.uiBindings.clear();
+    this.acknowledgedSubscribers.clear();
     await this.withOpLock(async () => {
       if (this.destroyed) {
         if (this.destroyFailure) {
@@ -515,10 +524,30 @@ export class Session {
     }
   }
 
-  /**
-   * Drop a subscriber socket and stop the staleness poll once none remain.
-   */
+  public acknowledgeSubscriber(socket: net.Socket): void {
+    if (this.subscribers.has(socket) && !socket.destroyed && this.taskExecution.accepting) {
+      this.acknowledgedSubscribers.add(socket);
+    }
+  }
+
+  public bindUi(socket: net.Socket): void {
+    if (!this.taskExecution.accepting) {
+      throw new Error("session_closing");
+    }
+    if (!this.acknowledgedSubscribers.has(socket) || socket.destroyed || !socket.writable) {
+      throw new Error("invalid_request");
+    }
+    this.uiBindings.set(socket, { socket, sessionId: this.id });
+  }
+
+  public getUiBinding(socket: net.Socket): UiBinding | undefined {
+    return this.uiBindings.get(socket);
+  }
+
+  /** Drop socket ownership and stop polling when no subscribers remain. */
   public removeSubscriber(socket: net.Socket): void {
+    this.uiBindings.delete(socket);
+    this.acknowledgedSubscribers.delete(socket);
     this.subscribers.delete(socket);
     if (this.subscribers.size === 0) {
       this.stopStalePoll();
@@ -699,12 +728,12 @@ export class Session {
     const line = `${JSON.stringify(event)}\n`;
     for (const sock of this.subscribers) {
       if (sock.destroyed) {
-        this.subscribers.delete(sock);
+        this.removeSubscriber(sock);
       } else {
         try {
           sock.write(line);
         } catch {
-          this.subscribers.delete(sock);
+          this.removeSubscriber(sock);
         }
       }
     }

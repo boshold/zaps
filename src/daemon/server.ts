@@ -489,7 +489,15 @@ class DaemonServer implements SessionStore {
     }
 
     const response = await this.routeRequest(req, socket);
-    socket.write(`${JSON.stringify(response)}\n`);
+    if (socket.destroyed || !socket.writable) {
+      return;
+    }
+    // eslint-disable-next-line prefer-await-to-callbacks -- acknowledgement follows socket flush
+    socket.write(`${JSON.stringify(response)}\n`, (error) => {
+      if (!error && req.method === "subscribe" && response.error === undefined && req.session) {
+        this.get(req.session)?.acknowledgeSubscriber(socket);
+      }
+    });
   }
 
   private async routeRequest(req: IpcRequest, socket: net.Socket): Promise<IpcResponse> {

@@ -91,6 +91,55 @@ describe("session handlers", () => {
   });
 
   describe("session.attach", () => {
+    it.each([undefined, {}, { ui: false }])(
+      "preserves snapshot-only attachment for %j",
+      async (params) => {
+        const bindUi = vi.fn();
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBeUndefined();
+        expect(session.attachSnapshot).toHaveBeenCalledOnce();
+        expect(bindUi).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([null, [], true, { ui: "true" }, { ui: true, client: "other" }])(
+      "rejects malformed attachment without effects: %j",
+      async (params) => {
+        const bindUi = vi.fn();
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBe("invalid_request");
+        expect(bindUi).not.toHaveBeenCalled();
+        expect(session.attachSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["invalid_request", "session_closing"])(
+      "rejects invalid binding before snapshot: %s",
+      async (message) => {
+        const bindUi = vi.fn(() => {
+          throw new Error(message);
+        });
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params: { ui: true } },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBe(message);
+        expect(session.attachSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
     it("returns attach snapshot", async () => {
       const session = createMockSession();
       const store = createMockStore([session]);
