@@ -60,6 +60,20 @@ function createMockDeps(): ServiceManagerDeps {
   return deps;
 }
 
+function notifyRuntimeExited(
+  deps: ServiceManagerDeps,
+  _name: string,
+  code: number,
+  signal: string | null,
+  spawnError?: string,
+): void {
+  const executionId = vi.mocked(deps.storeExecInfo).mock.calls.at(-1)?.[2];
+  if (executionId) {
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    serviceRuntimeExited(deps, executionId, { code, signal, spawnError });
+  }
+}
+
 // --- Config helpers ---
 
 function makeConfig(
@@ -358,6 +372,9 @@ describe("startAll", () => {
     const paneMap = makePaneMap(["a", "b"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.sendCtrlC = vi.fn(async () => {
+      deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    });
     deps.capturePane = vi.fn().mockResolvedValue("no match here");
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
@@ -922,7 +939,7 @@ describe("startService", () => {
 
     expect(result).toEqual({ noop: false });
     expect(mgr.getStatus("svc").state).toBe("stopped");
-    expect(deps.sendCtrlC).toHaveBeenCalledWith("view:svc");
+    expect(deps.sendCtrlC).not.toHaveBeenCalled();
   });
 
   it("uses run field when start is not set", async () => {
@@ -1042,35 +1059,25 @@ describe("stopService", () => {
     ]);
   });
 
-  it("falls back to SIGKILL after timeout", async () => {
-    const config = makeConfig({
-      svc: { start: "start-svc" },
-    });
-    const paneMap = makePaneMap(["svc"]);
+  it("retains ownership and reports incomplete pane cleanup", async () => {
     const deps = createMockDeps();
-
-    // Process never exits gracefully
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
-
-    // Start first
-    const startPromise = mgr.startService("svc");
-    await vi.advanceTimersByTimeAsync(2000);
-    await startPromise;
-
-    // Mock process.kill
-    const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
-
-    const stopPromise = mgr.stopService("svc");
-    // Advance past the 5s stop timeout + poll intervals
-    await vi.advanceTimersByTimeAsync(10_000);
-    await stopPromise;
-
-    // Should have tried to kill PID 2000 (child, not root)
-    expect(killSpy).toHaveBeenCalledWith(2000, "SIGKILL");
+    const mgr = new ServiceManager(
+      makeConfig({ svc: { start: "serve" } }),
+      makePaneMap(["svc"]),
+      deps,
+      "test-session",
+    );
+    await mgr.startService("svc");
+    const killSpy = vi.spyOn(process, "kill");
+    const stopped = expect(mgr.stopService("svc")).rejects.toThrow("termination deadline exceeded");
+    await vi.advanceTimersByTimeAsync(6000);
+    await stopped;
+    expect(mgr.getStatus("svc").state).toBe("error");
+    expect(killSpy).not.toHaveBeenCalled();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    await expect(mgr.stopService("svc")).resolves.toEqual({ noop: false });
     expect(mgr.getStatus("svc").state).toBe("stopped");
-
     killSpy.mockRestore();
   });
 });
@@ -1194,7 +1201,7 @@ describe("crash recovery", () => {
     let running = true;
 
     // The pane process is running only after a start command is sent; a crash
-    // Sets `running = false` and the restart's waitForPaneExit then passes.
+    // Sets `running = false` before cleanup verifies termination.
     deps.sendKeys = vi.fn(async () => {
       startCount += 1;
       running = true;
@@ -1300,8 +1307,10 @@ describe("crash recovery", () => {
 
     expect(mgr.getStatus("svc").state).toBe("error");
 
-    // Manual restart
-    crashed = false;
+    // The replacement becomes live only once its start command is sent.
+    deps.sendKeys = vi.fn(async () => {
+      crashed = false;
+    });
     const restartPromise = mgr.restartService("svc");
     await vi.advanceTimersByTimeAsync(5000);
     await restartPromise;
@@ -1318,7 +1327,7 @@ describe("crash recovery", () => {
     const paneMap = makePaneMap(["dep", "svc"]);
     const deps = createMockDeps();
     // Keep processes "running" so the background poll monitor never fires;
-    // We drive the crash explicitly via handleExecExited.
+    // Drive the crash through the runtime wrapper notification.
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
@@ -1336,10 +1345,11 @@ describe("crash recovery", () => {
       changed.push({ name, state: status.state });
     });
 
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
+    await vi.advanceTimersByTimeAsync(0);
     expect(mgr.getStatus("svc").state).toBe("restarting");
 
-    // Crashed process is now gone, so the restart's waitForPaneExit returns fast.
+    // The runtime has verified the crashed command is gone.
     vi.mocked(deps.getDescendantPids).mockResolvedValue([1000]);
 
     await vi.advanceTimersByTimeAsync(200);
@@ -1351,7 +1361,7 @@ describe("crash recovery", () => {
 
   it("does not restart a service stopped during crash-backoff", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: false },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -1374,7 +1384,8 @@ describe("crash recovery", () => {
     expect(startCount).toBe(1);
 
     // Crash → enters backoff (restarting)
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
+    await vi.advanceTimersByTimeAsync(0);
     expect(mgr.getStatus("svc").state).toBe("restarting");
 
     // Stop while in backoff
@@ -1388,7 +1399,7 @@ describe("crash recovery", () => {
 
   it("does not restart during shutdown (stopAll) while in crash-backoff", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: false },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -1409,7 +1420,8 @@ describe("crash recovery", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
 
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
+    await vi.advanceTimersByTimeAsync(0);
     expect(mgr.getStatus("svc").state).toBe("restarting");
 
     const stopAllPromise = mgr.stopAll();
@@ -1422,7 +1434,7 @@ describe("crash recovery", () => {
 
   it("does not restart when monitor generation is superseded during backoff", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: true },
+      svc: { start: "start-svc", restart: { maxRetries: 3, backoff: 1000 }, raw: false },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -1438,14 +1450,12 @@ describe("crash recovery", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
 
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
+    await vi.advanceTimersByTimeAsync(0);
     expect(mgr.getStatus("svc").state).toBe("restarting");
 
     // A superseding operation bumps the generation during backoff
-    (mgr as unknown as { monitorGenerations: Map<string, number> }).monitorGenerations.set(
-      "svc",
-      999,
-    );
+    (mgr as unknown as { lifecycleEpochs: Map<string, number> }).lifecycleEpochs.set("svc", 999);
 
     await vi.advanceTimersByTimeAsync(2000);
 
@@ -1509,7 +1519,7 @@ describe("crash monitor poll interval", () => {
 // HandleExecExited
 // =============================================================================
 
-describe("handleExecExited", () => {
+describe("runtime wrapper exits", () => {
   it("fails a starting service fast on a wrapper spawn error (E11)", async () => {
     const config = makeConfig({ svc: { start: "start-svc", ready: { output: /NEVER_MATCHES/u } } });
     const paneMap = makePaneMap(["svc"]);
@@ -1531,7 +1541,8 @@ describe("handleExecExited", () => {
       mgr as unknown as { abortControllers: Map<string, AbortController> }
     ).abortControllers.get("svc");
 
-    mgr.handleExecExited("svc", 127, null, "spawn /bad/cwd ENOENT");
+    notifyRuntimeExited(deps, "svc", 127, null, "spawn /bad/cwd ENOENT");
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(mgr.getStatus("svc").state).toBe("error");
     expect(mgr.getStatus("svc").lastError).toBe("spawn /bad/cwd ENOENT");
@@ -1561,7 +1572,7 @@ describe("handleExecExited", () => {
 
     expect(mgr.getStatus("svc").state).toBe("ready");
 
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
     await vi.advanceTimersByTimeAsync(100);
 
     expect(mgr.getStatus("svc").state).toBe("error");
@@ -1583,7 +1594,8 @@ describe("handleExecExited", () => {
 
     expect(mgr.getStatus("svc").state).toBe("ready");
 
-    mgr.handleExecExited("svc", 1, "SIGTERM");
+    notifyRuntimeExited(deps, "svc", 1, "SIGTERM");
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(mgr.getStatus("svc").state).toBe("restarting");
     expect(mgr.getStatus("svc").retryCount).toBe(1);
@@ -1601,14 +1613,14 @@ describe("handleExecExited", () => {
     // Service is in "stopped" state initially
     expect(mgr.getStatus("svc").state).toBe("stopped");
 
-    mgr.handleExecExited("svc", 1, null);
+    notifyRuntimeExited(deps, "svc", 1, null);
 
     expect(mgr.getStatus("svc").state).toBe("stopped");
   });
 
   it("increments generation to prevent stale PID poll double-trigger", async () => {
     const config = makeConfig({
-      svc: { start: "start-svc", raw: true },
+      svc: { start: "start-svc", raw: false },
     });
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
@@ -1624,8 +1636,8 @@ describe("handleExecExited", () => {
     // Simulate crash detection: PID poll returns crashed state
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
 
-    // HandleExecExited fires first — increments generation
-    mgr.handleExecExited("svc", 1, null);
+    // Runtime final exit wins the race with the poll.
+    notifyRuntimeExited(deps, "svc", 1, null);
     await vi.advanceTimersByTimeAsync(100);
 
     expect(mgr.getStatus("svc").state).toBe("error");
@@ -3151,7 +3163,7 @@ describe("combined docker services", () => {
     await vi.advanceTimersByTimeAsync(500);
     await p2;
 
-    const gens = (mgr as unknown as { monitorGenerations: Map<string, number> }).monitorGenerations;
+    const gens = (mgr as unknown as { lifecycleEpochs: Map<string, number> }).lifecycleEpochs;
     const before = gens.get("redis") ?? 0;
 
     const pRestart = mgr.restartService("redis");
@@ -3663,9 +3675,7 @@ describe("lazy-pane lifecycle", () => {
     const deps = createMockDeps();
     const mgr = new ServiceManager(config, paneMap, deps, "test-session");
 
-    // StopService throws `Unknown service` when pane-less and non-detached —
-    // That's the existing contract; what matters is reflowRemove isn't called.
-    await expect(mgr.stopService("worker")).rejects.toThrow(/Unknown service/);
+    await expect(mgr.stopService("worker")).resolves.toEqual({ noop: true });
     expect(deps.reflowRemove).not.toHaveBeenCalled();
   });
 
@@ -4097,6 +4107,9 @@ describe("sentra env injection", () => {
     });
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.sendCtrlC = vi.fn(async () => {
+      deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    });
     deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     const sentra = fakeSentra();
     deps.sentra = sentra;
@@ -4137,6 +4150,9 @@ describe("startedAt", () => {
     const config = makeConfig({ svc: { start: "start-svc" } });
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    deps.sendCtrlC = vi.fn(async () => {
+      deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    });
     vi.setSystemTime(1_000_000);
 
     const mgr = new ServiceManager(config, makePaneMap(["svc"]), deps, "test-session");
@@ -4287,8 +4303,8 @@ describe("neutral runtime launch", () => {
     expect(lines).toEqual(["first"]);
     await manager.stopService("svc");
     await manager.startService("svc");
-    expect(runtime.specs[1]?.generation).toBe(3);
-    runtime.emit({ kind: "output", unitId: "svc", generation: 3, lines: ["replacement"] });
+    expect(runtime.specs[1]?.generation).toBe(2);
+    runtime.emit({ kind: "output", unitId: "svc", generation: 2, lines: ["replacement"] });
     await vi.advanceTimersByTimeAsync(0);
     expect(lines).toEqual(["first", "replacement"]);
     release?.();
@@ -4318,10 +4334,41 @@ describe("neutral runtime launch", () => {
       "compat-session",
     );
     await manager.startService("svc");
+    await vi.advanceTimersByTimeAsync(0);
     expect(manager.getStatus("svc")).toMatchObject({
       state: "error",
       lastError: "command unavailable",
     });
+  });
+
+  it("keeps compatibility runtime ownership after failed final cleanup and reports exit once", async () => {
+    const deps = createMockDeps();
+    const runtime = deps.runtime(makePaneMap(["svc"]));
+    const events: ExecutionEvent[] = [];
+    runtime.subscribe((event) => events.push(event));
+    const handle = await runtime.start({
+      unitId: "svc",
+      generation: 1,
+      command: "serve",
+      cwd: "/test",
+      env: {},
+      raw: false,
+      placement: "default",
+    });
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    serviceRuntimeExited(deps, handle.id, { code: 1, signal: null });
+    expect(events.filter((event) => event.kind === "exit")).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events.filter((event) => event.kind === "exit")).toEqual([
+      expect.objectContaining({
+        cleanupError: expect.stringContaining("termination deadline exceeded"),
+      }),
+    ]);
+    expect(await runtime.isRunning(handle)).toBe(true);
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000]);
+    await runtime.stop(handle);
+    expect(events.filter((event) => event.kind === "exit")).toHaveLength(1);
+    expect(await runtime.isRunning(handle)).toBe(false);
   });
 
   it("keeps dependency order, hooks, ports and Sentra env in shared core", async () => {
@@ -4422,6 +4469,13 @@ describe("neutral runtime launch", () => {
         signal: null,
       });
       emit({ kind: "output", unitId: spec.unitId, generation: spec.generation, lines: ["stale"] });
+      emit({
+        kind: "exit",
+        unitId: spec.unitId,
+        generation: spec.generation,
+        code: 2,
+        signal: null,
+      });
     });
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;

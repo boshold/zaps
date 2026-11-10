@@ -44,6 +44,14 @@ import type {
 
 type PaneMap = Record<string, string>;
 
+interface OwnedExecution {
+  generation: number;
+  handle?: ExecutionHandle;
+  requestedStop: boolean;
+  leaderExited: boolean;
+  finalized: boolean;
+}
+
 interface StartTarget {
   readyDeps: ReadyDeps;
   detectPorts: () => Promise<number[]>;
@@ -193,20 +201,19 @@ export class ServiceManager extends EventEmitter {
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
-  private readonly wrapperIds = new Map<string, string>();
-  private readonly outputSubscriptions = new Map<string, () => void>();
-  private readonly monitorGenerations = new Map<string, number>();
+  private readonly lifecycleEpochs = new Map<string, number>();
   private readonly outputQueues = new Map<
     string,
     {
       unitId: string;
       generation: number;
-      memberGeneration: number;
+      lifecycleEpoch: number;
       pending: Promise<void>;
     }
   >();
   private readonly runtime: RuntimeDriver;
-  private readonly executions = new Map<string, { generation: number; handle?: ExecutionHandle }>();
+  private readonly executions = new Map<string, OwnedExecution>();
+  private readonly unitGenerations = new Map<string, number>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
@@ -358,11 +365,11 @@ export class ServiceManager extends EventEmitter {
    */
   public abortStartAll(): void {
     this.startAllAborted = true;
-    this.wrapperIds.clear();
+    for (const controller of this.abortControllers.values()) {
+      controller.abort();
+    }
     for (const name of this.statuses.keys()) {
-      this.outputSubscriptions.get(name)?.();
-      this.outputSubscriptions.delete(name);
-      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+      this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     }
   }
 
@@ -482,20 +489,16 @@ export class ServiceManager extends EventEmitter {
     const { services, hooks } = this.config.project;
     const levels = reverseTopoSort(services);
 
+    const failures: unknown[] = [];
     for (const level of levels) {
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
-          if (
-            status &&
-            status.state !== "stopped" &&
-            status.state !== "error" &&
-            status.state !== "unavailable"
-          ) {
+          if (status && status.state !== "unavailable") {
             try {
               await this.stopService(name);
-            } catch {
-              // Best-effort stop
+            } catch (error) {
+              failures.push(error);
             }
           }
         }),
@@ -516,6 +519,9 @@ export class ServiceManager extends EventEmitter {
     ).catch(() => {
       // Session may already be gone
     });
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Service cleanup incomplete");
+    }
   }
 
   /**
@@ -599,6 +605,10 @@ export class ServiceManager extends EventEmitter {
     }
 
     this.assertDepsReady(name, serviceConfig, satisfiedDeps);
+    if (!serviceConfig._combined) {
+      await this.stopRuntimeExecution(name);
+    }
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
     // Create abort controller for this service
     const controller = new AbortController();
@@ -675,9 +685,14 @@ export class ServiceManager extends EventEmitter {
     if (serviceConfig.docker) {
       await this.warnLegacyDockerProject(serviceConfig, cwd);
     }
-    const generation = (this.monitorGenerations.get(name) ?? 0) + 1;
-    this.monitorGenerations.set(name, generation);
-    const execution: { generation: number; handle?: ExecutionHandle } = { generation };
+    const generation = (this.unitGenerations.get(name) ?? 0) + 1;
+    this.unitGenerations.set(name, generation);
+    const execution: OwnedExecution = {
+      generation,
+      requestedStop: false,
+      leaderExited: false,
+      finalized: false,
+    };
     this.executions.set(name, execution);
     const handle = await this.runtime.start({
       unitId: name,
@@ -689,7 +704,6 @@ export class ServiceManager extends EventEmitter {
       raw: serviceConfig.raw ?? false,
     });
     execution.handle = handle;
-    this.wrapperIds.set(name, handle.id);
     if (!controller.signal.aborted) {
       status.pid = await this.runtime.getPid(handle);
       await this.finishRuntimeStart(name, name, serviceConfig, status, controller);
@@ -735,17 +749,22 @@ export class ServiceManager extends EventEmitter {
     controller: AbortController,
   ): Promise<void> {
     const execution = this.executions.get(unitId);
+    const epoch = this.lifecycleEpochs.get(name);
     const currentHandle = (): ExecutionHandle | undefined =>
-      this.executions.get(unitId) === execution ? execution?.handle : undefined;
+      !controller.signal.aborted &&
+      this.lifecycleEpochs.get(name) === epoch &&
+      this.executions.get(unitId) === execution
+        ? execution?.handle
+        : undefined;
     const detectPorts = async (): Promise<number[]> => {
       const handle = currentHandle();
       const pid = handle && (await this.runtime.getPid(handle));
-      return pid === undefined ? [] : this.deps.inspectPorts(pid);
+      return pid === undefined || currentHandle() !== handle ? [] : this.deps.inspectPorts(pid);
     };
     const readOutput = async (tail: number): Promise<string> => {
       const handle = currentHandle();
       const lines = handle ? await this.runtime.readOutput(handle, tail) : [];
-      return lines.join("\n");
+      return currentHandle() === handle ? lines.join("\n") : "";
     };
     await this.finishStart(name, serviceConfig, status, controller, {
       readyDeps: buildReadyDeps(serviceConfig, { detectPorts, readOutput }, this.config.projectDir),
@@ -755,29 +774,69 @@ export class ServiceManager extends EventEmitter {
 
   private handleRuntimeEvent(event: ExecutionEvent): void {
     const execution = this.executions.get(event.unitId);
-    if (
-      !execution ||
-      execution.generation !== event.generation ||
-      this.monitorGenerations.get(event.unitId) !== event.generation
-    ) {
+    if (!execution || execution.generation !== event.generation || execution.finalized) {
       return;
     }
+    const members = this.config.project.services[event.unitId]?._combined?.allServices ?? [
+      event.unitId,
+    ];
     if (event.kind === "output") {
-      const members = this.config.project.services[event.unitId]?._combined?.allServices ?? [
-        event.unitId,
-      ];
+      this.handleRuntimeOutput(event, execution, members);
+      return;
+    }
+    if (!execution.leaderExited && !execution.requestedStop) {
+      execution.leaderExited = true;
       for (const member of members) {
-        const state = this.statuses.get(member)?.state;
-        if (state === "starting" || state === "ready") {
-          this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
-        }
+        this.abortControllers.get(member)?.abort();
+        this.lifecycleEpochs.set(member, (this.lifecycleEpochs.get(member) ?? 0) + 1);
       }
-    } else if (event.kind === "exit" || this.statuses.get(event.unitId)?.state === "starting") {
-      if (event.spawnError) {
-        this.handleExecExited(event.unitId, event.code ?? 1, event.signal, event.spawnError);
-      } else {
-        this.handleDetachedExit(event.unitId, event.generation);
+    }
+    if (event.kind === "leaderExit") {
+      return;
+    }
+    this.handleRuntimeExit(event, execution);
+  }
+
+  private handleRuntimeOutput(
+    event: ExecutionEvent & { kind: "output" },
+    execution: OwnedExecution,
+    members: string[],
+  ): void {
+    if (execution.leaderExited || execution.requestedStop) {
+      return;
+    }
+    for (const member of members) {
+      const state = this.statuses.get(member)?.state;
+      if (state === "starting" || state === "ready") {
+        this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
       }
+    }
+  }
+
+  private handleRuntimeExit(
+    event: ExecutionEvent & { kind: "exit" },
+    execution: OwnedExecution,
+  ): void {
+    execution.finalized = true;
+    if (execution.requestedStop) {
+      return;
+    }
+    const status = this.statuses.get(event.unitId);
+    if (!status) {
+      return;
+    }
+    if (event.cleanupError) {
+      this.publishCleanupFailure(event.unitId, event.cleanupError);
+      return;
+    }
+    this.executions.delete(event.unitId);
+    if (status.state === "starting") {
+      status.state = transition(status.state, "error");
+      status.lastError = event.spawnError ?? "Process exited before becoming ready";
+      delete status.readySince;
+      this.emit("stateChange", event.unitId, status);
+    } else if (status.state === "ready") {
+      void this.handleCrash(event.unitId, this.config.project.services[event.unitId], status);
     }
   }
 
@@ -793,6 +852,9 @@ export class ServiceManager extends EventEmitter {
     controller: AbortController,
     target: StartTarget,
   ): Promise<void> {
+    const epoch = this.lifecycleEpochs.get(name);
+    const isCurrent = (): boolean =>
+      !controller.signal.aborted && this.lifecycleEpochs.get(name) === epoch;
     try {
       const readyPorts = await waitForReady(
         resolveReadyConfig(serviceConfig),
@@ -800,11 +862,14 @@ export class ServiceManager extends EventEmitter {
         target.readyDeps,
       );
 
-      if (controller.signal.aborted) {
+      if (!isCurrent()) {
         return;
       }
 
       const ports = readyPorts.length > 0 ? readyPorts : await target.detectPorts();
+      if (!isCurrent()) {
+        return;
+      }
 
       status.state = transition(status.state, "ready");
       status.ports = ports;
@@ -815,13 +880,25 @@ export class ServiceManager extends EventEmitter {
         this.config.projectDir,
         this.config.project.services,
       );
-      await this.onServiceReady(name, serviceConfig, status, ports, ctx);
+      await this.onServiceReady(name, serviceConfig, status, ports, ctx, isCurrent);
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (!isCurrent()) {
+        return;
+      }
+      controller.abort();
+      let message = error instanceof Error ? error.message : String(error);
+      if (!serviceConfig._combined) {
+        try {
+          await this.stopRuntimeExecution(name);
+        } catch (cleanupError) {
+          message += `; cleanup failed: ${String(cleanupError)}`;
+        }
+      }
+      if (this.lifecycleEpochs.get(name) !== epoch) {
         return;
       }
       status.state = transition(status.state, "error");
-      status.lastError = error instanceof Error ? error.message : String(error);
+      status.lastError = message;
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
@@ -838,17 +915,17 @@ export class ServiceManager extends EventEmitter {
     if (!onOutput) {
       return;
     }
-    const memberGeneration = this.monitorGenerations.get(name) ?? 0;
+    const lifecycleEpoch = this.lifecycleEpochs.get(name) ?? 0;
     const previous = this.outputQueues.get(name);
     const sameGeneration =
       previous?.unitId === unitId &&
       previous.generation === generation &&
-      previous.memberGeneration === memberGeneration;
+      previous.lifecycleEpoch === lifecycleEpoch;
     const isCurrent = (): boolean => {
       const state = this.statuses.get(name)?.state;
       return (
-        this.monitorGenerations.get(unitId) === generation &&
-        (this.monitorGenerations.get(name) ?? 0) === memberGeneration &&
+        this.executions.get(unitId)?.generation === generation &&
+        (this.lifecycleEpochs.get(name) ?? 0) === lifecycleEpoch &&
         (state === "starting" || state === "ready")
       );
     };
@@ -856,48 +933,10 @@ export class ServiceManager extends EventEmitter {
     this.outputQueues.set(name, {
       unitId,
       generation,
-      memberGeneration,
+      lifecycleEpoch,
       // eslint-disable-next-line promise/prefer-await-to-then -- serialize runtime output batches
       pending: pending.then(async () => fireServiceOutput(onOutput, lines, isCurrent)),
     });
-  }
-
-  /**
-   * Handle a detached child's exit. Generation-checked so a stop/restart that
-   * bumped the generation never crash-restarts a stale child (E4). An exit while
-   * still `starting` fails fast instead of waiting out the ready timeout.
-   */
-  private handleDetachedExit(name: string, generation: number): void {
-    const status = this.statuses.get(name);
-    if (!status) {
-      return;
-    }
-    if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
-      return;
-    }
-    const config = this.config.project.services[name];
-
-    if (status.state === "starting") {
-      this.outputSubscriptions.get(name)?.();
-      this.outputSubscriptions.delete(name);
-      this.monitorGenerations.set(name, generation + 1);
-      this.abortControllers.get(name)?.abort();
-      if (canTransition(status.state, "error")) {
-        status.state = transition(status.state, "error");
-      }
-      status.lastError = "Process exited before becoming ready";
-      delete status.readySince;
-      this.emit("stateChange", name, status);
-      return;
-    }
-
-    if (status.state !== "ready") {
-      return;
-    }
-    this.outputSubscriptions.get(name)?.();
-    this.outputSubscriptions.delete(name);
-    this.monitorGenerations.set(name, generation + 1);
-    void this.handleCrash(name, config, status);
   }
 
   /** Resolve the compose `-p` project args for a docker service ([] otherwise). */
@@ -933,6 +972,7 @@ export class ServiceManager extends EventEmitter {
     status: ServiceStatus,
     ports: number[],
     ctx: ServiceContext,
+    isCurrent: () => boolean,
   ): Promise<void> {
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
     if (explicitUrl === false || serviceConfig.docker) {
@@ -940,24 +980,37 @@ export class ServiceManager extends EventEmitter {
     } else if (explicitUrl) {
       status.url = explicitUrl;
     } else {
-      status.url = await probePort(ports);
+      const url = await probePort(ports);
+      if (!isCurrent()) {
+        return;
+      }
+      status.url = url;
       if (!status.url && ports.length > 0) {
         void this.monitorUrl(name, ports);
       }
     }
 
     await tryAutoOpen(serviceConfig, name, status.url, this.autoOpened);
+    if (!isCurrent()) {
+      return;
+    }
     this.emit("stateChange", name, status);
 
     try {
       await serviceConfig.onReady?.();
     } catch (error) {
+      if (!isCurrent()) {
+        return;
+      }
       // Log but don't fail the service start
       status.lastError = `onReady hook failed: ${error instanceof Error ? error.message : String(error)}`;
       this.emit("stateChange", name, status);
     }
 
-    const gen = this.monitorGenerations.get(name) ?? 0;
+    if (!isCurrent()) {
+      return;
+    }
+    const gen = this.lifecycleEpochs.get(name) ?? 0;
     void this.monitorCrash(name, gen);
   }
 
@@ -965,6 +1018,8 @@ export class ServiceManager extends EventEmitter {
    * Stop a single service (serialized per service).
    */
   public async stopService(name: string): Promise<ServiceActionResult> {
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     // Stop the process inside `withServiceLock` (state machine + side effects),
     // Then drop the pane OUTSIDE the lock — same op-lock-outermost discipline
     // As `startService`. This is the ONLY call site for `reflowRemove`; crash
@@ -991,29 +1046,26 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
-    this.wrapperIds.delete(name);
     const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    // Detached services have no pane (E4).
-    if (!status || (!serviceConfig?.detached && !paneTarget)) {
+    if (!status || !serviceConfig) {
       throw new Error(`Unknown service: ${name}`);
     }
 
-    // Idempotent no-op: nothing to stop in these states (terminal or already
-    // Stopping). Avoids a raw `Invalid state transition` over IPC on repeat calls.
+    // Terminal rows can still own a live execution.
     if (
-      status.state === "stopped" ||
-      status.state === "stopping" ||
-      status.state === "error" ||
-      status.state === "unavailable"
+      status.state === "unavailable" ||
+      (!this.executions.has(name) &&
+        (status.state === "stopped" || status.state === "stopping" || status.state === "error"))
     ) {
       return { noop: true };
     }
 
     // Transition: ready/starting/restarting -> stopping
-    status.state = transition(status.state, "stopping");
+    if (status.state !== "stopping") {
+      status.state = transition(status.state, "stopping");
+    }
     this.emit("stateChange", name, status);
 
     // Abort any pending ready poll
@@ -1023,21 +1075,17 @@ export class ServiceManager extends EventEmitter {
     }
 
     // Invalidate any active crash/output monitors
-    this.outputSubscriptions.get(name)?.();
-    this.outputSubscriptions.delete(name);
-    this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
     const combined = serviceConfig?._combined;
 
-    if (serviceConfig?.detached) {
-      // Detached service: signal the process group (SIGTERM, then SIGKILL).
-      await this.stopRuntimeExecution(name);
-    } else if (combined) {
-      await this.stopCombinedService(name, serviceConfig, combined, paneTarget);
-    } else {
-      // Regular service: Ctrl-C and wait for exit
-      await this.stopRuntimeExecution(name, paneTarget);
-      await this.waitForPaneExit(paneTarget);
+    try {
+      await (combined
+        ? this.stopCombinedService(name, serviceConfig, combined)
+        : this.stopRuntimeExecution(name));
+    } catch (error) {
+      this.publishCleanupFailure(name, String(error));
+      throw error;
     }
 
     // Transition: stopping -> stopped
@@ -1057,12 +1105,25 @@ export class ServiceManager extends EventEmitter {
     return { noop: false };
   }
 
-  private async stopRuntimeExecution(name: string, unownedTarget?: string): Promise<void> {
-    const handle = this.executions.get(name)?.handle;
-    if (handle) {
-      await this.runtime.stop(handle);
-    } else if (unownedTarget) {
-      await this.deps.sendCtrlC(unownedTarget);
+  private publishCleanupFailure(name: string, message: string): void {
+    const status = this.getStatus(name);
+    if (canTransition(status.state, "error")) {
+      status.state = transition(status.state, "error");
+    }
+    status.lastError = `Execution cleanup failed: ${message}`;
+    delete status.readySince;
+    this.emit("stateChange", name, status);
+  }
+
+  private async stopRuntimeExecution(name: string): Promise<void> {
+    const execution = this.executions.get(name);
+    if (!execution?.handle) {
+      return;
+    }
+    execution.requestedStop = true;
+    await this.runtime.stop(execution.handle);
+    if (this.executions.get(name) === execution) {
+      this.executions.delete(name);
     }
   }
 
@@ -1075,7 +1136,6 @@ export class ServiceManager extends EventEmitter {
     name: string,
     serviceConfig: ServiceConfig,
     combined: CombinedServiceMeta,
-    paneTarget: string,
   ): Promise<void> {
     await this.deps.exec(
       "docker",
@@ -1097,52 +1157,11 @@ export class ServiceManager extends EventEmitter {
     });
 
     if (allStopped) {
-      const ownerPane = this.resolveOwnerPane(combined, paneTarget);
-      await this.deps.sendCtrlC(ownerPane);
-      await this.waitForPaneExit(ownerPane);
-    }
-  }
-
-  /**
-   * Resolve the pane running the group's `docker compose up` — the owner's pane.
-   * Falls back to the given pane if no owner is found.
-   */
-  private resolveOwnerPane(combined: CombinedServiceMeta, fallback: string): string {
-    const owner = combined.allServices.find(
-      (sib) => this.config.project.services[sib]?._combined?.isOwner,
-    );
-    return owner ? (this.paneMap[owner] ?? fallback) : fallback;
-  }
-
-  /**
-   * Wait for pane process to exit with 5s timeout, force kill if needed.
-   */
-  private async waitForPaneExit(paneTarget: string): Promise<void> {
-    const stopStart = Date.now();
-    const STOP_TIMEOUT = 5000;
-    let exited = false;
-
-    while (Date.now() - stopStart < STOP_TIMEOUT) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const descendants = await this.deps.getDescendantPids(rootPid);
-      if (descendants.length <= 1) {
-        exited = true;
-        break;
-      }
-      await sleep(200);
-    }
-
-    if (!exited) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const pids = await this.deps.getDescendantPids(rootPid);
-      for (const pid of pids) {
-        if (pid !== rootPid) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Process may have already exited
-          }
-        }
+      const owner = combined.allServices.find(
+        (member) => this.config.project.services[member]?._combined?.isOwner,
+      );
+      if (owner) {
+        await this.stopRuntimeExecution(owner);
       }
     }
   }
@@ -1151,6 +1170,8 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     // Same lazy-pane invariant as `startService`: if the service is pane-less +
     // Lazy, ensure the pane exists BEFORE entering the lock-guarded body —
     // `restartServiceInternal` eventually calls `startServiceInternal`, which
@@ -1191,9 +1212,7 @@ export class ServiceManager extends EventEmitter {
       if (controller) {
         controller.abort();
       }
-      this.outputSubscriptions.get(name)?.();
-      this.outputSubscriptions.delete(name);
-      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+      this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
       status.state = transition(status.state, "stopping");
       this.emit("stateChange", name, status);
@@ -1218,9 +1237,7 @@ export class ServiceManager extends EventEmitter {
       await this.startServiceInternal(name);
     } else {
       // Stop if running
-      if (status.state === "ready" || status.state === "starting") {
-        await this.stopServiceInternal(name);
-      }
+      await this.stopServiceInternal(name);
 
       // Reset retry count
       status.retryCount = 0;
@@ -1327,12 +1344,7 @@ export class ServiceManager extends EventEmitter {
     const pollInterval = config.raw ? 2000 : 10_000;
     while (status.state === "ready") {
       await sleep(pollInterval);
-      // Re-check state after sleep (stopService may have changed it)
-      if (status.state !== "ready") {
-        return;
-      }
-      // Check if this monitor has been superseded by a newer generation
-      if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
+      if (!this.isReadyEpoch(name, generation)) {
         return;
       }
 
@@ -1354,12 +1366,38 @@ export class ServiceManager extends EventEmitter {
 
       if (crashed) {
         // Re-check state and generation after async crash detection — stopService may have run
-        if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
+        if (!this.isReadyEpoch(name, generation)) {
+          return;
+        }
+        if (!combined && !(await this.cleanCrashedExecution(name, generation))) {
+          return;
+        }
+        if (!this.isReadyEpoch(name, generation + (combined ? 0 : 1))) {
           return;
         }
         await this.handleCrash(name, config, status);
         return;
       }
+    }
+  }
+
+  private isReadyEpoch(name: string, epoch: number): boolean {
+    return this.statuses.get(name)?.state === "ready" && this.lifecycleEpochs.get(name) === epoch;
+  }
+
+  private async cleanCrashedExecution(name: string, epoch: number): Promise<boolean> {
+    const execution = this.executions.get(name);
+    if (execution?.leaderExited || execution?.requestedStop) {
+      return false;
+    }
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, epoch + 1);
+    try {
+      await this.stopRuntimeExecution(name);
+      return true;
+    } catch (error) {
+      this.publishCleanupFailure(name, String(error));
+      return false;
     }
   }
 
@@ -1372,18 +1410,22 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
+    const epoch = this.lifecycleEpochs.get(name);
     const MAX_RETRIES = 5;
     let retries = 0;
 
     while (status.state === "ready" && !status.url && retries < MAX_RETRIES) {
       await sleep(2000);
-      if (status.state !== "ready" || status.url) {
+      if (status.state !== "ready" || status.url || this.lifecycleEpochs.get(name) !== epoch) {
         return;
       }
 
       retries += 1;
 
       const result = await probePort(ports);
+      if (this.lifecycleEpochs.get(name) !== epoch || status.state !== "ready") {
+        return;
+      }
       if (result) {
         status.url = result;
         await tryAutoOpen(this.config.project.services[name], name, result, this.autoOpened);
@@ -1435,56 +1477,6 @@ export class ServiceManager extends EventEmitter {
     });
   }
 
-  public handleExecExited(
-    service: string,
-    _code: number,
-    _signal: string | null,
-    spawnError?: string,
-    executionId?: string,
-  ): void {
-    if (executionId !== undefined) {
-      if (this.wrapperIds.get(service) !== executionId) {
-        return;
-      }
-      this.wrapperIds.delete(service);
-    }
-    const status = this.statuses.get(service);
-    if (!status) {
-      return;
-    }
-
-    // Wrapper failed to spawn the command (E11): abort any in-flight start and
-    // Fail fast with the spawn message instead of leaving the service stuck in
-    // `starting` until the 60s ready timeout.
-    if (spawnError !== undefined) {
-      this.abortControllers.get(service)?.abort();
-      this.outputSubscriptions.get(service)?.();
-      this.outputSubscriptions.delete(service);
-      this.monitorGenerations.set(service, (this.monitorGenerations.get(service) ?? 0) + 1);
-      if (canTransition(status.state, "error")) {
-        status.state = transition(status.state, "error");
-      }
-      status.lastError = spawnError;
-      delete status.readySince;
-      this.emit("stateChange", service, status);
-      return;
-    }
-
-    if (status.state !== "ready") {
-      return;
-    }
-
-    const config = this.config.project.services[service];
-    const gen = this.monitorGenerations.get(service) ?? 0;
-
-    // Invalidate current crash monitor generation to prevent double-trigger
-    this.outputSubscriptions.get(service)?.();
-    this.outputSubscriptions.delete(service);
-    this.monitorGenerations.set(service, gen + 1);
-
-    void this.handleCrash(service, config, status);
-  }
-
   private async handleCrash(
     name: string,
     config: ServiceConfig,
@@ -1507,7 +1499,7 @@ export class ServiceManager extends EventEmitter {
   ): Promise<void> {
     const restartConfig = config.restart;
     if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
-      const gen = this.monitorGenerations.get(name) ?? 0;
+      const gen = this.lifecycleEpochs.get(name) ?? 0;
       status.state = transition(status.state, "restarting");
       status.retryCount += 1;
       delete status.readySince;
@@ -1523,7 +1515,7 @@ export class ServiceManager extends EventEmitter {
         // The restarting state) — the superseding op owns the state (C3).
         if (
           this.shuttingDown ||
-          (this.monitorGenerations.get(name) ?? 0) !== gen ||
+          (this.lifecycleEpochs.get(name) ?? 0) !== gen ||
           status.state !== "restarting"
         ) {
           return;
@@ -1532,12 +1524,9 @@ export class ServiceManager extends EventEmitter {
         // The restart must never reject out of handleCrash (a leaked rejection
         // Reaches Node and could kill the daemon — C2); on failure, go to error.
         try {
-          // Wait for the crashed pane process (and any orphans) to fully exit
-          // Before re-sending start keys, so the restart can't collide with a
-          // Lingering process on the same port (C3). Pane-based services only;
-          // Combined/docker services manage lifecycle via compose, not the pane.
-          if (!config._combined && !config.detached) {
-            await this.waitForPaneExit(this.paneMap[name]);
+          // Verify prior ownership is cleared before replacement.
+          if (!config._combined) {
+            await this.stopRuntimeExecution(name);
           }
           await this.startServiceInternal(name);
           await this.cascadeRestart(name);

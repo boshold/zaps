@@ -4,7 +4,7 @@ import { createProcessInspection } from "#src/lib/backend/runtime/process-inspec
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
 import type { OutputLease } from "#src/lib/backend/tmux/output.js";
-import { serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
+import { TmuxRuntime, serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -26,6 +26,10 @@ interface RuntimeRecord {
   target?: string;
   output?: OutputLease;
   unsubscribe?: () => void;
+  stop?: Promise<void>;
+  stopping?: boolean;
+  finalReported?: boolean;
+  exit?: { code: number; signal: string | null; spawnError?: string };
 }
 
 // Removed when session composition installs SessionBackend (P02-T08).
@@ -105,20 +109,19 @@ class ServiceRuntime implements RuntimeDriver {
         if (this.lookup(handle) !== record) {
           return;
         }
-        record.unsubscribe?.();
-        record.output?.release();
+        if (record.exit) {
+          return;
+        }
+        record.exit = details;
         this.publish({
           kind: "leaderExit",
           unitId: handle.unitId,
           generation: handle.generation,
           ...details,
         });
-        this.publish({
-          kind: "exit",
-          unitId: handle.unitId,
-          generation: handle.generation,
-          ...details,
-        });
+        if (!record.stopping) {
+          void this.finishExited(record);
+        }
       });
       this.deps.storeExecInfo(
         spec.unitId,
@@ -144,16 +147,64 @@ class ServiceRuntime implements RuntimeDriver {
     if (!record) {
       return;
     }
+    record.stopping = true;
+    record.stop ??= this.stopRecord(record);
+    try {
+      await record.stop;
+    } catch (error) {
+      record.stop = undefined;
+      if (!record.background) {
+        this.reportExit(record, String(error));
+      }
+      throw error;
+    }
+  }
+  private async finishExited(record: RuntimeRecord): Promise<void> {
+    try {
+      await this.stop(record.handle);
+    } catch {
+      // Stop reports failure while retaining ownership.
+    }
+  }
+  private reportExit(record: RuntimeRecord, cleanupError?: string): void {
+    if (record.finalReported) {
+      return;
+    }
+    record.finalReported = true;
+    this.publish({
+      kind: "exit",
+      unitId: record.handle.unitId,
+      generation: record.handle.generation,
+      code: record.exit?.code ?? null,
+      signal: record.exit?.signal ?? "SIGINT",
+      ...(record.exit?.spawnError === undefined ? {} : { spawnError: record.exit.spawnError }),
+      ...(cleanupError === undefined ? {} : { cleanupError }),
+    });
+  }
+  private async stopRecord(record: RuntimeRecord): Promise<void> {
+    const { handle } = record;
     if (record.background) {
       await this.runner.stop(handle);
     } else if (record.target) {
-      await this.deps.sendCtrlC(record.target);
+      const deadline = Date.now() + 5000;
+      await TmuxRuntime.bounded(async () => this.deps.sendCtrlC(record.target ?? ""), deadline);
+      while (await TmuxRuntime.bounded(async () => this.isRunning(handle), deadline)) {
+        await TmuxRuntime.bounded(
+          async () => new Promise<void>((resolve) => setTimeout(resolve, 25)),
+          deadline,
+        );
+      }
+      await TmuxRuntime.bounded(async () => record.output?.producer.poll(), deadline);
     }
     record.unsubscribe?.();
     record.output?.release();
     wrapperExits.get(this.deps)?.delete(handle.id);
     this.records.delete(handle.unitId);
+    if (!record.background) {
+      this.reportExit(record);
+    }
   }
+
   public async getPid(handle: ExecutionHandle): Promise<number | undefined> {
     const record = this.lookup(handle);
     if (!record) {

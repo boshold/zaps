@@ -61,7 +61,9 @@ describe("TmuxRuntime", () => {
     expect(await runtime.isRunning(handle)).toBe(true);
     wrappers.exited({ service: "api", executionId: handle.id, code: 127, spawnError: "bad cwd" });
     wrappers.exited({ service: "api", executionId: handle.id, code: 127 });
-    expect(events).toEqual(
+    expect(events.map((event) => event.kind)).toEqual(["leaderExit"]);
+    await runtime.stop(handle);
+    expect(events.filter((event) => event.kind !== "output")).toEqual(
       ["leaderExit", "exit"].map((kind) =>
         expect.objectContaining({ kind, unitId: "api", generation: 1, spawnError: "bad cwd" }),
       ),
@@ -89,6 +91,7 @@ describe("TmuxRuntime", () => {
       const starting = runtime.start(spec);
       acknowledge();
       const handle = await starting;
+      await runtime.stop(handle);
       expect(await runtime.isRunning(handle)).toBe(false);
       await vi.advanceTimersByTimeAsync(750);
       expect(tmux.capturePane).not.toHaveBeenCalled();
@@ -114,6 +117,8 @@ describe("TmuxRuntime", () => {
         });
       });
       const retiredStart = runtime.start(spec);
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      await vi.advanceTimersByTimeAsync(0);
       const replacement = await runtime.start({ ...spec, generation: 2 });
       const output = vi.fn();
       runtime.subscribe(output);
@@ -133,7 +138,55 @@ describe("TmuxRuntime", () => {
       expect(tmux.capturePane).toHaveBeenCalledTimes(2);
       await runtime.stop(replacement);
       await vi.advanceTimersByTimeAsync(500);
-      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports leader exit immediately and final exit only after descendant cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, descendants, wrappers } = fixture();
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => events.push(event));
+      const handle = await runtime.start(spec);
+      descendants.mockResolvedValue([123, 124]);
+      wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
+      expect(events.map((event) => event.kind)).toEqual(["leaderExit"]);
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(events.some((event) => event.kind === "exit")).toBe(false);
+      descendants.mockResolvedValue([123]);
+      await vi.advanceTimersByTimeAsync(25);
+      await runtime.stop(handle);
+      expect(events.filter((event) => event.kind === "exit")).toEqual([
+        expect.objectContaining({ kind: "exit", code: 1, generation: 1 }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains failed unexpected-exit cleanup and reports final exit once across retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, descendants, wrappers } = fixture();
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => events.push(event));
+      const handle = await runtime.start(spec);
+      descendants.mockResolvedValue([123, 124]);
+      wrappers.exited({ service: "api", executionId: handle.id, code: 1 });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(events.filter((event) => event.kind === "exit")).toEqual([
+        expect.objectContaining({
+          cleanupError: expect.stringContaining("termination deadline exceeded"),
+        }),
+      ]);
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      descendants.mockResolvedValue([123]);
+      await runtime.stop(handle);
+      expect(events.filter((event) => event.kind === "exit")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
@@ -272,7 +325,7 @@ describe("TmuxRuntime", () => {
     }
   });
 
-  it("shares log capture and drops an in-flight replacement generation", async () => {
+  it("drains shared in-flight log capture before allowing a replacement", async () => {
     vi.useFakeTimers();
     try {
       const { runtime, tmux, wrappers } = fixture();
@@ -300,16 +353,21 @@ describe("TmuxRuntime", () => {
       const first = await runtime.start(spec);
       await vi.advanceTimersByTimeAsync(250);
       wrappers.exited({ service: "api", executionId: first.id, code: 0 });
+      await expect(runtime.start({ ...spec, generation: 2 })).rejects.toThrow("still owned");
+      await vi.advanceTimersByTimeAsync(0);
+      finishCapture("final old output");
+      await runtime.stop(first);
       const second = await runtime.start({ ...spec, generation: 2 });
       expect(await runtime.readOutput(second, 5)).toEqual([]);
-      finishCapture("stale generation");
       await vi.advanceTimersByTimeAsync(250);
       expect(tmux.capturePane).toHaveBeenCalledTimes(2);
       expect(events.filter((event) => event.kind === "output")).toEqual([
+        { kind: "output", unitId: "api", generation: 1, lines: ["final old output"] },
         { kind: "output", unitId: "api", generation: 2, lines: ["replacement", "ready fragment"] },
       ]);
-      expect(buffer.snapshot()).toEqual(["replacement", "ready fragment"]);
-      expect(log).toHaveBeenCalledExactlyOnceWith("%1", ["replacement", "ready fragment"]);
+      expect(buffer.snapshot()).toEqual(["final old output", "replacement", "ready fragment"]);
+      expect(log).toHaveBeenCalledTimes(2);
+      expect(log).toHaveBeenLastCalledWith("%1", ["replacement", "ready fragment"]);
       expect(await runtime.readOutput(second, 1)).toEqual(["ready fragment"]);
       expect(tmux.capturePane).toHaveBeenCalledTimes(2);
       await runtime.stop(second);

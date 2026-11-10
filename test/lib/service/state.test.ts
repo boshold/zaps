@@ -16,11 +16,11 @@ describe("canTransition", () => {
 
   // Canonical transition table — kept in sync with VALID_TRANSITIONS in state.ts.
   const VALID: Record<ServiceState, ServiceState[]> = {
-    stopped: ["starting"],
+    stopped: ["starting", "stopping"],
     starting: ["ready", "error", "stopping"],
     ready: ["stopping", "restarting", "error"],
-    stopping: ["stopped"],
-    error: ["starting"],
+    stopping: ["stopped", "error"],
+    error: ["starting", "stopping"],
     restarting: ["starting", "stopping", "error"],
     unavailable: [],
   };

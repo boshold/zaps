@@ -148,6 +148,8 @@ interface PaneExecution {
   stop?: Promise<void>;
   stopping?: boolean;
   wrapperExit?: WrapperExit;
+  leaderReported?: boolean;
+  finalReported?: boolean;
 }
 
 class TmuxRuntime implements RuntimeDriver {
@@ -192,8 +194,9 @@ class TmuxRuntime implements RuntimeDriver {
         { command: spec.command, cwd: spec.cwd, env: { ...spec.env } },
         (exit) => {
           record.wrapperExit = exit;
+          this.publishLeader(record, exit);
           if (!record.stopping) {
-            this.release(record, exit);
+            void this.finishExited(record);
           }
         },
       );
@@ -210,7 +213,7 @@ class TmuxRuntime implements RuntimeDriver {
             handle.id,
           );
       await this.options.tmux.sendKeys(pane, command);
-      if (this.lookup(handle) !== record) {
+      if (this.lookup(handle) !== record || record.wrapperExit) {
         return handle;
       }
       record.output = acquireTmuxOutput(this.options.tmux.capturePane, pane, 250);
@@ -257,19 +260,47 @@ class TmuxRuntime implements RuntimeDriver {
       this.current.delete(handle.unitId);
     }
     this.options.wrappers.remove(handle);
-    let signal = exit?.signal ?? null;
-    if (!exit && record.stopping) {
-      signal = "SIGINT";
+    this.publishLeader(record, exit);
+    this.publishFinal(record);
+  }
+
+  private publishLeader(record: PaneExecution, exit?: WrapperExit): void {
+    if (record.leaderReported) {
+      return;
     }
-    for (const kind of ["leaderExit", "exit"] as const) {
-      this.publish({
-        kind,
-        unitId: handle.unitId,
-        generation: handle.generation,
-        code: exit?.code ?? null,
-        signal,
-        ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
-      });
+    record.leaderReported = true;
+    this.publish({
+      kind: "leaderExit",
+      unitId: record.handle.unitId,
+      generation: record.handle.generation,
+      code: exit?.code ?? null,
+      signal: exit?.signal ?? (record.stopping ? "SIGINT" : null),
+      ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
+    });
+  }
+
+  private publishFinal(record: PaneExecution, cleanupError?: string): void {
+    if (record.finalReported) {
+      return;
+    }
+    record.finalReported = true;
+    const exit = record.wrapperExit;
+    this.publish({
+      kind: "exit",
+      unitId: record.handle.unitId,
+      generation: record.handle.generation,
+      code: exit?.code ?? null,
+      signal: exit?.signal ?? (record.stopping ? "SIGINT" : null),
+      ...(exit?.spawnError === undefined ? {} : { spawnError: exit.spawnError }),
+      ...(cleanupError === undefined ? {} : { cleanupError }),
+    });
+  }
+
+  private async finishExited(record: PaneExecution): Promise<void> {
+    try {
+      await this.stop(record.handle);
+    } catch {
+      // StopPane reports failure while retaining ownership.
     }
   }
 
@@ -284,7 +315,7 @@ class TmuxRuntime implements RuntimeDriver {
     return record.stop;
   }
 
-  private static async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
+  public static async bounded<T>(operation: () => Promise<T>, deadline: number): Promise<T> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       throw new Error("termination deadline exceeded");
@@ -312,6 +343,9 @@ class TmuxRuntime implements RuntimeDriver {
           deadline,
         );
         if (!running) {
+          if (record.output) {
+            await TmuxRuntime.bounded(async () => record.output?.producer.poll(), deadline);
+          }
           this.release(record, record.wrapperExit);
           return;
         }
@@ -322,6 +356,7 @@ class TmuxRuntime implements RuntimeDriver {
       }
     } catch (error) {
       record.stop = undefined;
+      this.publishFinal(record, String(error));
       throw new Error(`Tmux cleanup incomplete for ${record.handle.unitId}: ${String(error)}`, {
         cause: error,
       });
