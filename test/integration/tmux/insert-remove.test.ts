@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { EventEmitter } from "node:events";
+import os from "node:os";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,22 +8,21 @@ import type { LayoutNode, ResolvedConfig } from "#src/config/types.js";
 import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
-import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import { ServiceManager } from "#src/lib/service/manager.js";
 import type { Rect } from "#src/lib/tmux-layout.js";
 import { computeRects } from "#src/lib/tmux-layout.js";
 import type { LayoutReflowDeps, PaneMap } from "#src/lib/tmux-reflow.js";
 import { LayoutReflow, TmuxFailedError } from "#src/lib/tmux-reflow.js";
 import {
-  capturePane,
   displayMessage,
   getWindowSize,
   newWindow,
   paneIndexOrder,
-  sendKeys,
   splitPane,
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
@@ -135,37 +134,19 @@ function makeConfig(
   return {
     project: {
       name: "p03-t05-test",
-      services: Object.fromEntries(services.map((name) => [name, { start: "true" }])),
+      services: Object.fromEntries(
+        services.map((name) => [name, { start: "node -e 'setInterval(()=>{},60000)'", raw: true }]),
+      ),
       layout,
     },
     configPath,
-    projectDir: "/test",
+    projectDir: os.tmpdir(),
     groups: new Map(),
     unavailableServices: new Map(),
     lazyPaneByService: new Map(),
-  } as ResolvedConfig;
+  };
 }
 
-/** No-op ServiceManager stub. Session only uses the EventEmitter facet here. */
-function makeFakeManager(): ServiceManager {
-  const emitter = new EventEmitter();
-  return Object.assign(emitter, {
-    startAll: vi.fn().mockResolvedValue(undefined),
-    stopAll: vi.fn().mockResolvedValue(undefined),
-    abortStartAll: vi.fn(),
-    startService: vi.fn().mockResolvedValue(undefined),
-    stopService: vi.fn().mockResolvedValue(undefined),
-    restartService: vi.fn().mockResolvedValue(undefined),
-    getAllStatuses: vi.fn(() => []),
-    getStatus: vi.fn(),
-  }) as unknown as ServiceManager;
-}
-
-/**
- * Construct a real Session targeting the test tmux session. `capturePane` is the
- * REAL one (so the LogMonitor reads actual pane output); everything else the
- * Session ctor needs is a no-op stub — these tests don't exercise the manager.
- */
 function makeSession(
   tmuxSession: string,
   initialPaneId: string,
@@ -183,19 +164,9 @@ function makeSession(
     originPane: initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
-    deps: {
-      capturePane,
-      sendKeys: vi.fn().mockResolvedValue(undefined),
-      sendCtrlC: vi.fn().mockResolvedValue(undefined),
-      panePid: vi.fn().mockResolvedValue(0),
-      detectPorts: vi.fn().mockResolvedValue([]),
-      getDescendantPids: vi.fn().mockResolvedValue([]),
-      renameWindow: vi.fn().mockResolvedValue(undefined),
-      getWindowName: vi.fn().mockResolvedValue("test"),
-      getWindowOption: vi.fn().mockResolvedValue(""),
-    } as unknown as ServiceManagerDeps,
+    deps: tmuxDeps,
   };
-  return new Session(params, makeFakeManager());
+  return new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmuxSession));
 }
 
 describe.skipIf(!hasTmux())("LayoutReflow.insertPane — real tmux", () => {
@@ -478,7 +449,11 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
   });
 
   afterEach(async () => {
-    await session.cleanup();
+    try {
+      await zapsSession?.manager.stopAll();
+    } finally {
+      await session.cleanup();
+    }
   });
 
   it("inserts a lazy pane in the stored window after another window becomes current", async () => {
@@ -507,22 +482,21 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
+    const marker = "P03_T05_INSERT_MARKER";
     const config = makeConfig(["api"], layout);
+    config.project.services.api.start = `node -e 'console.log("${marker}");setInterval(()=>{},60000)'`;
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
     await zapsSession.reflow.insertPane("api");
 
-    // The pane is now live; allocatePaneLog wired the monitor on its id.
+    // The pane projection exists before runtime output starts.
     expect(zapsSession.paneMap.api).toBeDefined();
     const apiPaneId = zapsSession.paneMap.api;
     expect(zapsSession.paneBuffers.has(apiPaneId)).toBe(true);
 
-    // Print a deterministic marker into the pane and wait for the monitor's
-    // 500ms tick to capture + diff it.
-    const marker = "P03_T05_INSERT_MARKER";
-    await sendKeys(apiPaneId, `echo ${marker}`);
+    await zapsSession.manager.startService("api");
 
     const snap = await waitFor(
       async () => zapsSession.logBuffers.get("api")?.snapshot() ?? [],
