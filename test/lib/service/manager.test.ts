@@ -3,6 +3,9 @@ import { PassThrough } from "node:stream";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { LogBuffer } from "#src/daemon/log-buffer.js";
+import { LogMonitor } from "#src/daemon/log-monitor.js";
+
 import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
 import { DetachedRunner } from "../../../src/lib/service/detached.js";
@@ -2457,6 +2460,55 @@ describe("diffOutput", () => {
 // =============================================================================
 
 describe("onOutput monitoring", () => {
+  it("shares capture batches with logs and both combined member hooks", async () => {
+    const ownerHook = vi.fn();
+    const memberHook = vi.fn();
+    const config = makeConfig({
+      owner: {
+        start: "start-owner",
+        onOutput: ownerHook,
+        _combined: { group: "group", allServices: ["owner", "member"], isOwner: true },
+      },
+      member: {
+        start: "start-member",
+        onOutput: memberHook,
+        _combined: { group: "group", allServices: ["owner", "member"], isOwner: false },
+      },
+    });
+    const deps = createMockDeps();
+    deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
+    let content = "baseline";
+    const capture = vi.fn(async () => content);
+    deps.capturePane = capture;
+    const buffer = new LogBuffer();
+    const broadcasts = vi.fn();
+    const monitor = new LogMonitor(
+      { capturePane: capture },
+      new Map([["%group", buffer]]),
+      broadcasts,
+    );
+    monitor.start("%group", "%group", 100);
+    const manager = new ServiceManager(
+      config,
+      { "@tui": "%tui", owner: "%group", member: "%group" },
+      deps,
+      "session",
+    );
+    await manager.startService("owner");
+    expect(capture).toHaveBeenCalledTimes(1);
+    await manager.startService("member");
+    expect(capture).toHaveBeenCalledTimes(1);
+    content = "baseline\nnew line\npartial";
+    await vi.advanceTimersByTimeAsync(100);
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(ownerHook.mock.calls).toEqual([["new line"], ["partial"]]);
+    expect(memberHook.mock.calls).toEqual(ownerHook.mock.calls);
+    expect(buffer.snapshot()).toEqual(["baseline", "new line", "partial"]);
+    expect(broadcasts).toHaveBeenLastCalledWith("%group", ["new line", "partial"]);
+    manager.abortStartAll();
+    monitor.stopAll();
+  });
+
   it("calls onOutput with new lines as they appear", async () => {
     const lines: string[] = [];
     const config = makeConfig({

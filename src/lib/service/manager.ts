@@ -7,6 +7,7 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
+import { acquireTmuxOutput, cachedTmuxOutput, diffOutput } from "#src/lib/backend/tmux/output.js";
 import { serviceWrapperCommand } from "#src/lib/backend/tmux/runtime.js";
 import {
   buildDockerCommand,
@@ -52,57 +53,6 @@ interface StartTarget {
   readyDeps: ReadyDeps;
   detectPorts: () => Promise<number[]>;
   detached: boolean;
-}
-
-/**
- * Longest tail of `prev` that equals the head of `current`, or null if none.
- */
-function overlapLength(prev: string[], current: string[]): number | null {
-  for (let overlap = Math.min(prev.length, current.length); overlap > 0; overlap -= 1) {
-    let match = true;
-    for (let i = 0; i < overlap; i += 1) {
-      if (prev[prev.length - overlap + i] !== current[i]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return overlap;
-    }
-  }
-  return null;
-}
-
-/**
- * Find new lines between two pane captures using line-overlap diffing.
- *
- * 1. Direct overlap on the full captures handles scrolling and plain appends.
- * 2. If that fails, retry with each capture's final line excluded: tmux may be
- *    rewriting it in place (progress bars, status lines), which would otherwise
- *    desync the search and re-emit the whole window (C6). Only the stable lines
- *    are returned; the volatile final line is held until a newer line appears.
- * 3. With no alignment, equal-size windows are the same buffer rewritten —
- *    prefer reporting nothing over re-emitting everything (C6).
- */
-function diffOutput(prev: string[], current: string[]): string[] {
-  // No baseline yet — everything is new.
-  if (prev.length === 0) {
-    return current;
-  }
-
-  const direct = overlapLength(prev, current);
-  if (direct !== null) {
-    return current.slice(direct);
-  }
-
-  const prevStable = prev.slice(0, -1);
-  const currStable = current.slice(0, -1);
-  const stable = overlapLength(prevStable, currStable);
-  if (stable !== null) {
-    return currStable.slice(stable);
-  }
-
-  return prev.length === current.length ? [] : current;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -165,7 +115,8 @@ function buildReadyDeps(
   const projectArgs = docker ? composeProjectArgs(serviceConfig.cwd ?? projectDir, docker) : [];
   return {
     detectPorts: deps.detectPorts,
-    capturePane: deps.capturePane,
+    capturePane: async (target, lines) =>
+      cachedTmuxOutput(deps.capturePane, target, lines).join("\n"),
     cwd: serviceConfig.cwd ?? projectDir,
     composeFile: docker?.file,
     dockerStatus: async (svc, cwd, composeFile) =>
@@ -247,6 +198,7 @@ export class ServiceManager extends EventEmitter {
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
   private readonly wrapperIds = new Map<string, string>();
+  private readonly outputSubscriptions = new Map<string, () => void>();
   private readonly monitorGenerations = new Map<string, number>();
   /** Runs pane-less `detached: true` services (E4). */
   private readonly detachedRunner: DetachedRunner;
@@ -412,6 +364,8 @@ export class ServiceManager extends EventEmitter {
     this.startAllAborted = true;
     this.wrapperIds.clear();
     for (const name of this.statuses.keys()) {
+      this.outputSubscriptions.get(name)?.();
+      this.outputSubscriptions.delete(name);
       this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
     }
   }
@@ -689,7 +643,16 @@ export class ServiceManager extends EventEmitter {
     if (serviceConfig.detached) {
       await this.startDetachedService(name, serviceConfig, status, controller, sentraEnv);
     } else {
+      this.outputSubscriptions.get(name)?.();
+      const output = acquireTmuxOutput(this.deps.capturePane, paneTarget);
+      this.outputSubscriptions.set(name, output.release);
+      if (!serviceConfig._combined || serviceConfig._combined.isOwner) {
+        output.producer.reset();
+      }
       await this.sendStartCommand(name, serviceConfig, paneTarget, sentraEnv);
+      if (!serviceConfig._combined || serviceConfig._combined.isOwner) {
+        await output.producer.poll();
+      }
       await this.finishStart(name, serviceConfig, status, controller, {
         readyTarget: paneTarget,
         readyDeps: buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
@@ -856,6 +819,8 @@ export class ServiceManager extends EventEmitter {
     const config = this.config.project.services[name];
 
     if (status.state === "starting") {
+      this.outputSubscriptions.get(name)?.();
+      this.outputSubscriptions.delete(name);
       this.monitorGenerations.set(name, generation + 1);
       this.abortControllers.get(name)?.abort();
       if (canTransition(status.state, "error")) {
@@ -870,6 +835,8 @@ export class ServiceManager extends EventEmitter {
     if (status.state !== "ready") {
       return;
     }
+    this.outputSubscriptions.get(name)?.();
+    this.outputSubscriptions.delete(name);
     this.monitorGenerations.set(name, generation + 1);
     void this.handleCrash(name, config, status);
   }
@@ -1022,7 +989,7 @@ export class ServiceManager extends EventEmitter {
 
       // Start output monitor if onOutput is configured
       if (serviceConfig.onOutput) {
-        void this.monitorOutput(name, gen);
+        this.monitorOutput(name, gen);
       }
     }
   }
@@ -1089,6 +1056,8 @@ export class ServiceManager extends EventEmitter {
     }
 
     // Invalidate any active crash/output monitors
+    this.outputSubscriptions.get(name)?.();
+    this.outputSubscriptions.delete(name);
     this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
 
     const combined = serviceConfig?._combined;
@@ -1246,6 +1215,8 @@ export class ServiceManager extends EventEmitter {
       if (controller) {
         controller.abort();
       }
+      this.outputSubscriptions.get(name)?.();
+      this.outputSubscriptions.delete(name);
       this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
 
       status.state = transition(status.state, "stopping");
@@ -1450,7 +1421,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Monitor service output and call onOutput for each new line.
    */
-  private async monitorOutput(name: string, generation: number): Promise<void> {
+  private monitorOutput(name: string, generation: number): void {
     const status = this.statuses.get(name);
     const serviceConfig = this.config.project.services[name];
     const paneTarget = this.paneMap[name];
@@ -1458,31 +1429,36 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    // Capture initial baseline
-    const baseline = await this.deps.capturePane(paneTarget, 500);
-    let prevLines = baseline.split("\n");
-
-    while (status.state === "ready") {
-      await sleep(1000);
-      if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
-        return;
-      }
-
-      const capture = await this.deps.capturePane(paneTarget, 500);
-      const currentLines = capture.split("\n");
-      const newLines = diffOutput(prevLines, currentLines);
-      prevLines = currentLines;
-
-      for (const line of newLines) {
-        if (line.trim() !== "") {
-          try {
-            await serviceConfig.onOutput(line);
-          } catch {
-            // Swallow errors — onOutput must not crash the service
+    const output = acquireTmuxOutput(this.deps.capturePane, paneTarget);
+    if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
+      output.release();
+      return;
+    }
+    let pending = Promise.resolve();
+    const unsubscribe = output.producer.subscribe((lines) => {
+      const deliver = async (): Promise<void> => {
+        for (const line of lines) {
+          if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
+            return;
+          }
+          if (line.trim()) {
+            try {
+              await serviceConfig.onOutput?.(line);
+            } catch {
+              /* Hooks are isolated. */
+            }
           }
         }
-      }
-    }
+      };
+      // eslint-disable-next-line promise/prefer-await-to-then -- serialize event batches
+      pending = pending.then(deliver);
+    });
+    const previous = this.outputSubscriptions.get(name);
+    this.outputSubscriptions.set(name, () => {
+      unsubscribe();
+      output.release();
+      previous?.();
+    });
   }
 
   private updateWindowTitle(): void {
@@ -1551,6 +1527,8 @@ export class ServiceManager extends EventEmitter {
     // `starting` until the 60s ready timeout.
     if (spawnError !== undefined) {
       this.abortControllers.get(service)?.abort();
+      this.outputSubscriptions.get(service)?.();
+      this.outputSubscriptions.delete(service);
       this.monitorGenerations.set(service, (this.monitorGenerations.get(service) ?? 0) + 1);
       if (canTransition(status.state, "error")) {
         status.state = transition(status.state, "error");
@@ -1569,6 +1547,8 @@ export class ServiceManager extends EventEmitter {
     const gen = this.monitorGenerations.get(service) ?? 0;
 
     // Invalidate current crash monitor generation to prevent double-trigger
+    this.outputSubscriptions.get(service)?.();
+    this.outputSubscriptions.delete(service);
     this.monitorGenerations.set(service, gen + 1);
 
     void this.handleCrash(service, config, status);

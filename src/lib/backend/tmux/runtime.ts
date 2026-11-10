@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
 import type { ProcessAuthority, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import { acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
+import type { OutputLease } from "#src/lib/backend/tmux/output.js";
 import type {
   ExecutionEvent,
   ExecutionHandle,
@@ -140,7 +142,8 @@ interface TmuxRuntimeOptions {
 interface PaneExecution {
   handle: ExecutionHandle;
   pane: string;
-  output: string[];
+  output?: OutputLease;
+  unsubscribeOutput?: () => void;
   raw: boolean;
   stop?: Promise<void>;
   stopping?: boolean;
@@ -154,7 +157,6 @@ class TmuxRuntime implements RuntimeDriver {
 
   private readonly options: TmuxRuntimeOptions;
   private readonly getDescendantPids: (pid: number) => Promise<number[]>;
-  private captureTimer?: ReturnType<typeof setTimeout>;
 
   public constructor(options: TmuxRuntimeOptions) {
     this.options = options;
@@ -180,7 +182,7 @@ class TmuxRuntime implements RuntimeDriver {
       generation: spec.generation,
     });
     const pane = this.options.paneFor(spec.unitId);
-    const record: PaneExecution = { handle, pane, output: [], raw: spec.raw };
+    const record: PaneExecution = { handle, pane, raw: spec.raw };
     this.records.set(handle.id, record);
     this.current.set(handle.unitId, handle.id);
     if (!spec.raw) {
@@ -208,7 +210,18 @@ class TmuxRuntime implements RuntimeDriver {
             handle.id,
           );
       await this.options.tmux.sendKeys(pane, command);
-      this.scheduleCapture();
+      record.output = acquireTmuxOutput(this.options.tmux.capturePane, pane, 250);
+      record.output.producer.reset();
+      record.unsubscribeOutput = record.output.producer.subscribe((lines) => {
+        if (this.lookup(handle) === record) {
+          this.publish({
+            kind: "output",
+            unitId: handle.unitId,
+            generation: handle.generation,
+            lines,
+          });
+        }
+      });
     } catch (error) {
       this.records.delete(handle.id);
       this.options.wrappers.remove(handle);
@@ -234,6 +247,8 @@ class TmuxRuntime implements RuntimeDriver {
     if (this.lookup(handle) !== record) {
       return;
     }
+    record.unsubscribeOutput?.();
+    record.output?.release();
     this.records.delete(handle.id);
     if (this.current.get(handle.unitId) === handle.id) {
       this.current.delete(handle.unitId);
@@ -352,54 +367,7 @@ class TmuxRuntime implements RuntimeDriver {
     if (!record) {
       return this.options.processes.readOutput(handle, tail);
     }
-    const output = tail > 0 ? await this.options.tmux.capturePane(record.pane, tail) : "";
-    return tail > 0 ? output.split("\n").slice(-tail) : [];
-  }
-
-  private scheduleCapture(): void {
-    if (this.captureTimer || !this.listeners.size || !this.records.size) {
-      return;
-    }
-    this.captureTimer = setTimeout(() => {
-      this.captureTimer = undefined;
-      void this.captureOutput();
-    }, 250);
-    this.captureTimer.unref();
-  }
-
-  private async captureOutput(): Promise<void> {
-    for (const record of this.records.values()) {
-      if (!this.lookup(record.handle)) {
-        continue;
-      }
-      try {
-        const captured = await this.options.tmux.capturePane(record.pane, 500);
-        if (!this.lookup(record.handle)) {
-          continue;
-        }
-        const lines = captured.split("\n");
-        let overlap = Math.min(record.output.length, lines.length);
-        while (
-          overlap > 0 &&
-          !record.output.slice(-overlap).every((line, index) => line === lines[index])
-        ) {
-          overlap -= 1;
-        }
-        const added = lines.slice(overlap);
-        record.output = lines;
-        if (added.length) {
-          this.publish({
-            kind: "output",
-            unitId: record.handle.unitId,
-            generation: record.handle.generation,
-            lines: added,
-          });
-        }
-      } catch {
-        // A pane may disappear during capture.
-      }
-    }
-    this.scheduleCapture();
+    return record.output?.producer.read(tail) ?? [];
   }
 
   private publish(event: ExecutionEvent): void {
@@ -410,14 +378,9 @@ class TmuxRuntime implements RuntimeDriver {
 
   public subscribe(listener: (event: ExecutionEvent) => void): () => void {
     this.listeners.add(listener);
-    this.scheduleCapture();
     const unsubscribe = this.options.processes.subscribe(listener);
     return () => {
       this.listeners.delete(listener);
-      if (!this.listeners.size) {
-        clearTimeout(this.captureTimer);
-        this.captureTimer = undefined;
-      }
       unsubscribe();
     };
   }

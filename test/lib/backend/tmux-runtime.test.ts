@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { LogBuffer } from "#src/daemon/log-buffer.js";
+import { LogMonitor } from "#src/daemon/log-monitor.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import {
   TmuxRuntime,
@@ -44,7 +46,7 @@ function fixture() {
 
 describe("TmuxRuntime", () => {
   it("launches registered wrappers and translates one exit to original generation", async () => {
-    const { runtime, send, wrappers } = fixture();
+    const { runtime, send, wrappers, tmux } = fixture();
     const events: ExecutionEvent[] = [];
     const unsubscribe = runtime.subscribe((event) => events.push(event));
     const handle = await runtime.start(spec);
@@ -54,7 +56,8 @@ describe("TmuxRuntime", () => {
     );
     expect(wrappers.resolve({ service: "api", executionId: handle.id })).toEqual(info);
     expect(await runtime.getPid(handle)).toBe(123);
-    expect(await runtime.readOutput(handle, 1)).toEqual(["world"]);
+    expect(await runtime.readOutput(handle, 1)).toEqual([]);
+    expect(tmux.capturePane).not.toHaveBeenCalled();
     expect(await runtime.isRunning(handle)).toBe(true);
     wrappers.exited({ service: "api", executionId: handle.id, code: 127, spawnError: "bad cwd" });
     wrappers.exited({ service: "api", executionId: handle.id, code: 127 });
@@ -185,6 +188,9 @@ describe("TmuxRuntime", () => {
       const handle = await runtime.start(spec);
       await vi.advanceTimersByTimeAsync(500);
       expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(await runtime.readOutput(handle, 1)).toEqual(["world"]);
+      expect(await runtime.readOutput(handle, 2)).toEqual(["hello", "world"]);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
       expect(first).toHaveBeenCalledTimes(1);
       expect(second).toHaveBeenCalledWith(
         expect.objectContaining({ kind: "output", lines: ["hello", "world"] }),
@@ -192,6 +198,53 @@ describe("TmuxRuntime", () => {
       removeFirst();
       removeSecond();
       await runtime.stop(handle);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shares log capture and drops an in-flight replacement generation", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime, tmux, wrappers } = fixture();
+      let finishCapture!: (value: string) => void;
+      vi.mocked(tmux.capturePane)
+        .mockImplementationOnce(
+          async () =>
+            new Promise<string>((resolve) => {
+              finishCapture = resolve;
+            }),
+        )
+        .mockResolvedValue("replacement\nready fragment");
+      const buffer = new LogBuffer();
+      const log = vi.fn();
+      const monitor = new LogMonitor(
+        { capturePane: tmux.capturePane },
+        new Map([["%1", buffer]]),
+        log,
+      );
+      monitor.start("%1", "%1", 250);
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => {
+        events.push(event);
+      });
+      const first = await runtime.start(spec);
+      await vi.advanceTimersByTimeAsync(250);
+      wrappers.exited({ service: "api", executionId: first.id, code: 0 });
+      const second = await runtime.start({ ...spec, generation: 2 });
+      expect(await runtime.readOutput(second, 5)).toEqual([]);
+      finishCapture("stale generation");
+      await vi.advanceTimersByTimeAsync(250);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      expect(events.filter((event) => event.kind === "output")).toEqual([
+        { kind: "output", unitId: "api", generation: 2, lines: ["replacement", "ready fragment"] },
+      ]);
+      expect(buffer.snapshot()).toEqual(["replacement", "ready fragment"]);
+      expect(log).toHaveBeenCalledExactlyOnceWith("%1", ["replacement", "ready fragment"]);
+      expect(await runtime.readOutput(second, 1)).toEqual(["ready fragment"]);
+      expect(tmux.capturePane).toHaveBeenCalledTimes(2);
+      await runtime.stop(second);
+      monitor.stopAll();
     } finally {
       vi.useRealTimers();
     }
