@@ -19,6 +19,7 @@ import {
   resolveEnvironment,
   runWithEnvironment,
 } from "#src/lib/request-context.js";
+import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
 import type { ServiceManager, ServiceManagerRuntimeDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
@@ -32,43 +33,18 @@ const STALE_POLL_MS = 10_000;
 
 type PaneMap = Record<string, string>;
 
-interface LogAllocation {
-  /** Service name → shared buffer; group members on one pane share an instance. */
-  buffers: Map<string, LogBuffer>;
-  /** Monitor key (pane id) → buffer; one entry per monitored pane. */
-  paneBuffers: Map<string, LogBuffer>;
-  /** Monitor key (pane id) → the member service names sharing that pane. */
-  paneMembers: Map<string, string[]>;
-}
-
-/**
- * Allocate one `LogBuffer` per unique pane and resolve every service name to the
- * shared instance for its pane (D2). Group names are layout expansion artifacts:
- * they never own a buffer and never surface as a key. A service without a pane
- * (future detached services) gets a private, unmonitored buffer so Phase 5 plugs
- * in without reshaping this map.
- */
-function allocateLogBuffers(config: ResolvedConfig, paneMap: PaneMap): LogAllocation {
+function allocateLogBuffers(memberUnits: ReadonlyMap<string, string>): Map<string, LogBuffer> {
   const buffers = new Map<string, LogBuffer>();
-  const paneBuffers = new Map<string, LogBuffer>();
-  const paneMembers = new Map<string, string[]>();
-  for (const svcName of Object.keys(config.project.services)) {
-    const paneId = paneMap[svcName];
-    if (paneId === undefined) {
-      // Detached services retain a private buffer.
-      buffers.set(svcName, new LogBuffer());
-      continue;
-    }
-    let buffer = paneBuffers.get(paneId);
+  const unitBuffers = new Map<string, LogBuffer>();
+  for (const [name, unitId] of memberUnits) {
+    let buffer = unitBuffers.get(unitId);
     if (!buffer) {
       buffer = new LogBuffer();
-      paneBuffers.set(paneId, buffer);
-      paneMembers.set(paneId, []);
+      unitBuffers.set(unitId, buffer);
     }
-    buffers.set(svcName, buffer);
-    paneMembers.get(paneId)?.push(svcName);
+    buffers.set(name, buffer);
   }
-  return { buffers, paneBuffers, paneMembers };
+  return buffers;
 }
 
 type ProjectedServiceStatus = ServiceStatus & { actions: ServiceActions };
@@ -201,15 +177,7 @@ export class Session {
   public paneMap: PaneMap;
   public manager: ServiceManager;
   public logBuffers: Map<string, LogBuffer>;
-  /** Legacy pane projection until execution-unit logs (P04-T05). */
-  public paneBuffers: Map<string, LogBuffer>;
-  /**
-   * Monitor key (pane id) → member service names sharing it; drives fan-out (D2).
-   * Public for the same reason `paneBuffers` is: dynamic insert/remove mutates
-   * this map in lockstep with `paneBuffers`/`logBuffers`, and
-   * tests need to assert the lockstep without surfacing a side accessor.
-   */
-  public paneMembers: Map<string, string[]>;
+  private memberUnits: Map<string, string>;
   /** Tracked in-flight `startAll`; reload/destroy abort then await its settlement. */
   public startPromise: Promise<void> | null = null;
   /** Set once `destroy()` runs; guards the reload-after-destroy race (A5). */
@@ -254,31 +222,17 @@ export class Session {
     this.manager = manager;
     this.configLoadedAt = Date.now();
 
-    // Per-pane log buffers; runtime events feed ingestion.
-    const pipeline = allocateLogBuffers(this.config, this.paneMap);
-    this.logBuffers = pipeline.buffers;
-    this.paneBuffers = pipeline.paneBuffers;
-    this.paneMembers = pipeline.paneMembers;
+    this.memberUnits = resolveExecutionUnits(this.config);
+    this.logBuffers = allocateLogBuffers(this.memberUnits);
 
     this.backend.subscribePresentation((view) => {
       const previousStatuses = this.projectStatuses();
-      const previous = { ...this.paneMap };
       this.presentation = view;
       const next = compatibilityProjection(view).paneMap;
       for (const name of Object.keys(this.paneMap)) {
         Reflect.deleteProperty(this.paneMap, name);
       }
       Object.assign(this.paneMap, next);
-      for (const [name, pane] of Object.entries(previous)) {
-        if (name !== "@tui" && this.paneMap[name] !== pane) {
-          this.freePaneLog(name, pane);
-        }
-      }
-      for (const [name, pane] of Object.entries(this.paneMap)) {
-        if (name !== "@tui" && previous[name] !== pane) {
-          this.allocatePaneLog(name, pane);
-        }
-      }
       this.broadcastPaneMap();
       const previousByName = new Map(previousStatuses.map((status) => [status.name, status]));
       for (const status of this.projectStatuses()) {
@@ -331,12 +285,8 @@ export class Session {
       });
     });
 
-    // Detached-service output: the runner streams lines straight from the child
-    // (no pane to poll), so append to the service's buffer + broadcast here, the
-    // Same shape the pane LogMonitor produces (D2/E4).
     manager.on("logLines", (svcName: string, lines: string[]) => {
-      const pane = this.paneMap[svcName];
-      if (!pane || this.paneMembers.get(pane)?.[0] === svcName) {
+      if (this.memberUnits.get(svcName) === svcName) {
         this.logBuffers.get(svcName)?.appendLines(lines);
       }
       this.broadcast({
@@ -452,11 +402,12 @@ export class Session {
     const view = this.backend.getPresentation();
     const paneMap = view.kind === "tmux" ? { ...view.paneMap } : {};
 
-    // 6. Build the new manager + per-pane log pipeline before the swap. Reuses
+    // 6. Build the new manager + unit log pipeline before the swap. Reuses
     // The same allocation helper as construction so the two cannot drift.
     const { ServiceManager } = await import("#src/lib/service/manager.js");
     const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.id);
-    const pipeline = allocateLogBuffers(newConfig, paneMap);
+    const memberUnits = resolveExecutionUnits(newConfig);
+    const logBuffers = allocateLogBuffers(memberUnits);
 
     // 7. Swap every reference atomically (single synchronous block).
     this.config = newConfig;
@@ -469,9 +420,8 @@ export class Session {
     this.paneMap = paneMap;
     this.name = newConfig.project.name ?? "unnamed";
     this.manager = newManager;
-    this.logBuffers = pipeline.buffers;
-    this.paneBuffers = pipeline.paneBuffers;
-    this.paneMembers = pipeline.paneMembers;
+    this.memberUnits = memberUnits;
+    this.logBuffers = logBuffers;
 
     this.taskExecution.bindManager(newManager);
     this.wireManagerEvents(newManager);
@@ -708,37 +658,6 @@ export class Session {
     await this.withOpLock(async () => {
       await this.presentationCallbacks.removePresentation?.(name);
     });
-  }
-
-  /** Update legacy pane projections when adapter presentation changes. */
-  public allocatePaneLog(name: string, paneId: string): void {
-    // Idempotent fast path: already wired to this exact pane with the same
-    // Pane-shared buffer → preserve membership and history
-    // Without creating a new buffer (would orphan the previously-referenced
-    // One and break any consumer holding a reference).
-    const existingPaneBuf = this.paneBuffers.get(paneId);
-    if (existingPaneBuf && this.logBuffers.get(name) === existingPaneBuf) {
-      const members = this.paneMembers.get(paneId) ?? [];
-      if (!members.includes(name)) {
-        members.push(name);
-        this.paneMembers.set(paneId, members);
-      }
-      return;
-    }
-
-    // Re-point: replace whatever buffer the service had (the pane-less private
-    // One from boot, or a stale entry) with a fresh pane-shared `LogBuffer`.
-    const buf = new LogBuffer();
-    this.logBuffers.set(name, buf);
-    this.paneBuffers.set(paneId, buf);
-    this.paneMembers.set(paneId, [name]);
-  }
-
-  /** Retain stopped service history while dropping its pane projection. */
-  public freePaneLog(_name: string, paneId: string): void {
-    this.paneBuffers.delete(paneId);
-    this.paneMembers.delete(paneId);
-    // NOTE: `this.logBuffers[name]` is RETAINED on purpose — see method docstring.
   }
 
   /**

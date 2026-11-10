@@ -808,7 +808,7 @@ describe("Session", () => {
   });
 });
 
-describe("Session per-pane log buffers (D2)", () => {
+describe("Session execution-unit log buffers", () => {
   function groupParams(): SessionCreateParams {
     // A combined group "grp" of three members all sharing pane %1; the group
     // Name is a layout artifact present in paneMap but not in services.
@@ -816,7 +816,15 @@ describe("Session per-pane log buffers (D2)", () => {
       config: {
         project: {
           name: "test-project",
-          services: { a: { start: "a" }, b: { start: "b" }, c: { start: "c" } },
+          services: Object.fromEntries(
+            ["a", "b", "c"].map((name) => [
+              name,
+              {
+                start: name,
+                _combined: { group: "grp", allServices: ["a", "b", "c"], isOwner: name === "a" },
+              },
+            ]),
+          ),
         },
         configPath: "/test/.zaps.mts",
         projectDir: "/test",
@@ -874,189 +882,10 @@ describe("Session per-pane log buffers (D2)", () => {
       expect(services).toEqual(["a", "b", "c"]);
       expect(services).not.toContain("grp");
       // The shared buffer received the lines exactly once.
-      expect(session.logBuffers.get("a")?.snapshot()).toContain("hello");
+      expect(session.logBuffers.get("a")?.snapshot()).toEqual(["hello", "world"]);
     } finally {
       vi.useRealTimers();
     }
-  });
-});
-
-describe("Session dynamic pane log hooks (P03-T03)", () => {
-  function lazyServiceParams(): SessionCreateParams {
-    // `web` is declared but has NO pane in paneMap → boots with a pane-less
-    // Private buffer (`allocateLogBuffers`'s detached branch). `allocatePaneLog`
-    // Must re-point it to a pane-shared buffer when the pane is created later.
-    return createSessionParams({
-      config: {
-        project: {
-          name: "test-project",
-          services: { api: { start: "a" }, web: { start: "w" } },
-        },
-        configPath: "/test/.zaps.mts",
-        projectDir: "/test",
-        groups: new Map(),
-        unavailableServices: new Map(),
-        lazyPaneByService: new Map(),
-      } as SessionCreateParams["config"],
-      paneMap: { "@tui": "%0", api: "%1" }, // `web` deliberately pane-less.
-    });
-  }
-
-  it("boots a lazy service with a private buffer (no pane key, retained)", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-
-    expect(session.logBuffers.has("web")).toBe(true);
-    expect(session.paneBuffers.size).toBe(1); // Only `api`'s pane.
-    expect(session.paneMembers.size).toBe(1);
-    // The pane-less private buffer is NOT mapped to any pane id.
-    const webBuf = session.logBuffers.get("web");
-    expect([...session.paneBuffers.values()]).not.toContain(webBuf);
-  });
-
-  it("allocatePaneLog re-points the buffer and starts the pane monitor", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    const oldWebBuf = session.logBuffers.get("web");
-
-    session.allocatePaneLog("web", "%2");
-
-    // Fresh shared buffer (not the boot private one).
-    const newWebBuf = session.logBuffers.get("web");
-    expect(newWebBuf).toBeDefined();
-    expect(newWebBuf).not.toBe(oldWebBuf);
-    expect(session.paneBuffers.get("%2")).toBe(newWebBuf);
-    expect(session.paneMembers.get("%2")).toEqual(["web"]);
-  });
-
-  it("new pane's captured lines reach its LogBuffer + broadcast listener (Round 7)", async () => {
-    vi.useFakeTimers();
-    try {
-      const capturePane = vi
-        .fn()
-        .mockImplementation(async (target: string) => (target === "%2" ? "alpha\nbeta" : ""));
-      const params = lazyServiceParams();
-      params.deps = { ...params.deps, capturePane } as unknown as SessionCreateParams["deps"];
-      const manager = createMockManager();
-      const session = new Session(params, manager);
-      const events: { event: string; data?: unknown }[] = [];
-      vi.spyOn(session, "broadcast").mockImplementation((e) => {
-        events.push(e);
-      });
-
-      session.allocatePaneLog("web", "%2");
-      manager.emit("logLines", "web", ["alpha", "beta"]);
-
-      const webEvent = events.find(
-        (e) =>
-          e.event === "log.lines" && (e.data as { service: string } | undefined)?.service === "web",
-      );
-      expect(webEvent).toBeDefined();
-      if (!webEvent) {
-        throw new Error("unreachable");
-      }
-      expect((webEvent.data as { lines: string[] }).lines).toEqual(["alpha", "beta"]);
-      expect(session.logBuffers.get("web")?.snapshot()).toEqual(["alpha", "beta"]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("freePaneLog stops monitor, drops pane-keyed entries, RETAINS logBuffers[name]", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    session.allocatePaneLog("web", "%2");
-    const retainedBuf = session.logBuffers.get("web");
-    retainedBuf?.appendLines(["a history line"]);
-
-    session.freePaneLog("web", "%2");
-
-    // Monitor stopped for that key only.
-    // Pane-keyed entries gone.
-    expect(session.paneBuffers.has("%2")).toBe(false);
-    expect(session.paneMembers.has("%2")).toBe(false);
-    // CRITICAL: service-keyed buffer + its retained history survive.
-    expect(session.logBuffers.has("web")).toBe(true);
-    expect(session.logBuffers.get("web")).toBe(retainedBuf);
-    expect(session.logBuffers.get("web")?.snapshot()).toEqual(["a history line"]);
-  });
-
-  it("attachSnapshot still surfaces a stopped lazy service (Round 7 invariant)", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    session.allocatePaneLog("web", "%2");
-    session.logBuffers.get("web")?.appendLines(["retained"]);
-    session.freePaneLog("web", "%2");
-
-    const snap = session.attachSnapshot();
-    expect(snap.logSnapshots).toHaveProperty("web");
-    expect(snap.logSnapshots.web).toEqual(["retained"]);
-  });
-
-  it("a never-started lazy service snapshots [] (private boot buffer is empty)", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    const snap = session.attachSnapshot();
-    expect(snap.logSnapshots).toHaveProperty("web");
-    expect(snap.logSnapshots.web).toEqual([]);
-  });
-
-  it("allocatePaneLog is idempotent — re-call doesn't churn the buffer", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    session.allocatePaneLog("web", "%2");
-    const first = session.logBuffers.get("web");
-
-    session.allocatePaneLog("web", "%2");
-
-    // Same buffer instance retained (no orphaned writes).
-    expect(session.logBuffers.get("web")).toBe(first);
-    expect(session.paneBuffers.get("%2")).toBe(first);
-    expect(session.paneMembers.get("%2")).toEqual(["web"]);
-  });
-
-  it("repeated insert/remove does not grow paneBuffers or paneMembers", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-    const baselinePaneBufs = session.paneBuffers.size;
-    const baselinePaneMembers = session.paneMembers.size;
-
-    for (let i = 0; i < 50; i += 1) {
-      session.allocatePaneLog("web", "%2");
-      session.freePaneLog("web", "%2");
-    }
-
-    expect(session.paneBuffers.size).toBe(baselinePaneBufs);
-    expect(session.paneMembers.size).toBe(baselinePaneMembers);
-    // The retained service buffer is still there.
-    expect(session.logBuffers.has("web")).toBe(true);
-  });
-
-  it("hooks read `this.*` at call time — survives reload-style map reassignment", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-
-    // Simulate the relevant subset of `_reload`'s atomic swap: NEW map instances
-    // For the four log fields. allocatePaneLog must write to the NEW maps; if
-    // It had captured the constructor-time instances it would silently leak
-    // Into the dead pipeline.
-    session.logBuffers = new Map();
-    session.paneBuffers = new Map();
-    session.paneMembers = new Map();
-    session.allocatePaneLog("web", "%5");
-
-    expect(session.paneBuffers.has("%5")).toBe(true);
-    expect(session.logBuffers.has("web")).toBe(true);
-    // The post-reload monitor saw the start, not the dead one.
-  });
-
-  it("paneBuffers is the SAME instance the LogMonitor holds internally", () => {
-    const session = new Session(lazyServiceParams(), createMockManager());
-
-    // Mutating session.paneBuffers must be visible to the monitor's internal
-    // `buffers` ref (`log-monitor.ts:22`). The strongest cross-check is to use
-    // The captured monitor closure: the monitor reads `buffers.get(key)` on
-    // Each capture cycle, so a value put into session.paneBuffers MUST be
-    // Readable through it. The monitor's field is private, so we cross-check
-    // Via behavior: after `allocatePaneLog`, the monitor's tick should land
-    // The captured lines into the buffer we placed in `session.paneBuffers`.
-    const buf = session.paneBuffers; // Capture the constructor-time ref.
-    session.allocatePaneLog("web", "%2");
-    expect(buf.get("%2")).toBe(session.logBuffers.get("web"));
-    // Same map instance was mutated.
-    expect(buf).toBe(session.paneBuffers);
   });
 });
 
@@ -1629,5 +1458,66 @@ describe("Session backend presentation", () => {
     } finally {
       await session.destroy();
     }
+  });
+});
+
+describe("Session presentation-independent logs", () => {
+  it("retains distinct unit buffers across lazy insertion, replacement and removal", () => {
+    const fixture = presentationFixture({ api: { start: "a" }, web: { start: "w" } }, []);
+    const host = observedBackend(fixture.runtime, mixedCapabilities, terminalView);
+    const session = projectedSession(fixture, host.backend);
+    const api = session.logBuffers.get("api");
+    const web = session.logBuffers.get("web");
+    expect(web).not.toBe(api);
+    fixture.manager.emit("logLines", "web", ["before"]);
+    const presentations: Record<string, string>[] = [
+      { api: "same", web: "same" },
+      { api: "replacement", web: "replacement" },
+      {},
+    ];
+    for (const paneMap of presentations) {
+      host.publish(paneMap);
+      expect(session.logBuffers.get("web")).toBe(web);
+      expect(session.logBuffers.get("api")).toBe(api);
+    }
+    fixture.manager.emit("logLines", "api", ["api"]);
+    fixture.manager.emit("logLines", "web", ["after"]);
+    expect(session.attachSnapshot().logSnapshots).toEqual({
+      api: ["api"],
+      web: ["before", "after"],
+    });
+  });
+
+  it("appends once for a stopped combined owner with a live sibling and no panes", () => {
+    const fixture = presentationFixture(
+      {
+        a: { start: "a", _combined: { group: "g", allServices: ["a", "b"], isOwner: true } },
+        b: { start: "b", _combined: { group: "g", allServices: ["a", "b"], isOwner: false } },
+      },
+      [
+        { name: "a", state: "stopped", ports: [], retryCount: 0 },
+        { name: "b", state: "ready", ports: [], retryCount: 0 },
+      ],
+    );
+    const host = observedBackend(fixture.runtime, mixedCapabilities, { kind: "shell" });
+    const session = projectedSession(fixture, host.backend);
+    const broadcast = vi.spyOn(session, "broadcast");
+    const buffer = session.logBuffers.get("a");
+    if (!buffer) {
+      throw new Error("Missing unit buffer");
+    }
+    const append = vi.spyOn(buffer, "appendLines");
+    fixture.manager.emit("logLines", "a", ["live sibling"]);
+    fixture.manager.emit("logLines", "b", ["live sibling"]);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(session.logBuffers.get("b")).toBe(buffer);
+    expect(session.attachSnapshot().logSnapshots).toEqual({
+      a: ["live sibling"],
+      b: ["live sibling"],
+    });
+    expect(broadcast.mock.calls.map(([event]) => event.data)).toEqual([
+      { service: "a", lines: ["live sibling"] },
+      { service: "b", lines: ["live sibling"] },
+    ]);
   });
 });

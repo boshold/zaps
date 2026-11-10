@@ -27,6 +27,7 @@ import type { SentraDeps } from "#src/lib/sentra/config.js";
 
 import type { SpawnFn } from "./detached.js";
 import { buildServiceContext, resolveEnv } from "./env.js";
+import { resolveExecutionUnits } from "./execution-units.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
 import { diffOutput } from "./output.js";
 import { waitForReady } from "./ready.js";
@@ -303,12 +304,9 @@ export class ServiceManager extends EventEmitter {
       this.statuses.set(name, status);
     }
 
-    for (const [name, service] of Object.entries(config.project.services)) {
-      const members = service._combined?.allServices ?? [name];
-      const unitId =
-        members.find((member) => config.project.services[member]?._combined?.isOwner) ?? name;
+    for (const [name, unitId] of resolveExecutionUnits(config)) {
       this.memberUnits.set(name, unitId);
-      this.unitMembers.set(unitId, members);
+      this.unitMembers.set(unitId, config.project.services[name]?._combined?.allServices ?? [name]);
     }
 
     this.restartWithMap = buildRestartWithMap(config.project.services);

@@ -493,8 +493,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
     // The pane projection exists before runtime output starts.
     expect(zapsSession.paneMap.api).toBeDefined();
-    const apiPaneId = zapsSession.paneMap.api;
-    expect(zapsSession.paneBuffers.has(apiPaneId)).toBe(true);
+    expect(zapsSession.logBuffers.has("api")).toBe(true);
 
     await zapsSession.manager.startService("api");
 
@@ -549,7 +548,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(removeMaps[removeMaps.length - 1].api).toBeUndefined();
   });
 
-  it("after remove the monitor key is gone; logBuffers[name] is RETAINED with history", async () => {
+  it("retains unit history after pane removal", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
@@ -571,9 +570,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
       (panes) => panes.every((p) => p.id !== apiPaneId),
     );
 
-    // Pane-keyed maps SHRANK; service-keyed buffer + history RETAINED.
-    expect(zapsSession.paneBuffers.has(apiPaneId)).toBe(false);
-    expect(zapsSession.paneMembers.has(apiPaneId)).toBe(false);
+    // Unit history survives presentation changes.
     expect(zapsSession.logBuffers.has("api")).toBe(true);
     expect(zapsSession.logBuffers.get("api")?.snapshot()).toContain("history-from-insert");
     // AttachSnapshot still surfaces the stopped lazy service (Round-7 invariant).
@@ -582,7 +579,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(snap.logSnapshots.api).toContain("history-from-insert");
   });
 
-  it("repeated insert/remove does NOT grow paneBuffers / paneMembers", async () => {
+  it("repeated insert/remove preserves the unit buffer", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
@@ -591,8 +588,8 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
     zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    const baselinePaneBufs = zapsSession.paneBuffers.size;
-    const baselinePaneMembers = zapsSession.paneMembers.size;
+    const buffer = zapsSession.logBuffers.get("api");
+    const baselineBuffers = zapsSession.logBuffers.size;
 
     /* eslint-disable no-await-in-loop -- sequential lifecycle test */
     for (let i = 0; i < 5; i += 1) {
@@ -601,8 +598,8 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     }
     /* eslint-enable no-await-in-loop */
 
-    expect(zapsSession.paneBuffers.size).toBe(baselinePaneBufs);
-    expect(zapsSession.paneMembers.size).toBe(baselinePaneMembers);
+    expect(zapsSession.logBuffers.size).toBe(baselineBuffers);
+    expect(zapsSession.logBuffers.get("api")).toBe(buffer);
     // The retained service buffer is still there.
     expect(zapsSession.logBuffers.has("api")).toBe(true);
   });
@@ -627,12 +624,16 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
 describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection", () => {
   let session: TestSession;
+  let zapsSession: Session;
 
   beforeEach(async () => {
     session = await createTestSession();
   });
 
   afterEach(async () => {
+    if (zapsSession) {
+      await zapsSession.destroy();
+    }
     await session.cleanup();
   });
 
@@ -678,19 +679,17 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
     expect(calls).toBe(2);
   });
 
-  it("Session-level rollback: paneBuffers cleaned, logBuffers retained (orphan-regression)", async () => {
+  it("Session-level rollback preserves unit history", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    const zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    // The Session built its own reflow with real wrappers; here we build a
-    // FAULT-INJECTING reflow but reuse the SESSION's hooks so the
-    // OnPaneInsertFailed → freePaneLog cleanup actually runs. This is the
-    // End-to-end seal on the cross-pane-id buffer-leak fix.
+    const buffer = zapsSession.logBuffers.get("api");
+    buffer?.appendLines(["before rollback"]);
     const tmux = await import("#src/lib/tmux.js");
     const realSelect = tmux.selectLayout;
     let calls = 0;
@@ -707,28 +706,15 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
         }
         await realSelect(target, layoutStr);
       },
-      onPaneInserted: (name, paneId) => {
+      onPaneInserted: (_name, paneId) => {
         observedPaneId = paneId;
-        zapsSession.allocatePaneLog(name, paneId);
-      },
-      onPaneInsertFailed: (name, paneId) => {
-        zapsSession.freePaneLog(name, paneId);
-      },
-      onPaneRemoved: (name, paneId) => {
-        zapsSession.freePaneLog(name, paneId);
       },
     });
 
     await expect(faultyReflow.insertPane("api")).rejects.toBeInstanceOf(TmuxFailedError);
-    // The new pane id was observed by allocatePaneLog (so the orphan cleanup
-    // Path was exercised, not a no-op).
     expect(observedPaneId).toBeDefined();
-    const failedPaneId = observedPaneId ?? "";
-    // Pane-keyed entries cleaned up — the cross-pane-id buffer-leak path.
-    expect(zapsSession.paneBuffers.has(failedPaneId)).toBe(false);
-    expect(zapsSession.paneMembers.has(failedPaneId)).toBe(false);
-    // Service-keyed buffer retained (Round-7).
-    expect(zapsSession.logBuffers.has("api")).toBe(true);
+    expect(zapsSession.logBuffers.get("api")).toBe(buffer);
+    expect(buffer?.snapshot()).toEqual(["before rollback"]);
     // PaneMap rolled back.
     expect(zapsSession.paneMap.api).toBeUndefined();
     // Restore selectLayout was called.
