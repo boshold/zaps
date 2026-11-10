@@ -270,6 +270,14 @@ class TmuxRuntime implements RuntimeDriver {
     return handle;
   }
 
+  public retainPanes(panes: ReadonlySet<string>): void {
+    for (const pane of this.paneBaselines.keys()) {
+      if (!panes.has(pane)) {
+        this.paneBaselines.delete(pane);
+      }
+    }
+  }
+
   public async dispose(): Promise<void> {
     const results = await Promise.allSettled([
       ...[...this.records.values()].map(async (record) => this.stop(record.handle)),
@@ -281,6 +289,7 @@ class TmuxRuntime implements RuntimeDriver {
     if (failures.length) {
       throw new AggregateError(failures, "Runtime cleanup incomplete");
     }
+    this.paneBaselines.clear();
   }
 
   private lookup(handle: ExecutionHandle): PaneExecution | undefined {

@@ -39,6 +39,20 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
     expect(mgr.getStatus("svc").state).toBe("ready");
   });
 
+  it("observes readiness when a partial line is rewritten without a newline", async () => {
+    session = await createTestSession();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+    const config = makeConfig({
+      svc: {
+        start: `node -e "process.stdout.write('loading');setTimeout(()=>process.stdout.write('\\rREADY\\x1b[K'),800);setInterval(()=>{},60000)"`,
+        ready: { output: /^READY$/ },
+      },
+    });
+    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    await mgr.startService("svc");
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
   it("ready: { output: fn } predicate function", async () => {
     session = await createTestSession();
     const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);

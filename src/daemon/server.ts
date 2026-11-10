@@ -311,6 +311,11 @@ class DaemonServer implements SessionStore {
       skip: computeBootSkip(config),
     });
     backendRef.current = backend;
+    backend.subscribePresentation((view) => {
+      if (view.kind === "tmux") {
+        runtime.retainPanes(new Set(Object.values(view.paneMap)));
+      }
+    });
     try {
       await backend.activateWindowTitles();
       const view = backend.getPresentation();

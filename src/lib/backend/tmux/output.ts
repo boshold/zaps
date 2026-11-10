@@ -3,6 +3,17 @@ import { diffOutput } from "#src/lib/service/output.js";
 type CapturePane = (target: string, lines: number) => Promise<string>;
 type OutputListener = (lines: string[]) => void;
 
+function executionCapture(baseline: readonly string[], current: string[]): string[] {
+  for (const retained of [baseline, baseline.slice(0, -1)]) {
+    for (let count = Math.min(retained.length, current.length); count > 0; count -= 1) {
+      if (retained.slice(-count).every((line, index) => line === current[index])) {
+        return current.slice(count);
+      }
+    }
+  }
+  return current;
+}
+
 class TmuxOutputProducer {
   private readonly capturePane: CapturePane;
   private readonly target: string;
@@ -13,7 +24,7 @@ class TmuxOutputProducer {
   private stopped = false;
   private revision = 0;
   private previous: string[] = [];
-  private readonly executionScoped: boolean;
+  private readonly baseline?: readonly string[];
   private capture: string[] = [];
   private complete: string[] = [];
 
@@ -24,7 +35,7 @@ class TmuxOutputProducer {
     baseline?: readonly string[],
   ) {
     this.previous = [...(baseline ?? [])];
-    this.executionScoped = baseline !== undefined;
+    this.baseline = baseline === undefined ? undefined : [...baseline];
     this.capturePane = capturePane;
     this.target = target;
     this.intervalMs = intervalMs;
@@ -81,7 +92,8 @@ class TmuxOutputProducer {
       const current = output === "" ? [] : output.split("\n");
       const lines = diffOutput(this.previous, current);
       this.previous = current;
-      this.capture = this.executionScoped ? [...this.capture, ...lines].slice(-500) : current;
+      this.capture =
+        this.baseline === undefined ? current : executionCapture(this.baseline, current);
       this.complete = this.capture.slice(0, -1);
       if (lines.length) {
         for (const listener of this.listeners) {

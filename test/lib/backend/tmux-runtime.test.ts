@@ -491,6 +491,27 @@ describe("TmuxRuntime", () => {
     }
   });
 
+  it("forgets the history of panes retired by presentation", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runtime } = fixture();
+      const events: ExecutionEvent[] = [];
+      runtime.subscribe((event) => events.push(event));
+      const first = await runtime.start(spec);
+      await vi.advanceTimersByTimeAsync(250);
+      await runtime.stop(first);
+      runtime.retainPanes(new Set());
+      const second = await runtime.start({ ...spec, generation: 2 });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(
+        events.filter((event) => event.kind === "output").map((event) => event.generation),
+      ).toEqual([1, 2]);
+      await runtime.stop(second);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("releases its producer after a failed command dispatch", async () => {
     vi.useFakeTimers();
     try {

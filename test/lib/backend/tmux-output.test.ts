@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LogBuffer } from "#src/daemon/log-buffer.js";
 import { LogMonitor } from "#src/daemon/log-monitor.js";
 import { TmuxOutputProducer, acquireTmuxOutput } from "#src/lib/backend/tmux/output.js";
+import { waitForReady } from "#src/lib/service/ready.js";
 
 describe("tmux output producer", () => {
   beforeEach(() => {
@@ -102,6 +103,43 @@ describe("tmux output producer", () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(listener).toHaveBeenCalledExactlyOnceWith(["retained history", "partial"]);
     expect(producer.read(1)).toEqual(["partial"]);
+    producer.stop();
+  });
+
+  it("reads rewritten current-execution fragments independently of deduplicated log batches", async () => {
+    const capture = vi.fn(async () => "OLD_READY\nretained");
+    const producer = new TmuxOutputProducer(capture, "%1", 100, ["OLD_READY", "retained"]);
+    const listener = vi.fn();
+    producer.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(producer.read(500)).toEqual([]);
+    capture.mockResolvedValue("OLD_READY\nretained\nloading");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(producer.read(500)).toEqual(["loading"]);
+    const readiness = waitForReady({ output: /^READY$/ }, new AbortController().signal, {
+      detectPorts: async () => [],
+      readOutput: async (tail) => producer.read(tail).join("\n"),
+    });
+    capture.mockResolvedValue("OLD_READY\nretained\nREADY");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(producer.read(500)).toEqual(["READY"]);
+    expect(producer.snapshot()).toEqual(["OLD_READY", "retained", "READY"]);
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(readiness).resolves.toEqual([]);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(["loading"]);
+    producer.stop();
+  });
+
+  it("reads a rewritten first partial line without accumulating its stale value", async () => {
+    const capture = vi.fn(async () => "loading");
+    const producer = new TmuxOutputProducer(capture, "%1", 100, []);
+    const listener = vi.fn();
+    producer.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(100);
+    capture.mockResolvedValue("READY");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(producer.read(500)).toEqual(["READY"]);
+    expect(listener).toHaveBeenCalledExactlyOnceWith(["loading"]);
     producer.stop();
   });
 
