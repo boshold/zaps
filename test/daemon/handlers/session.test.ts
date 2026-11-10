@@ -27,7 +27,8 @@ import {
 } from "../../_helpers/mock-session.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
-vi.mock("../../../src/lib/service/env.js", () => ({
+vi.mock("../../../src/lib/service/env.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/lib/service/env.js")>()),
   buildServiceContext: vi.fn(() => ({})),
   resolveEnv: vi.fn(() => ({})),
 }));
