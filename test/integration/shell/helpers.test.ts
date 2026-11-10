@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { loadConfig } from "#src/config/loader.js";
@@ -260,6 +260,108 @@ describe("shell integration harness", () => {
       fs.rmSync(parent, { recursive: true, force: true });
     }
     expect(() => fixture.assertNoTmux()).toThrow("Unexpected tmux");
+  });
+
+  it("cleans rapid successful native commands without a captured identity", async () => {
+    const truePath = z.string().parse(
+      (process.env.PATH ?? "")
+        .split(path.delimiter)
+        .map((directory) => path.resolve(directory, "true"))
+        .find((candidate) => fs.existsSync(candidate) && fs.statSync(candidate).isFile()),
+    );
+    const fixture = createShellTestEnvironment({ command: { file: truePath, args: [] } });
+    try {
+      const results = await Promise.all(Array.from({ length: 10 }, async () => fixture.run()));
+      expect(results.every((result) => result.code === 0)).toBe(true);
+      await Promise.all([fixture.cleanup(), fixture.cleanup()]);
+      expect(fs.existsSync(fixture.rootDir)).toBe(false);
+    } finally {
+      await fixture.cleanup();
+      fixture.assertNoTmux();
+    }
+  });
+
+  it("surfaces one ownership failure after cleaning independent resistant processes", async () => {
+    const fixture = createShellTestEnvironment({ command });
+    const finished = fixture.spawn(["-e", "process.exit(0)"]);
+    const running = fixture.spawn([
+      "-e",
+      "process.on('SIGTERM', () => {}); console.log('resistant'); setInterval(() => {}, 1000)",
+    ]);
+    const inspection = createProcessInspection();
+    await waitForCondition(() => running.stdout.includes("resistant"));
+    await finished.result;
+    const pid = z.number().int().positive().parse(running.child.pid);
+    const before = await inspection.readProcessIdentity(pid);
+    const probe = vi
+      .spyOn(finished, "refreshOwnership")
+      .mockRejectedValue(new Error("fixture identity probe failed"));
+    try {
+      await expect(fixture.cleanup()).rejects.toThrow("Fixture cleanup incomplete");
+      const result = await running.result;
+      expect(result.signal).toBe("SIGKILL");
+      expect(fs.readFileSync(path.join(fixture.rootDir, "cleanup-error.txt"), "utf8")).toContain(
+        "fixture identity probe failed",
+      );
+      await expect(fixture.cleanup()).rejects.toThrow("Fixture cleanup incomplete");
+    } finally {
+      probe.mockRestore();
+      const current = await inspection.readProcessIdentity(pid);
+      if (current && before && sameProcess(before, current)) {
+        process.kill(pid, "SIGKILL");
+      }
+      await running.result;
+      fs.rmSync(fixture.rootDir, { recursive: true, force: true });
+      fixture.assertNoTmux();
+    }
+  });
+
+  it("retains diagnostics without signalling unverified surviving descendants", async () => {
+    const fixture = createShellTestEnvironment({ command });
+    const launcher = fixture.spawn([
+      "-e",
+      `
+      const { fork } = require('node:child_process');
+      const child = fork('-e', ["process.send('ready'); setInterval(() => {}, 1000)"], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+      child.once('message', () => { console.log(child.pid); child.disconnect(); process.exit(0); });
+    `,
+    ]);
+    await launcher.result;
+    await launcher.stopTracking();
+    const pid = z.coerce.number().int().positive().parse(launcher.stdout.trim());
+    const inspection = createProcessInspection();
+    const before = await inspection.readProcessIdentity(pid);
+    launcher.members.clear();
+    try {
+      await expect(fixture.cleanup()).rejects.toThrow("Fixture cleanup incomplete");
+      expect(fs.readFileSync(path.join(fixture.rootDir, "cleanup-error.txt"), "utf8")).toContain(
+        "Unverified",
+      );
+      const after = await inspection.readProcessIdentity(pid);
+      expect(before && after && sameProcess(before, after)).toBe(true);
+      const { stdout } = await promisify(execFile)("ps", ["-o", "stat=", "-p", String(pid)]);
+      expect(stdout.trim().startsWith("Z")).toBe(false);
+    } finally {
+      const actual = await inspection.readProcessIdentity(pid);
+      if (actual && before && sameProcess(before, actual)) {
+        process.kill(pid, "SIGKILL");
+      }
+      await waitForCondition(async () => {
+        const current = await inspection.readProcessIdentity(pid);
+        if (!current || !before || !sameProcess(before, current)) {
+          return true;
+        }
+        const { stdout } = await promisify(execFile)("ps", [
+          "-o",
+          "stat=",
+          "-p",
+          String(pid),
+        ]).catch(() => ({ stdout: "Z" }));
+        return stdout.trim().startsWith("Z");
+      });
+      fs.rmSync(fixture.rootDir, { recursive: true, force: true });
+      fixture.assertNoTmux();
+    }
   });
 
   it("rejects ownership path overrides", async () => {

@@ -160,7 +160,6 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     });
     const members = new Map<number, ProcessIdentity>();
     let identity: ProcessIdentity | null = null;
-    let ownershipError: unknown;
     let monitor: ReturnType<typeof setTimeout> | undefined;
     let stopped = false;
     async function refreshOwnership(): Promise<ProcessIdentity[]> {
@@ -168,9 +167,25 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
         if (child.pid === undefined) {
           return [];
         }
-        identity = await inspection.readProcessIdentity(child.pid);
-        if (!identity || identity.pgid !== child.pid) {
-          throw new Error(`Missing fixture process identity: ${child.pid}`);
+        const captured =
+          child.exitCode === null && child.signalCode === null
+            ? await inspection.readProcessIdentity(child.pid)
+            : null;
+        identity = child.exitCode === null && child.signalCode === null ? captured : null;
+        if (!identity) {
+          const { stdout: groupOutput } = await execFileAsync("ps", ["-axo", "pgid="], {
+            timeout: 1000,
+          });
+          const groups = z
+            .array(z.coerce.number().int().nonnegative())
+            .parse(groupOutput.trim().split(/\s+/));
+          if (!groups.includes(child.pid)) {
+            return [];
+          }
+          throw new Error(`Unverified surviving fixture group: ${child.pid}`);
+        }
+        if (identity.pgid !== child.pid) {
+          throw new Error(`Invalid fixture process group: ${child.pid}`);
         }
         members.set(identity.pid, identity);
       }
@@ -196,9 +211,8 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     async function track(): Promise<void> {
       try {
         await refreshOwnership();
-        ownershipError = undefined;
-      } catch (error) {
-        ownershipError = error;
+      } catch {
+        // Cleanup retries ownership probes and surfaces unresolved failures.
       } finally {
         if (!stopped) {
           monitor = setTimeout(() => {
@@ -217,9 +231,6 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
         stopped = true;
         clearTimeout(monitor);
         await tracking;
-        if (ownershipError) {
-          throw ownershipError;
-        }
       },
       get stdout() {
         return stdout;
@@ -246,39 +257,40 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     }
   }
 
-  async function liveOwnedMembers(): Promise<ProcessIdentity[]> {
+  async function liveOwnedMembers(
+    handle: ReturnType<typeof spawnCommand>,
+  ): Promise<ProcessIdentity[]> {
     const live: ProcessIdentity[] = [];
-    for (const handle of children) {
-      for (const expected of await handle.refreshOwnership()) {
-        const actual = await inspection.readProcessIdentity(expected.pid);
-        if (actual && sameProcess(expected, actual)) {
-          const { stdout } = await execFileAsync(
-            "ps",
-            ["-o", "stat=", "-p", String(expected.pid)],
-            { timeout: 1000 },
-          ).catch((error: unknown) => {
-            if (
-              error instanceof Error &&
-              "code" in error &&
-              error.code === 1 &&
-              "stdout" in error &&
-              error.stdout === ""
-            ) {
-              return { stdout: "" };
-            }
-            throw error;
-          });
-          if (stdout.trim() && !stdout.trim().startsWith("Z")) {
-            live.push(actual);
+    for (const expected of await handle.refreshOwnership()) {
+      const actual = await inspection.readProcessIdentity(expected.pid);
+      if (actual && sameProcess(expected, actual)) {
+        const { stdout } = await execFileAsync("ps", ["-o", "stat=", "-p", String(expected.pid)], {
+          timeout: 1000,
+        }).catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            "code" in error &&
+            error.code === 1 &&
+            "stdout" in error &&
+            error.stdout === ""
+          ) {
+            return { stdout: "" };
           }
+          throw error;
+        });
+        if (stdout.trim() && !stdout.trim().startsWith("Z")) {
+          live.push(actual);
         }
       }
     }
     return live;
   }
 
-  async function signalOwnedChildren(signal: NodeJS.Signals): Promise<void> {
-    for (const expected of await liveOwnedMembers()) {
+  async function signalOwnedChildren(
+    handle: ReturnType<typeof spawnCommand>,
+    signal: NodeJS.Signals,
+  ): Promise<void> {
+    for (const expected of await liveOwnedMembers(handle)) {
       const actual = await inspection.readProcessIdentity(expected.pid);
       if (actual && sameProcess(expected, actual)) {
         try {
@@ -292,26 +304,37 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     }
   }
 
-  async function ownedProcessesStopped(): Promise<boolean> {
-    const live = await liveOwnedMembers();
-    return live.length === 0;
+  async function cleanupChild(handle: ReturnType<typeof spawnCommand>): Promise<void> {
+    await handle.stopTracking();
+    async function stopped(): Promise<boolean> {
+      const live = await liveOwnedMembers(handle);
+      return live.length === 0;
+    }
+    await signalOwnedChildren(handle, "SIGTERM");
+    await waitForCondition(stopped, 2000).catch(async () => {
+      await signalOwnedChildren(handle, "SIGKILL");
+    });
+    await waitForCondition(stopped, 2000);
+    handle.child.stdin.destroy();
+    handle.child.stdout.destroy();
+    handle.child.stderr.destroy();
+    await handle.result.catch(() => {
+      // Spawn failures remain observable through result.
+    });
   }
 
   async function cleanupOwnedResources(): Promise<void> {
-    try {
-      await Promise.all([...children].map(async (handle) => handle.stopTracking()));
-      await signalOwnedChildren("SIGTERM");
-      await waitForCondition(ownedProcessesStopped, 2000).catch(async () => {
-        await signalOwnedChildren("SIGKILL");
-      });
-      await waitForCondition(ownedProcessesStopped, 2000);
-      for (const { child } of children) {
-        child.stdin.destroy();
-        child.stdout.destroy();
-        child.stderr.destroy();
+    const outcomes = await Promise.allSettled(
+      [...children].map(async (handle) => cleanupChild(handle)),
+    );
+    readTmuxCalls();
+    const errors: unknown[] = [];
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        errors.push(outcome.reason);
       }
-      await Promise.allSettled([...children].map(async ({ result }) => result));
-    } catch (error) {
+    }
+    if (errors.length) {
       const diagnostics: ProcessIdentity[] = [];
       for (const handle of children) {
         for (const member of handle.members.values()) {
@@ -320,11 +343,9 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
       }
       fs.writeFileSync(
         path.join(rootDir, "cleanup-error.txt"),
-        `${String(error)}\n${JSON.stringify(diagnostics)}`,
+        `${errors.map(String).join("\n")}\n${JSON.stringify(diagnostics)}`,
       );
-      throw error;
-    } finally {
-      readTmuxCalls();
+      throw new AggregateError(errors, `Fixture cleanup incomplete: ${rootDir}`);
     }
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
