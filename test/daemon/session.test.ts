@@ -179,7 +179,11 @@ describe("Session", () => {
       expect(response4.error).toBe("invalid_request");
       const response5 = await attach();
       expect(response5.error).toBeUndefined();
-      expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+      expect(session.getUiBinding(socket)).toMatchObject({ socket, sessionId: session.id });
+      const binding = session.getUiBinding(socket);
+      expect(binding?.acknowledged).toBe(false);
+      session.uiBindingAcknowledgement(socket)();
+      expect(binding?.acknowledged).toBe(true);
       other.addSubscriber(socket);
       const response6 = await attach(other);
       expect(response6.error).toBe("invalid_request");
@@ -193,6 +197,7 @@ describe("Session", () => {
       );
       expect(session.getUiBinding(socket)).toBeUndefined();
       expect(other.getUiBinding(socket)).toBeDefined();
+      expect(binding?.controller.signal.aborted).toBe(true);
       const response8 = await attach();
       expect(response8.error).toBe("invalid_request");
       other.removeSubscriber(socket);
@@ -222,7 +227,9 @@ describe("Session", () => {
       session.addSubscriber(socket);
       session.subscriberAcknowledgement(socket)();
       session.bindUi(socket);
+      const binding = session.getUiBinding(socket);
       const destruction = session.destroy();
+      expect(binding?.controller.signal.aborted).toBe(true);
       expect(session.getUiBinding(socket)).toBeUndefined();
       expect(() => session.bindUi(socket)).toThrow("session_closing");
       await destruction;

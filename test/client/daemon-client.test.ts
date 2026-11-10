@@ -186,6 +186,68 @@ describe("DaemonClient", () => {
     });
   });
 
+  describe("terminal actions", () => {
+    it("requires UI acknowledgement", async () => {
+      client.connect();
+      await expect(client.terminalAction({ action: "taskPicker" })).rejects.toMatchObject({
+        code: "invalid_request",
+      });
+      expect(mockSub.request).not.toHaveBeenCalled();
+    });
+
+    it("uses the bound socket without timeout beyond ordinary RPC duration", async () => {
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: {} });
+      client.connect();
+      await client.bindUi();
+      vi.useFakeTimers();
+      try {
+        let complete: ((response: unknown) => void) | undefined;
+        mockSub.request.mockReturnValueOnce(
+          new Promise((resolve) => {
+            complete = resolve;
+          }),
+        );
+        let settled = false;
+        const action = client.terminalAction({ action: "taskPicker" }).then((result) => {
+          settled = true;
+          return result;
+        });
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(settled).toBe(false);
+        expect(mockSub.request).toHaveBeenLastCalledWith(
+          "terminal.action",
+          { action: "taskPicker" },
+          0,
+        );
+        complete?.({ id: "picker", result: { action: "taskPicker", taskKey: null } });
+        await expect(action).resolves.toEqual({ action: "taskPicker", taskKey: null });
+        expect(mockIpcRequest).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("preserves busy errors without fallback and rejects socket loss", async () => {
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: {} });
+      client.connect();
+      await client.bindUi();
+      mockSub.request.mockResolvedValueOnce({
+        id: "busy",
+        error: "occupied",
+        errorCode: "terminal_busy",
+      });
+      await expect(client.terminalAction({ action: "taskPicker" })).rejects.toMatchObject({
+        code: "terminal_busy",
+        message: "occupied",
+      });
+      mockSub.request.mockRejectedValueOnce(new Error("daemon connection closed"));
+      await expect(client.terminalAction({ action: "taskPicker" })).rejects.toThrow(
+        "daemon connection closed",
+      );
+      expect(mockIpcRequest).not.toHaveBeenCalled();
+    });
+  });
+
   describe("request methods", () => {
     beforeEach(() => {
       mockIpcRequest.mockResolvedValue({ id: "r1", result: "ok" });

@@ -3,10 +3,28 @@ import { EventEmitter } from "node:events";
 import type { DockerConfig, NoticeLevel } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
+import {
+  terminalActionParamsSchema,
+  terminalActionResultSchema,
+} from "#src/lib/backend/schemas.js";
+import type {
+  BackendErrorCode,
+  TerminalActionParams,
+  TerminalActionResult,
+} from "#src/lib/backend/schemas.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+
+export class TerminalActionError extends Error {
+  public override readonly name = "TerminalActionError";
+  public readonly code?: BackendErrorCode;
+  public constructor(message: string, code?: BackendErrorCode) {
+    super(message);
+    this.code = code;
+  }
+}
 
 export interface DaemonClientEvents {
   "service.stateChange": (name: string, status: ServiceStatus) => void;
@@ -103,6 +121,23 @@ export class DaemonClient extends EventEmitter {
       throw new Error("daemon connection closed");
     }
     this.boundSubscription = subscription;
+  }
+
+  public async terminalAction(params: TerminalActionParams): Promise<TerminalActionResult> {
+    const parsed = terminalActionParamsSchema.parse(params);
+    const subscription = this.boundSubscription;
+    if (!this.uiBound || !subscription) {
+      throw new TerminalActionError("invalid_request", "invalid_request");
+    }
+    const response = await subscription.request("terminal.action", parsed, 0);
+    if (response.error !== undefined) {
+      throw new TerminalActionError(response.error, response.errorCode);
+    }
+    const result = terminalActionResultSchema.parse(response.result);
+    if (result.action !== parsed.action) {
+      throw new Error("Invalid terminal action response");
+    }
+    return result;
   }
 
   public async attach(): Promise<SessionSnapshot> {

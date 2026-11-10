@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { DisplayPopupOptions, TmuxHandle } from "#src/lib/tmux.js";
 
@@ -37,22 +38,6 @@ interface TerminalOperationContext {
   capture(pane: string): Promise<string>;
 }
 
-class TerminalOperationError extends Error {
-  public override readonly name = "TerminalOperationError";
-  public readonly code: "backend_unavailable" | "terminal_busy" | "cancelled";
-  public readonly launched: boolean;
-
-  public constructor(
-    code: TerminalOperationError["code"],
-    launched = false,
-    options?: ErrorOptions,
-  ) {
-    super(code, options);
-    this.code = code;
-    this.launched = launched;
-  }
-}
-
 function unresolved(): never {
   throw new Error("Promise executor did not run");
 }
@@ -82,6 +67,7 @@ interface Lease {
   readonly client: Client;
   readonly owner: TerminalOwner;
   readonly done: Promise<void>;
+  quarantined?: boolean;
   cancel(): Promise<void>;
 }
 
@@ -170,6 +156,24 @@ class TmuxTerminalOperations {
     }
   }
 
+  private releaseReplacement(client: Client): void {
+    const lease = this.leases.get(client.name);
+    if (lease?.quarantined && lease.client.pid !== client.pid) {
+      this.leases.delete(client.name);
+    }
+  }
+
+  public async assertClientAvailable(): Promise<void> {
+    const client = await this.resolveClient();
+    if (this.closed) {
+      throw new TerminalOperationError("cancelled");
+    }
+    this.releaseReplacement(client);
+    if (this.leases.has(client.name)) {
+      throw new TerminalOperationError("terminal_busy");
+    }
+  }
+
   public async run<T>(
     request: OperationRequest,
     action: (context: TerminalOperationContext) => Promise<T>,
@@ -184,6 +188,7 @@ class TmuxTerminalOperations {
     if (this.closed || request.signal.aborted) {
       throw new TerminalOperationError("cancelled");
     }
+    this.releaseReplacement(client);
     if (this.leases.has(client.name)) {
       throw new TerminalOperationError("terminal_busy");
     }
@@ -195,6 +200,8 @@ class TmuxTerminalOperations {
     let active = true;
     let presenting = false;
     let popupOpen = false;
+    let cleanupUncertain = false;
+    let popupCompleted = false;
     const cancellationState: { task?: Promise<void> } = {};
     const checkActive = () => {
       if (!active || controller.signal.aborted) {
@@ -215,13 +222,23 @@ class TmuxTerminalOperations {
             const current = await this.resolveClient();
             if (active && this.leases.get(client.name)?.id === id && sameClient(current, client)) {
               // Tmux has no popup-ID close: external replacement cannot be proven safe.
-              await this.tmux.closePopup(client.name);
+              try {
+                await this.tmux.closePopup(client.name);
+              } catch {
+                cleanupUncertain = !popupCompleted;
+                const currentLease = this.leases.get(client.name);
+                if (currentLease?.id === id) {
+                  currentLease.quarantined = cleanupUncertain;
+                }
+              }
             }
           }
         } catch {
           // A vanished session/client has no owned popup left to close.
         } finally {
-          cancelled.reject(new TerminalOperationError("cancelled"));
+          cancelled.reject(
+            new TerminalOperationError(cleanupUncertain ? "terminal_busy" : "cancelled"),
+          );
         }
       })();
       return cancellationState.task;
@@ -278,7 +295,7 @@ class TmuxTerminalOperations {
         completion.reject(cleanupError);
         throw cleanupError;
       } finally {
-        if (this.leases.get(client.name)?.id === id) {
+        if (!cleanupUncertain && this.leases.get(client.name)?.id === id) {
           this.leases.delete(client.name);
         }
         completion.resolve();
@@ -308,13 +325,21 @@ class TmuxTerminalOperations {
           presenting = true;
           popupOpen = true;
           await Promise.race([
-            this.tmux.displayPopup({
-              ...options,
-              client: client.name,
-              pane: this.dashboardPane,
-              env: { ...env },
-              cwd,
-            }),
+            this.tmux
+              .displayPopup({
+                ...options,
+                client: client.name,
+                pane: this.dashboardPane,
+                env: { ...env },
+                cwd,
+              })
+              .then(() => {
+                popupCompleted = true;
+                if (cleanupUncertain && this.leases.get(client.name)?.id === id) {
+                  this.leases.delete(client.name);
+                }
+                return undefined;
+              }),
             cancellation,
           ]);
           popupOpen = false;
@@ -338,7 +363,9 @@ class TmuxTerminalOperations {
       if (popupOpen) {
         await cancel();
       }
-      throw new TerminalOperationError(code, presenting, { cause: error });
+      throw new TerminalOperationError(cleanupUncertain ? "terminal_busy" : code, presenting, {
+        cause: error,
+      });
     } finally {
       if (popupOpen) {
         await cancel();

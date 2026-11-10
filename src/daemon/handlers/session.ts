@@ -6,6 +6,9 @@ import type { Command, DockerConfig } from "#src/config/types.js";
 import { logConfigError } from "#src/daemon/log-config-error.js";
 import type { SessionStore } from "#src/daemon/server.js";
 import type { Session } from "#src/daemon/session.js";
+import type { TerminalActionParams } from "#src/lib/backend/schemas.js";
+import { terminalActionParamsSchema } from "#src/lib/backend/schemas.js";
+import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
 import {
   serviceWrappers,
   wrapperExitSchema,
@@ -14,6 +17,7 @@ import {
 import { wrapperStartedSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
 import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
+import { parseRequestContext } from "#src/lib/request-context.js";
 import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
@@ -64,10 +68,147 @@ function withErrorCount(
   return { ...status, sentra: status.sentra ?? false, errorCount };
 }
 
+function terminalCapabilityError(
+  session: Session,
+  params: TerminalActionParams,
+): "unsupported_capability" | "invalid_request" | undefined {
+  const { terminal, capabilities } = session.backend;
+  if (!terminal || !capabilities.panes || (params.action === "zoom" && !capabilities.zoom)) {
+    return "unsupported_capability";
+  }
+  if (["editOutput", "taskPicker", "taskOutput"].includes(params.action) && !capabilities.popups) {
+    return "unsupported_capability";
+  }
+  const view = session.backend.getPresentation();
+  if (view.kind !== "tmux") {
+    return "unsupported_capability";
+  }
+  let service: string | undefined = undefined;
+  if (params.action === "editOutput") {
+    ({ service } = params);
+  }
+  if ((params.action === "focus" || params.action === "zoom") && params.target.kind === "service") {
+    service = params.target.name;
+  }
+  if (service !== undefined) {
+    if (!Object.hasOwn(session.config.project.services, service)) {
+      return "invalid_request";
+    }
+    if (session.config.project.services[service]?.detached || !view.paneMap[service]) {
+      return "unsupported_capability";
+    }
+  }
+  if (params.action === "taskOutput" && !session.taskOutput.get(params.runId)) {
+    return "invalid_request";
+  }
+  return undefined;
+}
+
+function activeUiBinding(session: Session, socket: Socket) {
+  const binding = session.getUiBinding(socket);
+  if (
+    !binding ||
+    !binding.acknowledged ||
+    binding.sessionId !== session.id ||
+    binding.socket !== socket ||
+    socket.destroyed ||
+    !socket.writable ||
+    binding.controller.signal.aborted
+  ) {
+    return undefined;
+  }
+  return binding;
+}
+
+function terminalContext(req: IpcRequest, session: Session) {
+  try {
+    return req.context === undefined
+      ? { cwd: session.config.projectDir, env: { ...session.env } }
+      : parseRequestContext(req.context);
+  } catch {
+    return null;
+  }
+}
+
 export const sessionHandlers: Record<
   string,
   (req: IpcRequest, store: SessionStore, socket: Socket) => Promise<IpcResponse>
 > = {
+  async "terminal.action"(req, store, socket) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const fail = (
+      code:
+        | "invalid_request"
+        | "unsupported_capability"
+        | "session_closing"
+        | "backend_unavailable"
+        | "terminal_busy",
+    ) => ({ ...ipcErr(req.id, code), errorCode: code });
+    if (!session.taskExecution.accepting) {
+      return fail("session_closing");
+    }
+    const binding = activeUiBinding(session, socket);
+    const parsed = terminalActionParamsSchema.safeParse(req.params);
+    if (!binding || !parsed.success) {
+      return fail("invalid_request");
+    }
+    const params = parsed.data;
+    const capabilityError = terminalCapabilityError(session, params);
+    if (capabilityError) {
+      return fail(capabilityError);
+    }
+    const { terminal } = session.backend;
+    if (!terminal) {
+      return fail("unsupported_capability");
+    }
+    const context = terminalContext(req, session);
+    if (!context) {
+      return fail("invalid_request");
+    }
+    try {
+      const operation = {
+        id: binding.socketId,
+        cwd: context.cwd,
+        env: context.env,
+        signal: binding.controller.signal,
+      };
+      switch (params.action) {
+        case "focus":
+        case "zoom": {
+          await terminal[params.action](params.target);
+          break;
+        }
+        case "editOutput": {
+          await terminal.editOutput(params.service, operation);
+          break;
+        }
+        case "taskOutput": {
+          await terminal.taskOutput(params.runId, operation);
+          break;
+        }
+        case "taskPicker": {
+          const taskKey = await terminal.taskPicker(operation);
+          if (taskKey !== null && !Object.hasOwn(session.config.project.tasks ?? {}, taskKey)) {
+            return fail("invalid_request");
+          }
+          return ipcOk(req.id, { action: params.action, taskKey });
+        }
+        default: {
+          return fail("invalid_request");
+        }
+      }
+      return ipcOk(req.id, { action: params.action, done: true });
+    } catch (error) {
+      if (error instanceof TerminalOperationError) {
+        return fail(error.code === "cancelled" ? "invalid_request" : error.code);
+      }
+      return fail("backend_unavailable");
+    }
+  },
+
   async "session.attach"(req, store, socket) {
     const params = z
       .object({ ui: z.boolean().optional() })
@@ -346,10 +487,23 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, "Unknown session");
     }
 
-    const { key, target = "window" } = req.params as {
-      key: string;
-      target?: "pane" | "window";
-    };
+    const parsed = z
+      .strictObject({
+        key: z.string().min(1),
+        target: z.enum(["pane", "window"]).default("window"),
+      })
+      .safeParse(req.params);
+    if (!parsed.success) {
+      return { ...ipcErr(req.id, "invalid_request"), errorCode: "invalid_request" };
+    }
+    const { key, target } = parsed.data;
+    if (!session.taskExecution.accepting) {
+      return { ...ipcErr(req.id, "session_closing"), errorCode: "session_closing" };
+    }
+    const { terminal } = session.backend;
+    if (!terminal || !session.backend.capabilities.taskPanes) {
+      return { ...ipcErr(req.id, "unsupported_capability"), errorCode: "unsupported_capability" };
+    }
     const tasks = session.config.project.tasks ?? {};
     const task = tasks[key];
     if (!task) {
@@ -376,19 +530,6 @@ export const sessionHandlers: Record<
     const taskName = task.name;
     // One runId per run correlates start/complete + the stored pane (Q12/T01).
     const runId = newRunId();
-
-    // Create the pane/window; both helpers return the new pane id (the spec's
-    // Default target is a new window — a split would reflow the service panes).
-    let paneId = "";
-    try {
-      paneId =
-        target === "pane"
-          ? await session.tmux.splitPane(session.paneMap["@tui"] ?? session.originPane, "v")
-          : await session.tmux.newWindow(session.tmuxSession);
-    } catch {
-      return ipcErr(req.id, "tmux_failed");
-    }
-    session.panesByRun.set(runId, paneId);
 
     // Stash the resolve info the exec-task wrapper will fetch over IPC, plus the
     // Metadata needed to complete the run when the wrapper reports its exit.
@@ -436,7 +577,26 @@ export const sessionHandlers: Record<
       runId,
     });
     try {
-      await session.tmux.sendKeys(paneId, command);
+      if (!session.taskExecution.accepting) {
+        throw new Error("session_closing");
+      }
+      await terminal.runTaskInPane(
+        {
+          taskKey: key,
+          runId,
+          target,
+          execution: {
+            unitId: key,
+            generation: 0,
+            command,
+            cwd,
+            env,
+            placement: "default",
+            raw: false,
+          },
+        },
+        { id: runId, cwd, env, signal: new AbortController().signal },
+      );
     } catch {
       session.paneRunInfo.delete(runId);
       session.taskOutput.finish(runId, "error", Date.now());
@@ -444,7 +604,7 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, "tmux_failed");
     }
 
-    return ipcOk(req.id, { runId, paneId });
+    return ipcOk(req.id, { runId, paneId: session.panesByRun.get(runId) });
   },
 
   async "exec-task.resolve"(req, store) {

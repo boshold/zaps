@@ -399,3 +399,18 @@ describe("terminal operation leases", () => {
     expect(await popupPickerAvailable(tmux, { PATH: "/nonexistent-operation-path" })).toBe(false);
   });
 });
+
+it("quarantines a client when owned popup closure fails, forbidding fallback", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  f.tmux.closePopup.mockRejectedValue(new Error("close failed"));
+  f.controller.abort();
+  await expect(run.result).rejects.toMatchObject({ code: "terminal_busy" });
+  await expect(
+    f.operations.run({ ...f.request, signal: new AbortController().signal }, async () => undefined),
+  ).rejects.toMatchObject({ code: "terminal_busy" });
+  expect(f.tmux.displayPopup).toHaveBeenCalledTimes(1);
+  await expect(access(run.context.directory)).rejects.toThrow();
+  f.popup.resolve();
+  await vi.waitFor(async () => expect(await f.operations.assertClientAvailable()).toBeUndefined());
+});

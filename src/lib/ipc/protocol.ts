@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { ConfigNotice } from "#src/config/types.js";
+import type { BackendErrorCode } from "#src/lib/backend/schemas.js";
 import type { RequestContext } from "#src/lib/request-context.js";
 
 /** Payload of the `log.lines` daemon event. */
@@ -21,6 +22,7 @@ export interface IpcResponse {
   id: string;
   result?: unknown;
   error?: string;
+  errorCode?: BackendErrorCode;
 }
 
 export interface IpcEvent {

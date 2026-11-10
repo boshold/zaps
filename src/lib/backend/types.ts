@@ -97,6 +97,7 @@ interface TerminalOperation {
 }
 
 interface TaskPaneSpec {
+  readonly target?: "pane" | "window";
   readonly taskKey: string;
   readonly runId: string;
   readonly execution: ExecutionSpec;

@@ -8,6 +8,11 @@ import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
+import {
+  TmuxTerminalLeaseRegistry,
+  TmuxTerminalOperations,
+} from "#src/lib/backend/tmux/operations.js";
 import {
   TmuxRuntime,
   bindServiceWrappers,
@@ -116,6 +121,7 @@ function assertSameTmuxContext(existing: Session, params: CreateParams): void {
 }
 
 class DaemonServer implements SessionStore {
+  private readonly terminalLeases = new TmuxTerminalLeaseRegistry();
   private server: net.Server | null = null;
   private readonly sessions = new Map<string, Session>();
   /** In-flight `create` promises keyed by session id — collapses concurrent
@@ -278,6 +284,13 @@ class DaemonServer implements SessionStore {
       record: async (pid) => this.detachedRegistry.record(pid),
       unrecord: async (pid) => this.detachedRegistry.remove(pid),
     });
+    const ref: { session: Session | null } = { session: null };
+    const operations = new TmuxTerminalOperations(
+      tmux,
+      params.tmuxSession,
+      params.originPane,
+      this.terminalLeases,
+    );
     const backendRef: { current: TmuxSessionBackend | null } = { current: null };
     const runtime = new TmuxRuntime({
       tmux,
@@ -294,6 +307,32 @@ class DaemonServer implements SessionStore {
         return backendRef.current.paneFor(name);
       },
     });
+    const terminal = new TmuxTerminalDriver({
+      sessionId: id,
+      sessionName: params.tmuxSession,
+      taskPane: (runId, pane) => ref.session?.panesByRun.set(runId, pane),
+      tmux,
+      dashboardPane: params.originPane,
+      operations,
+      paneFor: (name) => {
+        if (!backendRef.current) {
+          throw new Error("Backend not initialized");
+        }
+        return backendRef.current.paneFor(name);
+      },
+      tasks: () =>
+        Object.entries(ref.session?.config.project.tasks ?? {}).map(([key, task]) => ({
+          key,
+          name: task.name,
+        })),
+      output: (runId) => ref.session?.taskOutput.get(runId) ?? undefined,
+      reconcile: async (layout) => {
+        if (!backendRef.current) {
+          throw new Error("Backend not initialized");
+        }
+        await backendRef.current.reconcileLayout(layout);
+      },
+    });
     const backend = await TmuxSessionBackend.create({
       host: {
         tmuxSession: params.tmuxSession,
@@ -304,7 +343,16 @@ class DaemonServer implements SessionStore {
       },
       tmux,
       runtime,
-      disposeRuntime: async () => runtime.dispose(),
+      terminal,
+      disposeRuntime: async () => {
+        await operations.dispose();
+        try {
+          await terminal.dispose();
+        } finally {
+          await runtime.dispose();
+        }
+      },
+
       layout: config.project.layout,
       services: config.project.services,
       groups: config.groups,
@@ -326,7 +374,6 @@ class DaemonServer implements SessionStore {
       const focusPane = view.focusPane ?? params.originPane;
 
       // Late-bound ref so storeExecInfo closure can capture session before it's created
-      const ref: { session: Session | null } = { session: null };
       const deps: ServiceManagerDeps = {
         runtime: () => runtime,
         inspectPorts: async (pid) => createProcessInspection().detectPortsForPid(pid),
@@ -497,7 +544,7 @@ class DaemonServer implements SessionStore {
     }
     // eslint-disable-next-line prefer-await-to-callbacks -- acknowledgement follows socket flush
     socket.write(`${JSON.stringify(response)}\n`, (error) => {
-      if (!error && req.method === "subscribe" && response.error === undefined && req.session) {
+      if (!error && response.error === undefined && req.session) {
         subscription.acknowledge?.();
       }
     });
@@ -542,6 +589,14 @@ class DaemonServer implements SessionStore {
           const response = sHandler(req, this, socket);
           if (req.method === "subscribe") {
             onSubscription(session.subscriberAcknowledgement(socket));
+          } else if (
+            req.method === "session.attach" &&
+            req.params &&
+            typeof req.params === "object" &&
+            "ui" in req.params &&
+            req.params.ui === true
+          ) {
+            onSubscription(session.uiBindingAcknowledgement(socket));
           }
           return response;
         });

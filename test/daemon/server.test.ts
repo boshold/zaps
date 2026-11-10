@@ -632,6 +632,7 @@ describe("DaemonServer", () => {
           tmuxSession: "main",
           originPane: "%0",
         });
+        session.config.unavailableServices = new Map();
         const { default: net } = await import("node:net");
         const mockServer = vi.mocked(net.createServer).mock.results[0].value;
         const listener = z
@@ -661,9 +662,52 @@ describe("DaemonServer", () => {
         await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
         expect(responses[1]).toContain("invalid_request");
         callbacks[0]();
-        send("attach", "session.attach", { ui: true });
-        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(3));
-        expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+        socket.emit(
+          "data",
+          Buffer.from(
+            [
+              JSON.stringify({
+                id: "attach",
+                method: "session.attach",
+                session: session.id,
+                params: { ui: true },
+              }),
+              JSON.stringify({
+                id: "before-attach-ack",
+                method: "terminal.action",
+                session: session.id,
+                params: { action: "taskPicker" },
+              }),
+              "",
+            ].join("\n"),
+          ),
+        );
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(4));
+        expect(session.getUiBinding(socket)).toMatchObject({
+          socket,
+          sessionId: session.id,
+          acknowledged: false,
+        });
+
+        expect(responses[3]).toContain("invalid_request");
+        const oldAttachAcknowledgement = callbacks.at(2);
+        session.bindUi(socket);
+        oldAttachAcknowledgement?.();
+        expect(session.getUiBinding(socket)?.acknowledged).toBe(false);
+        send("stale-attach-ack", "terminal.action", { action: "taskPicker" });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(5));
+        expect(responses[4]).toContain("invalid_request");
+        send("fresh-attach", "session.attach", { ui: true });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(6));
+        callbacks[5]();
+        const { terminal } = session.backend;
+        if (!terminal) {
+          throw new Error("Expected terminal driver");
+        }
+        vi.spyOn(terminal, "taskPicker").mockResolvedValueOnce(null);
+        send("after-attach-ack", "terminal.action", { action: "taskPicker" });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(7));
+        expect(responses[6]).toContain('"taskKey":null');
         expect(socket.listenerCount("close")).toBe(1);
         socket.emit(event, new Error("connection lost"));
         expect(session.getUiBinding(socket)).toBeUndefined();
@@ -684,6 +728,7 @@ describe("DaemonServer", () => {
           tmuxSession: "main",
           originPane: "%0",
         });
+        session.config.unavailableServices = new Map();
         session.config.unavailableServices = new Map();
         const { default: net } = await import("node:net");
         const mockServer = vi.mocked(net.createServer).mock.results[0].value;
@@ -732,7 +777,7 @@ describe("DaemonServer", () => {
         acknowledgeReplacement?.();
         const accepted = await request("session.attach", { ui: true });
         expect(accepted).not.toContain("error");
-        expect(session.getUiBinding(socket)).toEqual({ socket, sessionId: session.id });
+        expect(session.getUiBinding(socket)).toMatchObject({ socket, sessionId: session.id });
         session.removeSubscriber(socket);
         server.stop();
       },

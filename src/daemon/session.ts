@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type net from "node:net";
 import path from "node:path";
@@ -123,6 +123,9 @@ export function sessionId(configPath: string, projectDir?: string): string {
 export interface UiBinding {
   readonly socket: net.Socket;
   readonly sessionId: string;
+  readonly socketId: string;
+  acknowledged: boolean;
+  readonly controller: AbortController;
 }
 
 export class Session {
@@ -471,6 +474,9 @@ export class Session {
    */
   public async destroy(): Promise<void> {
     this.taskExecution.close();
+    for (const binding of this.uiBindings.values()) {
+      binding.controller.abort();
+    }
     this.uiBindings.clear();
     this.acknowledgedSubscribers.clear();
     this.subscriptionRegistrations.clear();
@@ -521,6 +527,7 @@ export class Session {
    */
   public addSubscriber(socket: net.Socket): void {
     this.acknowledgedSubscribers.delete(socket);
+    this.uiBindings.get(socket)?.controller.abort();
     this.uiBindings.delete(socket);
     this.subscriptionRegistrations.set(socket, Symbol());
     this.subscribers.add(socket);
@@ -551,7 +558,29 @@ export class Session {
     if (!this.acknowledgedSubscribers.has(socket) || socket.destroyed || !socket.writable) {
       throw new Error("invalid_request");
     }
-    this.uiBindings.set(socket, { socket, sessionId: this.id });
+    this.uiBindings.get(socket)?.controller.abort();
+    this.uiBindings.set(socket, {
+      socket,
+      sessionId: this.id,
+      socketId: randomUUID(),
+      acknowledged: false,
+      controller: new AbortController(),
+    });
+  }
+
+  public uiBindingAcknowledgement(socket: net.Socket): () => void {
+    const binding = this.uiBindings.get(socket);
+    return () => {
+      if (
+        binding &&
+        this.uiBindings.get(socket) === binding &&
+        !binding.controller.signal.aborted &&
+        !socket.destroyed &&
+        this.taskExecution.accepting
+      ) {
+        binding.acknowledged = true;
+      }
+    };
   }
 
   public getUiBinding(socket: net.Socket): UiBinding | undefined {
@@ -560,6 +589,7 @@ export class Session {
 
   /** Drop socket ownership and stop polling when no subscribers remain. */
   public removeSubscriber(socket: net.Socket): void {
+    this.uiBindings.get(socket)?.controller.abort();
     this.uiBindings.delete(socket);
     this.acknowledgedSubscribers.delete(socket);
     this.subscriptionRegistrations.delete(socket);

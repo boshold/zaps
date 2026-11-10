@@ -1,0 +1,115 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
+import {
+  TmuxTerminalLeaseRegistry,
+  TmuxTerminalOperations,
+} from "#src/lib/backend/tmux/operations.js";
+import { tmuxFor } from "#src/lib/tmux.js";
+
+function fixture() {
+  const client = { name: "owned", pid: 42, sessionId: "$1", sessionName: "host", windowId: "@2" };
+  const tmux = {
+    ...tmuxFor("test-only"),
+    listClients: vi.fn(async () => [client]),
+    displayMessage: vi.fn(async (_pane: string, format: string) =>
+      format.includes("session_name") ? "$1\thost\t@2" : "$1\t@2",
+    ),
+    paneExists: vi.fn(async () => true),
+    newWindow: vi.fn(async () => "%task"),
+    splitPane: vi.fn(async () => "%split"),
+    sendKeys: vi.fn(async () => undefined),
+    killPane: vi.fn(async () => undefined),
+    selectPane: vi.fn(async () => undefined),
+    zoomPane: vi.fn(async () => undefined),
+    tmuxSupportsPopup: vi.fn(async () => false),
+    displayPopup: vi.fn(async () => undefined),
+  };
+  const operations = new TmuxTerminalOperations(
+    tmux,
+    "host",
+    "%0",
+    new TmuxTerminalLeaseRegistry(),
+  );
+  const driver = new TmuxTerminalDriver({
+    sessionId: "session",
+    sessionName: "host",
+    taskPane: vi.fn(),
+    tmux,
+    dashboardPane: "%0",
+    operations,
+    paneFor: () => "%1",
+    tasks: () => [],
+    output: () => undefined,
+    reconcile: async () => undefined,
+  });
+  return { driver, tmux, operations };
+}
+
+describe("semantic tmux driver", () => {
+  it("owns non-popup task panes without discovering a client or UI binding", async () => {
+    const f = fixture();
+    f.tmux.listClients.mockResolvedValue([]);
+    const handle = await f.driver.runTaskInPane(
+      {
+        taskKey: "build",
+        runId: "run",
+        execution: {
+          unitId: "build",
+          generation: 3,
+          command: "zaps exec-task",
+          cwd: "/project",
+          env: {},
+          placement: "default",
+          raw: false,
+        },
+      },
+      { id: "run", cwd: "/project", env: {}, signal: new AbortController().signal },
+    );
+    expect(handle).toMatchObject({ unitId: "build", generation: 3 });
+    expect(handle.id).toBeTruthy();
+    expect(f.tmux.listClients).not.toHaveBeenCalled();
+    expect(f.tmux.newWindow).toHaveBeenCalledWith("host");
+    expect(f.tmux.sendKeys).toHaveBeenCalledWith("%task", "zaps exec-task");
+    await f.driver.dispose();
+    expect(f.tmux.killPane).toHaveBeenCalledWith("%task");
+  });
+
+  it("validates the unique owning dashboard client for every focus/zoom", async () => {
+    const f = fixture();
+    await f.driver.focus({ kind: "dashboard" });
+    await f.driver.zoom({ kind: "service", name: "api" });
+    expect(f.tmux.listClients).toHaveBeenCalledTimes(2);
+    expect(f.tmux.selectPane).toHaveBeenCalledWith("%0");
+    expect(f.tmux.zoomPane).toHaveBeenCalledWith("%1");
+    f.tmux.listClients.mockResolvedValue([]);
+    await expect(f.driver.focus({ kind: "dashboard" })).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    expect(f.tmux.selectPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects stale panes before effects", async () => {
+    const f = fixture();
+    f.tmux.paneExists.mockResolvedValue(false);
+    await expect(f.driver.zoom({ kind: "service", name: "api" })).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    expect(f.tmux.zoomPane).not.toHaveBeenCalled();
+  });
+
+  it("reports missing popup support after releasing owned resources", async () => {
+    const f = fixture();
+    const operation = {
+      id: "binding",
+      cwd: "/project",
+      env: {},
+      signal: new AbortController().signal,
+    };
+    await expect(f.driver.taskPicker(operation)).rejects.toMatchObject({
+      code: "backend_unavailable",
+    });
+    await expect(f.operations.assertClientAvailable()).resolves.toBeUndefined();
+    expect(f.tmux.displayPopup).not.toHaveBeenCalled();
+  });
+});

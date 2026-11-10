@@ -154,6 +154,29 @@ const ipcErrorResponseSchema = z.strictObject({
 });
 type IpcErrorResponse = z.infer<typeof ipcErrorResponseSchema>;
 
+const terminalTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("service"), name: z.string().min(1) }),
+  z.strictObject({ kind: z.literal("dashboard") }),
+]);
+const terminalActionParamsSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("focus"), target: terminalTargetSchema }),
+  z.strictObject({ action: z.literal("zoom"), target: terminalTargetSchema }),
+  z.strictObject({ action: z.literal("editOutput"), service: z.string().min(1) }),
+  z.strictObject({ action: z.literal("taskPicker") }),
+  z.strictObject({ action: z.literal("taskOutput"), runId: z.string().min(1) }),
+]);
+const terminalActionResultSchema = z.union([
+  z.strictObject({ action: z.literal("taskPicker"), taskKey: z.string().nullable() }),
+  z.strictObject({
+    action: z.enum(["focus", "zoom", "editOutput", "taskOutput"]),
+    done: z.literal(true),
+  }),
+]);
+type TerminalActionParams = z.infer<typeof terminalActionParamsSchema>;
+type TerminalActionResult = z.infer<typeof terminalActionResultSchema>;
+export { terminalTargetSchema, terminalActionParamsSchema, terminalActionResultSchema };
+export type { TerminalActionParams, TerminalActionResult };
+
 export type {
   BackendMetadata,
   SessionCreateParams,
