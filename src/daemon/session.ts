@@ -7,6 +7,7 @@ import type { TaskRunRecord } from "#src/components/TaskRunRecord.js";
 import { computeBootSkip } from "#src/config/loader.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig, UiConfig } from "#src/config/types.js";
+import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import {
@@ -353,7 +354,11 @@ export class Session {
   private async settleStartPromise(): Promise<void> {
     const pending = this.startPromise;
     if (pending) {
-      await pending.catch(() => {
+      await abortable(
+        pending,
+        AbortSignal.timeout(7000),
+        "Startup cancellation deadline exceeded",
+      ).catch(() => {
         /* Settled — errors surfaced via stateChange */
       });
     }
@@ -391,6 +396,9 @@ export class Session {
     const loaded = await loadProjectContext(this.configPath, this.invokeDir, shellEnv, (notice) => {
       this.broadcast({ session: this.id, event: "config.notice", data: notice });
     });
+    if (!this.taskExecution.accepting) {
+      throw new Error("session_closing");
+    }
     const newConfig = loaded.config;
     if (newConfig.projectDir !== this.projectDir) {
       throw new Error("Project cwd changed. Run zaps down, then zaps up.");
@@ -398,7 +406,9 @@ export class Session {
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
+    this.manager.closeAdmission?.();
     this.manager.abortStartAll();
+    this.taskExecution.cancelPresentations();
     await this.settleStartPromise();
 
     // Stop services before detaching output observers.
@@ -446,6 +456,11 @@ export class Session {
       data: this.attachSnapshot(),
     });
 
+    if (!this.taskExecution.accepting) {
+      newManager.closeAdmission();
+      return;
+    }
+
     // 9. Start services as a tracked promise.
     this.startPromise = this.runWithContext(async () => {
       try {
@@ -462,6 +477,8 @@ export class Session {
    */
   public async destroy(): Promise<void> {
     this.taskExecution.close();
+    this.manager.closeAdmission?.();
+    this.backend.runtime.closeAdmission?.();
     for (const binding of this.uiBindings.values()) {
       binding.controller.abort();
     }
@@ -490,19 +507,33 @@ export class Session {
         }
       };
       await attempt(async () => this.manager.stopAll());
-      this.manager.disposeObservers();
+      await attempt(async () => this.manager.disposeObservers());
       await attempt(async () => this.taskExecution.dispose());
 
-      // Notify subscribers of session destruction
+      await attempt(async () => this.backend.dispose());
+      for (const [runId, info] of this.paneRunInfo) {
+        this.taskOutput.finish(runId, "error", Date.now());
+        this.pushTaskRecord({
+          runId,
+          taskKey: info.taskKey,
+          taskName: info.taskName,
+          result: "error",
+          timestamp: Date.now(),
+          mode: "pane",
+        });
+        this.broadcast({
+          session: this.id,
+          event: "task.complete",
+          data: { key: info.taskKey, name: info.taskName, result: "error", runId },
+        });
+      }
+      this.paneRunInfo.clear();
       this.broadcast({ session: this.id, event: "session.destroyed", data: null });
-
-      // Close subscriber sockets
       for (const sock of this.subscribers) {
         sock.destroy();
       }
       this.subscribers.clear();
 
-      await attempt(async () => this.backend.dispose());
       if (errors.length) {
         this.destroyFailure = new AggregateError(errors, "Session cleanup incomplete");
         throw this.destroyFailure;

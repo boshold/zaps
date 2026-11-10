@@ -50,6 +50,7 @@ type ExecutionEvent = ExecutionIdentity &
   );
 
 interface RuntimeDriver {
+  closeAdmission?(): void;
   start(spec: ExecutionSpec): Promise<ExecutionHandle>;
   stop(handle: ExecutionHandle): Promise<void>;
   isRunning(handle: ExecutionHandle): Promise<boolean>;

@@ -5,11 +5,16 @@ import path from "node:path";
 import { z } from "zod";
 
 import type { LayoutNode } from "#src/config/types.js";
+import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
 import { TerminalOperationError, editOperationCapture } from "#src/lib/backend/tmux/operations.js";
 import type {
   TerminalOperationContext,
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
+import { PaneCleanup } from "#src/lib/backend/tmux/pane-cleanup.js";
+import type { PaneOwnership } from "#src/lib/backend/tmux/pane-cleanup.js";
+import { createRawPaneLaunch } from "#src/lib/backend/tmux/raw-launch.js";
+import type { RawPaneLaunch } from "#src/lib/backend/tmux/raw-launch.js";
 import type {
   ConfiguredTaskCommand,
   ConfiguredTaskOutcome,
@@ -51,7 +56,17 @@ function layoutNode(plan: PresentationPlan): LayoutNode {
 }
 
 class TmuxTerminalDriver implements TerminalDriver {
-  private readonly taskPanes = new Map<string, { handle: ExecutionHandle; pane: string }>();
+  private readonly taskPanes = new Map<
+    string,
+    {
+      handle: ExecutionHandle;
+      pane: string;
+      ownership: Promise<PaneOwnership>;
+      launch?: RawPaneLaunch;
+      cleanup?: Promise<void>;
+    }
+  >();
+  private readonly cleanup = new PaneCleanup(createProcessInspection().getDescendantPids);
   private readonly options: DriverOptions;
   private disposed = false;
 
@@ -215,35 +230,94 @@ printf '%s' "$status" > ${shellEscape(statusFile)}`;
       unitId: spec.execution.unitId,
       generation: spec.execution.generation,
     });
-    this.taskPanes.set(handle.id, { handle, pane });
+    const ownership = this.cleanup.capture(this.options.tmux.panePid(pane));
+    this.taskPanes.set(spec.runId, { handle, pane, ownership });
     try {
+      const launch = createRawPaneLaunch(spec.execution.command, () => {
+        operation.signal.throwIfAborted();
+        if (this.disposed) {
+          throw new Error("session_closing");
+        }
+      });
+      const entry = this.taskPanes.get(spec.runId);
+      if (!entry) {
+        throw new Error("Task pane registration lost");
+      }
+      entry.launch = launch;
+      await ownership;
       operation.signal.throwIfAborted();
       if (this.disposed) {
         throw new Error("Terminal driver disposed");
       }
       this.options.taskPane(spec.runId, pane);
-      await this.options.tmux.sendKeys(pane, spec.execution.command);
+      await this.options.tmux.sendKeys(pane, `sh ${shellEscape(launch.file)}`);
+      const holder = await launch.holder();
+      await this.cleanup.registerPaneCommand(ownership, holder, async () => launch.confirm());
+      await launch.start();
       return handle;
     } catch (error) {
-      await this.options.tmux.killPane(pane);
-      this.taskPanes.delete(handle.id);
+      const errors: unknown[] = [error];
+      try {
+        await this.finishTaskPane(spec.runId);
+      } catch (cleanupError) {
+        errors.push(cleanupError);
+      }
+      try {
+        await this.options.tmux.killPane(pane);
+      } catch (cleanupError) {
+        errors.push(cleanupError);
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Task pane launch cleanup incomplete", { cause: error });
+      }
+      this.taskPanes.delete(spec.runId);
       throw error;
     }
+  }
+
+  private async finishTaskPane(runId: string): Promise<void> {
+    const entry = this.taskPanes.get(runId);
+    if (!entry) {
+      throw new Error("Unknown task pane");
+    }
+    entry.cleanup ??= (async () => {
+      await this.cleanup.stop(
+        entry.ownership,
+        async () => this.options.tmux.sendCtrlC(entry.pane),
+        async () => false,
+        () => entry.launch?.release(),
+      );
+      entry.launch?.dispose();
+    })();
+    await entry.cleanup;
   }
 
   public async dispose(): Promise<void> {
     this.disposed = true;
     const errors: unknown[] = [];
     for (const [id, entry] of this.taskPanes) {
+      let cleaned = true;
+      try {
+        await this.finishTaskPane(id);
+      } catch (error) {
+        cleaned = false;
+        errors.push(error);
+      }
       try {
         await this.options.tmux.killPane(entry.pane);
-        this.taskPanes.delete(id);
       } catch (error) {
-        if (await this.options.tmux.paneExists(entry.pane)) {
-          errors.push(error);
-        } else {
-          this.taskPanes.delete(id);
+        try {
+          if (await this.options.tmux.paneExists(entry.pane)) {
+            cleaned = false;
+            errors.push(error);
+          }
+        } catch (inspectionError) {
+          cleaned = false;
+          errors.push(error, inspectionError);
         }
+      }
+      if (cleaned) {
+        this.taskPanes.delete(id);
       }
     }
     if (errors.length) {

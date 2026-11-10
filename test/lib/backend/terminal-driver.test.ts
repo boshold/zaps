@@ -1,16 +1,34 @@
 import { execFileSync } from "node:child_process";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TmuxTerminalDriver } from "#src/lib/backend/tmux/driver.js";
 import {
   TmuxTerminalLeaseRegistry,
   TmuxTerminalOperations,
 } from "#src/lib/backend/tmux/operations.js";
+import { PaneCleanup } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
+const rawLaunch = await import("#src/lib/backend/tmux/raw-launch.js");
+
+afterEach(() => vi.restoreAllMocks());
+
 function fixture() {
+  vi.spyOn(rawLaunch, "createRawPaneLaunch").mockReturnValue({
+    file: "/owned/launch.sh",
+    started: true,
+    holder: async () => 200,
+    confirm: async () => 200,
+    start: async () => {
+      /* Held launch mock */
+    },
+    release: vi.fn(),
+    dispose: vi.fn(),
+  });
+  vi.spyOn(PaneCleanup.prototype, "registerPaneCommand").mockResolvedValue();
+  vi.spyOn(PaneCleanup.prototype, "stop").mockResolvedValue(0);
   const client = { name: "owned", pid: 42, sessionId: "$1", sessionName: "host", windowId: "@2" };
   const tmux = {
     ...tmuxFor("test-only"),
@@ -22,6 +40,7 @@ function fixture() {
     newWindow: vi.fn(async () => "%task"),
     splitPane: vi.fn(async () => "%split"),
     sendKeys: vi.fn(async () => undefined),
+    panePid: vi.fn(async () => 0),
     killPane: vi.fn(async () => undefined),
     selectPane: vi.fn(async () => undefined),
     zoomPane: vi.fn(async () => undefined),
@@ -74,10 +93,46 @@ describe("semantic tmux driver", () => {
     expect(handle.id).toBeTruthy();
     expect(f.tmux.listClients).not.toHaveBeenCalled();
     expect(f.tmux.newWindow).toHaveBeenCalledWith("host");
-    expect(f.tmux.sendKeys).toHaveBeenCalledWith("%task", "zaps exec-task");
+    expect(f.tmux.sendKeys).toHaveBeenCalledWith("%task", "sh '/owned/launch.sh'");
     await f.driver.dispose();
     expect(f.tmux.killPane).toHaveBeenCalledWith("%task");
   });
+
+  it.each([false, true])(
+    "attempts every owned group and pane despite cleanup/probe failures (%s)",
+    async (probeFails) => {
+      const f = fixture();
+      f.tmux.newWindow.mockResolvedValueOnce("%first").mockResolvedValueOnce("%second");
+      for (const runId of ["first", "second"]) {
+        await f.driver.runTaskInPane(
+          {
+            taskKey: runId,
+            runId,
+            execution: {
+              unitId: runId,
+              generation: 1,
+              command: "task",
+              cwd: "/project",
+              env: {},
+              placement: "default",
+              raw: false,
+            },
+          },
+          { id: runId, cwd: "/project", env: {}, signal: new AbortController().signal },
+        );
+      }
+      vi.mocked(PaneCleanup.prototype.stop).mockRejectedValueOnce(new Error("group stop failed"));
+      f.tmux.killPane.mockRejectedValueOnce(new Error("pane close failed"));
+      if (probeFails) {
+        f.tmux.paneExists.mockRejectedValueOnce(new Error("pane probe failed"));
+      }
+      await expect(f.driver.dispose()).rejects.toThrow("Task pane cleanup incomplete");
+      expect(PaneCleanup.prototype.stop).toHaveBeenCalledTimes(2);
+      expect(f.tmux.killPane.mock.calls).toEqual([["%first"], ["%second"]]);
+      await expect(f.driver.dispose()).rejects.toThrow("Task pane cleanup incomplete");
+      expect(f.tmux.killPane.mock.calls.at(-1)).toEqual(["%first"]);
+    },
+  );
 
   it("validates the unique owning dashboard client for every focus/zoom", async () => {
     const f = fixture();

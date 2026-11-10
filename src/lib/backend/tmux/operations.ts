@@ -474,20 +474,38 @@ class TmuxTerminalOperations {
   }
 
   public async cancelOwner(owner: TerminalOwner): Promise<void> {
-    await Promise.all(
+    const results = await Promise.allSettled(
       [...this.leases.values()]
         .filter((lease) => lease.manager === this.manager && sameOwner(owner, lease.owner))
         .map(async (lease) => settleLease(lease)),
     );
+    const failures = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Terminal operation cleanup incomplete");
+    }
   }
 
   public async dispose(): Promise<void> {
     this.closed = true;
-    await Promise.all(
+    const results = await Promise.allSettled(
       [...this.leases.values()]
         .filter((lease) => lease.manager === this.manager)
         .map(async (lease) => settleLease(lease)),
     );
+    const failures = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason);
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Terminal operation cleanup incomplete");
+    }
   }
 }
 

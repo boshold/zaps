@@ -80,7 +80,7 @@ interface DisplayPopupOptions {
 function createTmux(resolveSocket: () => string | null) {
   function socketArgs(): string[] {
     const socket = resolveSocket();
-    return socket ? ["-L", socket] : [];
+    return socket ? ["-u", "-L", socket] : ["-u"];
   }
 
   async function run(args: string[], raw = false): Promise<string> {

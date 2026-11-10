@@ -584,7 +584,7 @@ export const sessionHandlers: Record<
       task.sentra,
       key,
     );
-    const env = { ...sentraEnv, ...resolveEnv(task.env, serviceCtx) };
+    const env = { ...session.env, ...sentraEnv, ...resolveEnv(task.env, serviceCtx) };
     session.paneRunInfo.set(runId, {
       command: joinTaskCommands(resolvedCommands),
       cwd,
@@ -658,6 +658,9 @@ export const sessionHandlers: Record<
     }
     const { runId } = req.params as { runId: string };
     const info = session.paneRunInfo.get(runId);
+    if (!session.taskExecution.accepting) {
+      return ipcErr(req.id, "session_closing");
+    }
     if (!info) {
       return ipcErr(req.id, "not_found");
     }
@@ -666,7 +669,7 @@ export const sessionHandlers: Record<
     return ipcOk(req.id, {
       command: info.command,
       cwd: info.cwd,
-      env: { ...session.env, ...info.env },
+      env: { ...info.env },
     });
   },
 

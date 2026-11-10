@@ -536,6 +536,28 @@ describe("Session", () => {
       expect(vi.mocked(manager.stopAll)).toHaveBeenCalled();
     });
 
+    it("closes service/process admission synchronously and attempts every cleanup after failures", async () => {
+      const closeManager = vi.fn();
+      Object.assign(manager, { closeAdmission: closeManager });
+      const closeRuntime = vi.fn();
+      Object.assign(session.backend.runtime, { closeAdmission: closeRuntime });
+      vi.mocked(manager.stopAll).mockRejectedValueOnce(new Error("service stop failed"));
+      const taskDisposal = vi
+        .spyOn(session.taskExecution, "dispose")
+        .mockRejectedValueOnce(new Error("task cleanup failed"));
+      const backendDisposal = vi
+        .spyOn(session.backend, "dispose")
+        .mockRejectedValueOnce(new Error("host cleanup failed"));
+      const pending = session.destroy();
+      expect(closeManager).toHaveBeenCalledOnce();
+      expect(closeRuntime).toHaveBeenCalledOnce();
+      expect(session.taskExecution.accepting).toBe(false);
+      await expect(pending).rejects.toThrow("Session cleanup incomplete");
+      expect(taskDisposal).toHaveBeenCalledOnce();
+      expect(backendDisposal).toHaveBeenCalledOnce();
+      await expect(session.destroy()).rejects.toThrow("Session cleanup incomplete");
+    });
+
     it("is idempotent — a second destroy does not tear down again", async () => {
       await session.destroy();
       await session.destroy();

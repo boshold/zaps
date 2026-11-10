@@ -160,6 +160,7 @@ export class ProcessRunner {
   private readonly units = new Map<string, ExecutionHandle>();
   private readonly deps;
   private disposed = false;
+  private admissionClosed = false;
   private readonly listeners = new Set<(event: ExecutionEvent) => void>();
 
   public constructor(deps: ProcessRunnerDeps) {
@@ -187,9 +188,14 @@ export class ProcessRunner {
   public admits(authority?: ProcessAuthority): boolean {
     return (
       !this.disposed &&
+      !this.admissionClosed &&
       this.deps.admit?.() !== false &&
       (!this.deps.admission || this.deps.admission.allows(authority))
     );
+  }
+
+  public closeAdmission(): void {
+    this.admissionClosed = true;
   }
 
   public spawnOwned(opts: ProcessSpawnOptions): ExecutionHandle {

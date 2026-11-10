@@ -15,7 +15,12 @@ import type {
   RuntimeDriver,
 } from "#src/lib/backend/types.js";
 
-import type { LibraryActions, ResolvedConfig, ServiceConfig } from "../../../src/config/types.js";
+import type {
+  LibraryActions,
+  ResolvedConfig,
+  ServiceConfig,
+  TaskRunContext,
+} from "../../../src/config/types.js";
 import { ProcessRunner } from "../../../src/lib/backend/runtime/process-runner.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
 import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
@@ -5139,5 +5144,169 @@ describe("neutral runtime launch", () => {
       state: "error",
       lastError: "Process inspection ss: unavailable",
     });
+  });
+});
+
+describe("cancellable lifecycle hooks", () => {
+  it("bounds the actual onStop task scope and revokes its retained callback", async () => {
+    let actions: LibraryActions | undefined;
+    let cleanupContext: TaskRunContext | undefined;
+    const config = makeConfig(
+      {},
+      {
+        onStop: async () => {
+          await actions?.runTask("cleanup");
+          await new Promise<void>(() => {
+            /* Pending hook */
+          });
+        },
+      },
+    );
+    config.project.tasks = {
+      cleanup: {
+        name: "Cleanup",
+        run: async (ctx) => {
+          cleanupContext = ctx;
+          await ctx.exec("cleanup");
+        },
+      },
+    };
+    config.bindActions = (bound) => {
+      actions = bound;
+    };
+    const deps = createMockDeps();
+    const manager = new ServiceManager(config, {}, deps, "test");
+    const execute = vi.fn(async () => ({ success: true, exitCode: 0, output: [] }));
+    const owner = new TaskExecutionService(
+      { id: "test", config, env: {}, manager, deps, broadcast: vi.fn() },
+      () => ({ execute }),
+    );
+    taskOwners.push(owner);
+    owner.bindManager(manager);
+    owner.close();
+    manager.closeAdmission();
+    try {
+      const stopping = manager.stopAll();
+      const expired = expect(stopping).rejects.toThrow("Service cleanup incomplete");
+      await vi.advanceTimersByTimeAsync(7000);
+      await expired;
+      expect(execute).toHaveBeenCalledOnce();
+      if (!cleanupContext) {
+        throw new Error("Cleanup task did not start");
+      }
+      await expect(cleanupContext.exec("after scope")).rejects.toThrow("session_closing");
+      await expect(actions?.runTask("cleanup")).rejects.toThrow("session_closing");
+    } finally {
+      manager.disposeObservers();
+    }
+  });
+
+  it.each(["onBeforeStart", "onStart"] as const)(
+    "detaches pending global %s on abort",
+    async (hookName) => {
+      let entered = false;
+      let rejectHook: (error: Error) => void = () => {
+        throw new Error("Hook not entered");
+      };
+      const manager = new ServiceManager(
+        makeConfig(
+          {},
+          {
+            [hookName]: async () => {
+              entered = true;
+              await new Promise<void>((_resolve, reject) => {
+                rejectHook = reject;
+              });
+            },
+          },
+        ),
+        {},
+        createMockDeps(),
+        "test",
+      );
+      try {
+        const startup = manager.startAll();
+        await vi.waitFor(() => expect(entered).toBe(true));
+        manager.abortStartAll();
+        await startup;
+        await manager.stopAll();
+        rejectHook(new Error("late rejection"));
+      } finally {
+        manager.closeAdmission();
+        manager.disposeObservers();
+      }
+    },
+  );
+
+  it("releases a suspended readiness callback when service startup is cancelled", async () => {
+    let entered = false;
+    let rejectReady: (error: Error) => void = () => {
+      throw new Error("Readiness not entered");
+    };
+    const config = makeConfig({
+      worker: {
+        start: "worker",
+        ready: async () => {
+          entered = true;
+          return await new Promise<boolean>((_resolve, reject) => {
+            rejectReady = reject;
+          });
+        },
+      },
+    });
+    const manager = new ServiceManager(config, makePaneMap(["worker"]), createMockDeps(), "test");
+    try {
+      const startup = manager.startService("worker");
+      await vi.waitFor(() => expect(entered).toBe(true));
+      manager.closeAdmission();
+      await startup;
+      await manager.stopAll();
+      rejectReady(new Error("late readiness rejection"));
+    } finally {
+      manager.closeAdmission();
+      manager.disposeObservers();
+    }
+  });
+
+  it("releases a service hook wait without blocking an unrelated service or stop", async () => {
+    let entered = false;
+    let resume: () => void = () => {
+      throw new Error("Hook not entered");
+    };
+    const config = makeConfig({
+      blocked: {
+        start: "blocked",
+        onBeforeStart: async () => {
+          entered = true;
+          await new Promise<void>((resolve) => {
+            resume = resolve;
+          });
+        },
+      },
+      other: { start: "other" },
+    });
+    const manager = new ServiceManager(
+      config,
+      makePaneMap(["blocked", "other"]),
+      createMockDeps(),
+      "test",
+    );
+    try {
+      const startup = manager.startService("blocked");
+      await vi.waitFor(() => expect(entered).toBe(true));
+      await manager.startService("other");
+      expect(manager.getStatus("other").state).toBe("ready");
+      await manager.stopService("blocked");
+      await startup;
+      manager.closeAdmission();
+      await expect(manager.startService("blocked")).rejects.toThrow("session_closing");
+      await expect(manager.restartService("other")).rejects.toThrow("session_closing");
+      resume();
+      await manager.stopAll();
+    } finally {
+      resume();
+      manager.closeAdmission();
+      manager.disposeObservers();
+    }
   });
 });

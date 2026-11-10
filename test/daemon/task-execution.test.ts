@@ -109,6 +109,39 @@ it("registers synchronously before closing, rejects later admission without hist
   await expect(owner.run("build", options)).rejects.toThrow("session_closing");
 });
 
+it("settles a suspended callback once on disposal and denies its later effects", async () => {
+  const entered = deferred<TaskRunContext>();
+  const release = deferred<void>();
+  const { owner, session, options, execute } = setup({
+    suspended: {
+      name: "Suspended",
+      run: async (ctx) => {
+        entered.resolve(ctx);
+        await release.promise;
+        ctx.stdout.write("late output");
+        await ctx.exec("late child");
+      },
+    },
+  });
+  const pending = owner.run("suspended", options);
+  const context = await entered.promise;
+  const runId = owner.history[0]?.runId;
+  await owner.dispose();
+  await expect(pending).resolves.toEqual({ success: false, runId });
+  await expect(context.exec("after sweep")).rejects.toThrow("session_closing");
+  release.resolve(undefined);
+  await Promise.resolve();
+  expect(execute).not.toHaveBeenCalled();
+  expect(
+    session.broadcast.mock.calls.filter(([event]) => event.event === "task.complete"),
+  ).toHaveLength(1);
+  expect(owner.history).toHaveLength(1);
+  if (!runId) {
+    throw new Error("Missing run ID");
+  }
+  expect(owner.output.get(runId)?.lines).toEqual([]);
+});
+
 it("retains captured config/cwd/env and stable output after manager replacement", async () => {
   const entered = deferred<TaskRunContext>();
   const resume = deferred<void>();
@@ -404,11 +437,16 @@ describe("private stop-hook cleanup admission", () => {
       },
     });
     owner.close();
-    await stopHook(async () => {
+    const pending = stopHook(async () => {
       await owner.actions.runTask("cleanup");
-      await vi.advanceTimersByTimeAsync(7000);
-      await expect(lateExec?.("expired")).rejects.toThrow("session_closing");
+      await new Promise<void>(() => {
+        /* Pending callback */
+      });
     });
+    const expired = expect(pending).rejects.toThrow("onStop cleanup deadline exceeded");
+    await vi.advanceTimersByTimeAsync(7000);
+    await expired;
+    await expect(lateExec?.("expired")).rejects.toThrow("session_closing");
     expect(execute).not.toHaveBeenCalled();
   });
 });

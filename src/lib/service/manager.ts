@@ -6,6 +6,7 @@ import type {
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
+import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
   buildDockerCommand,
@@ -157,6 +158,22 @@ async function fireHook(
   }
 }
 
+async function waitForHook(
+  hook: (() => void | Promise<void>) | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!hook || signal.aborted) {
+    return;
+  }
+  try {
+    await abortable(fireHook(hook), signal, "Service startup cancelled");
+  } catch (error) {
+    if (!signal.aborted) {
+      throw error;
+    }
+  }
+}
+
 /**
  * Drive a service's `onOutput` hook per non-empty line. Errors are
  * swallowed — `onOutput` must never crash the service (E4).
@@ -203,6 +220,8 @@ export class ServiceManager extends EventEmitter {
   private readonly session: string;
   private shuttingDown = false;
   private startAllPromise: Promise<void> | null = null;
+  private admissionClosed = false;
+  private startupCancellation = new AbortController();
   private stopAllPromise: Promise<void> | null = null;
   /** Cooperative-abort flag for an in-flight `startAll` (reload/destroy). */
   private startAllAborted = false;
@@ -334,6 +353,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   public async startAll(): Promise<void> {
+    this.assertAdmission();
     this.startAllPromise ??= this.runStartAll();
     await this.startAllPromise;
   }
@@ -345,7 +365,19 @@ export class ServiceManager extends EventEmitter {
    * Bumps every monitor generation so active crash/output monitors don't survive
    * the subsequent config swap (A5).
    */
+  public closeAdmission(): void {
+    this.admissionClosed = true;
+    this.abortStartAll();
+  }
+
+  private assertAdmission(): void {
+    if (this.admissionClosed) {
+      throw new Error("session_closing");
+    }
+  }
+
   public abortStartAll(): void {
+    this.startupCancellation.abort();
     this.startAllAborted = true;
     for (const controller of this.abortControllers.values()) {
       controller.abort();
@@ -357,6 +389,7 @@ export class ServiceManager extends EventEmitter {
 
   private async runStartAll(): Promise<void> {
     this.startAllAborted = false;
+    this.startupCancellation = new AbortController();
     try {
       await this.startAllServices();
     } finally {
@@ -367,7 +400,7 @@ export class ServiceManager extends EventEmitter {
   private async startAllServices(): Promise<void> {
     const { services, hooks } = this.config.project;
 
-    await fireHook(hooks?.onBeforeStart);
+    await waitForHook(hooks?.onBeforeStart, this.startupCancellation.signal);
 
     // Filter to autostart services
     const autostartServices: Record<string, { dependsOn?: string[] }> = {};
@@ -415,7 +448,7 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    await fireHook(hooks?.onStart);
+    await waitForHook(hooks?.onStart, this.startupCancellation.signal);
   }
 
   /**
@@ -479,7 +512,11 @@ export class ServiceManager extends EventEmitter {
     }
 
     if (hooks?.onStop) {
-      await this.runStopHook(hooks.onStop);
+      try {
+        await this.runStopHook(hooks.onStop);
+      } catch (error) {
+        failures.push(error);
+      }
     }
 
     if (failures.length > 0) {
@@ -516,6 +553,7 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
+    this.assertAdmission();
     return this.withMemberStart(name, async () => this.startServiceWithPane(name, satisfiedDeps));
   }
 
@@ -605,6 +643,7 @@ export class ServiceManager extends EventEmitter {
     satisfiedDeps?: ReadonlySet<string>,
     dockerOperation?: "restart",
   ): Promise<ServiceActionResult> {
+    this.assertAdmission();
     const serviceConfig = this.config.project.services[name];
     const status = this.statuses.get(name);
 
@@ -622,6 +661,7 @@ export class ServiceManager extends EventEmitter {
     if (!serviceConfig._combined) {
       await this.stopRuntimeExecution(name);
     }
+    this.assertAdmission();
     this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
     // Create abort controller for this service
@@ -635,7 +675,7 @@ export class ServiceManager extends EventEmitter {
 
     // Fire per-service onBeforeStart hook
     try {
-      await serviceConfig.onBeforeStart?.();
+      await waitForHook(serviceConfig.onBeforeStart, controller.signal);
     } catch (error) {
       status.lastError = `onBeforeStart hook failed: ${error instanceof Error ? error.message : String(error)}`;
       this.emit("stateChange", name, status);
@@ -787,6 +827,7 @@ export class ServiceManager extends EventEmitter {
     if (serviceConfig.docker) {
       await this.warnLegacyDockerProject(serviceConfig, cwd);
     }
+    this.assertAdmission();
     const generation = (this.unitGenerations.get(name) ?? 0) + 1;
     this.unitGenerations.set(name, generation);
     const execution: OwnedExecution = {
@@ -960,10 +1001,10 @@ export class ServiceManager extends EventEmitter {
     const isCurrent = (): boolean =>
       !controller.signal.aborted && this.lifecycleEpochs.get(name) === epoch;
     try {
-      const readyPorts = await waitForReady(
-        resolveReadyConfig(serviceConfig),
+      const readyPorts = await abortable(
+        waitForReady(resolveReadyConfig(serviceConfig), controller.signal, target.readyDeps),
         controller.signal,
-        target.readyDeps,
+        "Service readiness cancelled",
       );
 
       if (!isCurrent()) {
@@ -1104,7 +1145,10 @@ export class ServiceManager extends EventEmitter {
     this.emit("stateChange", name, status);
 
     try {
-      await serviceConfig.onReady?.();
+      const signal = this.abortControllers.get(name)?.signal;
+      if (signal) {
+        await waitForHook(serviceConfig.onReady, signal);
+      }
     } catch (error) {
       if (!isCurrent()) {
         return;
@@ -1293,6 +1337,7 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
+    this.assertAdmission();
     return this.withMemberStart(name, async () => this.restartServiceWithPane(name));
   }
 
@@ -1323,6 +1368,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   private async runServiceRestart(name: string): Promise<void> {
+    this.assertAdmission();
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);

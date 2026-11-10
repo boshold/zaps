@@ -89,6 +89,24 @@ describe("ProcessRunner ownership lifecycle", () => {
     await runner.dispose();
   });
 
+  it("closes normal admission before a delayed registration can release its payload", async () => {
+    const h = harness();
+    let release: (() => void) | undefined;
+    const registered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const runner = new ProcessRunner({ ...h.deps, record: async () => registered });
+    runner.spawnOwned(spec);
+    runner.closeAdmission();
+    expect(() => runner.spawnOwned({ ...spec, unitId: "late" })).toThrow("session_closing");
+    release?.();
+    await vi.waitFor(() => expect(h.gate.destroyed).toBe(true));
+    expect(h.gate.readableLength).toBe(0);
+    h.live.clear();
+    h.child.emit("exit", 125, null);
+    await runner.dispose();
+  });
+
   it("rejects replacement and admission after disposal", async () => {
     const h = harness();
     const runner = new ProcessRunner(h.deps);

@@ -178,6 +178,7 @@ interface PaneExecution {
 }
 
 class TmuxRuntime implements RuntimeDriver {
+  private admissionClosed = false;
   private readonly records = new Map<string, PaneExecution>();
   private readonly current = new Map<string, string>();
   private readonly paneBaselines = new Map<string, string[]>();
@@ -199,7 +200,19 @@ class TmuxRuntime implements RuntimeDriver {
     this.cleanup = new PaneCleanup(this.getDescendantPids, options);
   }
 
+  public closeAdmission(): void {
+    this.admissionClosed = true;
+    this.options.processes.closeAdmission();
+  }
+
+  private assertAdmission(): void {
+    if (this.admissionClosed) {
+      throw new Error("session_closing");
+    }
+  }
+
   public async start(spec: ExecutionSpec): Promise<ExecutionHandle> {
+    this.assertAdmission();
     if (spec.placement === "background") {
       return this.options.processes.spawnOwned({ ...spec, authority: this.options.authority });
     }
@@ -234,10 +247,12 @@ class TmuxRuntime implements RuntimeDriver {
         },
         false,
         async (pid, memberPid) => {
+          this.assertAdmission();
           if (record.stopping || this.lookup(handle) !== record) {
             throw new Error("Wrapper launch cancelled");
           }
           await this.cleanup.register(record.ownership, pid, memberPid);
+          this.assertAdmission();
           if (record.stopping || this.lookup(handle) !== record) {
             throw new Error("Wrapper launch cancelled");
           }
@@ -276,6 +291,7 @@ class TmuxRuntime implements RuntimeDriver {
         record.rawLaunch = (this.options.rawLaunch ?? createRawPaneLaunch)(
           spec.command,
           () => {
+            this.assertAdmission();
             if (record.stopping || this.lookup(handle) !== record) {
               throw new Error("Raw launch cancelled");
             }
@@ -290,6 +306,7 @@ class TmuxRuntime implements RuntimeDriver {
               .join(" ")} ${shellEscape(shell)} ${shellEscape(rawFile)}`;
       }
       await record.ownership;
+      this.assertAdmission();
       dispatched = true;
       await this.options.tmux.sendKeys(pane, command);
       await this.activateRaw(record);
@@ -355,6 +372,7 @@ class TmuxRuntime implements RuntimeDriver {
   }
 
   public async dispose(): Promise<void> {
+    this.closeAdmission();
     const results = await Promise.allSettled([
       ...[...this.records.values()].map(async (record) => this.stop(record.handle)),
       this.options.processes.dispose(),

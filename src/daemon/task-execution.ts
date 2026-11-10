@@ -7,6 +7,7 @@ import type {
   SentraConfig,
   TaskConfig,
 } from "#src/config/types.js";
+import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { OwnedCommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { ProcessAdmission, ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
@@ -177,10 +178,14 @@ class TaskExecutionService {
     if (this.state === "active") {
       this.state = "closing";
       this.admission.close();
-      for (const run of this.activeRuns.values()) {
-        if (run.authority === this.admission.normal) {
-          run.presentationCancellation.abort();
-        }
+      this.cancelPresentations();
+    }
+  }
+
+  public cancelPresentations(): void {
+    for (const run of this.activeRuns.values()) {
+      if (run.authority === this.admission.normal) {
+        run.presentationCancellation.abort();
       }
     }
   }
@@ -195,7 +200,11 @@ class TaskExecutionService {
   private async withStopHook(hook: () => void | Promise<void>): Promise<void> {
     const scope = this.admission.createCleanupScope(Date.now() + CLEANUP_SCOPE_MS);
     try {
-      await this.cleanupContext.run(scope.authority, hook);
+      await abortable(
+        Promise.resolve(this.cleanupContext.run(scope.authority, hook)),
+        scope.authority.signal,
+        "onStop cleanup deadline exceeded",
+      );
     } finally {
       scope.revoke();
     }
@@ -306,43 +315,54 @@ class TaskExecutionService {
     };
     let success = false;
     try {
-      success = await this.modeContext.run(context.mode, async () =>
-        runWithEnvironment(context.env, async () =>
-          runTaskWithDeps(
-            key,
-            {
-              tasks,
-              statuses,
-              projectDir: context.cwd,
-              services: context.services,
-              env: context.env,
-              commandExecutor,
-              mode: context.mode,
-              assertAdmission: () => this.assertAdmission(authority),
-              presentation,
-              sentra,
-              sentraConfig: context.sentraConfig,
-              onLine: (_key, line) => {
-                this.output.append(run.runId, line);
-                try {
-                  context.onLine?.(line);
-                } catch {
-                  /* Request sinks may disconnect. */
-                }
+      success = await abortable(
+        this.modeContext.run(context.mode, async () =>
+          runWithEnvironment(context.env, async () =>
+            runTaskWithDeps(
+              key,
+              {
+                tasks,
+                statuses,
+                projectDir: context.cwd,
+                services: context.services,
+                env: context.env,
+                commandExecutor,
+                mode: context.mode,
+                assertAdmission: () => this.assertAdmission(authority),
+                presentation,
+                sentra,
+                sentraConfig: context.sentraConfig,
+                onLine: (_key, line) => {
+                  if (!this.activeRuns.has(run.runId)) {
+                    return;
+                  }
+                  this.output.append(run.runId, line);
+                  try {
+                    context.onLine?.(line);
+                  } catch {
+                    /* Request sinks may disconnect. */
+                  }
+                },
+                onProgress: (taskKey, result) => {
+                  try {
+                    context.onProgress?.(taskKey, result);
+                  } catch {
+                    /* Request sinks may disconnect. */
+                  }
+                },
               },
-              onProgress: (taskKey, result) => {
-                try {
-                  context.onProgress?.(taskKey, result);
-                } catch {
-                  /* Request sinks may disconnect. */
-                }
-              },
-            },
-            new Set(),
-            new Map(),
+              new Set(),
+              new Map(),
+            ),
           ),
         ),
+        authority.signal,
+        "Task cancelled",
       );
+    } catch (error) {
+      if (!authority.signal.aborted) {
+        throw error;
+      }
     } finally {
       const result = success ? "success" : "error";
       this.output.finish(run.runId, result, Date.now());
