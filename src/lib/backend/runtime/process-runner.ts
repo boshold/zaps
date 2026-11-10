@@ -35,6 +35,13 @@ interface ProcessRunnerDeps {
   wait?: (ms: number) => Promise<void>;
   diagnostic?: (message: string) => void;
 }
+class CleanupDeadlineError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "CleanupDeadlineError";
+  }
+}
+
 interface OwnedProcess {
   handle: ExecutionHandle;
   child: ChildProcess;
@@ -47,6 +54,8 @@ interface OwnedProcess {
   exited: boolean;
   finalized: boolean;
   unexpected: boolean;
+  gateReleased: boolean;
+  childCompleted: boolean;
   stdout: string;
   stderr: string;
   lines: string[];
@@ -109,6 +118,8 @@ export class ProcessRunner {
       exited: false,
       finalized: false,
       unexpected: false,
+      gateReleased: false,
+      childCompleted: false,
       stdout: "",
       stderr: "",
       lines: [],
@@ -121,17 +132,28 @@ export class ProcessRunner {
     child.stderr?.on("data", (chunk: Buffer) => {
       this.output(proc, "stderr", chunk);
     });
-    const exited = () => {
+    const exited = (completed: boolean) => {
+      proc.childCompleted ||= completed;
+      if (proc.finalized) {
+        return;
+      }
       if (proc.exited) {
+        if (!proc.gateReleased && completed) {
+          void this.stopObserved(handle);
+        }
         return;
       }
       proc.exited = true;
-      proc.unexpected = !proc.stopping;
+      proc.unexpected ||= !proc.stopping;
       clearTimeout(proc.monitor);
       void this.stopObserved(handle);
     };
-    child.on("exit", exited);
-    child.on("error", exited);
+    child.on("exit", () => {
+      exited(true);
+    });
+    child.on("error", () => {
+      exited(proc.pid <= 0);
+    });
     proc.ready = this.register(proc);
     void this.observeRegistration(proc);
     return handle;
@@ -150,6 +172,7 @@ export class ProcessRunner {
       await proc.ready;
     } catch (error) {
       this.deps.diagnostic(`Process registration failed: ${String(error)}`);
+      proc.unexpected ||= !proc.stopping;
       await this.stopObserved(proc.handle);
     }
   }
@@ -182,7 +205,10 @@ export class ProcessRunner {
     if (proc.pid <= 0) {
       return;
     }
-    const identity = await ProcessRunner.probe(this.deps.readProcessIdentity(proc.pid));
+    const identity = await this.probe(async () => this.deps.readProcessIdentity(proc.pid));
+    if (proc.finalized) {
+      return;
+    }
     if (
       !identity ||
       identity.pid !== proc.pid ||
@@ -194,7 +220,7 @@ export class ProcessRunner {
     }
     proc.identity = identity;
     proc.members.set(identity.pid, identity);
-    await ProcessRunner.probe(Promise.resolve(this.deps.record?.(proc.pid)));
+    await this.probe(async () => this.deps.record?.(proc.pid));
     await this.refresh(proc);
     const gate = ProcessRunner.gate(proc);
     gate?.on("error", () => {
@@ -203,7 +229,11 @@ export class ProcessRunner {
     if (proc.stopping || proc.exited || this.disposed || this.deps.admit?.() === false) {
       gate?.destroy();
     } else {
-      gate?.end("run\n");
+      if (!gate) {
+        throw new Error("Missing payload gate");
+      }
+      proc.gateReleased = true;
+      gate.end("run\n");
       this.monitor(proc);
     }
   }
@@ -217,40 +247,65 @@ export class ProcessRunner {
     }, 25);
   }
 
-  private static async probe<T>(operation: Promise<T>): Promise<T> {
+  private async probe<T>(operation: () => Promise<T>, deadline = Infinity): Promise<T> {
+    const remaining = deadline - this.deps.now();
+    if (remaining <= 0) {
+      throw new CleanupDeadlineError("Process cleanup deadline exceeded");
+    }
     let timer: ReturnType<typeof setTimeout> | undefined = undefined;
     try {
-      return await Promise.race([
-        operation,
+      const result = await Promise.race([
+        operation(),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
-            reject(new Error("Process inspection timed out"));
-          }, 1000);
+          timer = setTimeout(
+            () => {
+              reject(
+                remaining <= 1000
+                  ? new CleanupDeadlineError("Process cleanup deadline exceeded")
+                  : new Error("Process inspection timed out"),
+              );
+            },
+            Math.min(1000, remaining),
+          );
         }),
       ]);
+      if (this.deps.now() > deadline) {
+        throw new CleanupDeadlineError("Process cleanup deadline exceeded");
+      }
+      return result;
     } finally {
       clearTimeout(timer);
     }
   }
 
-  private async refresh(proc: OwnedProcess): Promise<ProcessIdentity[]> {
+  private async refresh(proc: OwnedProcess, deadline = Infinity): Promise<ProcessIdentity[]> {
     if (!proc.identity) {
       if (proc.pid <= 0) {
         return [];
       }
       throw new Error(`Unresolved ownership for ${proc.pid}`);
     }
+    const { identity } = proc;
     const live: ProcessIdentity[] = [];
     for (const member of proc.members.values()) {
-      const actual = await ProcessRunner.probe(this.deps.readProcessIdentity(member.pid));
+      const actual = await this.probe(
+        async () => this.deps.readProcessIdentity(member.pid),
+        deadline,
+      );
       if (actual && sameProcess(member, actual)) {
         live.push(actual);
       }
     }
-    const candidates = await ProcessRunner.probe(this.deps.getProcessMembers(proc.identity));
+    const candidates = await this.probe(
+      async () => this.deps.getProcessMembers(identity),
+      deadline,
+    );
     const [anchor] = live;
     if (anchor) {
-      const actual = await ProcessRunner.probe(this.deps.readProcessIdentity(anchor.pid));
+      const actual = await this.probe(
+        async () => this.deps.readProcessIdentity(anchor.pid),
+        deadline,
+      );
       if (!actual || !sameProcess(anchor, actual)) {
         if (candidates.length) {
           throw new Error("Lost ownership anchor");
@@ -275,12 +330,23 @@ export class ProcessRunner {
     return live;
   }
 
-  private async signal(proc: OwnedProcess, signal: NodeJS.Signals): Promise<void> {
-    const members = await this.refresh(proc);
+  private async signal(
+    proc: OwnedProcess,
+    signal: NodeJS.Signals,
+    deadline: number,
+  ): Promise<void> {
+    const members =
+      signal === "SIGKILL" ? [...proc.members.values()] : await this.refresh(proc, deadline);
     const results = await Promise.allSettled(
       members.map(async (member) => {
-        const actual = await ProcessRunner.probe(this.deps.readProcessIdentity(member.pid));
+        const actual = await this.probe(
+          async () => this.deps.readProcessIdentity(member.pid),
+          deadline,
+        );
         if (actual && sameProcess(member, actual)) {
+          if (this.deps.now() >= deadline) {
+            throw new CleanupDeadlineError("Process cleanup deadline exceeded");
+          }
           try {
             this.deps.kill(member.pid, signal);
           } catch (error) {
@@ -320,31 +386,52 @@ export class ProcessRunner {
   }
 
   private async cleanup(proc: OwnedProcess): Promise<void> {
+    const termDeadline = this.deps.now() + STOP_GRACE_MS;
+    const killDeadline = termDeadline + KILL_WAIT_MS;
     try {
-      await proc.ready;
+      await this.probe(async () => proc.ready, termDeadline);
     } catch {
       /* Clean up even when registration failed. */
     }
     ProcessRunner.gate(proc)?.destroy();
-    await this.signal(proc, "SIGTERM");
-    if (!(await this.waitForExit(proc, STOP_GRACE_MS))) {
-      await this.signal(proc, "SIGKILL");
-      if (!(await this.waitForExit(proc, KILL_WAIT_MS))) {
-        throw new Error("Owned members survived SIGKILL");
+    if (!proc.gateReleased && !proc.identity) {
+      while (!proc.childCompleted) {
+        const remaining = termDeadline - this.deps.now();
+        if (remaining <= 0) {
+          throw new Error(`Unresolved ownership for ${proc.pid}`);
+        }
+        await this.deps.wait(Math.min(25, remaining));
+      }
+      this.finish(proc);
+      return;
+    }
+    if (!(proc.childCompleted && !proc.gateReleased)) {
+      await this.signal(proc, "SIGTERM", termDeadline);
+      if (!(await this.waitForExit(proc, termDeadline))) {
+        await this.signal(proc, "SIGKILL", killDeadline);
+        if (!(await this.waitForExit(proc, killDeadline))) {
+          throw new Error("Owned members survived SIGKILL or cleanup verification deadline");
+        }
       }
     }
     if (proc.pid > 0) {
-      await ProcessRunner.probe(Promise.resolve(this.deps.unrecord?.(proc.pid)));
+      await this.probe(async () => this.deps.unrecord?.(proc.pid), killDeadline);
     }
     this.finish(proc);
   }
 
-  private async waitForExit(proc: OwnedProcess, duration: number): Promise<boolean> {
-    const deadline = this.deps.now() + duration;
-    while (true) {
-      const members = await this.refresh(proc);
-      if (members.length === 0) {
-        return true;
+  private async waitForExit(proc: OwnedProcess, deadline: number): Promise<boolean> {
+    while (this.deps.now() < deadline) {
+      try {
+        const members = await this.refresh(proc, deadline);
+        if (members.length === 0) {
+          return true;
+        }
+      } catch (error) {
+        if (error instanceof CleanupDeadlineError) {
+          return false;
+        }
+        throw error;
       }
       const remaining = deadline - this.deps.now();
       if (remaining <= 0) {
@@ -352,6 +439,7 @@ export class ProcessRunner {
       }
       await this.deps.wait(Math.min(25, remaining));
     }
+    return false;
   }
 
   private finish(proc: OwnedProcess): void {

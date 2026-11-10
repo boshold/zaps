@@ -231,4 +231,110 @@ describe("ProcessRunner ownership lifecycle", () => {
     h.live.clear();
     await runner.dispose();
   });
+  it.each(["null", "rejected"])(
+    "finalizes a confirmed unlaunched shell after %s birth lookup",
+    async (failure) => {
+      const onExit = vi.fn();
+      const onLines = vi.fn();
+      const runner = new ProcessRunner({
+        onExit,
+        onLines,
+        diagnostic: vi.fn(),
+        readProcessIdentity: async () => {
+          if (failure === "rejected") {
+            throw new Error("inspection failed");
+          }
+          return null;
+        },
+      });
+      try {
+        const handle = runner.spawnOwned({ ...spec, command: "printf 'payload must not run\\n'" });
+        await vi.waitFor(() => {
+          expect(onExit).toHaveBeenCalledOnce();
+        });
+        expect(runner.getPid(handle)).toBe(-1);
+        expect(onLines).not.toHaveBeenCalled();
+        const replacement = runner.spawnOwned({ ...spec, command: "true" });
+        expect(replacement.id).not.toBe(handle.id);
+        await vi.waitFor(() => {
+          expect(onExit).toHaveBeenCalledTimes(2);
+        });
+      } finally {
+        await runner.dispose();
+      }
+    },
+  );
+
+  it.each([900, 1500])(
+    "bounds %i ms KILL verification and ignores late probes",
+    async (killProbeMs) => {
+      vi.useFakeTimers();
+      const h = harness();
+      let slow = false;
+      const started = Date.now();
+      const runner = new ProcessRunner({
+        ...h.deps,
+        now: Date.now,
+        wait: async (ms) =>
+          new Promise((resolve) => {
+            setTimeout(resolve, ms);
+          }),
+        readProcessIdentity: async (pid) => {
+          if (slow) {
+            const duration = Date.now() - started >= 5000 ? killProbeMs : 900;
+            await new Promise((resolve) => {
+              setTimeout(resolve, duration);
+            });
+          }
+          return h.live.get(pid) ?? null;
+        },
+        kill: (pid, signal) => {
+          h.signals.push({ pid, signal, at: Date.now() });
+        },
+      });
+      try {
+        const handle = runner.spawnOwned(spec);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(h.gate.readableLength).toBeGreaterThan(0);
+        slow = true;
+        const result = expect(runner.stop(handle)).rejects.toThrow("deadline");
+        await vi.advanceTimersByTimeAsync(6000);
+        await result;
+        expect(h.signals).toEqual(
+          killProbeMs === 900
+            ? [
+                { pid: 4242, signal: "SIGTERM", at: started + 2700 },
+                { pid: 4242, signal: "SIGKILL", at: started + 5900 },
+              ]
+            : [{ pid: 4242, signal: "SIGTERM", at: started + 2700 }],
+        );
+        expect(Date.now() - started).toBe(6000);
+        expect(runner.getPid(handle)).toBe(4242);
+        expect(h.unrecord).not.toHaveBeenCalled();
+        const signals = [...h.signals];
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(h.signals).toEqual(signals);
+        slow = false;
+        h.live.clear();
+        await runner.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("retains an unlaunched child until direct completion is confirmed", async () => {
+    const h = harness();
+    const runner = new ProcessRunner({ ...h.deps, readProcessIdentity: async () => null });
+    const handle = runner.spawnOwned(spec);
+    await expect(runner.stop(handle)).rejects.toThrow("Unresolved ownership");
+    expect(runner.getPid(handle)).toBe(4242);
+    expect(h.signals).toEqual([]);
+    expect(() => runner.spawnOwned(spec)).toThrow("still owned");
+    h.child.emit("exit", 125, null);
+    await vi.waitFor(() => {
+      expect(runner.getPid(handle)).toBe(-1);
+    });
+    await runner.dispose();
+  });
 });
