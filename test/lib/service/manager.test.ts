@@ -1075,6 +1075,14 @@ describe("stopService", () => {
     });
     const deps = createMockDeps({
       readProcessIdentity: async (pid) => identities.get(pid) ?? null,
+      getDescendantTree: async (pid, excluded = []) => {
+        if (!identities.has(pid) || excluded.includes(pid)) {
+          return [];
+        }
+        return (pid === root.pid ? [...identities.keys()] : [pid]).filter(
+          (member) => !excluded.includes(member),
+        );
+      },
       getProcessMembers: async (identity) =>
         [...identities.values()].filter(
           (member) => member.pgid === identity.pgid && member.sid === identity.sid,
