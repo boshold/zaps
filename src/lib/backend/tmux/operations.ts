@@ -69,6 +69,7 @@ interface Lease {
   readonly done: Promise<void>;
   quarantined?: boolean;
   cancel(): Promise<void>;
+  cleanup(): Promise<void>;
 }
 
 function sameClient(a: Client, b: Client): boolean {
@@ -89,6 +90,12 @@ function sameOwner(a: TerminalOwner, b: TerminalOwner): boolean {
       ? b.kind === "ui" && a.socketId === b.socketId
       : b.kind === "task" && a.runId === b.runId)
   );
+}
+
+async function settleLease(lease: Lease): Promise<void> {
+  await lease.cancel();
+  await observeCancellation(lease.done);
+  await lease.cleanup();
 }
 
 class TmuxTerminalLeaseRegistry {
@@ -156,19 +163,19 @@ class TmuxTerminalOperations {
     }
   }
 
-  private releaseReplacement(client: Client): void {
+  private async releaseReplacement(client: Client): Promise<void> {
     const lease = this.leases.get(client.name);
     if (lease?.quarantined && lease.client.pid !== client.pid) {
-      this.leases.delete(client.name);
+      await lease.cleanup();
     }
   }
 
   public async assertClientAvailable(): Promise<void> {
     const client = await this.resolveClient();
+    await this.releaseReplacement(client);
     if (this.closed) {
       throw new TerminalOperationError("cancelled");
     }
-    this.releaseReplacement(client);
     if (this.leases.has(client.name)) {
       throw new TerminalOperationError("terminal_busy");
     }
@@ -185,10 +192,10 @@ class TmuxTerminalOperations {
     const { cwd } = request;
     const owner = { ...request.owner };
     const client = await this.resolveClient();
+    await this.releaseReplacement(client);
     if (this.closed || request.signal.aborted) {
       throw new TerminalOperationError("cancelled");
     }
-    this.releaseReplacement(client);
     if (this.leases.has(client.name)) {
       throw new TerminalOperationError("terminal_busy");
     }
@@ -202,6 +209,7 @@ class TmuxTerminalOperations {
     let popupOpen = false;
     let cleanupUncertain = false;
     let popupCompleted = false;
+    const cleanupCauses: unknown[] = [];
     const cancellationState: { task?: Promise<void> } = {};
     const checkActive = () => {
       if (!active || controller.signal.aborted) {
@@ -224,7 +232,8 @@ class TmuxTerminalOperations {
               // Tmux has no popup-ID close: external replacement cannot be proven safe.
               try {
                 await this.tmux.closePopup(client.name);
-              } catch {
+              } catch (error) {
+                cleanupCauses.push(error);
                 cleanupUncertain = !popupCompleted;
                 const currentLease = this.leases.get(client.name);
                 if (currentLease?.id === id) {
@@ -243,6 +252,46 @@ class TmuxTerminalOperations {
       })();
       return cancellationState.task;
     };
+    let directory: string | undefined = undefined;
+    const cleanup = async () => {
+      if (cleanupUncertain) {
+        try {
+          const clients = await this.tmux.listClients();
+          if (
+            popupCompleted ||
+            !clients.some((current) => current.name === client.name && current.pid === client.pid)
+          ) {
+            cleanupUncertain = false;
+            const currentLease = this.leases.get(client.name);
+            if (currentLease?.id === id) {
+              currentLease.quarantined = false;
+            }
+          }
+        } catch (error) {
+          cleanupCauses.push(error);
+        }
+      }
+      try {
+        if (directory) {
+          await rm(directory, { recursive: true, force: true });
+          directory = undefined;
+        }
+      } catch (error) {
+        cleanupCauses.push(error);
+      }
+      if (cleanupUncertain || directory !== undefined) {
+        throw new TerminalOperationError(
+          cleanupUncertain ? "terminal_busy" : "backend_unavailable",
+          presenting,
+          {
+            cause: new AggregateError(cleanupCauses, "Terminal cleanup incomplete"),
+          },
+        );
+      }
+      if (this.leases.get(client.name)?.id === id) {
+        this.leases.delete(client.name);
+      }
+    };
     const completion = deferred<void>();
     void observeCancellation(completion.promise);
     const lease: Lease = {
@@ -252,6 +301,7 @@ class TmuxTerminalOperations {
       owner,
       cancel,
       done: completion.promise,
+      cleanup: async () => cleanup(),
     };
     this.leases.set(client.name, lease);
     const onAbort = () => {
@@ -282,23 +332,13 @@ class TmuxTerminalOperations {
       void checkClient();
     }, this.pollMs);
     timer.unref();
-    let directory: string | undefined = undefined;
-    const cleanup = async () => {
+    const finish = async () => {
       try {
-        if (directory) {
-          await rm(directory, { recursive: true, force: true });
-        }
-      } catch (error) {
-        const cleanupError = new TerminalOperationError("backend_unavailable", presenting, {
-          cause: error,
-        });
-        completion.reject(cleanupError);
-        throw cleanupError;
-      } finally {
-        if (!cleanupUncertain && this.leases.get(client.name)?.id === id) {
-          this.leases.delete(client.name);
-        }
+        await cleanup();
         completion.resolve();
+      } catch (error) {
+        completion.reject(error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
     };
     try {
@@ -335,8 +375,16 @@ class TmuxTerminalOperations {
               })
               .then(() => {
                 popupCompleted = true;
-                if (cleanupUncertain && this.leases.get(client.name)?.id === id) {
-                  this.leases.delete(client.name);
+                if (cleanupUncertain) {
+                  cleanupUncertain = false;
+                  lease.quarantined = false;
+                  if (
+                    !active &&
+                    directory === undefined &&
+                    this.leases.get(client.name)?.id === id
+                  ) {
+                    this.leases.delete(client.name);
+                  }
                 }
                 return undefined;
               }),
@@ -374,7 +422,7 @@ class TmuxTerminalOperations {
       clearInterval(timer);
       request.signal.removeEventListener("abort", onAbort);
       await cancellationState.task;
-      await cleanup();
+      await finish();
     }
   }
 
@@ -382,10 +430,7 @@ class TmuxTerminalOperations {
     await Promise.all(
       [...this.leases.values()]
         .filter((lease) => lease.manager === this.manager && sameOwner(owner, lease.owner))
-        .map(async (lease) => {
-          await lease.cancel();
-          await lease.done;
-        }),
+        .map(async (lease) => settleLease(lease)),
     );
   }
 
@@ -394,10 +439,7 @@ class TmuxTerminalOperations {
     await Promise.all(
       [...this.leases.values()]
         .filter((lease) => lease.manager === this.manager)
-        .map(async (lease) => {
-          await lease.cancel();
-          await lease.done;
-        }),
+        .map(async (lease) => settleLease(lease)),
     );
   }
 }

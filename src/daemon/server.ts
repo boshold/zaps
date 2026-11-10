@@ -345,11 +345,20 @@ class DaemonServer implements SessionStore {
       runtime,
       terminal,
       disposeRuntime: async () => {
-        await operations.dispose();
-        try {
-          await terminal.dispose();
-        } finally {
-          await runtime.dispose();
+        const errors: unknown[] = [];
+        for (const dispose of [
+          async () => operations.dispose(),
+          async () => terminal.dispose(),
+          async () => runtime.dispose(),
+        ]) {
+          try {
+            await dispose();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+        if (errors.length) {
+          throw new AggregateError(errors, "Backend resource cleanup incomplete");
         }
       },
 

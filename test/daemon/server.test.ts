@@ -130,6 +130,9 @@ vi.mock("#src/lib/service/manager.js", () => {
   return { ServiceManager: MockServiceManager };
 });
 
+const { TmuxTerminalOperations } = await import("#src/lib/backend/tmux/operations.js");
+const { TmuxTerminalDriver } = await import("#src/lib/backend/tmux/driver.js");
+const { TmuxRuntime } = await import("#src/lib/backend/tmux/runtime.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
 const { SentraHost } = await import("../../src/lib/sentra/host.js");
 const { sentraEnvFor } = await import("../../src/lib/sentra/config.js");
@@ -615,6 +618,37 @@ describe("DaemonServer", () => {
     await server.destroy(session.id);
     expect(server.sessionCount).toBe(0);
     expect(server.get(session.id)).toBeUndefined();
+  });
+
+  it("attempts every backend disposer and preserves synchronous and asynchronous failures", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    const operationsFailure = new Error("operations cleanup failed");
+    const terminalFailure = new Error("terminal cleanup failed");
+    const runtimeFailure = new Error("runtime cleanup failed");
+    const operations = vi
+      .spyOn(TmuxTerminalOperations.prototype, "dispose")
+      .mockImplementationOnce(() => {
+        throw operationsFailure;
+      });
+    const terminal = vi
+      .spyOn(TmuxTerminalDriver.prototype, "dispose")
+      .mockRejectedValueOnce(terminalFailure);
+    const runtime = vi.spyOn(TmuxRuntime.prototype, "dispose").mockImplementationOnce(() => {
+      throw runtimeFailure;
+    });
+    await expect(session.backend.dispose()).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ errors: [operationsFailure, terminalFailure, runtimeFailure] }),
+      ],
+    });
+    expect(operations).toHaveBeenCalledTimes(1);
+    expect(terminal).toHaveBeenCalledTimes(1);
+    expect(runtime).toHaveBeenCalledTimes(1);
   });
 
   it("destroy is no-op for unknown session", async () => {

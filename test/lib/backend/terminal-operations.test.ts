@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, chmod, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +17,11 @@ import type {
 import { shellEscape } from "#src/lib/service/env.js";
 import { showOutputPopup } from "#src/lib/task/output-popup.js";
 import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, rm: vi.fn(original.rm) };
+});
 
 function unresolved(): never {
   throw new Error("Promise executor did not run");
@@ -413,4 +418,84 @@ it("quarantines a client when owned popup closure fails, forbidding fallback", a
   await expect(access(run.context.directory)).rejects.toThrow();
   f.popup.resolve();
   await vi.waitFor(async () => expect(await f.operations.assertClientAvailable()).toBeUndefined());
+});
+
+it("preserves busy and retained cleanup state when popup closure and removal both fail", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  const closeFailure = new Error("close failed");
+  const removeFailure = new Error("remove failed");
+  f.tmux.closePopup.mockRejectedValue(closeFailure);
+  vi.mocked(rm).mockRejectedValueOnce(removeFailure);
+  f.controller.abort();
+  await expect(run.result).rejects.toMatchObject({
+    code: "terminal_busy",
+    cause: { errors: [closeFailure, removeFailure] },
+  });
+  await expect(access(run.context.directory)).resolves.toBeUndefined();
+  await expect(f.operations.dispose()).rejects.toMatchObject({ code: "terminal_busy" });
+  await expect(access(run.context.directory)).rejects.toThrow();
+  f.popup.resolve();
+  await vi.waitFor(async () => expect(await f.operations.dispose()).toBeUndefined());
+});
+
+it("settles the run and concurrent disposals with incomplete cleanup, then recovers after natural close", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  f.tmux.closePopup.mockRejectedValue(new Error("close failed"));
+  const disposals = [outcome(f.operations.dispose()), outcome(f.operations.dispose())];
+  expect(await run.outcome).toMatchObject({ error: { code: "terminal_busy" } });
+  for (const disposal of disposals) {
+    expect(await disposal).toMatchObject({ error: { code: "terminal_busy" } });
+  }
+  const successor = new TmuxTerminalOperations(f.tmux, "owned", "%3", f.registry);
+  await expect(successor.assertClientAvailable()).rejects.toMatchObject({ code: "terminal_busy" });
+  f.popup.resolve();
+  await vi.waitFor(async () => expect(await successor.assertClientAvailable()).toBeUndefined());
+  await expect(f.operations.dispose()).resolves.toBeUndefined();
+  await successor.dispose();
+});
+
+it("retries retained file cleanup after natural completion", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  f.tmux.closePopup.mockRejectedValue(new Error("close failed"));
+  vi.mocked(rm).mockRejectedValueOnce(new Error("remove failed"));
+  f.controller.abort();
+  await expect(run.result).rejects.toMatchObject({ code: "terminal_busy" });
+  f.popup.resolve();
+  await vi.waitFor(async () => expect(await f.operations.dispose()).toBeUndefined());
+  await expect(access(run.context.directory)).rejects.toThrow();
+});
+
+it("confirms client replacement before releasing a quarantined lease", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  f.tmux.closePopup.mockRejectedValue(new Error("close failed"));
+  f.controller.abort();
+  await expect(run.result).rejects.toMatchObject({ code: "terminal_busy" });
+  f.tmux.listClients.mockResolvedValue([{ ...client, pid: client.pid + 1 }]);
+  await expect(f.operations.dispose()).resolves.toBeUndefined();
+  const successor = new TmuxTerminalOperations(f.tmux, "owned", "%3", f.registry);
+  await expect(successor.assertClientAvailable()).resolves.toBeUndefined();
+  f.popup.resolve();
+  await successor.dispose();
+});
+
+it("settles run and concurrent disposal failures while retaining files for a successful retry", async () => {
+  const f = fixture();
+  const run = await pending(f);
+  const removal = vi.mocked(rm);
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    removal.mockRejectedValueOnce(new Error("remove failed"));
+  }
+  const disposals = [outcome(f.operations.dispose()), outcome(f.operations.dispose())];
+  expect(await run.outcome).toMatchObject({ error: { code: "backend_unavailable" } });
+  for (const disposal of disposals) {
+    expect(await disposal).toMatchObject({ error: { code: "backend_unavailable" } });
+  }
+  await expect(access(run.context.directory)).resolves.toBeUndefined();
+  await expect(f.operations.dispose()).resolves.toBeUndefined();
+  await expect(access(run.context.directory)).rejects.toThrow();
+  f.popup.resolve();
 });
