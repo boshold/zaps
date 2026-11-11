@@ -218,18 +218,25 @@ class TmuxTerminalOperations {
     let popupCompleted = false;
     const cleanupCauses: unknown[] = [];
     const cancellationState: { task?: Promise<void> } = {};
+    let cancellationCause: "owner" | "client" = "owner";
+    const cancellationCode = (): "cancelled" | "backend_unavailable" =>
+      cancellationCause === "client" && !presenting ? "backend_unavailable" : "cancelled";
     const checkActive = () => {
       if (!active || controller.signal.aborted) {
         throw new TerminalOperationError("cancelled");
       }
     };
-    const cancel = async (): Promise<void> => {
+    const cancel = async (cause: "owner" | "client" = "owner"): Promise<void> => {
       if (cancellationState.task) {
+        if (cause === "owner") {
+          cancellationCause = cause;
+        }
         return cancellationState.task;
       }
       if (!active) {
         return Promise.resolve();
       }
+      cancellationCause = cause;
       controller.abort();
       cancellationState.task = (async () => {
         try {
@@ -253,7 +260,7 @@ class TmuxTerminalOperations {
           // A vanished session/client has no owned popup left to close.
         } finally {
           cancelled.reject(
-            new TerminalOperationError(cleanupUncertain ? "terminal_busy" : "cancelled"),
+            new TerminalOperationError(cleanupUncertain ? "terminal_busy" : cancellationCode()),
           );
         }
       })();
@@ -327,10 +334,10 @@ class TmuxTerminalOperations {
       try {
         const current = await this.resolveClient();
         if (!sameClient(current, client)) {
-          await cancel();
+          await cancel("client");
         }
       } catch {
-        await cancel();
+        await cancel("client");
       } finally {
         checking = false;
       }
@@ -419,7 +426,7 @@ class TmuxTerminalOperations {
     } catch (error) {
       let code: TerminalOperationError["code"] = "backend_unavailable";
       if (controller.signal.aborted) {
-        code = "cancelled";
+        code = cancellationCode();
       } else if (error instanceof TerminalOperationError) {
         ({ code } = error);
       }

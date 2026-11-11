@@ -198,6 +198,49 @@ describe("terminal operation leases", () => {
     expect(f.tmux.displayPopup).not.toHaveBeenCalled();
   });
 
+  it.each(["ui", "task"] as const)(
+    "reports client loss during %s popup preparation as unavailable before launch",
+    async (kind) => {
+      const f = fixture();
+      const prepared = deferred<void>();
+      const release = deferred<void>();
+      const originalWrite =
+        await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+      vi.mocked(writeFile).mockImplementationOnce(async (...args) => {
+        await originalWrite.writeFile(...args);
+        prepared.resolve();
+        await release.promise;
+      });
+      const owner: OperationRequest["owner"] =
+        kind === "ui" ? f.request.owner : { kind: "task", sessionId: "session-a", runId: "run-a" };
+      vi.useFakeTimers();
+      let directory = "";
+      const result = outcome(
+        f.operations.run({ ...f.request, owner }, async (operation) => {
+          ({ directory } = operation);
+          await operation.popup({ command: "never" });
+        }),
+      );
+      try {
+        await prepared.promise;
+        f.tmux.listClients.mockResolvedValue([]);
+        await vi.advanceTimersByTimeAsync(10);
+        expect(await result).toMatchObject({
+          error: { code: "backend_unavailable", launched: false },
+        });
+        expect(f.tmux.displayPopup).not.toHaveBeenCalled();
+        expect(f.tmux.closePopup).not.toHaveBeenCalled();
+        await expect(access(directory)).rejects.toThrow();
+        release.resolve();
+        f.tmux.listClients.mockResolvedValue([client]);
+        await expect(f.operations.run(f.request, async () => "next")).resolves.toBe("next");
+      } finally {
+        release.resolve();
+        await f.operations.dispose();
+      }
+    },
+  );
+
   it("reserves a single lease across concurrent discovery and leaves the winner open", async () => {
     const f = fixture();
     const start = async () =>

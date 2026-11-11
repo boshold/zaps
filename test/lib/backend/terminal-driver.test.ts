@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { access, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -11,9 +13,37 @@ import { PaneCleanup } from "#src/lib/backend/tmux/pane-cleanup.js";
 import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...original, writeFile: vi.fn(original.writeFile) };
+});
+
 const rawLaunch = await import("#src/lib/backend/tmux/raw-launch.js");
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+function deferred() {
+  const controls: { resolve(): void } = {
+    resolve: () => {
+      throw new Error("Promise executor did not run");
+    },
+  };
+  const promise = new Promise<void>((resolve) => {
+    controls.resolve = resolve;
+  });
+  return { promise, ...controls };
+}
+
+async function outcome<T>(promise: Promise<T>) {
+  try {
+    return { value: await promise };
+  } catch (error) {
+    return { error };
+  }
+}
 
 function fixture() {
   vi.spyOn(rawLaunch, "createRawPaneLaunch").mockReturnValue({
@@ -221,6 +251,53 @@ it("returns unavailable only before launch when client or popup support is missi
   });
   expect(f.tmux.displayPopup).not.toHaveBeenCalled();
 });
+
+it.each(["client", "owner"] as const)(
+  "falls back only for client loss, not %s cancellation during preparation",
+  async (loss) => {
+    const f = fixture();
+    f.tmux.tmuxSupportsPopup.mockResolvedValue(true);
+    const prepared = deferred();
+    const release = deferred();
+    const originalWrite =
+      await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let directory = "";
+    vi.mocked(writeFile).mockImplementationOnce(async (...args) => {
+      if (typeof args[0] !== "string") {
+        throw new Error("Unexpected popup launcher path");
+      }
+      directory = path.dirname(args[0]);
+      await originalWrite.writeFile(...args);
+      prepared.resolve();
+      await release.promise;
+    });
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    const result = outcome(
+      f.driver.runConfiguredTask(configuredCommand, {
+        ...configuredOperation,
+        signal: controller.signal,
+      }),
+    );
+    try {
+      await prepared.promise;
+      if (loss === "client") {
+        f.tmux.listClients.mockResolvedValue([]);
+        await vi.advanceTimersByTimeAsync(250);
+        expect(await result).toEqual({ value: { kind: "unavailable" } });
+      } else {
+        controller.abort();
+        expect(await result).toMatchObject({ error: { code: "cancelled", launched: false } });
+      }
+      expect(f.tmux.displayPopup).not.toHaveBeenCalled();
+      expect(f.tmux.closePopup).not.toHaveBeenCalled();
+      await expect(access(directory)).rejects.toThrow();
+    } finally {
+      release.resolve();
+      await f.operations.dispose();
+    }
+  },
+);
 
 it("fails launched commands on client loss after a side effect, without replay", async () => {
   const f = fixture();
