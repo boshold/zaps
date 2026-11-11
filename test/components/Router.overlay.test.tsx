@@ -66,6 +66,24 @@ function renderWithOverlay(client: DaemonClient, statuses: ServiceStatus[]) {
 const STATUS: ServiceStatus = { name: "web", state: "ready", ports: [3000], retryCount: 0 };
 
 describe("Router overlay gating", () => {
+  it("Ctrl-C detaches without triggering the dashboard reload shortcut", async () => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+    stdin.write("\x03");
+    await vi.waitFor(() => expect(client.detach).toHaveBeenCalledOnce());
+    expect(client.reloadConfig).not.toHaveBeenCalled();
+    expect(client.restartService).not.toHaveBeenCalled();
+    expect(client.destroySession).not.toHaveBeenCalled();
+  });
+
+  it.each(["\x12", "\x13", "\x1bc"])("ignores modified dashboard shortcuts %j", (key) => {
+    const client = createMockClient();
+    const { stdin } = renderWithOverlay(client, [STATUS]);
+    stdin.write(key);
+    expect(client.reloadConfig).not.toHaveBeenCalled();
+    expect(client.restartService).not.toHaveBeenCalled();
+  });
+
   it("fires dashboard quick keys when no overlay is open", () => {
     const client = createMockClient();
     const { stdin } = renderWithOverlay(client, [STATUS]);

@@ -15,7 +15,7 @@ import { ipcRequest } from "#src/lib/ipc/client.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 
-import { scriptPtyArgs } from "../helpers/pty.js";
+import { scriptPtyArgs } from "./pty-helper.js";
 
 interface TerminalStreams {
   stdin: boolean;
@@ -216,7 +216,7 @@ export function createShellTestEnvironment({
     const ptyCommand = [explicitCommand.file, ...argv].map(shellEscape).join(" ");
     const redirectedStdout = path.join(rootDir, `stdout-${children.size}.log`);
     const terminalCommand = [
-      `stty rows 32 cols 100; exec ${ptyCommand}`,
+      `stty rows 32 cols 100 -echo -icanon -isig; exec ${ptyCommand}`,
       terminal?.stdin ? "" : "</dev/null",
       terminal?.stdout ? "" : `>${shellEscape(redirectedStdout)}`,
     ].join(" ");
@@ -293,6 +293,14 @@ export function createShellTestEnvironment({
         }
       }
       const candidates = await inspection.getProcessMembers(identity);
+      if (terminal && live.some((member) => member.pid === identity?.pid)) {
+        for (const pid of await inspection.getDescendantTree(identity.pid)) {
+          const descendant = await inspection.readProcessIdentity(pid);
+          if (descendant) {
+            candidates.push(descendant);
+          }
+        }
+      }
       const [anchor] = live;
       if (anchor) {
         for (const member of candidates) {

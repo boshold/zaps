@@ -31,6 +31,9 @@ interface DashboardInputContext {
 
 // eslint-disable-next-line complexity -- Flat key-dispatch handler, inherently branchy
 function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContext) {
+  if (key.ctrl || key.meta) {
+    return;
+  }
   if (key.upArrow || input === "k") {
     ctx.moveUp();
   }
