@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+import type { TaskPreflight } from "#src/lib/task/ensure-services.js";
+import type { TaskListEntry } from "#src/lib/task/list-entry.js";
+
 import {
   backendCapabilitiesSchema,
   backendIdSchema,
@@ -55,6 +58,7 @@ const daemonEventDataSchemas = {
     runId: z.string().optional(),
     result: z.enum(["success", "error"]),
   }),
+  taskPreparing: z.object({ key: z.string(), services: z.array(z.string()) }),
   paneMap: z.object({ paneMap: z.record(z.string(), z.string()) }),
   notice: z.object({ level: z.enum(["info", "warn", "success"]), message: z.string() }),
 };
@@ -72,6 +76,8 @@ const snapshotFields = {
       name: z.string(),
       description: z.string().nullable(),
       shortcut: z.string().optional(),
+      requiredServices: z.array(z.string()).optional(),
+      autoStart: z.boolean().optional(),
     }),
   ),
   servicesMeta: z.array(
@@ -205,6 +211,31 @@ const daemonStatusSchema = z.object({
     }),
   ),
 });
+const taskPreflightSchema = z.strictObject({
+  key: z.string(),
+  services: z.array(
+    z.strictObject({
+      name: z.string(),
+      state: statusFields.state,
+      action: z.enum(["ok", "wait", "start", "blocked"]),
+      required: z.boolean(),
+      startable: z.boolean(),
+      reason: z.string().optional(),
+    }),
+  ),
+  needsStart: z.boolean(),
+  autoStart: z.boolean(),
+  blocked: z.array(z.string()),
+}) satisfies z.ZodType<TaskPreflight>;
+const taskListEntrySchema = z.object({
+  key: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  services: z.array(z.string()),
+  requiredServices: z.array(z.string()),
+  autoStart: z.boolean(),
+  dependsOn: z.array(z.string()),
+}) satisfies z.ZodType<TaskListEntry>;
 function parseDaemonStatus(input: unknown) {
   const record = z.record(z.string(), z.unknown()).parse(input);
   if (Object.hasOwn(record, "supportedBackends")) {
@@ -230,4 +261,6 @@ export {
   parseSessionList,
   daemonStatusSchema,
   parseDaemonStatus,
+  taskPreflightSchema,
+  taskListEntrySchema,
 };

@@ -1,6 +1,7 @@
 import { Socket } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
 import type { UiBinding } from "#src/daemon/session.js";
@@ -19,6 +20,7 @@ import type {
   SessionBackend,
   TerminalDriver,
 } from "#src/lib/backend/types.js";
+import { taskListEntrySchema, taskPreflightSchema } from "#src/lib/backend/wire.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
 
@@ -842,6 +844,141 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["tasks.list"](req, store, socket as never);
       expect(res.result).toEqual([]);
+    });
+
+    it("includes services, requiredServices, autoStart and dependsOn", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        migrate: { name: "Migrate", commands: "m", services: ["db"], autoStart: true },
+        seed: { name: "Seed", commands: "s", services: ["api"], dependsOn: ["migrate"] },
+        lint: { name: "Lint", commands: "l" },
+      };
+      const res = await sessionHandlers["tasks.list"](
+        { id: "r", method: "tasks.list", session: session.id },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(z.array(taskListEntrySchema).parse(res.result)).toEqual([
+        {
+          key: "migrate",
+          name: "Migrate",
+          description: null,
+          services: ["db"],
+          requiredServices: ["db"],
+          autoStart: true,
+          dependsOn: [],
+        },
+        {
+          key: "seed",
+          name: "Seed",
+          description: null,
+          services: ["api"],
+          requiredServices: ["db", "api"],
+          autoStart: false,
+          dependsOn: ["migrate"],
+        },
+        {
+          key: "lint",
+          name: "Lint",
+          description: null,
+          services: [],
+          requiredServices: [],
+          autoStart: false,
+          dependsOn: [],
+        },
+      ]);
+    });
+
+    it("returns error for unknown session", async () => {
+      const res = await sessionHandlers["tasks.list"](
+        { id: "r", method: "tasks.list", session: "nope" },
+        createMockStore([]),
+        createMockSocket() as never,
+      );
+      expect(res.error).toBe("Unknown session");
+    });
+  });
+
+  describe("tasks.preflight", () => {
+    function preflightSession() {
+      const session = createMockSession();
+      session.config.project.services = {
+        api: { start: "npm dev", dependsOn: ["db"] },
+        db: { start: "pg" },
+      };
+      session.config.unavailableServices = new Map([
+        ["mail", { name: "mail", reason: "binary 'mailhog' not found" }],
+      ]);
+      session.manager.getAllStatuses.mockReturnValue([
+        { name: "api", state: "stopped", ports: [], retryCount: 0 },
+        { name: "db", state: "stopped", ports: [], retryCount: 0 },
+        { name: "mail", state: "unavailable", ports: [], retryCount: 0 },
+      ]);
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "s", services: ["api"], autoStart: true },
+        mail: { name: "Mail", commands: "m", services: ["mail"] },
+        lint: { name: "Lint", commands: "l" },
+      };
+      return session;
+    }
+
+    async function preflight(session: ReturnType<typeof createMockSession>, params: unknown) {
+      return sessionHandlers["tasks.preflight"](
+        { id: "p", method: "tasks.preflight", session: session.id, params },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+    }
+
+    it("returns the plan and summary without side effects", async () => {
+      const session = preflightSession();
+      const res = await preflight(session, { key: "seed" });
+      expect(taskPreflightSchema.parse(res.result)).toEqual({
+        key: "seed",
+        services: [
+          { name: "db", state: "stopped", action: "start", required: false, startable: true },
+          { name: "api", state: "stopped", action: "start", required: true, startable: true },
+        ],
+        needsStart: true,
+        autoStart: true,
+        blocked: [],
+      });
+      expect(session.manager.startService).not.toHaveBeenCalled();
+      expect(session.manager.startAll).not.toHaveBeenCalled();
+    });
+
+    it("reports blocked services with reason", async () => {
+      const res = await preflight(preflightSession(), { key: "mail" });
+      expect(taskPreflightSchema.parse(res.result)).toMatchObject({
+        services: [{ name: "mail", action: "blocked", reason: "binary 'mailhog' not found" }],
+        needsStart: false,
+        blocked: ["mail"],
+      });
+    });
+
+    it("returns an empty plan for an independent task", async () => {
+      const res = await preflight(preflightSession(), { key: "lint" });
+      expect(res.result).toEqual({
+        key: "lint",
+        services: [],
+        needsStart: false,
+        autoStart: true,
+        blocked: [],
+      });
+    });
+
+    it.each(["missing", "constructor"])("returns Unknown task for %s", async (key) => {
+      const res = await preflight(preflightSession(), { key });
+      expect(res.error).toBe(`Unknown task: ${key}`);
+    });
+
+    it("returns Unknown session", async () => {
+      const res = await sessionHandlers["tasks.preflight"](
+        { id: "p", method: "tasks.preflight", session: "nope", params: { key: "seed" } },
+        createMockStore([]),
+        createMockSocket() as never,
+      );
+      expect(res.error).toBe("Unknown session");
     });
   });
 

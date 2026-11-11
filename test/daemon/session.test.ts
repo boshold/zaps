@@ -814,6 +814,34 @@ describe("Session", () => {
       expect(snap.tasks).toHaveLength(1);
       expect(snap.tasks[0].shortcut).toBe("b");
     });
+
+    it("includes requiredServices (chain union) and autoStart per task", async () => {
+      const params = await createSessionParams({
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" }, db: { start: "pg" } },
+            tasks: {
+              migrate: { name: "Migrate", commands: "m", services: ["db"], autoStart: true },
+              seed: { name: "Seed", commands: "s", services: ["api"], dependsOn: ["migrate"] },
+              lint: { name: "Lint", commands: "l" },
+            },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          groups: new Map(),
+          unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
+        } as SessionCreateParams["config"],
+      });
+
+      const snap = new Session(params, createMockManager()).attachSnapshot();
+      expect(snap.tasks.map((t) => [t.key, t.requiredServices, t.autoStart])).toEqual([
+        ["migrate", ["db"], true],
+        ["seed", ["db", "api"], false],
+        ["lint", [], false],
+      ]);
+    });
   });
 
   describe("broadcast", () => {

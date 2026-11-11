@@ -22,6 +22,11 @@ interface TaskPlanSummary {
   blocked: string[];
 }
 
+interface TaskPreflight extends TaskPlanSummary {
+  key: string;
+  services: TaskServicePlanEntry[];
+}
+
 /** Structural subset of `ServiceManager` (a `Pick` would require `on`/`off` to return a full manager). */
 interface TaskServiceManager {
   startService(name: string): Promise<ServiceActionResult>;
@@ -302,6 +307,7 @@ export type {
   TaskServiceAction,
   TaskServicePlanEntry,
   TaskPlanSummary,
+  TaskPreflight,
   TaskServiceManager,
   TaskServiceEvent,
   EnsureTaskServicesOptions,

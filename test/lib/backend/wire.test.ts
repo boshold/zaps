@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import {
+  daemonEventDataSchemas,
   parseDaemonStatus,
   parseServiceStatus,
   parseSessionListEntry,
   parseSessionSnapshot,
+  taskListEntrySchema,
+  taskPreflightSchema,
   unavailableActions,
   unavailableCapabilities,
 } from "#src/lib/backend/wire.js";
@@ -118,5 +121,85 @@ describe("backend wire decoding", () => {
       error: "session_closing",
     });
     expect(ipcErr("r", { code: "bogus" })).not.toHaveProperty("errorCode");
+  });
+
+  it.each(["services_not_running", "service_start_failed", "service_unavailable"])(
+    "keeps the %s error code",
+    (code) => {
+      expect(ipcErr("r", Object.assign(new Error("m"), { code }))).toEqual({
+        id: "r",
+        error: "m",
+        errorCode: code,
+      });
+    },
+  );
+
+  it("keeps task requirement fields on snapshot tasks and accepts their absence", () => {
+    const withFields = parseSessionSnapshot({
+      ...legacySnapshot(),
+      tasks: [
+        {
+          key: "seed",
+          name: "Seed",
+          description: null,
+          requiredServices: ["db"],
+          autoStart: true,
+        },
+        { key: "lint", name: "Lint", description: null },
+      ],
+    });
+    expect(withFields.tasks).toEqual([
+      { key: "seed", name: "Seed", description: null, requiredServices: ["db"], autoStart: true },
+      { key: "lint", name: "Lint", description: null },
+    ]);
+  });
+
+  it("parses task.preparing event data", () => {
+    expect(daemonEventDataSchemas.taskPreparing.parse({ key: "seed", services: ["db"] })).toEqual({
+      key: "seed",
+      services: ["db"],
+    });
+    expect(() => daemonEventDataSchemas.taskPreparing.parse({ key: "seed" })).toThrow();
+  });
+
+  it("validates preflight results strictly, with optional reason", () => {
+    const preflight = {
+      key: "seed",
+      services: [
+        { name: "db", state: "stopped", action: "start", required: true, startable: false },
+        {
+          name: "x",
+          state: "unavailable",
+          action: "blocked",
+          required: true,
+          startable: false,
+          reason: "binary 'x' not found",
+        },
+      ],
+      needsStart: true,
+      autoStart: false,
+      blocked: ["x"],
+    };
+    expect(taskPreflightSchema.parse(preflight)).toEqual(preflight);
+    expect(() => taskPreflightSchema.parse({ ...preflight, extra: 1 })).toThrow();
+    expect(() =>
+      taskPreflightSchema.parse({
+        ...preflight,
+        services: [{ ...preflight.services[0], action: "bogus" }],
+      }),
+    ).toThrow();
+  });
+
+  it("parses extended tasks.list entries and ignores unknown keys", () => {
+    const entry = {
+      key: "seed",
+      name: "Seed",
+      description: null,
+      services: ["db"],
+      requiredServices: ["db"],
+      autoStart: false,
+      dependsOn: [],
+    };
+    expect(taskListEntrySchema.parse({ ...entry, future: true })).toEqual(entry);
   });
 });

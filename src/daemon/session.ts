@@ -26,6 +26,7 @@ import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -89,6 +90,9 @@ export interface TaskInfo {
   name: string;
   description: string | null;
   shortcut?: string;
+  /** Optional so snapshots from older daemons still parse. */
+  requiredServices?: string[];
+  autoStart?: boolean;
 }
 
 export interface ServiceMeta {
@@ -707,7 +711,13 @@ export class Session {
     const shortcuts = getTaskShortcuts(rawTasks);
     const shortcutMap = new Map(shortcuts.map((s) => [s.name, s.shortcut]));
     const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) => {
-      const info: TaskInfo = { key, name: t.name, description: t.description ?? null };
+      const info: TaskInfo = {
+        key,
+        name: t.name,
+        description: t.description ?? null,
+        requiredServices: resolveTaskServiceRequirements(rawTasks, key).services,
+        autoStart: t.autoStart ?? false,
+      };
       const shortcut = shortcutMap.get(t.name);
       if (shortcut) {
         info.shortcut = shortcut;

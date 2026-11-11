@@ -24,8 +24,12 @@ import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { planTaskServices, summarizePlan } from "#src/lib/task/ensure-services.js";
+import type { TaskPreflight } from "#src/lib/task/ensure-services.js";
+import { buildTaskListEntries } from "#src/lib/task/list-entry.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -514,13 +518,27 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
+    return ipcOk(req.id, buildTaskListEntries(session.config.project.tasks ?? {}));
+  },
+
+  async "tasks.preflight"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const { key } = z.strictObject({ key: z.string() }).parse(req.params);
     const tasks = session.config.project.tasks ?? {};
-    const list = Object.entries(tasks).map(([key, t]) => ({
-      key,
-      name: t.name,
-      description: t.description ?? null,
-    }));
-    return ipcOk(req.id, list);
+    if (!Object.hasOwn(tasks, key)) {
+      return ipcErr(req.id, `Unknown task: ${key}`);
+    }
+    const plan = planTaskServices(
+      resolveTaskServiceRequirements(tasks, key),
+      session.manager.getAllStatuses(),
+      session.config.project.services,
+      session.config.unavailableServices,
+    );
+    const preflight: TaskPreflight = { key, services: plan, ...summarizePlan(plan) };
+    return ipcOk(req.id, preflight);
   },
 
   async "tasks.run"(req, store, socket) {

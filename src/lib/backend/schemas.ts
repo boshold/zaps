@@ -145,6 +145,9 @@ const backendErrorCodeSchema = z.enum([
   "backend_unavailable",
   "session_closing",
   "terminal_busy",
+  "services_not_running",
+  "service_start_failed",
+  "service_unavailable",
 ]);
 type BackendErrorCode = z.infer<typeof backendErrorCodeSchema>;
 const ipcErrorResponseSchema = z.strictObject({
