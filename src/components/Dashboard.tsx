@@ -34,6 +34,7 @@ interface DashboardProps {
   taskHistory: TaskRunRecord[];
   /** Optional sticky top slot — e.g. the disconnect banner when offline. */
   banner?: ReactNode;
+  hideHints?: boolean;
   /** Key-handler context; when present and `inputActive`, the dashboard owns input. */
   input?: DashboardInputContext;
   /** Whether the Router has routed input to the dashboard (false → inert). */
@@ -46,6 +47,7 @@ export function Dashboard({
   selectedBusy,
   taskHistory,
   banner,
+  hideHints,
   input,
   inputActive = false,
 }: DashboardProps) {
@@ -115,6 +117,7 @@ export function Dashboard({
         capabilities={capabilities}
         busy={selectedBusy}
         width={headerWidth}
+        hidden={hideHints}
       />
     </Box>
   );

@@ -183,16 +183,13 @@ describe("CLI — runTui", () => {
     vi.clearAllMocks();
     mockLoadYoga.mockReturnValue({});
     mockWaitUntilExit.mockResolvedValue();
-    mockIpcRequest.mockResolvedValue({
-      id: "status",
-      result: { pid: 1, sessions: [], supportedBackends: ["tmux", "shell"] },
-    });
   });
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("loads Yoga independently and renders only after the two ACKs on the UI socket", async () => {
+  it("renders only after subscribe, status, and attach on the UI socket", async () => {
     const subscribed = deferred<void>();
+    const advertised = deferred<IpcResponse>();
     const attached = deferred<IpcResponse>();
     const yogaReady = deferred<void>();
     const yogaRead = deferred<void>();
@@ -210,7 +207,9 @@ describe("CLI — runTui", () => {
         },
       ),
     );
-    const request = vi.fn(async () => attached.promise);
+    const request = vi.fn(async (method: string) =>
+      method === "daemon.status" ? advertised.promise : attached.promise,
+    );
     const close = vi.fn();
     mockIpcSubscribe.mockReturnValue({
       subscribed: subscribed.promise,
@@ -240,8 +239,16 @@ describe("CLI — runTui", () => {
     expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
     expect(renderInk).not.toHaveBeenCalled();
     subscribed.resolve();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledExactlyOnceWith("daemon.status"));
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    advertised.resolve({
+      id: "status",
+      result: { pid: 1, sessions: [], supportedBackends: ["tmux", "shell"] },
+    });
     await vi.waitFor(() =>
-      expect(request).toHaveBeenCalledExactlyOnceWith(
+      expect(request).toHaveBeenNthCalledWith(
+        2,
         "session.attach",
         { ui: true },
         undefined,
@@ -267,13 +274,8 @@ describe("CLI — runTui", () => {
         initialStatuses: snapshot.statuses,
       },
     });
-    expect(mockIpcRequest).toHaveBeenCalledExactlyOnceWith(
-      "/test.sock",
-      "daemon.status",
-      undefined,
-      30_000,
-      "sess1",
-    );
+    expect(vi.mocked(renderInk).mock.calls[0]?.[1]).toMatchObject({ exitOnCtrlC: false });
+    expect(mockIpcRequest).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
   });
 
@@ -281,7 +283,11 @@ describe("CLI — runTui", () => {
     const close = vi.fn();
     mockIpcSubscribe.mockReturnValue({
       subscribed: Promise.resolve(),
-      request: acceptMockResponse(async () => ({ id: "attach", error: "attach failed" })),
+      request: acceptMockResponse(async (method) =>
+        method === "daemon.status"
+          ? { id: "status", result: { pid: 1, sessions: [] } }
+          : { id: "attach", error: "attach failed" },
+      ),
       send: vi.fn(),
       connected: true,
       close,

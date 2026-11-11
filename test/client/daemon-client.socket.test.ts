@@ -32,7 +32,7 @@ it.each([
       lines.on("line", (line) => {
         const request = requestSchema.parse(JSON.parse(line));
         if (request.method === "daemon.status") {
-          socket.end(
+          socket.write(
             `${JSON.stringify({ id: request.id, result: { pid: 1, sessions: [], supportedBackends: ["tmux"] } })}\n`,
           );
         } else if (request.method === "subscribe") {

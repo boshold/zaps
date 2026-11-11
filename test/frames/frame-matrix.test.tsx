@@ -172,7 +172,7 @@ describe.each(SIZES)("dashboard frames @ $rows×$cols", ({ rows, cols }) => {
         statuses={POPULATED}
         selectedIndex={0}
         taskHistory={HISTORY}
-        banner={<DisconnectBanner />}
+        banner={<DisconnectBanner canQuitOffline />}
       />,
     );
     const frame = lastFrame() ?? "";

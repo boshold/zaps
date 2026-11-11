@@ -117,6 +117,7 @@ export async function runTui(opts: {
       />,
       {
         patchConsole: false,
+        exitOnCtrlC: false,
         // On a real pty, paint frames even when CI env vars leak into the pane
         // (a tmux server started on CI hands CI=true to every pane, and Ink's
         // Is-in-ci check would then skip every frame until unmount).

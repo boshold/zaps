@@ -21,11 +21,6 @@ import { deferred } from "../_helpers/deferred.js";
 import { fullCapabilities } from "../_helpers/ui-capabilities.js";
 
 vi.mock("../../src/lib/open.js", () => ({ openInBrowser: vi.fn() }));
-vi.mock("../../src/lib/tmux.js", () => ({
-  // `q` detaches the tmux client in managed mode; keep the mock complete so a
-  // Future test pressing `q` fails loudly instead of silently skipping it.
-  detachClient: vi.fn().mockResolvedValue(undefined),
-}));
 vi.mock("../../src/lib/notifier.js", () => ({ notifyFailure: vi.fn() }));
 
 const { notifyFailure } = await import("../../src/lib/notifier.js");

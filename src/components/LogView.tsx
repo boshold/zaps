@@ -1,4 +1,5 @@
 import { Box, Text, useInput } from "ink";
+import type { ReactNode } from "react";
 
 import { useDimensions } from "#src/hooks/useDimensions.js";
 
@@ -20,6 +21,7 @@ export interface LogViewProps {
   scrollDown?: () => void;
   /** Whether the Router has routed input to the log view (false → inert). */
   inputActive?: boolean;
+  banner?: ReactNode;
 }
 
 export function LogView({
@@ -31,6 +33,7 @@ export function LogView({
   scrollUp,
   scrollDown,
   inputActive = false,
+  banner,
 }: LogViewProps) {
   const { cols, compact } = useDimensions();
   const { icon } = useIcons();
@@ -53,7 +56,12 @@ export function LogView({
   const up = icon("overflowUp");
   const down = icon("overflowDown");
 
-  const header = <Header projectName={serviceName} statuses={[]} width={cols} compact={compact} />;
+  const header = (
+    <>
+      {banner}
+      <Header projectName={serviceName} statuses={[]} width={cols} compact={compact} />
+    </>
+  );
   const footer = (
     <Box>
       <Text dimColor>{`[j/k/${up}/${down}] scroll [esc] back `}</Text>

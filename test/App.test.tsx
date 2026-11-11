@@ -1,35 +1,13 @@
-import { EventEmitter } from "node:events";
-
 import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// Mock tmux functions to prevent real tmux commands
-vi.mock("../src/lib/tmux.js", () => ({
-  displayPopup: vi.fn().mockResolvedValue(undefined),
-  capturePane: vi.fn().mockResolvedValue(""),
-  selectPane: vi.fn().mockResolvedValue(undefined),
-  sendKeys: vi.fn().mockResolvedValue(undefined),
-  sendCtrlC: vi.fn().mockResolvedValue(undefined),
-  panePid: vi.fn().mockResolvedValue(0),
-  killPane: vi.fn().mockResolvedValue(undefined),
-  renameWindow: vi.fn().mockResolvedValue(undefined),
-  getWindowName: vi.fn().mockResolvedValue(""),
-  getWindowOption: vi.fn().mockResolvedValue(""),
-  setWindowOption: vi.fn().mockResolvedValue(undefined),
-  currentSession: vi.fn().mockResolvedValue(""),
-  showEnv: vi.fn().mockResolvedValue(""),
-  // Quitting detaches the tmux client in managed mode; without this export the
-  // Detach throws inside its own catch and the tests below pass vacuously.
-  detachClient: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("../src/lib/open.js", () => ({
   openInBrowser: vi.fn().mockResolvedValue(undefined),
 }));
 
-import type { DaemonClient } from "../src/client/daemon-client.js";
+import { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
 import { resolveUiConfig } from "../src/config/index.js";
 import type {
@@ -65,14 +43,14 @@ async function pressEscape(stdin: { write: (data: string) => void }) {
 }
 
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
-  const emitter = new EventEmitter();
-  const client = Object.assign(emitter, {
+  const client = new DaemonClient("/unused", "test");
+  vi.spyOn(client, "connected", "get").mockReturnValue(true);
+  vi.spyOn(client, "uiBound", "get").mockReturnValue(true);
+  return Object.assign(client, {
     connectUi: vi.fn(),
     disconnect: vi.fn(),
-    connected: true,
-    uiBound: true,
+    detach: vi.fn<DaemonClient["detach"]>().mockResolvedValue(undefined),
     deliverUpgradeNotice: vi.fn(),
-    session: "test",
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
       projectDir: "/fake",
@@ -94,7 +72,6 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     ),
     runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
-  return client as unknown as DaemonClient;
 }
 
 function renderApp(opts: {
@@ -363,49 +340,7 @@ describe("Keyboard routing — Dashboard", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
-  });
-
-  it("q hands the terminal back by detaching the managed tmux client", async () => {
-    const { detachClient } = await import("../src/lib/tmux.js");
-    vi.mocked(detachClient).mockClear();
-    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
-    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-
-    const { stdin, client } = renderApp({ statuses });
-
-    act(() => {
-      stdin.write("q");
-    });
-    await act(async () => {
-      /* Flush */
-    });
-
-    expect(vi.mocked(detachClient)).toHaveBeenCalled();
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
-  });
-
-  it("q in a personal tmux leaves the client attached", async () => {
-    const { detachClient } = await import("../src/lib/tmux.js");
-    vi.mocked(detachClient).mockClear();
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-
-    const { stdin, client } = renderApp({ statuses });
-
-    act(() => {
-      stdin.write("q");
-    });
-    await act(async () => {
-      /* Flush */
-    });
-
-    expect(vi.mocked(detachClient)).not.toHaveBeenCalled();
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 
   it("d destroys session (shut down) once confirmed", async () => {
@@ -622,7 +557,7 @@ describe("Keyboard routing — ctrl keys", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 
   it("ctrl+d destroys session from dashboard once confirmed", async () => {
@@ -669,7 +604,7 @@ describe("Keyboard routing — ctrl keys", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 });
 
@@ -1016,13 +951,13 @@ describe("Router — task event handling", () => {
     });
 
     // Simulate daemon task.start event
-    (client as unknown as EventEmitter).emit("task.start", "build", "Build");
+    client.emit("task.start", "build", "Build");
     await act(async () => {
       /* Flush */
     });
 
     // Simulate daemon task.complete event
-    (client as unknown as EventEmitter).emit("task.complete", "build", "Build", "success");
+    client.emit("task.complete", "build", "Build", "success");
     await act(async () => {
       /* Flush */
     });

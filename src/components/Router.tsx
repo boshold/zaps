@@ -1,4 +1,4 @@
-import { useApp as useInkApp, useInput } from "ink";
+import { Text, useApp as useInkApp, useInput } from "ink";
 import {
   useCallback,
   useEffect,
@@ -28,7 +28,6 @@ import {
 } from "#src/lib/backend/capabilities.js";
 import type { TerminalActionParams, TerminalActionResult } from "#src/lib/backend/schemas.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
-import { detachManagedClient } from "#src/lib/managed-detach.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
 
@@ -83,6 +82,7 @@ export function Router({
   const busySnapshot = useSyncExternalStore(busyServices.subscribe, busyServices.getSnapshot);
   const selectedBusy = selected !== undefined && busySnapshot.has(selected.name);
   const globalBusyRef = useRef(false);
+  const [lifecycleError, setLifecycleError] = useState<string>();
 
   // Logs state — now uses daemon client event stream
   const {
@@ -263,21 +263,23 @@ export function Router({
     }
   }, [connected, overlay]);
 
-  // Tear down the session once, shared by Ctrl-D (global), `d` (dashboard), palette.
-  function destroySession() {
+  async function destroySession() {
     if (globalBusyRef.current) {
       return;
     }
     globalBusyRef.current = true;
-    client
-      .destroySession()
-      .catch(() => {
-        /* Graceful shutdown */
-      })
-      .finally(() => {
-        client.disconnect();
-        exit();
-      });
+    setLifecycleError(undefined);
+    try {
+      await client.destroySession();
+    } catch (error) {
+      setLifecycleError(
+        `Shutdown failed. ${error instanceof Error ? error.message : String(error)}`,
+      );
+      globalBusyRef.current = false;
+      return;
+    }
+    client.disconnect();
+    exit();
   }
 
   // Every shutdown entry point (Ctrl-D, dashboard `d`, palette) goes through
@@ -291,22 +293,34 @@ export function Router({
     }
     overlay.push({
       id: SHUTDOWN_CONFIRM_ID,
-      render: () => <ShutdownConfirmOverlay onConfirm={destroySession} />,
+      render: () => <ShutdownConfirmOverlay onConfirm={() => void destroySession()} />,
     });
   }
 
-  // Detach (services keep running) — shared by `q`/Ctrl-C and the palette.
-  // In a zaps-managed tmux the client is detached first, so quitting drops the
-  // User back into their plain shell; in a personal tmux this is a no-op.
-  function detachSession() {
+  async function detachSession() {
     if (globalBusyRef.current) {
       return;
     }
+    if (!client.uiBound) {
+      if (client.canQuitOffline) {
+        globalBusyRef.current = true;
+        client.disconnect();
+        exit();
+      }
+      return;
+    }
     globalBusyRef.current = true;
-    void detachManagedClient().finally(() => {
-      client.disconnect();
-      exit();
-    });
+    setLifecycleError(undefined);
+    try {
+      await client.detach({ detachHost: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const hint = client.canQuitOffline ? "" : " Detach tmux manually.";
+      setLifecycleError(`Quit failed. ${detail}${hint}`);
+      globalBusyRef.current = false;
+      return;
+    }
+    exit();
   }
 
   async function runBusyAction(names: string[], action: () => Promise<void>) {
@@ -587,7 +601,7 @@ export function Router({
         zoom: zoomService,
         editCapture: editCaptureService,
         runTask: runTaskByKey,
-        detach: detachSession,
+        detach: () => void detachSession(),
         shutdown: confirmShutdown,
         help: openHelp,
       },
@@ -601,9 +615,9 @@ export function Router({
   // Global keys — work from any base view, survive a disconnect, yield to overlays.
   useInput(
     (input, key) => {
-      // Q / ctrl+c: detach from any view (services keep running). Works offline.
+      // Q / ctrl+c: detach from any base view (services keep running).
       if (input === "q" || (key.ctrl && input === "c")) {
-        detachSession();
+        void detachSession();
         return;
       }
       // X: acknowledge — clear sticky failure toasts. Works offline (toasts are
@@ -617,7 +631,8 @@ export function Router({
       // Below are gated behind this so a disconnect can't push an overlay that the
       // Force-pop effect would then immediately clear (one-frame flash).
       if (!connected) {
-        if (input === "r") {
+        if (input === "r" && !globalBusyRef.current) {
+          setLifecycleError(undefined);
           retry();
         }
         return;
@@ -674,6 +689,8 @@ export function Router({
     return null;
   }
 
+  const lifecycleBanner = lifecycleError && <Text color="red">{lifecycleError}</Text>;
+
   // Disconnected: show the last-known dashboard with a sticky banner regardless
   // Of which view was active, so the lost connection is never a silent blank.
   if (!connected) {
@@ -683,7 +700,13 @@ export function Router({
         selectedIndex={dashboardSel.index}
         selectedBusy={selectedBusy}
         taskHistory={taskHistory}
-        banner={<DisconnectBanner />}
+        banner={
+          <>
+            <DisconnectBanner canQuitOffline={client.canQuitOffline} />
+            {lifecycleBanner}
+          </>
+        }
+        hideHints
         input={dashboardInput}
         inputActive={flags.dashboard}
       />
@@ -702,6 +725,7 @@ export function Router({
         scrollUp={scrollUp}
         scrollDown={scrollDown}
         inputActive={flags.logs}
+        banner={lifecycleBanner}
       />
     );
   }
@@ -713,6 +737,7 @@ export function Router({
       selectedIndex={dashboardSel.index}
       selectedBusy={selectedBusy}
       taskHistory={taskHistory}
+      banner={lifecycleBanner}
       input={dashboardInput}
       inputActive={flags.dashboard}
     />

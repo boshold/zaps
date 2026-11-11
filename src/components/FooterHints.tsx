@@ -16,6 +16,7 @@ interface FooterHintsProps {
   status?: ServiceStatus & { actions?: ServiceActions };
   capabilities: BackendCapabilities;
   busy?: boolean;
+  hidden?: boolean;
   /** Footer width, used to budget the left cell so the global hints stay intact. */
   width: number;
 }
@@ -28,7 +29,17 @@ interface FooterHintsProps {
  * HelpBar. Children stay one level deep so the JSX nesting never trips
  * oxlint's `jsx-max-depth`.
  */
-export function FooterHints({ compact, status, capabilities, busy, width }: FooterHintsProps) {
+export function FooterHints({
+  compact,
+  status,
+  capabilities,
+  busy,
+  width,
+  hidden,
+}: FooterHintsProps) {
+  if (hidden) {
+    return null;
+  }
   if (compact) {
     return (
       <HelpBar

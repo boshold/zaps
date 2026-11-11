@@ -30,6 +30,18 @@ const terminalActionResponseSchema = z.union([
   z.strictObject({ id: z.string(), result: terminalActionResultSchema }),
   ipcErrorResponseSchema,
 ]);
+const handshakeResponseSchema = z.union([
+  z.strictObject({ id: z.string(), result: z.unknown().nonoptional() }),
+  ipcErrorResponseSchema,
+]);
+const detachResponseSchema = z.union([
+  z.strictObject({ id: z.string(), result: z.strictObject({ detached: z.literal(true) }) }),
+  ipcErrorResponseSchema,
+]);
+const destroyResponseSchema = z.union([
+  z.strictObject({ id: z.string(), result: z.strictObject({ destroyed: z.string() }) }),
+  ipcErrorResponseSchema,
+]);
 
 export class DaemonRequestError extends Error {
   public override readonly name: string = "DaemonRequestError";
@@ -67,26 +79,23 @@ export class DaemonClient extends EventEmitter {
   private readonly socketPath: string;
   private readonly sessionId: string;
   private sub: IpcSubscription | null = null;
-  private boundSubscription: IpcSubscription | null = null;
+  private binding: { subscription: IpcSubscription; supportsHostDetach: boolean } | null = null;
 
-  private managedHost = true;
+  private managedHost: boolean | undefined;
   private advertised = false;
   private upgradeNoticed = false;
   private connectionEpoch = 0;
   private upgradePending = false;
-  private readonly supportsHostDetach: () => boolean;
 
   public constructor(
     socketPath: string,
     sessionId: string,
-    // Trusted protocol support, supplied by connection metadata composition.
-    options: { supportsHostDetach?: () => boolean; daemonStatus?: unknown } = {},
+    options: { daemonStatus?: unknown } = {},
   ) {
     super();
     if (options.daemonStatus !== undefined) {
       this.advertised = parseDaemonStatus(options.daemonStatus).advertised;
     }
-    this.supportsHostDetach = options.supportsHostDetach ?? (() => false);
     this.socketPath = socketPath;
     this.sessionId = sessionId;
   }
@@ -114,7 +123,7 @@ export class DaemonClient extends EventEmitter {
             return;
           }
           this.connectionEpoch += 1;
-          this.boundSubscription = null;
+          this.binding = null;
           this.sub = null;
           this.emit("disconnect");
         },
@@ -124,7 +133,7 @@ export class DaemonClient extends EventEmitter {
 
   public disconnect(): void {
     this.connectionEpoch += 1;
-    this.boundSubscription = null;
+    this.binding = null;
     if (this.sub) {
       // Send detach before closing
       const subscription = this.sub;
@@ -152,23 +161,20 @@ export class DaemonClient extends EventEmitter {
   }
 
   public get uiBound(): boolean {
-    return this.sub !== null && this.boundSubscription === this.sub && this.sub.connected;
+    return this.sub !== null && this.binding?.subscription === this.sub && this.sub.connected;
+  }
+
+  public get canQuitOffline(): boolean {
+    return this.managedHost === false;
   }
 
   public async connectUi(): Promise<SessionSnapshot> {
     this.disconnect();
     const epoch = this.connectionEpoch;
-    const response = await this.request("daemon.status");
-    if (epoch !== this.connectionEpoch) {
-      throw new Error("daemon connection replaced");
-    }
-    if (response.error !== undefined) {
-      throw new DaemonRequestError(response.error, response.errorCode);
-    }
-    this.advertised = parseDaemonStatus(response.result).advertised;
+    this.advertised = false;
     this.openSubscription();
     try {
-      return await this.bindUi();
+      return await this.bindUi(true);
     } catch (error) {
       if (epoch === this.connectionEpoch) {
         this.disconnect();
@@ -177,7 +183,7 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  public async bindUi(): Promise<SessionSnapshot> {
+  public async bindUi(verifyAdvertisement = false): Promise<SessionSnapshot> {
     const subscription = this.sub;
     if (!subscription) {
       throw new Error("Not connected");
@@ -190,18 +196,40 @@ export class DaemonClient extends EventEmitter {
     };
     await subscription.subscribed;
     assertCurrent();
+    let status: ReturnType<typeof parseDaemonStatus> | undefined = undefined;
+    if (verifyAdvertisement) {
+      const reply = handshakeResponseSchema.parse(await subscription.request("daemon.status"));
+      assertCurrent();
+      if ("error" in reply) {
+        throw new DaemonRequestError(reply.error, reply.errorCode);
+      }
+      status = parseDaemonStatus(reply.result);
+      this.advertised = status.advertised;
+    }
     const snapshot = await subscription.request(
       "session.attach",
       { ui: true },
       undefined,
       (response) => {
         assertCurrent();
-        if (response.error !== undefined) {
-          throw new DaemonRequestError(response.error, response.errorCode);
+        const reply = handshakeResponseSchema.parse(response);
+        if ("error" in reply) {
+          throw new DaemonRequestError(reply.error, reply.errorCode);
         }
-        const parsed = parseSessionSnapshot(response.result, this.advertised);
+        const parsed = parseSessionSnapshot(reply.result, status?.advertised ?? this.advertised);
+        if (parsed.id !== this.sessionId) {
+          throw new Error("UI attachment returned a different session");
+        }
         this.managedHost = parsed.backend === "tmux" && parsed.managed;
-        this.boundSubscription = subscription;
+        this.binding = {
+          subscription,
+          supportsHostDetach:
+            status?.advertised === true &&
+            status.supportedBackends.includes(parsed.backend) &&
+            typeof reply.result === "object" &&
+            reply.result !== null &&
+            Object.hasOwn(reply.result, "backend"),
+        };
         this.emit("session.snapshot", parsed);
         this.noticeUpgrade();
         return parsed;
@@ -212,38 +240,42 @@ export class DaemonClient extends EventEmitter {
   }
 
   public async detach(options: { detachHost?: boolean } = {}): Promise<void> {
-    const subscription = this.sub;
+    const { sub: subscription, binding } = this;
     if (!subscription || !subscription.connected || (options.detachHost && !this.uiBound)) {
-      throw new TerminalActionError("invalid_request", "invalid_request");
+      throw new DaemonRequestError("invalid_request", "invalid_request");
     }
-    if (options.detachHost && this.managedHost && !this.supportsHostDetach()) {
-      throw new TerminalActionError(
-        "Host detach unavailable. Detach tmux manually, then restart the daemon to upgrade.",
+    if (options.detachHost && !this.canQuitOffline && !binding?.supportsHostDetach) {
+      throw new DaemonRequestError(
+        "Host detach unavailable. Restart the daemon to upgrade.",
         "backend_unavailable",
       );
     }
-    const response = await subscription.request("session.detach", options);
-    if (response.error !== undefined) {
-      throw new TerminalActionError(response.error, response.errorCode);
+    const reply = detachResponseSchema.safeParse(
+      await subscription.request("session.detach", options),
+    );
+    if (!reply.success) {
+      throw new Error("Invalid detach response");
     }
-    z.object({ detached: z.literal(true) }).parse(response.result);
-    if (this.sub !== subscription || !subscription.connected) {
+    if ("error" in reply.data) {
+      throw new DaemonRequestError(reply.data.error, reply.data.errorCode);
+    }
+    if (this.sub !== subscription || this.binding !== binding || !subscription.connected) {
       throw new Error("daemon connection closed");
     }
     this.connectionEpoch += 1;
-    this.boundSubscription = null;
+    this.binding = null;
     this.sub = null;
     subscription.close();
   }
 
   public async terminalAction(params: TerminalActionParams): Promise<TerminalActionResult> {
     const parsed = terminalActionParamsSchema.parse(params);
-    const subscription = this.boundSubscription;
+    const subscription = this.binding?.subscription;
     if (!this.uiBound || !subscription) {
       throw new TerminalActionError("invalid_request", "invalid_request");
     }
     const response = await subscription.request("terminal.action", parsed, 0);
-    if (this.boundSubscription !== subscription || !this.uiBound) {
+    if (this.binding?.subscription !== subscription || !this.uiBound) {
       throw new Error("daemon connection closed");
     }
     const reply = terminalActionResponseSchema.parse(response);
@@ -268,9 +300,15 @@ export class DaemonClient extends EventEmitter {
   }
 
   public async destroySession(): Promise<void> {
-    const res = await this.request("session.destroy");
-    if (res.error) {
-      throw new DaemonRequestError(res.error, res.errorCode);
+    const reply = destroyResponseSchema.safeParse(await this.request("session.destroy"));
+    if (!reply.success) {
+      throw new Error("Invalid shutdown response");
+    }
+    if ("error" in reply.data) {
+      throw new DaemonRequestError(reply.data.error, reply.data.errorCode);
+    }
+    if (reply.data.result.destroyed !== this.sessionId) {
+      throw new Error("Shutdown acknowledged a different session");
     }
   }
 

@@ -2,7 +2,11 @@ import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DaemonClient, TerminalActionError } from "../../src/client/daemon-client.js";
+import {
+  DaemonClient,
+  DaemonRequestError,
+  TerminalActionError,
+} from "../../src/client/daemon-client.js";
 import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
 import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
@@ -33,9 +37,14 @@ vi.mock("../../src/lib/open.js", () => ({
 }));
 
 vi.mock("../../src/lib/tmux.js", () => ({
-  // Quitting asks tmux to detach the client (managed mode only).
   detachClient: vi.fn().mockResolvedValue(undefined),
 }));
+
+const exit = vi.hoisted(() => vi.fn());
+vi.mock(import("ink"), async (importOriginal) => {
+  const ink = await importOriginal();
+  return { ...ink, useApp: () => ({ ...ink.useApp(), exit }) };
+});
 
 const { openInBrowser } = await import("../../src/lib/open.js");
 const { detachClient } = await import("../../src/lib/tmux.js");
@@ -58,6 +67,7 @@ function createMockClient(): DaemonClient {
       action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
     ),
     disconnect: vi.fn(),
+    detach: vi.fn<DaemonClient["detach"]>().mockResolvedValue(undefined),
     deliverUpgradeNotice: vi.fn(),
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
@@ -178,6 +188,7 @@ describe("Router", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
     overlay = undefined;
   });
 
@@ -708,40 +719,90 @@ describe("Router", () => {
 
   // ── global input: quit (q) ───────────────────────────────────
 
-  it("disconnects client on q", async () => {
-    const client = createMockClient();
-    const { stdin } = renderRouter({ client });
-    stdin.write("q");
-    // Quitting first asks tmux to detach the client (a no-op outside a managed
-    // Session), so the disconnect lands one microtask later.
-    await act(async () => {
-      /* Flush */
-    });
-    expect(client.disconnect).toHaveBeenCalled();
-  });
+  it.each(["q", "\x03", "palette"])(
+    "waits for bound detach before exiting via %j",
+    async (input) => {
+      const { stdin, client } = renderRouter();
+      const ack = deferred<void>();
+      vi.mocked(client.detach).mockReturnValueOnce(ack.promise);
+      if (input === "palette") {
+        await pressKey(stdin, ":");
+        await pressKey(stdin, "detach");
+        await pressKey(stdin, "\r");
+      } else {
+        await pressKey(stdin, input);
+      }
+      expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
+      expect(exit).not.toHaveBeenCalled();
+      await pressKey(stdin, "q");
+      await pressKey(stdin, "\x03");
+      expect(client.detach).toHaveBeenCalledOnce();
+      expect(client.disconnect).not.toHaveBeenCalled();
+      expect(client.destroySession).not.toHaveBeenCalled();
+      await act(async () => {
+        ack.resolve();
+      });
+      expect(exit).toHaveBeenCalledOnce();
+    },
+  );
 
-  it("detaches the tmux client on q in a managed session (F2)", async () => {
+  it("quits shell even with inherited managed tmux environment", async () => {
     vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
     vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
-    const client = createMockClient();
-    const { stdin } = renderRouter({ client });
-    stdin.write("q");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(detachClient).toHaveBeenCalledWith();
-    expect(client.disconnect).toHaveBeenCalled();
-    vi.unstubAllEnvs();
+    const { stdin, client } = renderRouter({ backend: "shell" });
+    await pressKey(stdin, "q");
+    expect(detachClient).not.toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
+    expect(client.destroySession).not.toHaveBeenCalled();
+    expect(client.stopService).not.toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledOnce();
   });
 
-  it("does not touch tmux on q in a personal session", async () => {
-    const { stdin } = renderRouter();
-    stdin.write("q");
-    await act(async () => {
-      /* Flush */
-    });
-    expect(detachClient).not.toHaveBeenCalled();
+  it.each([
+    ["ambiguous host", "backend_unavailable"],
+    ["legacy daemon", "Restart the daemon to upgrade."],
+    ["invalid acknowledgement", "Invalid detach response"],
+  ])("keeps the log view active after %s and allows another quit", async (_case, detail) => {
+    const { stdin, client, lastFrame } = renderRouter();
+    vi.mocked(client.detach).mockRejectedValueOnce(
+      new DaemonRequestError(detail, "backend_unavailable"),
+    );
+    await pressKey(stdin, "l");
+    await pressKey(stdin, "q");
+    expect(lastFrame()).toContain(detail);
+    expect(lastFrame()).toContain("Detach tmux manually");
+    expect(lastFrame()).toContain("[esc] back");
+    expect(exit).not.toHaveBeenCalled();
+    expect(client.disconnect).not.toHaveBeenCalled();
+    await pressKey(stdin, "q");
+    expect(client.detach).toHaveBeenCalledTimes(2);
+    expect(exit).toHaveBeenCalledOnce();
   });
+
+  it.each([true, false])(
+    "routes offline quit using verified host metadata (%s)",
+    async (canQuitOffline) => {
+      const client = createMockClient();
+      vi.spyOn(client, "canQuitOffline", "get").mockReturnValue(canQuitOffline);
+      const { stdin, lastFrame } = renderRouter({ client });
+      act(() => {
+        vi.mocked(client.connectUi).mockResolvedValue(makeSessionSnapshot());
+        vi.spyOn(client, "uiBound", "get").mockReturnValue(false);
+        client.emit("disconnect");
+      });
+      expect(lastFrame()).toContain(canQuitOffline ? "q quit" : "Detach tmux manually");
+      expect(lastFrame()).not.toContain("[q]uit/detach");
+      await pressKey(stdin, "q");
+      expect(client.detach).not.toHaveBeenCalled();
+      expect(detachClient).not.toHaveBeenCalled();
+      expect(client.disconnect).toHaveBeenCalledTimes(canQuitOffline ? 1 : 0);
+      expect(exit).toHaveBeenCalledTimes(canQuitOffline ? 1 : 0);
+      if (!canQuitOffline) {
+        await pressKey(stdin, "r");
+        expect(client.connectUi).toHaveBeenCalledOnce();
+      }
+    },
+  );
 
   // ── logs view input ──────────────────────────────────────────
 
@@ -1216,7 +1277,7 @@ describe("Router", () => {
     await act(async () => {
       /* Flush */
     });
-    expect(client.disconnect).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 
   // ── ctrl+d still works during per-service busy ────────────
