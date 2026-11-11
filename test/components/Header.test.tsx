@@ -9,6 +9,14 @@ function makeStatus(name: string, state: ServiceStatus["state"] = "ready"): Serv
 }
 
 describe("Header", () => {
+  it.each(["tmux", "shell"] as const)("labels %s without advertising actions", (backend) => {
+    const { lastFrame } = render(
+      <Header projectName="test" backend={backend} statuses={[]} width={40} compact />,
+    );
+    expect(lastFrame()).toContain(`[${backend}]`);
+    expect(lastFrame()).not.toContain("focus");
+  });
+
   it("renders project name", () => {
     const { lastFrame } = render(<Header projectName="my-project" statuses={[]} width={80} />);
     expect(lastFrame()).toContain("zaps:");

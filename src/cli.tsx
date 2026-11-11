@@ -47,6 +47,7 @@ import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
 import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
+import { parseSessionList } from "./lib/backend/wire.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
 import { logLinesDataSchema } from "./lib/ipc/protocol.js";
@@ -317,7 +318,7 @@ const lsCommand = command(
     const res = await requestDaemon(sock, "session.list").catch((error: unknown) => {
       if (error instanceof CliError && error.message === DAEMON_NOT_RUNNING) {
         if (format !== "text") {
-          writeData([] as SessionInfo[], format);
+          writeData([], format);
         } else {
           process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
         }
@@ -332,7 +333,7 @@ const lsCommand = command(
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
     }
-    const sessions = res.result as SessionInfo[];
+    const sessions = parseSessionList(res.result);
     if (format !== "text") {
       writeData(sessions, format);
       return;

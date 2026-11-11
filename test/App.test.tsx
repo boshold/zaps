@@ -3,6 +3,8 @@ import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { Header } from "../src/components/Header.js";
+
 vi.mock("../src/lib/open.js", () => ({
   openInBrowser: vi.fn().mockResolvedValue(undefined),
 }));
@@ -173,20 +175,28 @@ describe("App", () => {
       const ctx = useZaps();
       ({ retry } = ctx);
       return (
-        <Text>
-          {[
-            ctx.backend,
-            ctx.ui.icons,
-            ctx.capabilities.popups,
-            ctx.statuses[0]?.name,
-            ctx.statuses[0]?.actions.focus,
-            ctx.tasks[0]?.key,
-            ctx.configStale,
-            ctx.connected,
-          ]
-            .map(String)
-            .join(":")}
-        </Text>
+        <>
+          <Header
+            projectName={ctx.projectName}
+            backend={ctx.backend}
+            statuses={ctx.statuses}
+            width={100}
+          />
+          <Text>
+            {[
+              ctx.backend,
+              ctx.ui.icons,
+              ctx.capabilities.popups,
+              ctx.statuses[0]?.name,
+              ctx.statuses[0]?.actions.focus,
+              ctx.tasks[0]?.key,
+              ctx.configStale,
+              ctx.connected,
+            ]
+              .map(String)
+              .join(":")}
+          </Text>
+        </>
       );
     }
     const { lastFrame } = render(
@@ -204,10 +214,12 @@ describe("App", () => {
         <Probe />
       </AppProvider>,
     );
+    expect(lastFrame()).toContain("[tmux]");
     expect(lastFrame()).toContain("tmux:ascii:false:api:true:undefined:false:true");
     act(() => {
       client.emit("session.configReloaded", reload);
     });
+    expect(lastFrame()).toContain("[tmux]");
     expect(lastFrame()).toContain("tmux:unicode:true:api:true:undefined:false:true");
     act(() => {
       client.emit("disconnect");
@@ -217,6 +229,8 @@ describe("App", () => {
     await act(async () => {
       pending.resolve();
     });
+    expect(lastFrame()).toContain("[shell]");
+    expect(lastFrame()).not.toContain("[tmux]");
     expect(lastFrame()).toContain("shell:nerd:false:fresh:false:new-task:true:true");
   });
 

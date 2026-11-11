@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { requestDaemon, resolveCommandArgv } from "#src/cli/helpers.js";
 import { createAutoStartRequest } from "#src/cli/sentra.js";
+import { parseSessionList } from "#src/lib/backend/wire.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import { logLinesDataSchema } from "#src/lib/ipc/protocol.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
@@ -25,7 +26,6 @@ import {
 } from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
-import type { SessionInfo } from "#src/lib/session/resolve.js";
 
 const taskResultSchema = z.object({ success: z.boolean() });
 
@@ -103,7 +103,7 @@ async function startMcpServer(
     if (listRes.error) {
       throw new Error(listRes.error);
     }
-    const sessions = listRes.result as SessionInfo[];
+    const sessions = parseSessionList(listRes.result);
     if (sessionArg) {
       try {
         return resolveTargetSession(sessions, sessionArg).id;

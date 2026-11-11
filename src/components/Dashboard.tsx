@@ -51,7 +51,7 @@ export function Dashboard({
   input,
   inputActive = false,
 }: DashboardProps) {
-  const { projectName, configStale, ui, capabilities } = useZaps();
+  const { projectName, backend, configStale, ui, capabilities } = useZaps();
   const { cols, compact } = useDimensions();
   const { icon } = useIcons();
   const selected = statuses[selectedIndex];
@@ -77,6 +77,7 @@ export function Dashboard({
       {banner}
       <Header
         projectName={projectName}
+        backend={backend}
         statuses={statuses}
         width={headerWidth}
         compact={compact}

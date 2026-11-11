@@ -1,5 +1,6 @@
 import { Box, Text } from "ink";
 
+import type { BackendId } from "#src/lib/backend/types.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { buildRule } from "./dashboardRule.js";
@@ -8,6 +9,7 @@ import { useIcons } from "./theme/IconTheme.js";
 
 interface HeaderProps {
   projectName: string;
+  backend?: BackendId;
   statuses: ServiceStatus[];
   width: number;
   compact?: boolean;
@@ -18,6 +20,7 @@ interface HeaderProps {
 
 export function Header({
   projectName,
+  backend,
   statuses,
   width,
   compact,
@@ -29,7 +32,12 @@ export function Header({
     dividerCol === undefined ? undefined : { char: icon("dividerTop"), col: dividerCol };
   return (
     <Box flexDirection="column">
-      <HeaderRow projectName={projectName} statuses={statuses} configStale={configStale} />
+      <HeaderRow
+        projectName={projectName}
+        backend={backend}
+        statuses={statuses}
+        configStale={configStale}
+      />
       {!compact && <Text color="gray">{buildRule(width, icon("divider"), junction)}</Text>}
     </Box>
   );

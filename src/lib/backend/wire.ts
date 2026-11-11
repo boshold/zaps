@@ -186,6 +186,10 @@ function parseSessionListEntry(input: unknown) {
     capabilities: { ...unavailableCapabilities },
   };
 }
+function parseSessionList(input: unknown) {
+  return z.array(z.unknown()).parse(input).map(parseSessionListEntry);
+}
+
 const daemonStatusSchema = z.object({
   pid: z.number().int(),
   supportedBackends: z.array(backendIdSchema).optional(),
@@ -223,6 +227,7 @@ export {
   sessionSnapshotSchema,
   parseSessionSnapshot,
   parseSessionListEntry,
+  parseSessionList,
   daemonStatusSchema,
   parseDaemonStatus,
 };

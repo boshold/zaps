@@ -1,7 +1,5 @@
-import { z } from "zod";
-
 import { sessionId } from "#src/daemon/session.js";
-import { parseSessionListEntry } from "#src/lib/backend/wire.js";
+import { parseSessionList } from "#src/lib/backend/wire.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
 
 import { CliError, requestDaemon } from "./helpers.js";
@@ -14,11 +12,11 @@ function readDaemonResult(response: IpcResponse): unknown {
   return response.result;
 }
 
-type ListedSession = ReturnType<typeof parseSessionListEntry>;
+type ListedSession = ReturnType<typeof parseSessionList>[number];
 
 async function listStartupSessions(sock: string): Promise<ListedSession[]> {
   const response = await requestDaemon(sock, "session.list");
-  return z.array(z.unknown()).parse(readDaemonResult(response)).map(parseSessionListEntry);
+  return parseSessionList(readDaemonResult(response));
 }
 
 function findStartupSession(sessions: ListedSession[], configPath: string, projectDir: string) {

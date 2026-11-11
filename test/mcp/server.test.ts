@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionId } from "../../src/daemon/session.js";
+import { unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
 import { errorsParamsSchema, issuesParamsSchema } from "../../src/lib/sentra/schemas.js";
 
@@ -140,6 +141,63 @@ describe("startMcpServer", () => {
     vi.restoreAllMocks();
   });
 
+  it.each([
+    { backend: "unknown", capabilities: unavailableCapabilities },
+    { backend: "shell" },
+    { capabilities: unavailableCapabilities },
+    { backend: "shell", capabilities: { ...unavailableCapabilities, panes: true } },
+    { backend: "shell", capabilities: unavailableCapabilities, tmuxSession: "fake" },
+  ])("rejects malformed explicit session metadata %j before actions", async (metadata) => {
+    setSessionList({
+      id: "L",
+      result: [
+        {
+          id: SESSION,
+          name: "proj",
+          projectDir: process.cwd(),
+          configPath: "/project/.zaps.mts",
+          createdAt: 1,
+          ...metadata,
+        },
+      ],
+    });
+    mockIpcRequest.mockClear();
+    await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow();
+    expect(mockIpcRequest).toHaveBeenCalledOnce();
+    expect(mockIpcRequest).toHaveBeenCalledWith(SOCK, "session.list", undefined, 30_000);
+  });
+
+  it("preserves shell service action metadata", async () => {
+    setSessionList({
+      id: "L",
+      result: [
+        {
+          id: SESSION,
+          name: "proj",
+          projectDir: process.cwd(),
+          configPath: "/project/.zaps.mts",
+          createdAt: 1,
+          backend: "shell",
+          capabilities: unavailableCapabilities,
+        },
+      ],
+    });
+    const services = [
+      {
+        name: "optional",
+        state: "unavailable",
+        ports: [],
+        retryCount: 0,
+        actions: { focus: false, zoom: false, editOutput: false },
+      },
+    ];
+    setMethodResult({ id: "r", result: services });
+    const result = await registeredTools.get("services_list")!.cb({});
+    expect(result).toEqual({
+      content: [{ type: "text", text: JSON.stringify(services, null, 2) }],
+    });
+  });
+
   // --- Setup ---
 
   describe("setup", () => {
@@ -193,7 +251,17 @@ describe("startMcpServer", () => {
 
       setSessionList({
         id: "L",
-        result: [{ id: "sess-A", name: "proj", projectDir: process.cwd() }],
+        result: [
+          {
+            id: "sess-A",
+            name: "proj",
+            projectDir: process.cwd(),
+            configPath: "/project/.zaps.mts",
+            createdAt: 1,
+            backend: "tmux",
+            capabilities: { ...unavailableCapabilities, panes: true },
+          },
+        ],
       });
       await registeredTools.get("services_list")!.cb({});
       expect(mockIpcRequest).toHaveBeenLastCalledWith(
@@ -207,7 +275,17 @@ describe("startMcpServer", () => {
       // Simulate `zaps down && zaps up` minting a new id for the same project.
       setSessionList({
         id: "L",
-        result: [{ id: "sess-B", name: "proj", projectDir: process.cwd() }],
+        result: [
+          {
+            id: "sess-B",
+            name: "proj",
+            projectDir: process.cwd(),
+            configPath: "/project/.zaps.mts",
+            createdAt: 1,
+            backend: "shell",
+            capabilities: unavailableCapabilities,
+          },
+        ],
       });
       await registeredTools.get("services_list")!.cb({});
       expect(mockIpcRequest).toHaveBeenLastCalledWith(
@@ -589,6 +667,41 @@ describe("startMcpServer", () => {
   // --- Resources ---
 
   describe("resources", () => {
+    it("validates a fresh shell binding for resource calls", async () => {
+      const resource = registeredResources.get("service-logs")!;
+      setSessionList({
+        id: "L",
+        result: [
+          {
+            id: "shell-resource",
+            name: "proj",
+            projectDir: process.cwd(),
+            configPath: "/project/.zaps.mts",
+            createdAt: 1,
+            backend: "shell",
+            capabilities: unavailableCapabilities,
+          },
+        ],
+      });
+      setMethodResult({ id: "r", result: ["shell output"] });
+      const result = await resource.cb({ href: "zaps://logs/api" }, { serviceName: "api" });
+      expect(mockIpcRequest).toHaveBeenLastCalledWith(
+        SOCK,
+        "logs.snapshot",
+        { service: "api" },
+        30_000,
+        "shell-resource",
+      );
+      expect(result).toEqual({
+        contents: [{ uri: "zaps://logs/api", text: "shell output", mimeType: "text/plain" }],
+      });
+      setSessionList({
+        id: "L",
+        result: [{ id: SESSION, name: "proj", projectDir: process.cwd(), backend: "unknown" }],
+      });
+      await expect(resource.template.config.list()).rejects.toThrow();
+    });
+
     it("list callback returns URI per service", async () => {
       const statuses = [
         { name: "api", state: "ready" },
