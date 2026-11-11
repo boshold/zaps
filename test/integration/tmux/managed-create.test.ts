@@ -1,9 +1,15 @@
-import { afterEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 
+import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
+
+import { sessionListEntrySchema } from "#src/lib/backend/schemas.js";
 import { MANAGED_SOCKET } from "#src/lib/managed-tmux.js";
 
 import type { Project } from "../helpers/managed.js";
 import {
+  clients,
   createProject,
   managed,
   managedSessionExists,
@@ -65,6 +71,15 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
       "remain-on-exit on",
     );
 
+    const reused = await runZaps(["up", "-d"], project.dir, project.runtimeDir);
+    expect(reused.code).toBe(0);
+    expect(reused.stdout).toContain("already running");
+    const legacy = await runZaps(["up", "-d"], project.dir, project.runtimeDir, {
+      ZAPS_AUTO_TMUX: "0",
+    });
+    expect(legacy.code).toBe(1);
+    expect(legacy.stderr).toContain("zaps must be run from inside a tmux session");
+
     const background = await runZaps(["-b"], project.dir, project.runtimeDir);
     expect(background.code).toBe(0);
     expect(background.stdout).toContain("already running (tmux)");
@@ -98,17 +113,93 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     project = await createProject(config);
     await release();
 
+    const { runtimeDir } = project;
     const result = await runZaps(
       [],
       project.dir,
       project.runtimeDir,
       { ZAPS_TEST_BOOTSTRAP_VALUE: "caller" },
-      { detachFrom: project.sessionName, ready: async () => serviceAnswers(port) },
+      {
+        detachFrom: project.sessionName,
+        ready: async () => {
+          if (!(await serviceAnswers(port))) {
+            return false;
+          }
+          return !fs
+            .readdirSync(path.join(runtimeDir, "zaps"))
+            .some((name) => name.startsWith("bootstrap-"));
+        },
+      },
     );
     expect(result.code, result.stdout + result.stderr).toBe(0);
     expect(result.stdout).toContain("detached");
     expect(await serviceAnswers(port)).toBe(true);
     await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
+  });
+
+  it("returns a foreground backend conflict and removes only the provisional managed host", async () => {
+    const candidate = await createProject(`import fs from "node:fs";
+      import path from "node:path";
+      export async function config(lib) {
+        const root = process.env.ZAPS_TEST_GATE_ROOT;
+        if (root && process.env.ZAPS_MANAGED_TMUX === "1") {
+          fs.writeFileSync(path.join(root, "inner-entered"), "");
+          while (!fs.existsSync(path.join(root, "release-inner"))) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        }
+        return lib.define({ name: "shell-race", services: {
+          worker: { start: "exit 99", flags: { start: false } }
+        } });
+      }`);
+    project = candidate;
+    const release = path.join(candidate.dir, "release-inner");
+    let recover = false;
+    const foreground = runZaps(
+      [],
+      candidate.dir,
+      candidate.runtimeDir,
+      { ZAPS_TEST_GATE_ROOT: candidate.dir },
+      { detachFrom: candidate.sessionName, ready: async () => recover },
+    );
+    try {
+      expect(
+        await pollUntil(async () => fs.existsSync(path.join(candidate.dir, "inner-entered")), 8000),
+      ).toBe(true);
+      expect(await clients(candidate.sessionName)).toHaveLength(1);
+      const shell = await runZaps(["-b"], candidate.dir, candidate.runtimeDir);
+      expect(shell.code, shell.stderr).toBe(0);
+      fs.writeFileSync(release, "");
+      const result = await foreground;
+      expect(result.code, result.stdout + result.stderr).toBe(1);
+      expect(result.stdout + result.stderr).toContain("backend_conflict");
+      expect(result.stdout).not.toContain("services still running");
+      await expect(managedSessionExists(candidate.sessionName)).resolves.toBe(false);
+      const listed = await runZaps(["ls", "--json"], candidate.dir, candidate.runtimeDir);
+      const sessions = z.array(sessionListEntrySchema).parse(JSON.parse(listed.stdout));
+      expect(sessions).toMatchObject([{ name: "shell-race", backend: "shell" }]);
+    } finally {
+      recover = true;
+      fs.writeFileSync(release, "");
+      await foreground;
+    }
+  });
+
+  it("reports a detached startup hook failure and keeps the registered tmux session", async () => {
+    project = await createProject(`export function config(lib) {
+      return lib.define({ name: "managed-hook-failure",
+        hooks: { onBeforeStart: () => { throw new Error("managed startup hook failed"); } },
+        services: { worker: { start: "exit 99", flags: { start: false } } }
+      });
+    }`);
+    const result = await runZaps(["up", "-d"], project.dir, project.runtimeDir);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("managed startup hook failed");
+    expect(result.stdout).not.toContain("started (detached");
+    await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
+    const listed = await runZaps(["ls", "--json"], project.dir, project.runtimeDir);
+    const sessions = z.array(sessionListEntrySchema).parse(JSON.parse(listed.stdout));
+    expect(sessions).toMatchObject([{ backend: "tmux", tmuxSession: project.sessionName }]);
   });
 
   it("propagates an inner failure and leaves no session behind (F4)", async () => {

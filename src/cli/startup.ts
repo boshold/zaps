@@ -79,16 +79,18 @@ async function reportDetachedStartup(
       if (!sub) {
         throw new CliError("No startup subscription.");
       }
-      await sub.ready;
+      await sub.subscribed;
       const params = session.backend === undefined ? undefined : { startup: true };
       const startRes = await sub.request("services.startAll", params, 0);
       z.strictObject({ started: z.literal("all") }).parse(readDaemonResult(startRes));
-      const listRes = await sub.request("services.list", undefined, 0);
-      const statuses = z
-        .array(z.unknown())
-        .parse(readDaemonResult(listRes))
-        .map((status) => parseServiceStatus(status));
-      ctl.anyError = statuses.some((s) => s.state === "error");
+      if (session.backend === undefined) {
+        const listRes = await sub.request("services.list", undefined, 0);
+        const statuses = z
+          .array(z.unknown())
+          .parse(readDaemonResult(listRes))
+          .map((status) => parseServiceStatus(status));
+        ctl.anyError = statuses.some((s) => s.state === "error");
+      }
       finish(() => resolve());
     };
 
@@ -140,10 +142,11 @@ function requireUiTerminal(): void {
   }
 }
 
-function renderStartupError(error: unknown): never {
-  return renderCliError(
-    error instanceof StartupArgumentError ? `${error.code}: ${error.message}` : error,
-  );
+function renderStartupError(error: unknown, report?: (message: string) => void): never {
+  const rendered =
+    error instanceof StartupArgumentError ? `${error.code}: ${error.message}` : error;
+  report?.(rendered instanceof Error ? rendered.message : String(rendered));
+  return renderCliError(rendered);
 }
 
 async function startShell(project: ProjectIdentity, attachUi: boolean): Promise<void> {
@@ -172,7 +175,11 @@ async function startShell(project: ProjectIdentity, attachUi: boolean): Promise<
   await reportDetachedStartup(sock, session);
 }
 
-async function startTmux(project: ProjectIdentity, attachUi: boolean): Promise<void> {
+async function startTmux(
+  project: ProjectIdentity,
+  attachUi: boolean,
+  onUiReady?: () => void,
+): Promise<void> {
   const originPane = await currentPaneId();
   const tmuxSession = await currentSession(originPane);
   const sock = await ensureDaemon(resolveCommandArgv());
@@ -198,7 +205,7 @@ async function startTmux(project: ProjectIdentity, attachUi: boolean): Promise<v
   const focusPane = session.focusPane ?? tuiPaneId;
   if (tuiPaneId === originPane) {
     await selectPane(focusPane);
-    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
+    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true, onReady: onUiReady });
   } else {
     await sendKeys(
       tuiPaneId,
@@ -208,11 +215,18 @@ async function startTmux(project: ProjectIdentity, attachUi: boolean): Promise<v
   }
 }
 
+function reportExisting(session: Pick<ListedSession, "name" | "backend">): void {
+  process.stdout.write(
+    `Session "${session.name}" is already running (${session.backend}). Run 'zaps attach' to open the UI.\n`,
+  );
+}
+
 async function launchTmux(
   project: ProjectIdentity,
   attachUi: boolean,
   sock: string,
   existing: ListedSession | undefined,
+  onUiReady?: () => void,
 ): Promise<void> {
   const bootstrap = await ensureTmuxContext({
     configPath: project.configPath,
@@ -232,11 +246,17 @@ async function launchTmux(
   });
   if (!bootstrap.proceed) {
     process.exitCode = bootstrap.exitCode;
-  } else if (existing) {
-    await runTui({ sessionId: existing.id, socketPath: sock });
-  } else {
-    await startTmux(project, attachUi);
+    return;
   }
+  if (!existing) {
+    await startTmux(project, attachUi, onUiReady);
+    return;
+  }
+  if (attachUi) {
+    await runTui({ sessionId: existing.id, socketPath: sock, onReady: onUiReady });
+    return;
+  }
+  reportExisting(existing);
 }
 
 async function listRunningSessions(sock: string) {
@@ -257,6 +277,7 @@ async function runStartup(
   intent: StartupIntent,
   sessionSelector: string | undefined,
   managedBootstrap: boolean,
+  onUiReady?: () => void,
 ): Promise<void> {
   if (!intent.background && !intent.detach) {
     requireUiTerminal();
@@ -285,10 +306,8 @@ async function runStartup(
 
   const { backend, attachUi } = selectStartupBackend(intent, existing?.backend);
   const project = { configPath, projectDir, resolvedProjectDir: config.projectDir };
-  if (existing && !attachUi) {
-    process.stdout.write(
-      `Session "${existing.name}" is already running (${backend}). Run 'zaps attach' to open the UI.\n`,
-    );
+  if (existing && !attachUi && (intent.background || backend === "shell")) {
+    reportExisting(existing);
     return;
   }
   if (backend === "shell") {
@@ -300,7 +319,7 @@ async function runStartup(
     return;
   }
 
-  await launchTmux(project, attachUi, sock, existing);
+  await launchTmux(project, attachUi, sock, existing, onUiReady);
 }
 
-export { renderStartupError, requireUiTerminal, runStartup };
+export { renderStartupError, reportDetachedStartup, requireUiTerminal, runStartup };

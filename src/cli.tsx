@@ -4,7 +4,11 @@ import type { Command } from "cleye";
 
 import { StartupArgumentError, parseStartupArguments } from "./cli/backend-selection.js";
 import type { StartupIntent } from "./cli/backend-selection.js";
-import { MANAGED_BOOTSTRAP_FLAG, reattachManaged } from "./cli/bootstrap-tmux.js";
+import {
+  MANAGED_BOOTSTRAP_FLAG,
+  managedBootstrapReporter,
+  reattachManaged,
+} from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -156,14 +160,17 @@ const upCommand = command(
     if (!startupInvocation) {
       renderCliError(new StartupArgumentError("invalid_request", "Invalid startup arguments."));
     }
+    const report = startupInvocation.managedBootstrap ? managedBootstrapReporter() : undefined;
     try {
       await runStartup(
         startupInvocation.intent,
         globalSession(),
         startupInvocation.managedBootstrap,
+        report ? () => report({ exitCode: 0 }) : undefined,
       );
+      report?.({ exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) });
     } catch (error) {
-      renderStartupError(error);
+      renderStartupError(error, report ? (message) => report({ exitCode: 1, message }) : undefined);
     }
   },
 );

@@ -440,7 +440,9 @@ export const sessionHandlers: Record<
         }
         return ipcOk(req.id, { started: options.names });
       }
-      await (options && "startup" in options ? session.startPromise : session.manager.startAll());
+      await (options && "startup" in options
+        ? session.waitForInitialStartup()
+        : session.manager.startAll());
       return ipcOk(req.id, { started: "all" });
     } catch (error) {
       return ipcErr(req.id, error);

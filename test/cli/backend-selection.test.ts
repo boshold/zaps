@@ -239,6 +239,8 @@ describe("existing CLI ownership", () => {
     ["-h"],
     ["help"],
     ["help", "up"],
+    ["up", "-dh"],
+    ["up", "-dsh"],
     ["up", "--help"],
     ["--version"],
     ["-V"],

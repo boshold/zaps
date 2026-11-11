@@ -268,6 +268,10 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       `tmux -L zaps attach -t =${project.sessionName}`,
     );
 
+    const detached = await runZaps(["up", "-d"], project.dir, project.runtimeDir, inside);
+    expect(detached.code).toBe(1);
+    expect(detached.stderr).toContain("is running in a zaps-managed tmux");
+
     const attach = await runZaps(["attach"], project.dir, project.runtimeDir, inside, {});
     expect(attach.code).toBe(1);
     expect(attach.stdout + attach.stderr).toContain(
@@ -320,6 +324,13 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       expect(result.stdout + result.stderr).toContain(
         `is running inside tmux session '${personalSession}'. Attach from within tmux, or run zaps down first.`,
       );
+      const detached = await runZaps(["up", "-d"], project.dir, project.runtimeDir);
+      expect(detached.code).toBe(1);
+      expect(detached.stderr).toContain(`is running inside tmux session '${personalSession}'`);
+      const background = await runZaps(["-b"], project.dir, project.runtimeDir);
+      expect(background.code).toBe(0);
+      expect(background.stdout).toContain("already running (tmux)");
+
       // Nothing was spawned on the managed socket for it.
       expect(await managedSessionExists(project.sessionName)).toBe(false);
     } finally {

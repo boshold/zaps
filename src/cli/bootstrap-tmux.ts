@@ -1,5 +1,9 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
+
+import { z } from "zod";
 
 import { daemonDir, isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
@@ -11,18 +15,15 @@ import {
   buildNewWindowArgs,
   buildRespawnArgs,
   buildSetPaneOptionArgs,
-  buildSetSessionOptionArgs,
   hasManagedSession,
   killStaleSession,
   managedSessionName,
   tmuxAvailable,
-  waitForPaneSettled,
 } from "#src/lib/managed-tmux.js";
 import {
   ENVIRONMENT_SNAPSHOT_VARIABLE,
   captureEnvironment,
   consumeEnvironmentSnapshot,
-  removeEnvironmentSnapshot,
   writeEnvironmentSnapshot,
 } from "#src/lib/request-context.js";
 import { defaultTmux } from "#src/lib/tmux-default.js";
@@ -35,6 +36,42 @@ import { decideTmuxContext } from "./tmux-context.js";
 import type { DaemonSessionView } from "./tmux-context.js";
 
 const MANAGED_BOOTSTRAP_FLAG = "--managed-bootstrap";
+
+const execFileAsync = promisify(execFile);
+const resultFile = "result.json";
+const bootstrapOutcomeSchema = z.strictObject({
+  exitCode: z.number().int().min(0).max(255),
+  message: z.string().optional(),
+});
+type BootstrapOutcome = z.infer<typeof bootstrapOutcomeSchema>;
+
+function managedBootstrapReporter(): ((outcome: BootstrapOutcome) => void) | undefined {
+  const snapshot = process.env[ENVIRONMENT_SNAPSHOT_VARIABLE];
+  if (!snapshot || !process.env.TMUX || !process.env.TMUX_PANE) {
+    return undefined;
+  }
+  const directory = path.dirname(snapshot);
+  if (!path.basename(directory).startsWith("bootstrap-")) {
+    return undefined;
+  }
+  let reported = false;
+  return (outcome) => {
+    if (reported) {
+      return;
+    }
+    reported = true;
+    try {
+      fs.writeFileSync(path.join(directory, resultFile), JSON.stringify(outcome), {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+    }
+  };
+}
 
 function consumeManagedEnvironmentSnapshot(): void {
   const {
@@ -65,10 +102,6 @@ function consumeManagedEnvironmentSnapshot(): void {
 /** How long the inner `zaps up -d` may take to settle before we give up (F4). */
 const DETACHED_SETTLE_TIMEOUT_MS = 120_000;
 
-/** How long to wait for a foreground-created session to appear before options. */
-const SESSION_VISIBLE_TIMEOUT_MS = 5000;
-
-/** Gap between `has-session` probes while waiting for the session to appear. */
 const SESSION_POLL_MS = 25;
 
 /** Printed to the plain terminal after the tmux client goes away (F2). */
@@ -85,11 +118,18 @@ type BootstrapTmux = Pick<
   "capturePane" | "displayMessage" | "hasSession" | "killSession" | "listPanes" | "tmuxVersion"
 >;
 
+interface ForegroundTmuxClient {
+  result: Promise<number>;
+  close(): void;
+}
+
 interface BootstrapDeps {
   io: BootstrapIo;
   tmux: BootstrapTmux;
   /** Run `tmux <args>`; `inherit` hands the current TTY to the child. */
   runTmux: (args: string[], inherit: boolean) => Promise<number>;
+  createTmux: (args: string[]) => Promise<string>;
+  startTmuxClient: (args: string[]) => ForegroundTmuxClient;
   /** This project's live daemon session, or undefined (daemon down / none). */
   daemonSession: (
     configPath: string,
@@ -103,8 +143,6 @@ interface BootstrapDeps {
   size: () => { height: number; width: number } | undefined;
   /** How long `up -d` may take to settle before the outer CLI gives up. */
   settleTimeoutMs: number;
-  /** How long to wait for a foreground-created session before giving up on options. */
-  sessionVisibleTimeoutMs: number;
 }
 
 /** Outcome for the caller: continue with the normal in-tmux flow, or exit. */
@@ -118,13 +156,20 @@ interface EnsureTmuxContextOptions {
   deps?: Partial<BootstrapDeps>;
 }
 
-/** Run `tmux <args>` to completion, resolving its exit code. */
-async function spawnTmux(args: string[], inherit: boolean): Promise<number> {
-  return new Promise((resolve) => {
-    const child = spawn("tmux", args, { stdio: inherit ? "inherit" : "ignore" });
+function startTmuxProcess(args: string[], inherit: boolean): ForegroundTmuxClient {
+  const child = spawn("tmux", args, { stdio: inherit ? "inherit" : "ignore" });
+  const result = new Promise<number>((resolve) => {
     child.on("error", () => resolve(1));
     child.on("close", (code) => resolve(code ?? 1));
   });
+  return {
+    result,
+    close() {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill();
+      }
+    },
+  };
 }
 
 /** Ask the daemon (if up) for this project's session — F6/F9 need it first. */
@@ -161,7 +206,12 @@ function defaultDeps(): BootstrapDeps {
       },
     },
     tmux: tmuxFor(MANAGED_SOCKET),
-    runTmux: spawnTmux,
+    runTmux: async (args, inherit) => startTmuxProcess(args, inherit).result,
+    createTmux: async (args) => {
+      const { stdout } = await execFileAsync("tmux", args);
+      return stdout;
+    },
+    startTmuxClient: (args) => startTmuxProcess(args, true),
     daemonSession: daemonSessionFor,
     // Env-based handle on purpose: this asks about the tmux we are INSIDE, which
     // Is the managed server only when the marker env says so.
@@ -181,7 +231,6 @@ function defaultDeps(): BootstrapDeps {
       return columns && rows ? { width: columns, height: rows } : undefined;
     },
     settleTimeoutMs: DETACHED_SETTLE_TIMEOUT_MS,
-    sessionVisibleTimeoutMs: SESSION_VISIBLE_TIMEOUT_MS,
   };
 }
 
@@ -189,61 +238,20 @@ function defaultDeps(): BootstrapDeps {
  * Pass the current environment through a private one-time file. Forwarding all
  * values as tmux `-e` arguments exceeds tmux's command-size limit in large shells.
  */
-function managedEnvironment(): { env: Record<string, string>; snapshotPath: string } {
+function managedEnvironment(directory: string): Record<string, string> {
   const env = captureEnvironment();
   Reflect.deleteProperty(env, "TMUX");
   Reflect.deleteProperty(env, "TMUX_PANE");
   Reflect.deleteProperty(env, "ZAPS_TMUX_SOCKET");
   Reflect.deleteProperty(env, "ZAPS_MANAGED_TMUX");
   Reflect.deleteProperty(env, ENVIRONMENT_SNAPSHOT_VARIABLE);
-  const snapshotPath = writeEnvironmentSnapshot(daemonDir(), env);
+  const snapshotPath = writeEnvironmentSnapshot(directory, env);
   const routingEnv = Object.fromEntries(
     ["XDG_RUNTIME_DIR", "ZAPS_SOCKET_PATH"]
       .map((key) => [key, env[key]] as const)
       .filter((entry): entry is readonly [string, string] => entry[1] !== undefined),
   );
-  return {
-    env: { ...routingEnv, [ENVIRONMENT_SNAPSHOT_VARIABLE]: snapshotPath },
-    snapshotPath,
-  };
-}
-
-/** First pane of `name` on the managed socket — the bootstrap (TUI) pane. */
-async function bootstrapPaneId(deps: BootstrapDeps, name: string): Promise<string | undefined> {
-  const panes = await deps.tmux.listPanes(name).catch(() => []);
-  return panes[0]?.id;
-}
-
-/**
- * Apply what a managed session needs, best-effort:
- * - `destroy-unattached off`, so a user config that kills unattached sessions
- *   can't take the services down the moment the client detaches;
- * - pane-level `remain-on-exit on` on the bootstrap pane, which is what makes
- *   the `-d` exit code readable and (in P03) the dead pane revivable.
- */
-async function applyManagedOptions(
-  deps: BootstrapDeps,
-  name: string,
-  paneId: string | undefined,
-): Promise<void> {
-  await deps.runTmux(buildSetSessionOptionArgs(name, "destroy-unattached", "off"), false);
-  if (paneId) {
-    await deps.runTmux(buildSetPaneOptionArgs(paneId, "remain-on-exit", "on"), false);
-  }
-}
-
-/** Bounded poll for the session to exist — it is created by a child we don't await. */
-async function waitForSession(deps: BootstrapDeps, name: string): Promise<boolean> {
-  const deadline = Date.now() + deps.sessionVisibleTimeoutMs;
-  /* eslint-disable no-await-in-loop -- bounded poll on a real condition */
-  while (Date.now() < deadline) {
-    if (await hasManagedSession(name, deps.tmux)) {
-      return true;
-    }
-    await new Promise((resolve) => setTimeout(resolve, SESSION_POLL_MS));
-  }
-  /* eslint-enable no-await-in-loop */
-  return false;
+  return { ...routingEnv, [ENVIRONMENT_SNAPSHOT_VARIABLE]: snapshotPath };
 }
 
 /**
@@ -257,127 +265,208 @@ async function reportDetached(deps: BootstrapDeps, name: string): Promise<void> 
   }
 }
 
-/**
- * Wait for a foreground-created session, then apply its options. Best-effort by
- * design: a missing option never justifies failing the session the user is
- * already looking at.
- */
-async function applyOptionsWhenVisible(deps: BootstrapDeps, name: string): Promise<void> {
-  try {
-    if (await waitForSession(deps, name)) {
-      await applyManagedOptions(deps, name, await bootstrapPaneId(deps, name));
-    }
-  } catch {
-    // Nothing to recover: the session lives on without the option.
-  }
+const provisionedSessionSchema = z.tuple([
+  z.string().regex(/^\$\d+$/u),
+  z.string().regex(/^%\d+$/u),
+  z.string().regex(/^\d+$/u),
+]);
+
+interface ManagedLaunch {
+  name: string;
+  configPath: string;
+  projectDir: string;
+  detach: boolean;
 }
 
-/**
- * F1: create the managed session in the foreground and hand it the terminal.
- * The child owns the TTY until the user detaches or the session ends, so the
- * session options are applied concurrently as soon as the session shows up.
- * The outer exit code mirrors the tmux client (per 50_api).
- */
-async function spawnAttached(deps: BootstrapDeps, name: string): Promise<BootstrapResult> {
-  const environment = managedEnvironment();
-  const args = buildCreateArgs({
-    name,
-    zapsArgv: [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux"],
-    env: environment.env,
-  });
-  try {
-    const attached = deps.runTmux(args, true);
-    const options = applyOptionsWhenVisible(deps, name);
-
-    const exitCode = await attached;
-    await options;
-    await reportDetached(deps, name);
-    return { proceed: false, exitCode };
-  } finally {
-    removeEnvironmentSnapshot(environment.snapshotPath);
-  }
+interface ProvisionedSession {
+  session: string;
+  pane: string;
+  serverPid: string;
 }
 
-/**
- * F4: create the session detached, wait for the inner `zaps up -d` to settle,
- * then report. On failure the inner output is replayed and the half-created
- * session is killed so no orphan is left behind.
- *
- * The session is created running the plain shell and only *then* respawned with
- * the zaps command: `remain-on-exit` has to be in place before the command can
- * exit, otherwise a fast failure (bad config) takes the pane — and with it the
- * exit code and the error text — down with it.
- */
-async function spawnDetached(
+async function provisionSession(
   deps: BootstrapDeps,
   name: string,
-  configPath: string,
-  projectDir: string,
-): Promise<BootstrapResult> {
-  const environment = managedEnvironment();
-  const args = buildCreateArgs({ name, detach: true, env: environment.env, ...deps.size() });
-  if ((await deps.runTmux(args, false)) !== 0) {
-    removeEnvironmentSnapshot(environment.snapshotPath);
-    deps.io.stderr(`Failed to create managed tmux session ${name}.\n`);
-    return { proceed: false, exitCode: 1 };
-  }
+  env: Record<string, string>,
+): Promise<ProvisionedSession> {
+  const args = buildCreateArgs({ name, detach: true, env, ...deps.size() });
+  args.splice(3, 0, "-P", "-F", "#{session_id}|#{pane_id}|#{pid}");
+  const stdout = await deps.createTmux(args);
+  const [session, pane, serverPid] = provisionedSessionSchema.parse(stdout.trim().split("|"));
+  return { session, pane, serverPid };
+}
 
-  const paneId = await bootstrapPaneId(deps, name);
-  await applyManagedOptions(deps, name, paneId);
-  if (!paneId) {
-    removeEnvironmentSnapshot(environment.snapshotPath);
-    deps.io.stderr(`Managed tmux session ${name} vanished before it could start.\n`);
-    await killStaleSession(name, deps.tmux);
-    return { proceed: false, exitCode: 1 };
+function readOutcome(directory: string): BootstrapOutcome | undefined {
+  try {
+    const result = bootstrapOutcomeSchema.safeParse(
+      JSON.parse(fs.readFileSync(path.join(directory, resultFile), "utf8")),
+    );
+    return result.success ? result.data : undefined;
+  } catch (error) {
+    if (
+      error instanceof SyntaxError ||
+      (error instanceof Error && "code" in error && error.code === "ENOENT")
+    ) {
+      return undefined;
+    }
+    throw error;
   }
+}
 
-  const zapsArgv = [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux", "-d"];
-  if ((await deps.runTmux(buildRespawnArgs(paneId, zapsArgv, { kill: true }), false)) !== 0) {
-    removeEnvironmentSnapshot(environment.snapshotPath);
-    deps.io.stderr(`Failed to start zaps in managed tmux session ${name}.\n`);
-    await killStaleSession(name, deps.tmux);
-    return { proceed: false, exitCode: 1 };
+async function waitForManagedOutcome(
+  deps: BootstrapDeps,
+  launch: ManagedLaunch,
+  pane: string,
+  directory: string,
+  clientState: { exitCode?: number },
+): Promise<BootstrapOutcome> {
+  const deadline = Date.now() + deps.settleTimeoutMs;
+  /* eslint-disable no-await-in-loop -- bounded polling of the result and bootstrap pane */
+  while (Date.now() < deadline) {
+    const outcome = readOutcome(directory);
+    if (outcome && (!launch.detach || outcome.exitCode !== 0)) {
+      return outcome;
+    }
+    if (clientState.exitCode) {
+      return { exitCode: clientState.exitCode, message: `Could not attach to ${launch.name}.` };
+    }
+    const state = await deps.tmux
+      .displayMessage(pane, "#{pane_dead}|#{pane_dead_status}")
+      .catch(() => "");
+    const [dead, status] = state.trim().split("|");
+    if (dead === "1" || !dead) {
+      const exitCode = Number(status);
+      return (
+        readOutcome(directory) ?? {
+          exitCode: Number.isInteger(exitCode) && exitCode > 0 && exitCode <= 255 ? exitCode : 1,
+        }
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, SESSION_POLL_MS));
   }
+  /* eslint-enable no-await-in-loop */
+  return { exitCode: 1, message: `Timed out waiting for ${launch.name} to start.` };
+}
 
-  const settlement = await waitForPaneSettled(paneId, {
-    timeoutMs: deps.settleTimeoutMs,
-    tmux: deps.tmux,
-  });
-  removeEnvironmentSnapshot(environment.snapshotPath);
-  if (settlement.settled && settlement.exitCode === 0) {
+async function releaseUnregistered(
+  deps: BootstrapDeps,
+  launch: ManagedLaunch,
+  host: ProvisionedSession,
+): Promise<void> {
+  try {
+    const owner = await deps.daemonSession(launch.configPath, launch.projectDir);
+    if (owner?.managed && owner.tmuxSession === launch.name) {
+      return;
+    }
+    await deps.runTmux(
+      [
+        "-L",
+        MANAGED_SOCKET,
+        "if-shell",
+        "-F",
+        "-t",
+        host.session,
+        `#{==:#{pid},${host.serverPid}}`,
+        `kill-session -t '${host.session}'`,
+      ],
+      false,
+    );
+  } catch {
+    // An unreadable daemon view cannot prove the host is unregistered.
+  }
+}
+
+async function reportManagedFailure(
+  deps: BootstrapDeps,
+  launch: ManagedLaunch,
+  host: ProvisionedSession,
+  outcome: BootstrapOutcome,
+  client?: ForegroundTmuxClient,
+): Promise<void> {
+  const output = outcome.message ?? (await deps.tmux.capturePane(host.pane, 200).catch(() => ""));
+  await releaseUnregistered(deps, launch, host);
+  if (client) {
+    client.close();
+    await client.result;
+  }
+  const message = output.trim()
+    ? output.trimEnd()
+    : `Managed tmux session ${launch.name} died before reporting a result.`;
+  deps.io.stderr(`${message}\n`);
+}
+
+async function observeClient(
+  client: ForegroundTmuxClient,
+  state: { exitCode?: number },
+): Promise<void> {
+  state.exitCode = await client.result;
+}
+
+async function launchManaged(deps: BootstrapDeps, launch: ManagedLaunch): Promise<BootstrapResult> {
+  const { name, detach } = launch;
+  const directory = fs.mkdtempSync(path.join(daemonDir(), "bootstrap-"));
+  let client: ForegroundTmuxClient | undefined = undefined;
+  try {
+    const host = await provisionSession(deps, name, managedEnvironment(directory)).catch(
+      () => undefined,
+    );
+    if (!host) {
+      deps.io.stderr(`Failed to create managed tmux session ${name}.\n`);
+      return { proceed: false, exitCode: 1 };
+    }
+
+    await deps.runTmux(
+      ["-L", MANAGED_SOCKET, "set-option", "-t", `${host.session}:`, "destroy-unattached", "off"],
+      false,
+    );
+    await deps.runTmux(buildSetPaneOptionArgs(host.pane, "remain-on-exit", "on"), false);
+    const inner = [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux"];
+    if (detach) {
+      inner.push("-d");
+    }
+    const respawn = buildRespawnArgs(host.pane, inner, { kill: true });
+    const clientState: { exitCode?: number } = {};
+    if (!detach) {
+      // Tmux attaches the client before executing the next command in its queue.
+      client = deps.startTmuxClient([
+        "-L",
+        MANAGED_SOCKET,
+        "attach-session",
+        "-t",
+        host.session,
+        ";",
+        ...respawn.slice(2),
+      ]);
+      void observeClient(client, clientState);
+    } else if ((await deps.runTmux(respawn, false)) !== 0) {
+      await reportManagedFailure(deps, launch, host, {
+        exitCode: 1,
+        message: `Failed to start zaps in managed tmux session ${name}.`,
+      });
+      return { proceed: false, exitCode: 1 };
+    }
+
+    const outcome = await waitForManagedOutcome(deps, launch, host.pane, directory, clientState);
+    if (outcome.exitCode !== 0) {
+      await reportManagedFailure(deps, launch, host, outcome, client);
+      client = undefined;
+      return { proceed: false, exitCode: outcome.exitCode };
+    }
+    if (client) {
+      fs.rmSync(directory, { recursive: true, force: true });
+      const exitCode = await client.result;
+      await reportDetached(deps, name);
+      return { proceed: false, exitCode };
+    }
     deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
     return { proceed: false, exitCode: 0 };
-  }
-
-  // A dead pane with an unreadable status is NOT proof of failure: tmux reaps
-  // The pane's process lazily (an unreaped zombie can outlive any wait — seen
-  // Live on 3.5a through 3.7c), so `#{pane_dead_status}` may never materialize.
-  // The daemon is authoritative instead: it only registers the session once the
-  // Inner run got that far, and every pre-session failure (bad config, version
-  // Refusal, conflict) exits without one.
-  if (!settlement.settled && settlement.reason === "unknown-status") {
-    const view = await deps.daemonSession(configPath, projectDir).catch(() => undefined);
-    if (view) {
-      deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
-      return { proceed: false, exitCode: 0 };
+  } finally {
+    if (client) {
+      client.close();
+      await client.result;
     }
+    fs.rmSync(directory, { recursive: true, force: true });
   }
-
-  // Replay what the inner run printed before it died — that text is the only
-  // Thing the user can act on, and the pane is about to be killed.
-  const output = await deps.tmux.capturePane(paneId, 200).catch(() => "");
-  if (output.trim()) {
-    deps.io.stderr(`${output.trimEnd()}\n`);
-  }
-  if (!settlement.settled) {
-    deps.io.stderr(
-      settlement.reason === "timeout"
-        ? `Timed out waiting for ${name} to start.\n`
-        : `Managed tmux session ${name} died before reporting a result.\n`,
-    );
-  }
-  await killStaleSession(name, deps.tmux);
-  return { proceed: false, exitCode: settlement.settled ? settlement.exitCode : 1 };
 }
 
 /**
@@ -512,15 +601,11 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
     }
     case "kill-stale-then-spawn": {
       await killStaleSession(decision.name, deps.tmux);
-      return decision.detach
-        ? spawnDetached(deps, decision.name, options.configPath, options.projectDir)
-        : spawnAttached(deps, decision.name);
+      return launchManaged(deps, { ...options, name: decision.name, detach: decision.detach });
     }
-    case "spawn": {
-      return spawnAttached(deps, decision.name);
-    }
+    case "spawn":
     case "spawn-detached": {
-      return spawnDetached(deps, decision.name, options.configPath, options.projectDir);
+      return launchManaged(deps, { ...options, name: decision.name });
     }
     case "reattach": {
       return reattachManaged({ name: decision.name, tuiPane: decision.tuiPane, deps });
@@ -537,6 +622,7 @@ export {
   MANAGED_BOOTSTRAP_FLAG,
   consumeManagedEnvironmentSnapshot,
   ensureTmuxContext,
+  managedBootstrapReporter,
   reattachManaged,
 };
 export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux };

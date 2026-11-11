@@ -820,7 +820,14 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
     CLI_TIMEOUT,
   );
 
-  it.each([["--help"], ["up", "--help"], ["-b", "--help"], ["help", "up"]])(
+  it.each([
+    ["--help"],
+    ["up", "--help"],
+    ["up", "-dh"],
+    ["up", "-dsh"],
+    ["-b", "--help"],
+    ["help", "up"],
+  ])(
     "documents startup options in %j",
     (...argv) => {
       const result = runCli(argv);

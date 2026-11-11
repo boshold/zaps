@@ -183,6 +183,7 @@ export class Session {
   private memberUnits: Map<string, string>;
   /** Tracked in-flight `startAll`; reload/destroy abort then await its settlement. */
   public startPromise: Promise<void> | null = null;
+  private initialStartup?: Promise<void>;
   /** Set once `destroy()` runs; guards the reload-after-destroy race (A5). */
   public destroyed = false;
   /** Timestamp of the last successful config load — staleness source (A4). */
@@ -312,6 +313,29 @@ export class Session {
     await this.runWithContext(async () => {
       await this.manager.startAll();
     });
+  }
+
+  public beginInitialStartup(): void {
+    if (this.initialStartup) {
+      return;
+    }
+    const { manager, name } = this;
+    const pending = this.startAll();
+    this.startPromise = pending;
+    this.initialStartup = (async () => {
+      await pending;
+      if (manager.getAllStatuses().some((status) => status.state === "error")) {
+        throw new Error(`Session ${name}: one or more services failed to start.`);
+      }
+    })();
+    // eslint-disable-next-line promise/prefer-await-to-then -- Observe without replacing the tracked promise.
+    void this.initialStartup.catch(() => {
+      /* Joiners observe the original outcome. */
+    });
+  }
+
+  public async waitForInitialStartup(): Promise<void> {
+    await this.initialStartup;
   }
 
   /**

@@ -47,6 +47,7 @@ export async function runTui(opts: {
   sessionId: string;
   socketPath: string;
   autoStart?: boolean;
+  onReady?: () => void;
 }): Promise<void> {
   const client = new DaemonClient(opts.socketPath, opts.sessionId);
 
@@ -125,6 +126,7 @@ export async function runTui(opts: {
       },
     );
 
+    opts.onReady?.();
     await waitUntilExit();
   } finally {
     stopResizeReset?.();

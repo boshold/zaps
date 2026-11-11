@@ -52,6 +52,7 @@ interface ArgumentState {
   upIndex: number;
   leadingSession: boolean;
   help: boolean;
+  legacyClusterHelp: boolean;
   version: boolean;
   invalidOption: string | undefined;
 }
@@ -137,6 +138,9 @@ function consumeFlag(
       break;
     }
     default: {
+      if (state.command === "up" && /^-[dsh]{2,}$/.test(flag) && flag.includes("h")) {
+        state.legacyClusterHelp = inline !== "false";
+      }
       state.invalidOption = argv[index];
       if (/^-[^-]*[bB]/.test(flag) && flag.length > 2) {
         state.startupFlag = true;
@@ -163,7 +167,12 @@ function leadingSessionEnd(argv: readonly string[]): number {
 }
 
 function finishArguments(argv: string[], state: ArgumentState): StartupArguments {
-  if (state.help || state.command === "help" || (state.version && state.command === undefined)) {
+  if (
+    state.help ||
+    (state.legacyClusterHelp && !state.startupFlag) ||
+    state.command === "help" ||
+    (state.version && state.command === undefined)
+  ) {
     return { kind: "dispatch", argv };
   }
   if (state.startupFlag && state.command !== undefined && state.command !== "up") {
@@ -195,6 +204,7 @@ function parseStartupArguments(input: readonly string[]): StartupArguments {
     upIndex: -1,
     leadingSession: true,
     help: false,
+    legacyClusterHelp: false,
     version: false,
     invalidOption: undefined,
   };

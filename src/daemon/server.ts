@@ -732,10 +732,7 @@ class DaemonServer implements SessionStore {
 
       // Start services in background — TUI connects and sees them starting.
       // Tracked so reload/destroy can cooperatively abort and await it (A5).
-      session.startPromise = session.startAll();
-      void session.startPromise.catch(() => {
-        /* The detached reporter can await the original rejection. */
-      });
+      session.beginInitialStartup();
 
       return session;
     } catch (error) {

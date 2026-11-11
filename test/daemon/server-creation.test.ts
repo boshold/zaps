@@ -116,6 +116,34 @@ describe("session creation with real shell orchestration", () => {
     expect(hook).toHaveBeenCalledTimes(2);
   });
 
+  it("reports the original hook failure after a successful reload replaces lifecycle startup", async () => {
+    const socket = path.join(root, "original-startup.sock");
+    config.project.hooks = {
+      onBeforeStart: () => {
+        throw new Error("original hook failed");
+      },
+    };
+    await server.start(socket);
+    const session = await server.create(request());
+    await expect(session.startPromise).rejects.toThrow("original hook failed");
+
+    const newHook = vi.fn();
+    config = { ...config, project: { ...config.project, hooks: { onBeforeStart: newHook } } };
+    await session.reload();
+    await expect(session.startPromise).resolves.toBeUndefined();
+    expect(newHook).toHaveBeenCalledOnce();
+
+    const joined = await ipcRequest(
+      socket,
+      "services.startAll",
+      { startup: true },
+      5000,
+      session.id,
+    );
+    expect(joined.error).toBe("original hook failed");
+    expect(newHook).toHaveBeenCalledOnce();
+  });
+
   it("blocks established-socket allocation paths while preserving cleanup and daemon queries", async () => {
     const socket = path.join(root, "closing.sock");
     await server.start(socket);
