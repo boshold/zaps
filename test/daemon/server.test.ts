@@ -7,6 +7,7 @@ import { z } from "zod";
 import { ConfigError } from "../../src/config/errors.js";
 import type { ResolvedConfig } from "../../src/config/types.js";
 import { ProcessRunner } from "../../src/lib/backend/runtime/process-runner.js";
+import type { ServiceManager } from "../../src/lib/service/manager.js";
 
 // eslint-disable-next-line no-unsafe-type-assertion -- Test boundary
 vi.mock("node:net", () => {
@@ -124,6 +125,7 @@ vi.mock("#src/lib/service/manager.js", () => {
     public stopAll = vi.fn().mockResolvedValue(undefined);
     public abortStartAll = vi.fn();
     public closeAdmission = vi.fn();
+    public bindTaskExecution = vi.fn<ServiceManager["bindTaskExecution"]>();
     public startService = vi.fn().mockResolvedValue(undefined);
     public stopService = vi.fn().mockResolvedValue(undefined);
     public restartService = vi.fn().mockResolvedValue(undefined);

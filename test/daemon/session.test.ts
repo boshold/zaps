@@ -90,6 +90,7 @@ function createMockManager(): ServiceManager {
     resumeRuntimeObserver: vi.fn(),
     abortStartAll: vi.fn(),
     closeAdmission: vi.fn(),
+    bindTaskExecution: vi.fn<ServiceManager["bindTaskExecution"]>(),
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),

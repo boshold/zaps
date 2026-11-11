@@ -157,8 +157,7 @@ class TaskExecutionService {
   }
 
   public bindManager(manager: Pick<ServiceManager, "bindTaskExecution">): void {
-    // Legacy mock managers lack composition hooks until P06-T04.
-    manager.bindTaskExecution?.(this.actions, async (hook) => this.withStopHook(hook));
+    manager.bindTaskExecution(this.actions, async (hook) => this.withStopHook(hook));
   }
 
   private assertNormalAdmission(): void {
