@@ -11,11 +11,11 @@ import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import type {
   BackendCapabilities,
+  PresentationDriver,
   PresentationSnapshot,
   RuntimeDriver,
   SessionBackend,
 } from "#src/lib/backend/types.js";
-import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
 import { daemonHandlers } from "../../src/daemon/handlers/daemon.js";
@@ -24,8 +24,10 @@ import type { SessionCreateParams } from "../../src/daemon/session.js";
 import { Session, sessionId } from "../../src/daemon/session.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { createMockStore } from "../_helpers/mock-session.js";
-import type { LegacySessionParams } from "../_helpers/session-backend.js";
-import { prepareSessionParams } from "../_helpers/session-backend.js";
+import { managerDependencies } from "../_helpers/service-runtime.js";
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../_helpers/service-runtime.js";
+import type { TmuxFixtureParams } from "../_helpers/session-backend.js";
+import { createTmuxSession } from "../_helpers/session-backend.js";
 
 vi.mock("../../src/lib/taskShortcuts.js", () => ({
   getTaskShortcuts: vi.fn(() => []),
@@ -87,6 +89,7 @@ function createMockManager(): ServiceManager {
     disposeObservers: vi.fn(),
     resumeRuntimeObserver: vi.fn(),
     abortStartAll: vi.fn(),
+    closeAdmission: vi.fn(),
     startService: vi.fn().mockResolvedValue(undefined),
     stopService: vi.fn().mockResolvedValue(undefined),
     restartService: vi.fn().mockResolvedValue(undefined),
@@ -95,8 +98,15 @@ function createMockManager(): ServiceManager {
   }) as unknown as ServiceManager;
 }
 
-function createSessionParams(overrides?: Partial<LegacySessionParams>) {
-  return prepareSessionParams({
+async function createSessionParams(
+  overrides?: Partial<TmuxFixtureParams & { paneMap: Record<string, string> }>,
+) {
+  const { createLayout } = await import("#src/lib/tmux-layout.js");
+  vi.mocked(createLayout).mockResolvedValueOnce({
+    paneMap: overrides?.paneMap ?? { "@tui": "%0", api: "%1" },
+    focusPane: "%0",
+  });
+  return createTmuxSession({
     configPath: "/test/.zaps.mts",
     projectDir: "/test",
     tmuxSocket: null,
@@ -112,12 +122,12 @@ function createSessionParams(overrides?: Partial<LegacySessionParams>) {
       unavailableServices: new Map(),
       lazyPaneByService: new Map(),
     } as SessionCreateParams["config"],
-    paneMap: { "@tui": "%0", api: "%1" },
     tmuxSession: "main",
     tmuxWindow: "@1",
     originPane: "%0",
     deps: {
       runtime: () => ({
+        closeAdmission: vi.fn(),
         start: vi.fn(),
         stop: vi.fn(),
         isRunning: vi.fn(),
@@ -125,8 +135,26 @@ function createSessionParams(overrides?: Partial<LegacySessionParams>) {
         readOutput: vi.fn(),
         subscribe: vi.fn(),
       }),
-      capturePane: vi.fn().mockResolvedValue(""),
-    } as unknown as SessionCreateParams["deps"],
+      inspectPorts: vi.fn(async () => []),
+      sendKeys: vi.fn(),
+      sendCtrlC: vi.fn(),
+      panePid: vi.fn(),
+      detectPorts: vi.fn(),
+      capturePane: vi.fn(async () => ""),
+      getDescendantPids: vi.fn(),
+      renameWindow: vi.fn(),
+      getWindowName: vi.fn(),
+      getWindowOption: vi.fn(),
+      setWindowOption: vi.fn(),
+      displayPopup: vi.fn(),
+      exec: vi.fn(),
+      preflightPorts: vi.fn(async () => null),
+      storeExecInfo: vi.fn(),
+      sessionId: "test",
+      zapsCommand: "zaps",
+      reflowInsert: vi.fn(),
+      reflowRemove: vi.fn(),
+    },
     ...overrides,
   });
 }
@@ -154,10 +182,10 @@ describe("Session", () => {
   let manager: ServiceManager;
   let session: Session;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
     manager = createMockManager();
-    session = new Session(createSessionParams(), manager);
+    session = new Session(await createSessionParams(), manager);
   });
 
   afterEach(() => {
@@ -169,7 +197,7 @@ describe("Session", () => {
       const socket = new Socket();
       const otherSocket = new Socket();
       const other = new Session(
-        createSessionParams({ configPath: "/other/.zaps.mts" }),
+        await createSessionParams({ configPath: "/other/.zaps.mts" }),
         createMockManager(),
       );
       const store = {
@@ -598,7 +626,7 @@ describe("Session", () => {
       const { killSession, tmuxFor } = await import("#src/lib/tmux.js");
       vi.mocked(killSession).mockClear();
       const managed = new Session(
-        createSessionParams({
+        await createSessionParams({
           tmuxSocket: "zaps",
           managedTmux: true,
           tmuxSession: "zaps-app-abc123abc123",
@@ -623,7 +651,11 @@ describe("Session", () => {
       vi.mocked(killSession).mockRejectedValueOnce(new Error("can't find session"));
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const managed = new Session(
-        createSessionParams({ tmuxSocket: "zaps", managedTmux: true, tmuxSession: "zaps-gone" }),
+        await createSessionParams({
+          tmuxSocket: "zaps",
+          managedTmux: true,
+          tmuxSession: "zaps-gone",
+        }),
         createMockManager(),
       );
       await expect(managed.destroy()).resolves.toBeUndefined();
@@ -644,7 +676,7 @@ describe("Session", () => {
         order.push("killSession");
       });
       await new Session(
-        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        await createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
         managed,
       ).destroy();
       expect(order).toEqual(["stopAll", "killSession"]);
@@ -701,7 +733,7 @@ describe("Session", () => {
       const { tmuxFor } = await import("#src/lib/tmux.js");
       vi.mocked(tmuxFor).mockClear();
       const managed = new Session(
-        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        await createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
         createMockManager(),
       );
       expect(managed.backend.getPresentation()).toMatchObject({ tmuxSocket: "zaps" });
@@ -724,16 +756,16 @@ describe("Session", () => {
       expect(snap.managed).toBe(false);
     });
 
-    it("reports managed sessions so the client can route attach/teardown", () => {
+    it("reports managed sessions so the client can route attach/teardown", async () => {
       const managed = new Session(
-        createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
+        await createSessionParams({ tmuxSocket: "zaps", managedTmux: true }),
         createMockManager(),
       );
       expect(managed.attachSnapshot().managed).toBe(true);
     });
 
-    it("flags detached services in servicesMeta (E4)", () => {
-      const params = createSessionParams({
+    it("flags detached services in servicesMeta (E4)", async () => {
+      const params = await createSessionParams({
         config: {
           project: {
             name: "test-project",
@@ -761,7 +793,7 @@ describe("Session", () => {
       const { getTaskShortcuts } = await import("../../src/lib/taskShortcuts.js");
       vi.mocked(getTaskShortcuts).mockReturnValue([{ shortcut: "b", name: "Build" }]);
 
-      const params = createSessionParams({
+      const params = await createSessionParams({
         config: {
           project: {
             name: "test-project",
@@ -809,10 +841,10 @@ describe("Session", () => {
 });
 
 describe("Session execution-unit log buffers", () => {
-  function groupParams(): SessionCreateParams {
+  async function groupParams(): Promise<SessionCreateParams> {
     // A combined group "grp" of three members all sharing pane %1; the group
     // Name is a layout artifact present in paneMap but not in services.
-    return createSessionParams({
+    return await createSessionParams({
       config: {
         project: {
           name: "test-project",
@@ -836,8 +868,8 @@ describe("Session execution-unit log buffers", () => {
     });
   }
 
-  it("shares one LogBuffer instance across every member of a combined group", () => {
-    const session = new Session(groupParams(), createMockManager());
+  it("shares one LogBuffer instance across every member of a combined group", async () => {
+    const session = new Session(await groupParams(), createMockManager());
     const bufA = session.logBuffers.get("a");
 
     expect(bufA).toBeDefined();
@@ -847,8 +879,8 @@ describe("Session execution-unit log buffers", () => {
     expect(session.logBuffers.has("grp")).toBe(false);
   });
 
-  it("attachSnapshot resolves every member to its shared pane buffer", () => {
-    const session = new Session(groupParams(), createMockManager());
+  it("attachSnapshot resolves every member to its shared pane buffer", async () => {
+    const session = new Session(await groupParams(), createMockManager());
     const snap = session.attachSnapshot();
 
     expect(snap.logSnapshots).toHaveProperty("a");
@@ -860,9 +892,7 @@ describe("Session execution-unit log buffers", () => {
   it("fans captured lines out once per member, never the group name", async () => {
     vi.useFakeTimers();
     try {
-      const capturePane = vi.fn().mockResolvedValue("hello\nworld");
-      const params = groupParams();
-      params.deps = { ...params.deps, capturePane } as unknown as SessionCreateParams["deps"];
+      const params = await groupParams();
       const manager = createMockManager();
       const session = new Session(params, manager);
       const events: { event: string; data?: unknown }[] = [];
@@ -890,19 +920,8 @@ describe("Session execution-unit log buffers", () => {
 });
 
 describe("Session.reflow — wired with live-getter deps", () => {
-  it("constructs a LayoutReflow whose deps see post-reload field values", () => {
-    const params = createSessionParams();
-    const session = new Session(params, createMockManager());
-    expect(params.backend.legacyReflow).toBeDefined();
-    // Indirect proof: the reflow object is stable across a paneMap reassignment
-    // (the deps are closures over `this`, not captured refs at construction).
-    const beforeReflow = params.backend.legacyReflow;
-    session.paneMap = { "@tui": "%9", api: "%10" };
-    expect(params.backend.legacyReflow).toBe(beforeReflow);
-  });
-
   it("targets the stored tmux window", async () => {
-    const params = createSessionParams({
+    const params = await createSessionParams({
       tmuxSession: "zaps-app-a1",
       tmuxWindow: "@7",
       paneMap: { "@tui": "%0", api: "%1" },
@@ -926,7 +945,10 @@ describe("Session.reflow — wired with live-getter deps", () => {
       { index: 1, id: "%1" },
     ]);
 
-    await params.backend.legacyReflow.applyGeometry(new Set(["@tui", "api"]));
+    await params.backend.reconcileLayout({
+      direction: "columns",
+      children: [{ pane: "@tui" }, { pane: "api" }],
+    });
 
     // One getter feeds every window-scoped call site (incl. insert/remove's
     // `windowLayout` snapshot), so pinning the geometry path pins them all.
@@ -955,8 +977,8 @@ describe("Session config staleness (A4)", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it("isConfigStale reflects file mtime vs configLoadedAt", () => {
-    const session = new Session(createSessionParams({ configPath }), manager);
+  it("isConfigStale reflects file mtime vs configLoadedAt", async () => {
+    const session = new Session(await createSessionParams({ configPath }), manager);
     const mtime = fs.statSync(configPath).mtimeMs;
 
     session.configLoadedAt = mtime - 1000; // File edited after load → stale
@@ -966,23 +988,23 @@ describe("Session config staleness (A4)", () => {
     expect(session.isConfigStale()).toBe(false);
   });
 
-  it("isConfigStale is false when the config file is missing", () => {
+  it("isConfigStale is false when the config file is missing", async () => {
     const session = new Session(
-      createSessionParams({ configPath: path.join(dir, "gone.mts") }),
+      await createSessionParams({ configPath: path.join(dir, "gone.mts") }),
       manager,
     );
     expect(session.isConfigStale()).toBe(false);
   });
 
-  it("attachSnapshot includes a configStale flag", () => {
-    const session = new Session(createSessionParams({ configPath }), manager);
+  it("attachSnapshot includes a configStale flag", async () => {
+    const session = new Session(await createSessionParams({ configPath }), manager);
     session.configLoadedAt = fs.statSync(configPath).mtimeMs - 1000;
     expect(session.attachSnapshot().configStale).toBe(true);
   });
 
-  it("broadcasts session.configStale once per false→true transition", () => {
+  it("broadcasts session.configStale once per false→true transition", async () => {
     vi.useFakeTimers();
-    const session = new Session(createSessionParams({ configPath }), manager);
+    const session = new Session(await createSessionParams({ configPath }), manager);
     session.configLoadedAt = fs.statSync(configPath).mtimeMs - 1000; // Stale
     const broadcast = vi.spyOn(session, "broadcast").mockImplementation(() => undefined);
 
@@ -997,11 +1019,11 @@ describe("Session config staleness (A4)", () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
-  it("arms the poll only while subscribed and clears it on unsubscribe and destroy", () => {
+  it("arms the poll only while subscribed and clears it on unsubscribe and destroy", async () => {
     vi.useFakeTimers();
     const setSpy = vi.spyOn(globalThis, "setInterval");
     const clearSpy = vi.spyOn(globalThis, "clearInterval");
-    const session = new Session(createSessionParams({ configPath }), manager);
+    const session = new Session(await createSessionParams({ configPath }), manager);
     const a = {} as never;
     const b = {} as never;
 
@@ -1019,7 +1041,7 @@ describe("Session config staleness (A4)", () => {
   it("stops the poll on destroy with subscribers still attached", async () => {
     vi.useFakeTimers();
     const clearSpy = vi.spyOn(globalThis, "clearInterval");
-    const session = new Session(createSessionParams({ configPath }), manager);
+    const session = new Session(await createSessionParams({ configPath }), manager);
     session.addSubscriber({ destroyed: false, write: vi.fn(), destroy: vi.fn() } as never);
 
     await session.destroy();
@@ -1037,6 +1059,7 @@ function presentationFixture(services: Record<string, ServiceConfig>, statuses: 
     lazyPaneByService: new Map(),
   };
   const runtime: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     start: vi.fn(async () => {
       throw new Error("Unexpected execution");
     }),
@@ -1085,7 +1108,7 @@ function observedBackend(
 ) {
   let view = initial;
   const listeners = new Set<(next: PresentationSnapshot) => void>();
-  const backend: SessionBackend = {
+  const backend: Omit<SessionBackend, "presentation"> & { presentation?: PresentationDriver } = {
     id: "tmux",
     capabilities,
     runtime,
@@ -1144,7 +1167,7 @@ function projectedSession(
       configPath: fixture.config.configPath,
       projectDir: fixture.config.projectDir,
       config: fixture.config,
-      deps: fixture.deps,
+      deps: managerDependencies({}, fixture.deps),
       backend,
       shellEnv: {},
       env: {},
@@ -1168,9 +1191,6 @@ describe("Session backend presentation", () => {
     ]);
     const tmux = await import("#src/lib/tmux.js");
     vi.mocked(tmux.tmuxFor).mockClear();
-    const adopt = vi.spyOn(TmuxSessionBackend, "adopt").mockImplementation(() => {
-      throw new Error("Unexpected tmux adoption");
-    });
     const create = vi
       .spyOn(TmuxSessionBackend, "create")
       .mockRejectedValue(new Error("Unexpected tmux construction"));
@@ -1229,9 +1249,7 @@ describe("Session backend presentation", () => {
     } finally {
       await session.destroy();
       expect(tmux.tmuxFor).not.toHaveBeenCalled();
-      expect(adopt).not.toHaveBeenCalled();
       expect(create).not.toHaveBeenCalled();
-      adopt.mockRestore();
       create.mockRestore();
     }
     expect(await backend.health()).toBe("lost");
@@ -1360,14 +1378,18 @@ describe("Session backend presentation", () => {
       { ...mixedCapabilities, zoom: true, popups: true },
       { ...terminalView, paneMap: {} },
     );
-    const sharedMap: Record<string, string> = {};
     const title = vi
-      .fn<NonNullable<SessionCreateParams["updatePresentationTitle"]>>()
+      .fn<NonNullable<PresentationDriver["updateTitle"]>>()
       .mockResolvedValue(undefined);
-    const session = projectedSession(fixture, observed.backend, {
-      paneMap: sharedMap,
-      updatePresentationTitle: title,
-    });
+    observed.backend.presentation = {
+      hasService: () => false,
+      reload: vi.fn(),
+      insert: vi.fn(),
+      remove: vi.fn(),
+      updateTitle: title,
+    };
+    const session = projectedSession(fixture, observed.backend);
+    const sharedMap = session.paneMap;
     const broadcast = vi.spyOn(session, "broadcast");
     const managerEmit = vi.spyOn(fixture.manager, "emit");
     const loadedAt = session.configLoadedAt;
@@ -1430,20 +1452,19 @@ describe("Session backend presentation", () => {
     const status: ServiceStatus = { name: "api", state: "ready", ports: [], retryCount: 0 };
     const fixture = presentationFixture({ api: { start: "true" } }, [status]);
     const observed = observedBackend(fixture.runtime, mixedCapabilities, terminalView);
-    const insert = vi
-      .fn<NonNullable<SessionCreateParams["insertPresentation"]>>()
-      .mockResolvedValue(undefined);
-    const remove = vi
-      .fn<NonNullable<SessionCreateParams["removePresentation"]>>()
-      .mockResolvedValue(undefined);
+    const insert = vi.fn<NonNullable<PresentationDriver["insert"]>>().mockResolvedValue(undefined);
+    const remove = vi.fn<NonNullable<PresentationDriver["remove"]>>().mockResolvedValue(undefined);
     const title = vi
-      .fn<NonNullable<SessionCreateParams["updatePresentationTitle"]>>()
+      .fn<NonNullable<PresentationDriver["updateTitle"]>>()
       .mockResolvedValue(undefined);
-    const session = projectedSession(fixture, observed.backend, {
-      insertPresentation: insert,
-      removePresentation: remove,
-      updatePresentationTitle: title,
-    });
+    observed.backend.presentation = {
+      hasService: () => true,
+      reload: vi.fn(),
+      insert,
+      remove,
+      updateTitle: title,
+    };
+    const session = projectedSession(fixture, observed.backend);
     const broadcast = vi.spyOn(session, "broadcast");
     try {
       fixture.manager.emit("stateChange", "api", status);

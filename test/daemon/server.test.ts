@@ -123,6 +123,7 @@ vi.mock("#src/lib/service/manager.js", () => {
     public startAll = vi.fn().mockResolvedValue(undefined);
     public stopAll = vi.fn().mockResolvedValue(undefined);
     public abortStartAll = vi.fn();
+    public closeAdmission = vi.fn();
     public startService = vi.fn().mockResolvedValue(undefined);
     public stopService = vi.fn().mockResolvedValue(undefined);
     public restartService = vi.fn().mockResolvedValue(undefined);

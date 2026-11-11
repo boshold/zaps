@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { crashingCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -36,7 +37,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
@@ -60,7 +61,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
@@ -84,7 +85,7 @@ describe.skipIf(!hasTmux())("crash-recovery integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 

@@ -1,5 +1,4 @@
 export type {
-  DisplayPopupOptions,
   DockerReadinessContext,
   EnvConfig,
   ExecInfo,

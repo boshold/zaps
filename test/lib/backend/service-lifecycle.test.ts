@@ -11,7 +11,8 @@ import type {
 } from "../../../src/lib/backend/types.js";
 import { shellEscape } from "../../../src/lib/service/env.js";
 import { ServiceManager } from "../../../src/lib/service/manager.js";
-import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
+import { managerDependencies } from "../../_helpers/service-runtime.js";
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
 
 function deferred<T>() {
   let complete!: (value: T | PromiseLike<T>) => void;
@@ -27,6 +28,7 @@ function runtimeHarness() {
   const listeners = new Set<(event: ExecutionEvent) => void>();
   const handles: ExecutionHandle[] = [];
   const driver: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     start: vi.fn<RuntimeDriver["start"]>(async (spec) => {
       const handle = {
         id: `opaque-${spec.generation}`,
@@ -86,7 +88,7 @@ function makeManager(runtime: RuntimeDriver, service: ServiceConfig = {}) {
     unavailableServices: new Map(),
     lazyPaneByService: new Map(),
   };
-  const manager = new ServiceManager(config, {}, deps, "lifecycle");
+  const manager = new ServiceManager(config, managerDependencies({}, deps));
   managers.push(manager);
   return manager;
 }
@@ -118,6 +120,7 @@ describe("owned service lifecycle", () => {
     const runner = new ProcessRunner({ onLines: vi.fn(), onExit: vi.fn() });
     let handle: ExecutionHandle | undefined;
     const driver: RuntimeDriver = {
+      closeAdmission: vi.fn(),
       start: async (spec) => {
         handle = runner.spawnOwned(spec);
         return handle;

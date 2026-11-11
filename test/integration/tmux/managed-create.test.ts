@@ -191,9 +191,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
 
   it("returns a foreground backend conflict and removes only the provisional managed host", async () => {
     const candidate = await createProject(`import fs from "node:fs";
-import net from "node:net";
       import path from "node:path";
-import { createInterface } from "node:readline";
       export async function config(lib) {
         const root = process.env.ZAPS_TEST_GATE_ROOT;
         if (root && process.env.ZAPS_MANAGED_TMUX === "1") {

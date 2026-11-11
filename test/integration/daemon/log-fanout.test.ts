@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Session } from "#src/daemon/session.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import { sendKeys, splitPane } from "#src/lib/tmux.js";
+import { sendKeys } from "#src/lib/tmux.js";
 
-import { prepareSessionParams } from "../../_helpers/session-backend.js";
+import { createTmuxSession } from "../../_helpers/session-backend.js";
 import { makeConfig } from "../helpers/config.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
@@ -39,14 +39,6 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
 
   it("surfaces shared-pane output for every member, never the group name", async () => {
     tmux = await createTestSession();
-    const sharedPane = await splitPane(tmux.initialPaneId, "v");
-
-    // Alpha and beta are one combined group sharing `sharedPane`.
-    const paneMap: Record<string, string> = {
-      "@tui": tmux.initialPaneId,
-      alpha: sharedPane,
-      beta: sharedPane,
-    };
     const config = makeConfig({
       alpha: {
         start: "node -e 'setInterval(()=>{},1000)'",
@@ -59,11 +51,10 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       },
     });
 
-    const params = prepareSessionParams({
+    const params = await createTmuxSession({
       configPath: "/test/.zaps.mts",
       projectDir: "/test",
       config,
-      paneMap,
       tmuxSession: tmux.name,
       tmuxWindow: tmux.initialPaneId,
       originPane: tmux.initialPaneId,
@@ -71,7 +62,8 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       managedTmux: false,
       deps: tmuxDeps,
     });
-    session = new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmux.name));
+    const sharedPane = params.backend.paneFor("alpha");
+    session = new Session(params, new ServiceManager(config, params.deps));
 
     // Both members must resolve to one shared buffer; the group never owns one.
     expect(session.logBuffers.get("alpha")).toBe(session.logBuffers.get("beta"));

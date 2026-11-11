@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { slowStartCmd, wrapperStartCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -32,7 +33,7 @@ describe.skipIf(!hasTmux())("ready-port integration", () => {
       web: { start: slowStartCmd(port, 2000), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("web");
 
     expect(mgr.getStatus("web").state).toBe("ready");
@@ -48,7 +49,7 @@ describe.skipIf(!hasTmux())("ready-port integration", () => {
       web: { start: slowStartCmd(port, 1000), ready: { port: true } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("web");
 
     expect(mgr.getStatus("web").state).toBe("ready");
@@ -64,7 +65,7 @@ describe.skipIf(!hasTmux())("ready-port integration", () => {
       web: { start: wrapperStartCmd(port, 1000), ready: { port: true } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("web");
 
     expect(mgr.getStatus("web").state).toBe("ready");

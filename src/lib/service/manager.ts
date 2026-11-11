@@ -26,7 +26,6 @@ import {
 } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 
-import type { SpawnFn } from "./detached.js";
 import { buildServiceContext, resolveEnv } from "./env.js";
 import { resolveExecutionUnits } from "./execution-units.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
@@ -34,9 +33,7 @@ import { diffOutput } from "./output.js";
 import { waitForReady } from "./ready.js";
 import { canTransition, createServiceStatus, transition } from "./state.js";
 import type {
-  DisplayPopupOptions,
   DockerReadinessContext,
-  ExecInfo,
   ReadyConfig,
   ReadyDeps,
   ServiceActionResult,
@@ -52,8 +49,6 @@ class GroupedDockerRebuildError extends Error {
     this.name = "GroupedDockerRebuildError";
   }
 }
-
-type PaneMap = Record<string, string>;
 
 interface OwnedExecution {
   generation: number;
@@ -213,26 +208,11 @@ async function tryAutoOpen(
   }
 }
 
-type LegacyTerminalDeps =
-  | "sendKeys"
-  | "sendCtrlC"
-  | "panePid"
-  | "detectPorts"
-  | "capturePane"
-  | "renameWindow"
-  | "getWindowName"
-  | "getWindowOption"
-  | "setWindowOption"
-  | "displayPopup";
-type ServiceManagerRuntimeDeps = Omit<ServiceManagerDeps, LegacyTerminalDeps> &
-  Partial<Pick<ServiceManagerDeps, LegacyTerminalDeps>>;
-
 export class ServiceManager extends EventEmitter {
   private runStopHook: (hook: () => void | Promise<void>) => Promise<void> = fireHook;
   private readonly statuses: Map<string, ServiceStatus>;
   private readonly abortControllers: Map<string, AbortController>;
   private readonly config: ResolvedConfig;
-  private readonly paneMap: PaneMap;
   private shuttingDown = false;
   private startAllPromise: Promise<void> | null = null;
   private admissionClosed = false;
@@ -240,7 +220,7 @@ export class ServiceManager extends EventEmitter {
   private stopAllPromise: Promise<void> | null = null;
   /** Cooperative-abort flag for an in-flight `startAll` (reload/destroy). */
   private startAllAborted = false;
-  private readonly deps: ServiceManagerRuntimeDeps;
+  private readonly deps: ServiceManagerDeps;
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
@@ -268,20 +248,14 @@ export class ServiceManager extends EventEmitter {
   private readonly legacyWarned = new Set<string>();
   private readonly sentraDockerWarned = new Set<string>();
 
-  public constructor(
-    config: ResolvedConfig,
-    paneMap: PaneMap,
-    deps: ServiceManagerRuntimeDeps,
-    _session?: string,
-  ) {
+  public constructor(config: ResolvedConfig, deps: ServiceManagerDeps) {
     super();
     this.config = config;
-    this.paneMap = paneMap;
     this.deps = deps;
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
-    this.runtime = deps.runtime(paneMap);
+    this.runtime = deps.runtime;
 
     // Initialize statuses for all services
     for (const [name, svc] of Object.entries(config.project.services)) {
@@ -605,35 +579,10 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
-    // Lazy-pane services start pane-less and acquire their pane on first
-    // Start (Flow B). MUST insert BEFORE `withServiceLock`:
-    //   1. `startServiceInternal` (manager.ts:577) throws `Unknown service`
-    //      If `paneMap[name]` is missing for a non-detached service, so the
-    //      Insert is REQUIRED before the lock-guarded body runs.
-    //   2. The reflow takes the SESSION op-lock; calling it INSIDE the per-
-    //      Service lock would invert the global lock order (`reload` already
-    //      Holds op-lock then takes service-lock via stopAll/startAll) and
-    //      Deadlock a concurrent manual start + reload (Round-4 trap).
-    // Already-paned (e.g. autostart after first start, or explicit
-    // `lazyPane: true` on an autostart service) and detached services bypass
-    // The reflow entirely — non-lazy behavior is byte-identical to before.
-    // CRITICAL: skip reflowInsert during shutdown (reload/destroy). Same deadlock
-    // Class as the reflowRemove guard in `stopService` — a `onStop` hook is
-    // Allowed to call `lib.service.start`/`lib.service.restart` (config/builder.ts:49-53),
-    // And `onStop` fires during reload's stopAll loop. Without this guard:
-    //   Reload holds withOpLock → manager.stopAll → stopService(svc1) →
-    //   StopServiceInternal → onStop hook → lib.service.start(svc2) →
-    //   Deps.reflowInsert(svc2) → Session.reflowInsert → withOpLock (not
-    //   Re-entrant) → chains AFTER the outer reload fn → permanent hang.
-    // Safe to skip during shutdown: services aren't meaningfully starting
-    // During stopAll, and `_reload` rebuilds the layout fresh via `createLayout
-    // + computeBootSkip` afterwards — any service that ends up running post-
-    // Reload gets its pane via the rebuild, not via a hook-driven reflowInsert
-    // Mid-stopAll. `startServiceInternal` will throw `Unknown service` on the
-    // Missing paneMap entry (existing contract); the hook's promise rejects,
-    // Which is preferable to deadlocking the whole reload.
+    // Presentation mutations take the session lock before the service lock.
+    // Hooks during stopAll must not re-enter the session lock held by reload.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.deps.hasPresentation(name)) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
@@ -1201,7 +1150,7 @@ export class ServiceManager extends EventEmitter {
     // Redundant and deadlock-prone. The manual stop path (no reload/destroy
     // In flight) still runs reflowRemove as intended.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && this.paneMap[name] !== undefined) {
+    if (!this.shuttingDown && isLazy && this.deps.hasPresentation(name)) {
       await this.deps.reflowRemove(name);
     }
     return result;
@@ -1355,20 +1304,9 @@ export class ServiceManager extends EventEmitter {
   private async restartServiceWithPane(name: string): Promise<void> {
     this.abortControllers.get(name)?.abort();
     this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
-    // Same lazy-pane invariant as `startService`: if the service is pane-less +
-    // Lazy, ensure the pane exists BEFORE entering the lock-guarded body —
-    // `restartServiceInternal` eventually calls `startServiceInternal`, which
-    // Throws `Unknown service` on a missing pane. The OUTSIDE-the-lock
-    // Placement keeps op-lock-outermost: the Round-4 trap stays closed for
-    // Restart just as it is for start. A restart of an ALREADY-paned service
-    // (the common "restart the running worker") sees `paneMap[name]` already
-    // Set and skips this — preserving the existing pane id (P04-T04 Flow E).
-    // CRITICAL: same shuttingDown guard as `startService` — `onStop` hooks can
-    // Reach `lib.service.restart` during reload's stopAll loop; without the
-    // Guard we'd re-enter withOpLock through reflowInsert and deadlock. See
-    // `startService` for the full chain.
+    // Preserve an existing target; acquire missing lazy presentation before the lock.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.deps.hasPresentation(name)) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.restartServiceInternal(name));
@@ -1717,45 +1655,16 @@ export interface ServiceManagerEvents {
 }
 
 export interface ServiceManagerDeps {
-  runtime: (targets: Record<string, string>) => RuntimeDriver;
+  runtime: RuntimeDriver;
+  sessionId: string;
+  zapsCommand: string;
+  hasPresentation: (name: string) => boolean;
   inspectPorts: (rootPid: number) => Promise<number[]>;
-  sendKeys: (target: string, keys: string) => Promise<void>;
-  sendCtrlC: (target: string) => Promise<void>;
-  panePid: (target: string) => Promise<number>;
-  detectPorts: (paneTarget: string) => Promise<number[]>;
-  /** PID-based port detection for detached services (no pane) (E4). */
-  detectPortsForPid?: (pid: number) => Promise<number[]>;
-  capturePane: (target: string, lines: number) => Promise<string>;
-  getDescendantPids: (rootPid: number) => Promise<number[]>;
-  /** Record a spawned detached child PID for orphan protection (R10). */
-  recordDetached?: (pid: number) => void | Promise<void>;
-  /** Drop a recorded detached child PID on clean stop/exit (R10). */
-  removeDetached?: (pid: number) => void | Promise<void>;
-  /** Overridable spawn for detached children (tests inject a fake) (E4). */
-  detachedSpawn?: SpawnFn;
-  renameWindow: (target: string, name: string) => Promise<void>;
-  getWindowName: (target: string) => Promise<string>;
-  getWindowOption: (target: string, option: string) => Promise<string>;
-  setWindowOption: (target: string, option: string, value: string) => Promise<void>;
-  /** Popup surface for hook-path popup tasks; bound to the session's tmux socket. */
-  displayPopup: (opts: DisplayPopupOptions) => Promise<void>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
   /** Pre-flight expected host ports; returns a conflict message or null (B2). */
   preflightPorts: (serviceConfig: ServiceConfig, projectDir: string) => Promise<string | null>;
-  storeExecInfo: (
-    service: string,
-    info: ExecInfo,
-    executionId?: string,
-    generation?: number,
-  ) => void;
-  sessionId: string;
-  zapsCommand: string;
   /** Latest request-derived environment for this session. */
   environment?: () => Record<string, string>;
-  /** Write a private, short-lived shell env file for raw pane commands. */
-  environmentFile?: (env: Record<string, string>) => string;
-  /** Remove an env file when the pane command could not be sent. */
-  removeEnvironmentFile?: (filePath: string) => void;
   /**
    * Lazy-pane reflow hooks (P04-T04). Both run under the SESSION op-lock so they
    * Serialize against each other AND against `_reload` (no half-applied geometry
@@ -1771,5 +1680,3 @@ export interface ServiceManagerDeps {
 }
 
 export { diffOutput, GroupedDockerRebuildError };
-
-export type { ServiceManagerRuntimeDeps };

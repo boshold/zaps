@@ -83,13 +83,28 @@ describe("ensureTmuxContext — default daemon lookup", () => {
     expect(ipcRequest).not.toHaveBeenCalled();
   });
 
-  it("treats an IPC error as 'no session' rather than failing the command", async () => {
-    vi.mocked(ipcRequest).mockResolvedValue({ id: "1", error: "boom" });
-    await expect(run(io().deps)).resolves.toBe(true);
-  });
-
-  it("treats an unreachable daemon socket the same way", async () => {
-    vi.mocked(ipcRequest).mockRejectedValue(new Error("ECONNREFUSED"));
-    await expect(run(io().deps)).resolves.toBe(true);
-  });
+  it.each([
+    ["an IPC error", { id: "1", error: "boom" }, "boom"],
+    ["an unreachable socket", new Error("ECONNREFUSED"), "ECONNREFUSED"],
+  ] as const)(
+    "preserves unknown ownership after %s without tmux effects",
+    async (_label, reply, message) => {
+      if (reply instanceof Error) {
+        vi.mocked(ipcRequest).mockRejectedValue(reply);
+      } else {
+        vi.mocked(ipcRequest).mockResolvedValue(reply);
+      }
+      const runTmux = vi.fn<BootstrapDeps["runTmux"]>();
+      const createTmux = vi.fn<BootstrapDeps["createTmux"]>();
+      const startTmuxClient = vi.fn<BootstrapDeps["startTmuxClient"]>();
+      const currentTmuxSession = vi.fn<BootstrapDeps["currentTmuxSession"]>();
+      await expect(
+        run({ ...io().deps, runTmux, createTmux, startTmuxClient, currentTmuxSession }),
+      ).rejects.toThrow(message);
+      expect(runTmux).not.toHaveBeenCalled();
+      expect(createTmux).not.toHaveBeenCalled();
+      expect(startTmuxClient).not.toHaveBeenCalled();
+      expect(currentTmuxSession).not.toHaveBeenCalled();
+    },
+  );
 });

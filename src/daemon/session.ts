@@ -23,7 +23,7 @@ import {
   runWithEnvironment,
 } from "#src/lib/request-context.js";
 import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
-import type { ServiceManager, ServiceManagerRuntimeDeps } from "#src/lib/service/manager.js";
+import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
@@ -111,14 +111,7 @@ export interface SessionCreateParams {
   configPath: string;
   projectDir: string;
   config: ResolvedConfig;
-  deps: ServiceManagerRuntimeDeps;
-  /** Shared manager projection; removed by P06-T04. */
-  paneMap?: PaneMap;
-  /** Composition bridges; removed by P06-T04. */
-  reloadPresentation?: (config: ResolvedConfig) => Promise<void>;
-  insertPresentation?: (name: string) => Promise<void>;
-  removePresentation?: (name: string) => Promise<void>;
-  updatePresentationTitle?: (statuses: ServiceStatus[]) => Promise<void>;
+  deps: ServiceManagerDeps;
   /** Shell environment forwarded by the CLI that created the session. */
   shellEnv?: Record<string, string>;
   /** Project .env merged with shellEnv. */
@@ -144,10 +137,6 @@ export interface UiBinding {
 export class Session {
   public readonly backend: SessionBackend;
   private presentation: PresentationSnapshot;
-  private readonly presentationCallbacks: Pick<
-    SessionCreateParams,
-    "reloadPresentation" | "insertPresentation" | "removePresentation" | "updatePresentationTitle"
-  >;
   public readonly id: string;
   public readonly configPath: string;
   public readonly projectDir: string;
@@ -173,7 +162,7 @@ export class Session {
   public get taskOutput() {
     return this.taskExecution.output;
   }
-  public readonly deps: ServiceManagerRuntimeDeps;
+  public readonly deps: ServiceManagerDeps;
 
   public name: string;
   public config: ResolvedConfig;
@@ -211,18 +200,7 @@ export class Session {
     this.config = params.config;
     this.backend = params.backend;
     this.presentation = this.backend.getPresentation();
-    this.presentationCallbacks = {
-      reloadPresentation: params.reloadPresentation,
-      insertPresentation: params.insertPresentation,
-      removePresentation: params.removePresentation,
-      updatePresentationTitle: params.updatePresentationTitle,
-    };
-    const initialPaneMap = compatibilityProjection(this.presentation).paneMap;
-    this.paneMap = params.paneMap ?? {};
-    for (const name of Object.keys(this.paneMap)) {
-      Reflect.deleteProperty(this.paneMap, name);
-    }
-    Object.assign(this.paneMap, initialPaneMap);
+    this.paneMap = compatibilityProjection(this.presentation).paneMap;
     this.deps = params.deps;
     this.manager = manager;
     this.configLoadedAt = Date.now();
@@ -273,7 +251,7 @@ export class Session {
 
   private async updatePresentationTitle(manager: ServiceManager): Promise<void> {
     try {
-      await this.presentationCallbacks.updatePresentationTitle?.(manager.getAllStatuses());
+      await this.backend.presentation?.updateTitle(manager.getAllStatuses());
     } catch {
       /* Cosmetic update. */
     }
@@ -419,7 +397,7 @@ export class Session {
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
-    this.manager.closeAdmission?.();
+    this.manager.closeAdmission();
     this.manager.abortStartAll();
     this.taskExecution.cancelPresentations();
     await this.settleStartPromise();
@@ -429,7 +407,7 @@ export class Session {
     this.manager.disposeObservers();
 
     try {
-      await this.presentationCallbacks.reloadPresentation?.(newConfig);
+      await this.backend.presentation?.reload(newConfig);
     } catch (error) {
       this.manager.resumeRuntimeObserver();
       this.wireManagerEvents(this.manager);
@@ -441,7 +419,7 @@ export class Session {
     // 6. Build the new manager + unit log pipeline before the swap. Reuses
     // The same allocation helper as construction so the two cannot drift.
     const { ServiceManager } = await import("#src/lib/service/manager.js");
-    const newManager = new ServiceManager(newConfig, paneMap, this.deps, this.id);
+    const newManager = new ServiceManager(newConfig, this.deps);
     const memberUnits = resolveExecutionUnits(newConfig);
     const logBuffers = allocateLogBuffers(memberUnits);
 
@@ -487,8 +465,8 @@ export class Session {
   public closeAdmission(): void {
     this.closing.abort();
     this.taskExecution.close();
-    this.manager.closeAdmission?.();
-    this.backend.runtime.closeAdmission?.();
+    this.manager.closeAdmission();
+    this.backend.runtime.closeAdmission();
     for (const binding of this.uiBindings.values()) {
       binding.controller.abort();
     }
@@ -691,13 +669,13 @@ export class Session {
    */
   public async reflowInsert(name: string): Promise<void> {
     await this.withOpLock(async () => {
-      await this.presentationCallbacks.insertPresentation?.(name);
+      await this.backend.presentation?.insert(name);
     });
   }
 
   public async reflowRemove(name: string): Promise<void> {
     await this.withOpLock(async () => {
-      await this.presentationCallbacks.removePresentation?.(name);
+      await this.backend.presentation?.remove(name);
     });
   }
 

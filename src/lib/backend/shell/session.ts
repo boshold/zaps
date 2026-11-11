@@ -31,8 +31,9 @@ interface ShellSessionOptions {
 class ShellSessionBackend implements SessionBackend {
   public readonly id = "shell";
   public readonly capabilities = shellCapabilities;
+  public readonly presentation = undefined;
   public readonly runtime: ShellRuntime;
-  private readonly presentation: PresentationSnapshot = Object.freeze({ kind: "shell" });
+  private readonly snapshot: PresentationSnapshot = Object.freeze({ kind: "shell" });
   private disposed = false;
   private disposal?: Promise<void>;
 
@@ -57,7 +58,7 @@ class ShellSessionBackend implements SessionBackend {
   }
 
   public getPresentation(): PresentationSnapshot {
-    return this.presentation;
+    return this.snapshot;
   }
 
   public subscribePresentation(_listener: (view: PresentationSnapshot) => void): () => void {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { outputOnlyCmd } from "../helpers/fixtures.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
@@ -33,7 +34,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
 
     expect(mgr.getStatus("svc").state).toBe("ready");
@@ -48,7 +49,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
         ready: { output: /^READY$/ },
       },
     });
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
   });
@@ -64,7 +65,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
 
     expect(mgr.getStatus("svc").state).toBe("ready");

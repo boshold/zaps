@@ -13,15 +13,66 @@ import type {
   ExecutionSpec,
   RuntimeDriver,
 } from "#src/lib/backend/types.js";
+import type { SpawnFn } from "#src/lib/service/detached.js";
 import { formatEnvForShell, shellEscape } from "#src/lib/service/env.js";
 import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { DisplayPopupOptions } from "#src/lib/tmux.js";
+
+interface ServiceManagerFixtureDeps extends Omit<
+  ServiceManagerDeps,
+  "runtime" | "hasPresentation"
+> {
+  runtime: (targets: Record<string, string>) => RuntimeDriver;
+  storeExecInfo: (
+    service: string,
+    info: import("#src/lib/service/types.js").ExecInfo,
+    executionId?: string,
+    generation?: number,
+  ) => void;
+  sessionId: string;
+  zapsCommand: string;
+  sendKeys: (target: string, keys: string) => Promise<void>;
+  sendCtrlC: (target: string) => Promise<void>;
+  panePid: (target: string) => Promise<number>;
+  detectPorts: (target: string) => Promise<number[]>;
+  capturePane: (target: string, lines: number) => Promise<string>;
+  getDescendantPids: (pid: number) => Promise<number[]>;
+  recordDetached?: (pid: number) => void | Promise<void>;
+  removeDetached?: (pid: number) => void | Promise<void>;
+  detachedSpawn?: SpawnFn;
+  renameWindow: (target: string, name: string) => Promise<void>;
+  getWindowName: (target: string) => Promise<string>;
+  getWindowOption: (target: string, option: string) => Promise<string>;
+  setWindowOption: (target: string, option: string, value: string) => Promise<void>;
+  displayPopup: (options: DisplayPopupOptions) => Promise<void>;
+  detectPortsForPid?: (pid: number) => Promise<number[]>;
+  environmentFile?: (env: Record<string, string>) => string;
+  removeEnvironmentFile?: (file: string) => void;
+}
+
+function managerDependencies(
+  targets: Record<string, string>,
+  deps: ServiceManagerFixtureDeps,
+): ServiceManagerDeps {
+  const bound: ServiceManagerDeps = {
+    ...deps,
+    runtime: deps.runtime(targets),
+    hasPresentation: (name) => Boolean(targets[name]),
+  };
+  for (const key of Object.keys(deps)) {
+    if (key !== "runtime") {
+      Object.defineProperty(bound, key, { get: () => Reflect.get(deps, key) });
+    }
+  }
+  return bound;
+}
 
 const wrapperExits = new WeakMap<
   object,
   Map<string, (details: { code: number; signal: string | null; spawnError?: string }) => void>
 >();
 
-type LegacyDeps = Omit<ServiceManagerDeps, "runtime" | "inspectPorts">;
+type LegacyDeps = Omit<ServiceManagerFixtureDeps, "runtime" | "inspectPorts">;
 interface RuntimeRecord {
   handle: ExecutionHandle;
   background: boolean;
@@ -64,6 +115,10 @@ class ServiceRuntime implements RuntimeDriver {
     });
     this.runner.subscribe((event) => this.publish(event));
   }
+  public closeAdmission(): void {
+    this.runner.closeAdmission();
+  }
+
   private publish(event: ExecutionEvent): void {
     for (const listener of this.listeners) {
       listener(event);
@@ -259,7 +314,7 @@ class ServiceRuntime implements RuntimeDriver {
 function withServiceRuntime<T extends LegacyDeps>(
   deps: T,
   options: PaneCleanupOptions = {},
-): T & Pick<ServiceManagerDeps, "runtime" | "inspectPorts"> {
+): T & Pick<ServiceManagerFixtureDeps, "runtime" | "inspectPorts"> {
   return Object.assign(deps, {
     runtime: (targets: Record<string, string>) => new ServiceRuntime(deps, targets, options),
     inspectPorts: async (pid: number) => createProcessInspection().detectPortsForPid(pid),
@@ -274,4 +329,5 @@ function serviceRuntimeExited(
   wrapperExits.get(deps)?.get(executionId)?.(details);
 }
 
-export { withServiceRuntime, serviceRuntimeExited };
+export { withServiceRuntime, serviceRuntimeExited, managerDependencies };
+export type { ServiceManagerFixtureDeps };

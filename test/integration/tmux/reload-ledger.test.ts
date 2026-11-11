@@ -58,6 +58,7 @@ it("cleans failed reload acquisitions before allocating and retains the personal
     await tmux.killPane(pane);
   };
   const runtime: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     start: vi.fn(),
     stop: vi.fn(),
     getPid: vi.fn(),

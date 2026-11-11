@@ -29,14 +29,12 @@ import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import { ipcErr, ipcOk, startAllParamsSchema } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
-import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
 import { captureEnvironment, parseRequestContext } from "#src/lib/request-context.js";
 import { sanitizeSegment } from "#src/lib/sentra/config.js";
 import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
-import type { ServiceManager, ServiceManagerRuntimeDeps } from "#src/lib/service/manager.js";
-import type { ExecInfo } from "#src/lib/service/types.js";
+import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
@@ -564,27 +562,6 @@ class DaemonServer implements SessionStore {
       return {
         backend,
         wrappers,
-        deps: {
-          sendKeys: tmux.sendKeys,
-          sendCtrlC: tmux.sendCtrlC,
-          panePid: tmux.panePid,
-          detectPorts: async (paneTarget: string) => detectPorts(paneTarget, tmux),
-          capturePane: tmux.capturePane,
-          renameWindow: tmux.renameWindow,
-          getWindowName: tmux.getWindowName,
-          getWindowOption: tmux.getWindowOption,
-          setWindowOption: tmux.setWindowOption,
-          displayPopup: tmux.displayPopup,
-        },
-        presentation: {
-          reloadPresentation: async (candidate: ResolvedProjectContext["config"]) =>
-            backend.reload(candidate, computeBootSkip(candidate)),
-          insertPresentation: async (name: string) => backend.insertPane(name),
-          removePresentation: async (name: string) => backend.removePane(name),
-          updatePresentationTitle: async (
-            statuses: Parameters<TmuxSessionBackend["updateServiceTitle"]>[0],
-          ) => backend.updateServiceTitle(statuses),
-        },
       };
     } catch (error) {
       const [result] = await Promise.allSettled([
@@ -631,16 +608,12 @@ class DaemonServer implements SessionStore {
     let manager: ServiceManager | undefined = undefined;
     try {
       this.assertAccepting();
-      const view = backend.getPresentation();
-      const paneMap = view.kind === "tmux" ? { ...view.paneMap } : {};
-      const deps: ServiceManagerRuntimeDeps = {
-        ...tmux?.deps,
-        runtime: () => backend.runtime,
+      const deps: ServiceManagerDeps = {
+        runtime: backend.runtime,
+        sessionId: id,
+        zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
+        hasPresentation: (name) => backend.presentation?.hasService(name) ?? false,
         inspectPorts: async (pid) => createProcessInspection().detectPortsForPid(pid),
-        detectPortsForPid,
-        getDescendantPids,
-        recordDetached: async (pid: number) => this.detachedRegistry.record(pid),
-        removeDetached: async (pid: number) => this.detachedRegistry.remove(pid),
         exec: async (cmd: string, args: string[], cwd?: string) => {
           await execFileAsync(cmd, args, {
             ...(cwd ? { cwd } : {}),
@@ -648,24 +621,7 @@ class DaemonServer implements SessionStore {
           });
         },
         preflightPorts: checkPortPreflight,
-        storeExecInfo: (service: string, info: ExecInfo, executionId?: string) => {
-          const { session } = ref;
-          if (!session || !executionId) {
-            throw new Error("Missing wrapper registration");
-          }
-          session.execInfo.set(service, info);
-        },
-        sessionId: id,
-        zapsCommand: process.env.ZAPS_COMMAND ?? "zaps",
         environment: () => ({ ...(ref.session?.env ?? loaded.env) }),
-        environmentFile: writeEnvironmentFile,
-        removeEnvironmentFile: (filePath: string) => {
-          try {
-            fs.unlinkSync(filePath);
-          } catch {
-            /* Already consumed or unavailable. */
-          }
-        },
         // Session serializes adapter layout mutations against reload/destroy.
         reflowInsert: async (name: string) => {
           if (!ref.session) {
@@ -701,21 +657,14 @@ class DaemonServer implements SessionStore {
       };
 
       const { ServiceManager } = await import("#src/lib/service/manager.js");
-      manager = new ServiceManager(
-        config,
-        paneMap,
-        deps,
-        params.backend === "tmux" ? params.tmuxSession : undefined,
-      );
+      manager = new ServiceManager(config, deps);
 
       const sessionParams: SessionCreateParams = {
         backend,
-        paneMap,
         configPath: params.configPath,
         projectDir: params.projectDir,
         config,
         deps,
-        ...tmux?.presentation,
         shellEnv: params.shellEnv,
         env: loaded.env,
       };

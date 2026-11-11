@@ -21,7 +21,7 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
-import { prepareSessionParams } from "../../_helpers/session-backend.js";
+import { createTmuxSession } from "../../_helpers/session-backend.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
@@ -147,26 +147,26 @@ function makeConfig(
   };
 }
 
-function makeSession(
+async function makeSession(
   tmuxSession: string,
   initialPaneId: string,
   config: ResolvedConfig,
   paneMap: PaneMap,
   tmuxWindow = initialPaneId,
-): Session {
-  const params = prepareSessionParams({
+): Promise<Session> {
+  const params = await createTmuxSession({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
-    paneMap,
     tmuxSession,
     tmuxWindow,
     originPane: initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
     deps: tmuxDeps,
+    skip: new Set(Object.keys(config.project.services)),
   });
-  return new Session(params, new ServiceManager(config, paneMap, tmuxDeps, tmuxSession));
+  return new Session(params, new ServiceManager(config, params.deps));
 }
 
 describe.skipIf(!hasTmux())("LayoutReflow.insertPane — real tmux", () => {
@@ -450,7 +450,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
   afterEach(async () => {
     try {
-      await zapsSession?.manager.stopAll();
+      await zapsSession?.destroy();
     } finally {
       await session.cleanup();
     }
@@ -465,7 +465,13 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
     const tmuxWindow = await displayMessage(session.initialPaneId, "#{window_id}");
     const otherPane = await newWindow(session.name);
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap, tmuxWindow);
+    zapsSession = await makeSession(
+      session.name,
+      session.initialPaneId,
+      config,
+      paneMap,
+      tmuxWindow,
+    );
 
     await execFileAsync("tmux", [...tmuxSocketArgs(), "select-window", "-t", otherPane]);
     await zapsSession.reflowInsert("api");
@@ -486,7 +492,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     const config = makeConfig(["api"], layout);
     config.project.services.api.start = `node -e 'console.log("${marker}");setInterval(()=>{},60000)'`;
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
     await zapsSession.reflowInsert("api");
@@ -523,7 +529,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
     await zapsSession.reflowInsert("api");
@@ -555,7 +561,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
     await zapsSession.reflowInsert("api");
     const apiPaneId = zapsSession.paneMap.api;
@@ -586,7 +592,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
     const buffer = zapsSession.logBuffers.get("api");
     const baselineBuffers = zapsSession.logBuffers.size;
@@ -614,7 +620,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["web"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
     const snap = zapsSession.attachSnapshot();
     expect(snap.logSnapshots).toHaveProperty("web");
@@ -686,7 +692,7 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
     const buffer = zapsSession.logBuffers.get("api");
     buffer?.appendLines(["before rollback"]);

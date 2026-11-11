@@ -1,5 +1,7 @@
+import { computeBootSkip } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import type {
+  PresentationDriver,
   PresentationSnapshot,
   RuntimeDriver,
   SessionBackend,
@@ -88,15 +90,13 @@ class TmuxSessionBackend implements SessionBackend {
     });
   }
 
-  // Legacy constructor projection; removed with final boundary cleanup (P06-T04).
-  public static adopt(
-    options: TmuxSessionOptions,
-    paneMap: Record<string, string>,
-  ): TmuxSessionBackend {
-    const backend = new TmuxSessionBackend(options);
-    backend.paneMap = { ...paneMap };
-    return backend;
-  }
+  public readonly presentation: PresentationDriver = {
+    hasService: (name) => Boolean(this.paneMap[name]),
+    reload: async (config) => this.reload(config, computeBootSkip(config)),
+    insert: async (name) => this.insertPane(name),
+    remove: async (name) => this.removePane(name),
+    updateTitle: async (statuses) => this.updateServiceTitle(statuses),
+  };
 
   public async reload(config: ResolvedConfig, skip: Set<string>): Promise<void> {
     await this.mutate(async () => {
@@ -136,10 +136,6 @@ class TmuxSessionBackend implements SessionBackend {
     if (errors.length) {
       throw new AggregateError(errors, "Tmux layout cleanup incomplete");
     }
-  }
-
-  public get legacyReflow(): LayoutReflow {
-    return this.reflow;
   }
 
   public static async create(

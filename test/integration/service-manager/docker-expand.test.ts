@@ -10,6 +10,7 @@ import { captureEnvironment, runWithEnvironment } from "#src/lib/request-context
 import { ServiceManager } from "#src/lib/service/manager.js";
 import { splitPane } from "#src/lib/tmux.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { composeDown, writeComposeFile } from "../helpers/docker.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
@@ -117,7 +118,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     await startGroup(mgr);
 
     expect(mgr.getStatus("redis").state).toBe("ready");
@@ -158,7 +159,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     await startGroup(mgr);
 
     // Stop memcached only — redis should remain ready
@@ -220,8 +221,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       config.project.services.memcached.onOutput = logs;
       mgr = new ServiceManager(
         config,
-        paneMap,
-        {
+        managerDependencies(paneMap, {
           ...deps,
           runtime: (targets) => {
             const runtime = deps.runtime(targets);
@@ -237,8 +237,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
             });
             return runtime;
           },
-        },
-        session.name,
+        }),
       );
       await startGroup(mgr);
       const ids = async (name = "memcached") => {

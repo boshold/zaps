@@ -8,7 +8,7 @@ import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { TmuxRuntime, WrapperRegistry } from "#src/lib/backend/tmux/runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { shellEscape } from "#src/lib/service/env.js";
-import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import {
   capturePane,
@@ -22,6 +22,8 @@ import {
   setWindowOption,
   tmuxFor,
 } from "#src/lib/tmux.js";
+
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
 
 import { testTmuxSocket } from "./tmux.js";
 

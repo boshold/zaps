@@ -94,9 +94,15 @@ describe.skipIf(!hasTmux())("popup-picker tmux integration", () => {
         );
         expect(key).toBe("seed");
       } finally {
-        await operations.dispose();
-        client.cleanup();
-        await session.cleanup();
+        try {
+          await operations.dispose();
+        } finally {
+          try {
+            client.cleanup();
+          } finally {
+            await session.cleanup();
+          }
+        }
       }
     },
   );

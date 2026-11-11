@@ -23,11 +23,15 @@ import type {
 } from "../../../src/config/types.js";
 import { ProcessRunner } from "../../../src/lib/backend/runtime/process-runner.js";
 import { runWithEnvironment } from "../../../src/lib/request-context.js";
-import type { ServiceManagerDeps } from "../../../src/lib/service/manager.js";
 import { ServiceManager, diffOutput } from "../../../src/lib/service/manager.js";
 import type { ServiceStatus } from "../../../src/lib/service/types.js";
 import { SENTRA_BLOCK, fakeSentra } from "../../_helpers/fake-sentra.js";
-import { serviceRuntimeExited, withServiceRuntime } from "../../_helpers/service-runtime.js";
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
+import {
+  managerDependencies,
+  serviceRuntimeExited,
+  withServiceRuntime,
+} from "../../_helpers/service-runtime.js";
 
 const processInspection = await import("../../../src/lib/backend/runtime/process-inspection.js");
 
@@ -170,7 +174,7 @@ function makeDetachedManager(
   paneMap: Record<string, string>,
   deps: ServiceManagerDeps,
 ): ServiceManager {
-  const manager = new ServiceManager(config, paneMap, deps, "test-session");
+  const manager = new ServiceManager(config, managerDependencies(paneMap, deps));
   detachedManagers.push(manager);
   return manager;
 }
@@ -298,7 +302,7 @@ describe("startAll", () => {
     // Descendants > 1 means process is running (for crash monitor)
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startAll();
 
     // Advance timers to let ready checks complete
@@ -325,7 +329,7 @@ describe("startAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -344,7 +348,7 @@ describe("startAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await expect(promise).resolves.toBeUndefined();
@@ -361,7 +365,7 @@ describe("startAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const p1 = mgr.startAll();
     const p2 = mgr.startAll();
@@ -390,7 +394,7 @@ describe("startAll", () => {
     });
     deps.capturePane = vi.fn().mockResolvedValue("no match here");
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const changed: { name: string; lastError?: string }[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -436,7 +440,7 @@ describe("startAll", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startAll();
     await dbStarted;
     mgr.abortStartAll();
@@ -471,7 +475,7 @@ describe("startAll", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startAll();
     await dbStarted;
     mgr.abortStartAll();
@@ -525,7 +529,7 @@ describe("stopAll", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // First start them
     const startPromise = mgr.startAll();
@@ -563,7 +567,7 @@ describe("stopAll", () => {
     deps.getWindowOption = vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("on");
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -588,7 +592,7 @@ describe("stopAll", () => {
     deps.getWindowOption = vi.fn<ServiceManagerDeps["getWindowOption"]>().mockResolvedValue("off");
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -608,7 +612,7 @@ describe("stopAll", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startAll();
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -658,7 +662,7 @@ describe("startService", () => {
     });
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start db first
     const dbPromise = mgr.startService("db");
@@ -699,7 +703,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -730,7 +734,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const events: { name: string; state: string }[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -755,7 +759,7 @@ describe("startService", () => {
       .fn<ServiceManagerDeps["preflightPorts"]>()
       .mockResolvedValue("Port 5432 already in use (pid 1234 postgres)");
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await expect(mgr.startService("svc")).rejects.toThrow(
       "Port 5432 already in use (pid 1234 postgres)",
@@ -785,7 +789,7 @@ describe("startService", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start
     const startPromise = mgr.startService("svc");
@@ -814,7 +818,7 @@ describe("startService", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Try to start api without db being ready
     await expect(mgr.startService("api")).rejects.toThrow(
@@ -830,7 +834,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -851,7 +855,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start twice concurrently
     const p1 = mgr.startService("svc");
@@ -872,7 +876,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -891,7 +895,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -905,7 +909,7 @@ describe("startService", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.getStatus("svc").state = "unavailable";
 
     const events: string[] = [];
@@ -924,7 +928,7 @@ describe("startService", () => {
       const paneMap = makePaneMap(["svc"]);
       const deps = createMockDeps();
 
-      const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+      const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
       mgr.getStatus("svc").state = state;
 
       const events: string[] = [];
@@ -943,7 +947,7 @@ describe("startService", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.getStatus("svc").state = "restarting";
 
     const stopPromise = mgr.stopService("svc");
@@ -963,7 +967,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -984,7 +988,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1011,7 +1015,7 @@ describe("startService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1046,7 +1050,7 @@ describe("stopService", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start first
     const startPromise = mgr.startService("svc");
@@ -1100,9 +1104,7 @@ describe("stopService", () => {
     deps.getDescendantPids = vi.fn(async () => [...identities.keys()]);
     const mgr = new ServiceManager(
       makeConfig({ svc: { start: "serve" } }),
-      makePaneMap(["svc"]),
-      deps,
-      "test-session",
+      managerDependencies(makePaneMap(["svc"]), deps),
     );
     try {
       await mgr.startService("svc");
@@ -1159,7 +1161,7 @@ describe("restartService", () => {
       }
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start first
     const startPromise = mgr.startService("svc");
@@ -1201,7 +1203,7 @@ describe("restartService", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start
     const startPromise = mgr.startService("svc");
@@ -1253,7 +1255,7 @@ describe("crash recovery", () => {
 
     deps.getDescendantPids = vi.fn(async () => (running ? [1000, 2000] : [1000]));
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start service
     const startPromise = mgr.startService("svc");
@@ -1291,7 +1293,7 @@ describe("crash recovery", () => {
       return [1000, 2000]; // Running
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start service
     const startPromise = mgr.startService("svc");
@@ -1337,7 +1339,7 @@ describe("crash recovery", () => {
       return [1000, 2000];
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1374,7 +1376,7 @@ describe("crash recovery", () => {
     // Drive the crash through the runtime wrapper notification.
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     await mgr.startService("dep");
     const svcStart = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1421,7 +1423,7 @@ describe("crash recovery", () => {
       startCount += 1;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -1459,7 +1461,7 @@ describe("crash recovery", () => {
       startCount += 1;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -1489,7 +1491,7 @@ describe("crash recovery", () => {
       startCount += 1;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -1520,7 +1522,7 @@ describe("crash monitor poll interval", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await p;
@@ -1541,7 +1543,7 @@ describe("crash monitor poll interval", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await p;
@@ -1570,7 +1572,7 @@ describe("runtime wrapper exits", () => {
     const deps = createMockDeps();
     deps.capturePane = vi.fn().mockResolvedValue("no match here");
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const events: { name: string; state: string; lastError?: string }[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -1609,7 +1611,7 @@ describe("runtime wrapper exits", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await p;
@@ -1631,7 +1633,7 @@ describe("runtime wrapper exits", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await p;
@@ -1652,7 +1654,7 @@ describe("runtime wrapper exits", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Service is in "stopped" state initially
     expect(mgr.getStatus("svc").state).toBe("stopped");
@@ -1670,7 +1672,7 @@ describe("runtime wrapper exits", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await p;
@@ -1707,7 +1709,7 @@ describe("url resolution", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1737,7 +1739,7 @@ describe("url resolution", () => {
     });
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const dbPromise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1761,7 +1763,7 @@ describe("url resolution", () => {
 
     probePort.mockResolvedValueOnce("http://localhost:3000");
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1782,7 +1784,7 @@ describe("url resolution", () => {
     // First call (onServiceReady) fails, second call (monitorUrl) succeeds
     probePort.mockResolvedValueOnce(undefined).mockResolvedValueOnce("http://localhost:3000");
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Track stateChange events to detect when monitorUrl emits
     const urlEvents: (string | undefined)[] = [];
@@ -1815,7 +1817,7 @@ describe("url resolution", () => {
 
     probePort.mockResolvedValue(undefined);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1838,7 +1840,7 @@ describe("url resolution", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1859,7 +1861,7 @@ describe("url resolution", () => {
     deps.inspectPorts = vi.fn().mockResolvedValue([5432]);
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -1881,7 +1883,7 @@ describe("url resolution", () => {
     // Always fail
     probePort.mockResolvedValue(undefined);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(500);
     await promise;
@@ -1908,7 +1910,7 @@ describe("url resolution", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -1955,7 +1957,7 @@ describe("docker ready detection", () => {
       return { state: "created", health: "", ports: [], ids: [] };
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -1982,7 +1984,7 @@ describe("docker ready detection", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
 
     await vi.advanceTimersByTimeAsync(2000);
@@ -2022,7 +2024,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2055,7 +2057,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2084,7 +2086,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "healthy", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2109,7 +2111,7 @@ describe("docker config", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2136,7 +2138,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const status = mgr.getStatus("svc");
 
     expect(status.name).toBe("svc");
@@ -2150,7 +2152,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["svc"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     expect(() => mgr.getStatus("unknown")).toThrow("Unknown service: unknown");
   });
 
@@ -2162,7 +2164,7 @@ describe("getStatus / getAllStatuses", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const statuses = mgr.getAllStatuses();
 
     expect(statuses).toHaveLength(2);
@@ -2190,7 +2192,7 @@ describe("per-service hooks", () => {
       callOrder.push("sendKeys");
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2208,7 +2210,7 @@ describe("per-service hooks", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2226,7 +2228,7 @@ describe("per-service hooks", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2249,7 +2251,7 @@ describe("per-service hooks", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -2275,7 +2277,7 @@ describe("per-service hooks", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2299,7 +2301,7 @@ describe("per-service hooks", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -2349,7 +2351,7 @@ describe("bindActions", () => {
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const broadcast = vi.fn();
     const owner = new TaskExecutionService({
@@ -2408,7 +2410,7 @@ describe("bindActions", () => {
 
     const displayPopup = vi.fn().mockResolvedValue(undefined);
     const deps = { ...createMockDeps(), displayPopup };
-    const mgr = new ServiceManager(config, makePaneMap(["db"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["db"]), deps));
     expect(mgr).toBeDefined();
 
     const broadcast = vi.fn();
@@ -2467,7 +2469,7 @@ describe("bindActions", () => {
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const broadcast = vi.fn();
     const owner = new TaskExecutionService({
@@ -2524,7 +2526,7 @@ describe("bindActions", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const _mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const _mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     if (!capturedActions) {
       throw new Error("bindActions was not called");
@@ -2624,9 +2626,7 @@ describe("onOutput monitoring", () => {
     monitor.start("view:group", "view:group", 100);
     const manager = new ServiceManager(
       config,
-      { "@tui": "view:tui", owner: "view:group", member: "view:group" },
-      deps,
-      "session",
+      managerDependencies({ "@tui": "view:tui", owner: "view:group", member: "view:group" }, deps),
     );
     await manager.startService("owner");
     expect(capture).toHaveBeenCalledTimes(1);
@@ -2660,7 +2660,7 @@ describe("onOutput monitoring", () => {
     let captureContent = "initial output";
     deps.capturePane = vi.fn(async () => captureContent);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2688,7 +2688,7 @@ describe("onOutput monitoring", () => {
     let captureContent = "line1";
     deps.capturePane = vi.fn(async () => captureContent);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const promise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -2720,7 +2720,7 @@ describe("onOutput monitoring", () => {
     let captureContent = "initial";
     deps.capturePane = vi.fn(async () => captureContent);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -2753,7 +2753,7 @@ describe("restartWithDockerOverrides", () => {
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await expect(mgr.restartWithDockerOverrides("api", { build: true })).rejects.toThrow(
       'Service "api" is not a docker service',
@@ -2774,7 +2774,7 @@ describe("restartWithDockerOverrides", () => {
     const spy = vi.spyOn(dockerModule, "getContainerInfo");
     spy.mockResolvedValue({ state: "running", health: "", ports: [5432], ids: [] });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start initially so restartService can stop first
     const startPromise = mgr.startService("db");
@@ -2813,7 +2813,7 @@ describe("restartWithDockerOverrides", () => {
     const paneMap = makePaneMap(["db"]);
     const deps = createMockDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await expect(mgr.restartWithDockerOverrides("db", { build: true })).rejects.toThrow();
 
@@ -2840,7 +2840,7 @@ describe("restartWithDockerOverrides", () => {
       processRunning = false;
     });
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Two rebuilds fired concurrently: the second must snapshot the RESTORED
     // Config (not the first's temporary overrides), so nothing leaks.
@@ -2883,7 +2883,7 @@ describe("cascadeRestart", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createCascadeDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start both services
     const startDb = mgr.startService("db");
@@ -2919,7 +2919,7 @@ describe("cascadeRestart", () => {
     const paneMap = makePaneMap(["db", "cache", "api"]);
     const deps = createCascadeDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     for (const name of ["db", "cache", "api"]) {
       const p = mgr.startService(name);
@@ -2948,7 +2948,7 @@ describe("cascadeRestart", () => {
     const paneMap = makePaneMap(["db", "api"]);
     const deps = createCascadeDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startDb = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(500);
@@ -2978,7 +2978,7 @@ describe("cascadeRestart", () => {
     const paneMap = makePaneMap(["db", "api", "frontend"]);
     const deps = createCascadeDeps();
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     for (const name of ["db", "api", "frontend"]) {
       const p = mgr.startService(name);
@@ -3014,7 +3014,7 @@ describe("operation mutex", () => {
     let stopRequested = false;
     deps.getDescendantPids = vi.fn(async () => (stopRequested ? [1000] : [1000, 2000]));
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const startPromise = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await startPromise;
@@ -3046,7 +3046,7 @@ describe("operation mutex", () => {
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // First op rejects (api is not a docker service) — the rejection reaches the
     // Caller but must not block later operations on the same service.
@@ -3079,6 +3079,7 @@ function neutralRuntime(
     }
   };
   const driver: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     start: async (spec) => {
       specs.push(spec);
       onStart?.(spec, emit);
@@ -3140,7 +3141,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
     const config = makeCombinedConfig();
-    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies({}, deps));
     const buffer = new LogBuffer(20);
     const logLines = vi.fn((_name: string, lines: string[]) => buffer.appendLines(lines));
     mgr.on("logLines", logLines);
@@ -3191,7 +3192,7 @@ describe("combined docker services", () => {
       const deps = createMockDeps();
       deps.runtime = () => runtime.driver;
       const config = makeCombinedConfig();
-      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      const mgr = new ServiceManager(config, managerDependencies({}, deps));
       await mgr.startAll();
       const sibling = member === "postgres" ? "redis" : "postgres";
       const siblingBefore = structuredClone(mgr.getStatus(sibling));
@@ -3233,7 +3234,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const p = mgr.startService("postgres");
     await vi.advanceTimersByTimeAsync(500);
@@ -3256,7 +3257,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const p = mgr.startService("redis");
     await vi.advanceTimersByTimeAsync(500);
@@ -3270,7 +3271,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start owner first
     const p1 = mgr.startService("postgres");
@@ -3314,7 +3315,7 @@ describe("combined docker services", () => {
       const sibling = member === "postgres" ? "redis" : "postgres";
       const siblingOutput = vi.fn();
       config.project.services[sibling].onOutput = siblingOutput;
-      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      const mgr = new ServiceManager(config, managerDependencies({}, deps));
       const logs = vi.fn();
       mgr.on("logLines", logs);
       await mgr.startAll();
@@ -3359,7 +3360,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
     const config = makeCombinedConfig();
-    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     let release: (() => void) | undefined;
@@ -3401,7 +3402,7 @@ describe("combined docker services", () => {
       const deps = createMockDeps();
       deps.runtime = () => runtime.driver;
       const config = makeCombinedConfig();
-      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      const mgr = new ServiceManager(config, managerDependencies({}, deps));
       await mgr.startAll();
       await mgr.stopService("postgres");
       let release: (() => void) | undefined;
@@ -3448,7 +3449,7 @@ describe("combined docker services", () => {
     const runtime = neutralRuntime();
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
-    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    const mgr = new ServiceManager(makeCombinedConfig(), managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     deps.exec = vi.fn(async (_command, args) => {
@@ -3478,7 +3479,7 @@ describe("combined docker services", () => {
     const runtime = neutralRuntime();
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
-    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    const mgr = new ServiceManager(makeCombinedConfig(), managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     let release: (() => void) | undefined;
@@ -3524,7 +3525,7 @@ describe("combined docker services", () => {
       for (const service of Object.values(config.project.services)) {
         service.restart = { maxRetries: 1, backoff: 1 };
       }
-      const mgr = new ServiceManager(config, {}, deps, "test-session");
+      const mgr = new ServiceManager(config, managerDependencies({}, deps));
       await mgr.startAll();
       if (ownerStopped) {
         await mgr.stopService("postgres");
@@ -3566,7 +3567,7 @@ describe("combined docker services", () => {
     const runtime = neutralRuntime();
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
-    const mgr = new ServiceManager(makeCombinedConfig(), {}, deps, "test-session");
+    const mgr = new ServiceManager(makeCombinedConfig(), managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     deps.exec = vi.fn(async (_command, args) => {
@@ -3589,7 +3590,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
     const config = makeCombinedConfig();
-    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     let rejectStop = true;
@@ -3623,7 +3624,7 @@ describe("combined docker services", () => {
     const config = makeCombinedConfig();
     const output = vi.fn();
     config.project.services.redis.onOutput = output;
-    const mgr = new ServiceManager(config, {}, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies({}, deps));
     await mgr.startAll();
     await mgr.stopService("postgres");
     config.project.services.postgres.ready = async () => {
@@ -3655,7 +3656,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const statuses = mgr.getAllStatuses();
     expect(statuses.find((s) => s.name === "postgres")?.group).toBe("infra");
     expect(statuses.find((s) => s.name === "redis")?.group).toBe("infra");
@@ -3666,7 +3667,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start both
     const p1 = mgr.startService("postgres");
@@ -3695,7 +3696,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start owner only
     const p1 = mgr.startService("postgres");
@@ -3720,7 +3721,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start both
     const p1 = mgr.startService("postgres");
@@ -3749,7 +3750,7 @@ describe("combined docker services", () => {
     const deps = createMockDeps();
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p1 = mgr.startService("postgres");
     await vi.advanceTimersByTimeAsync(500);
     await p1;
@@ -3773,7 +3774,7 @@ describe("combined docker services", () => {
     // Group not referenced in layout → each child got its OWN pane.
     const paneMap = { "@tui": "view:tui", postgres: "view:postgres", redis: "view:redis" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     const p1 = mgr.startService("postgres");
     await vi.advanceTimersByTimeAsync(500);
     await p1;
@@ -3806,7 +3807,7 @@ describe("combined docker services", () => {
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start owner
     const p = mgr.startService("postgres");
@@ -3845,7 +3846,7 @@ describe("combined docker services", () => {
     (deps.getDescendantPids as ReturnType<typeof vi.fn>).mockResolvedValue([1000, 2000]);
     const paneMap = { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" };
 
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start owner
     const p = mgr.startService("postgres");
@@ -3880,7 +3881,7 @@ describe("unavailable services", () => {
     ]);
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const dbStatus = mgr.getStatus("db");
     expect(dbStatus.state).toBe("unavailable");
@@ -3900,7 +3901,7 @@ describe("unavailable services", () => {
     ]);
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const all = mgr.getAllStatuses();
     expect(all).toHaveLength(2);
@@ -3915,7 +3916,7 @@ describe("unavailable services", () => {
     ]);
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // StopAll should complete without trying to stop unavailable services
     await mgr.stopAll();
@@ -3933,7 +3934,7 @@ describe("unavailable services", () => {
     ]);
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Start api service to trigger title update
     deps.panePid = vi.fn(async () => 1000);
@@ -4142,7 +4143,7 @@ describe("lazy-pane lifecycle", () => {
     deps.reflowInsert = vi.fn(async (name: string) => {
       paneMap[name] = "view:worker";
     });
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("worker");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4161,7 +4162,7 @@ describe("lazy-pane lifecycle", () => {
     const config = lazyConfig({ api: { start: "npm dev" } }, ["api"]);
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("api");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4175,7 +4176,7 @@ describe("lazy-pane lifecycle", () => {
     const config = makeConfig({ api: { start: "npm dev" } }); // No lazyPane entry.
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const startPromise = mgr.startService("api");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4193,7 +4194,7 @@ describe("lazy-pane lifecycle", () => {
     const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
     deps.reflowInsert = vi.fn().mockRejectedValue(new Error("forced split failure"));
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     const stateEvents: string[] = [];
     mgr.on("stateChange", (_, status: ServiceStatus) => {
@@ -4221,7 +4222,7 @@ describe("lazy-pane lifecycle", () => {
       delete paneMap[name];
     });
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.on("stateChange", (_, status: ServiceStatus) => {
       events.push(`state:${status.state}`);
     });
@@ -4247,7 +4248,7 @@ describe("lazy-pane lifecycle", () => {
     const paneMap = makePaneMap(["api"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await mgr.startService("api");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4267,7 +4268,7 @@ describe("lazy-pane lifecycle", () => {
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
     const paneMap: Record<string, string> = { "@tui": "view:tui" }; // No worker pane.
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await expect(mgr.stopService("worker")).resolves.toEqual({ noop: true });
     expect(deps.reflowRemove).not.toHaveBeenCalled();
@@ -4287,7 +4288,7 @@ describe("lazy-pane lifecycle", () => {
     const deps = createMockDeps();
     // Start: process spawns; then immediately exits → handleCrash triggers.
     deps.getDescendantPids = vi.fn().mockResolvedValueOnce([1000, 2000]).mockResolvedValue([1000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await mgr.startService("worker");
     // Let monitor tick + crash handler run.
@@ -4318,7 +4319,7 @@ describe("lazy-pane lifecycle", () => {
     const paneMap = makePaneMap(["worker", "api"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // Get both services to `ready` first.
     await mgr.startService("worker");
@@ -4357,7 +4358,7 @@ describe("lazy-pane lifecycle", () => {
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
     const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     // Simulate the shutdown phase (what runStopAll sets at line 496).
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
     (mgr as any).shuttingDown = true;
@@ -4377,7 +4378,7 @@ describe("lazy-pane lifecycle", () => {
     const config = lazyConfig({ worker: { start: "node w.js" } }, ["worker"]);
     const paneMap: Record<string, string> = { "@tui": "view:tui" };
     const deps = createMockDeps();
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toggling the private flag for the deadlock-guard test
     (mgr as any).shuttingDown = true;
 
@@ -4392,7 +4393,7 @@ describe("lazy-pane lifecycle", () => {
     const paneMap = makePaneMap(["worker"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await mgr.startService("worker");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4419,7 +4420,7 @@ describe("lazy-pane lifecycle", () => {
     deps.reflowInsert = vi.fn(async (name: string) => {
       paneMap[name] = "view:worker";
     });
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     // RestartService on a stopped pane-less lazy: would throw `Unknown service`
     // Without the wrapper reflowInsert. Drive it forward and assert reflowInsert ran.
@@ -4442,7 +4443,7 @@ describe("lazy-pane lifecycle", () => {
     const paneMap = makePaneMap(["worker"]);
     const deps = createMockDeps();
     deps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const mgr = new ServiceManager(config, paneMap, deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
 
     await mgr.startService("worker");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4486,7 +4487,7 @@ describe("sentra env injection", () => {
     const sentra = fakeSentra();
     deps.sentra = sentra;
 
-    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), deps));
     const promise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4515,7 +4516,7 @@ describe("sentra env injection", () => {
     const onServiceStart = vi.fn<(service: string, startedAt: number) => void>();
     deps.sentra = { ...fakeSentra(), onServiceStart };
 
-    const mgr = new ServiceManager(config, makePaneMap(["web app"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web app"]), deps));
     const promise = mgr.startService("web app");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4530,7 +4531,7 @@ describe("sentra env injection", () => {
     const onServiceStart = vi.fn<(service: string, startedAt: number) => void>();
     deps.sentra = { ...fakeSentra(false), onServiceStart };
 
-    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), deps));
     const promise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4547,7 +4548,7 @@ describe("sentra env injection", () => {
     deps.environment = () => ({});
     deps.sentra = fakeSentra();
 
-    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), deps));
     const promise = runWithEnvironment(
       { SENTRY_DSN: "request", REQ: "1", SHARED: "request" },
       async () => mgr.startService("web"),
@@ -4591,7 +4592,7 @@ describe("sentra env injection", () => {
     const sentra = fakeSentra(false);
     deps.sentra = sentra;
 
-    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), deps));
     const promise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4619,7 +4620,7 @@ describe("sentra env injection", () => {
     const sentra = fakeSentra();
     deps.sentra = sentra;
 
-    const mgr = new ServiceManager(config, makePaneMap(["web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), deps));
     const promise = mgr.startService("web");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4641,7 +4642,7 @@ describe("sentra env injection", () => {
     const sentra = fakeSentra();
     deps.sentra = sentra;
 
-    const mgr = new ServiceManager(config, makePaneMap(["db", "web"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["db", "web"]), deps));
     const promise = mgr.startService("db");
     await vi.advanceTimersByTimeAsync(2000);
     await promise;
@@ -4649,7 +4650,7 @@ describe("sentra env injection", () => {
 
     const plainDeps = createMockDeps();
     plainDeps.getDescendantPids = vi.fn().mockResolvedValue([1000, 2000]);
-    const plain = new ServiceManager(config, makePaneMap(["web"]), plainDeps, "test-session");
+    const plain = new ServiceManager(config, managerDependencies(makePaneMap(["web"]), plainDeps));
     const plainStart = plain.startService("web");
     await vi.advanceTimersByTimeAsync(2000);
     await plainStart;
@@ -4674,9 +4675,10 @@ describe("sentra env injection", () => {
     deps.sentra = sentra;
     const mgr = new ServiceManager(
       config,
-      { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" },
-      deps,
-      "test-session",
+      managerDependencies(
+        { "@tui": "view:tui", postgres: "view:infra", redis: "view:infra" },
+        deps,
+      ),
     );
     const dockerModule = await import("../../../src/lib/docker.js");
     const containerSpy = vi.spyOn(dockerModule, "getContainerInfo").mockResolvedValue({
@@ -4715,7 +4717,7 @@ describe("sentra env injection", () => {
       ids: [],
     });
 
-    const mgr = new ServiceManager(config, makePaneMap(["web", "db"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["web", "db"]), deps));
     for (const name of ["web", "db"]) {
       const promise = mgr.startService(name);
       await vi.advanceTimersByTimeAsync(2000);
@@ -4749,7 +4751,7 @@ describe("startedAt", () => {
     });
     vi.setSystemTime(1_000_000);
 
-    const mgr = new ServiceManager(config, makePaneMap(["svc"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["svc"]), deps));
     expect(mgr.getStatus("svc").startedAt).toBeUndefined();
     const start = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
@@ -4775,7 +4777,7 @@ describe("startedAt", () => {
     });
     deps.getDescendantPids = vi.fn(async () => (running ? [1000, 2000] : [1000]));
 
-    const mgr = new ServiceManager(config, makePaneMap(["svc"]), deps, "test-session");
+    const mgr = new ServiceManager(config, managerDependencies(makePaneMap(["svc"]), deps));
     const start = mgr.startService("svc");
     await vi.advanceTimersByTimeAsync(2000);
     await start;
@@ -4813,9 +4815,7 @@ describe("neutral runtime launch", () => {
           },
         },
       }),
-      {},
-      deps,
-      "neutral-session",
+      managerDependencies({}, deps),
     );
     await manager.startService("svc");
     runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["first", "second"] });
@@ -4850,9 +4850,7 @@ describe("neutral runtime launch", () => {
           },
         },
       }),
-      makePaneMap(["svc"]),
-      deps,
-      "neutral-session",
+      managerDependencies(makePaneMap(["svc"]), deps),
     );
     await manager.startService("svc");
     runtime.emit({ kind: "output", unitId: "svc", generation: 1, lines: ["first", "old second"] });
@@ -4887,9 +4885,7 @@ describe("neutral runtime launch", () => {
     };
     const manager = new ServiceManager(
       makeConfig({ svc: { start: "missing" } }),
-      makePaneMap(["svc"]),
-      deps,
-      "compat-session",
+      managerDependencies(makePaneMap(["svc"]), deps),
     );
     await manager.startService("svc");
     await vi.advanceTimersByTimeAsync(0);
@@ -4988,7 +4984,7 @@ describe("neutral runtime launch", () => {
     deps.runtime = () => runtime.driver;
     deps.inspectPorts = async (pid) => (pid === 4242 ? [5432] : [8080]);
     deps.sentra = fakeSentra();
-    const manager = new ServiceManager(config, {}, deps, "neutral-session");
+    const manager = new ServiceManager(config, managerDependencies({}, deps));
     await manager.startAll();
     expect(order).toEqual(["db", "db ready", "web"]);
     expect(runtime.specs[1]?.env).toMatchObject({ DB_PORT: "5432", SENTRY_DSN: DSN_WEB });
@@ -5019,7 +5015,7 @@ describe("neutral runtime launch", () => {
     const deps = createMockDeps();
     deps.runtime = () => runtime.driver;
     deps.inspectPorts = vi.fn().mockResolvedValue([8080]);
-    const manager = new ServiceManager(config, {}, deps, "neutral-session");
+    const manager = new ServiceManager(config, managerDependencies({}, deps));
     const logs = vi.fn();
     manager.on("logLines", logs);
     await runWithEnvironment({ REQUEST: "captured", OWN: "request" }, async () =>
@@ -5058,9 +5054,7 @@ describe("neutral runtime launch", () => {
     const onOutput = vi.fn();
     const manager = new ServiceManager(
       makeConfig({ svc: { start: "serve", onOutput } }),
-      {},
-      deps,
-      "neutral-session",
+      managerDependencies({}, deps),
     );
     const logs = vi.fn();
     manager.on("logLines", logs);
@@ -5108,9 +5102,7 @@ describe("neutral runtime launch", () => {
     deps.runtime = () => runtime.driver;
     const manager = new ServiceManager(
       makeConfig({ svc: { start: "serve", onReady, onOutput } }),
-      {},
-      deps,
-      "neutral-session",
+      managerDependencies({}, deps),
     );
     const logs = vi.fn();
     manager.on("logLines", logs);
@@ -5135,9 +5127,7 @@ describe("neutral runtime launch", () => {
       .mockRejectedValue(new processInspection.ProcessInspectionError("ss", "unavailable"));
     const manager = new ServiceManager(
       makeConfig({ svc: { start: "serve", ready: { port: true } } }),
-      {},
-      deps,
-      "neutral-session",
+      managerDependencies({}, deps),
     );
     await manager.startService("svc");
     expect(manager.getStatus("svc")).toMatchObject({
@@ -5175,7 +5165,7 @@ describe("cancellable lifecycle hooks", () => {
       actions = bound;
     };
     const deps = createMockDeps();
-    const manager = new ServiceManager(config, {}, deps, "test");
+    const manager = new ServiceManager(config, managerDependencies({}, deps));
     const execute = vi.fn(async () => ({ success: true, exitCode: 0, output: [] }));
     const owner = new TaskExecutionService(
       { id: "test", config, env: {}, manager, deps, broadcast: vi.fn() },
@@ -5220,9 +5210,7 @@ describe("cancellable lifecycle hooks", () => {
             },
           },
         ),
-        {},
-        createMockDeps(),
-        "test",
+        managerDependencies({}, createMockDeps()),
       );
       try {
         const startup = manager.startAll();
@@ -5254,7 +5242,10 @@ describe("cancellable lifecycle hooks", () => {
         },
       },
     });
-    const manager = new ServiceManager(config, makePaneMap(["worker"]), createMockDeps(), "test");
+    const manager = new ServiceManager(
+      config,
+      managerDependencies(makePaneMap(["worker"]), createMockDeps()),
+    );
     try {
       const startup = manager.startService("worker");
       await vi.waitFor(() => expect(entered).toBe(true));
@@ -5287,9 +5278,7 @@ describe("cancellable lifecycle hooks", () => {
     });
     const manager = new ServiceManager(
       config,
-      makePaneMap(["blocked", "other"]),
-      createMockDeps(),
-      "test",
+      managerDependencies(makePaneMap(["blocked", "other"]), createMockDeps()),
     );
     try {
       const startup = manager.startService("blocked");

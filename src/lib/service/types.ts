@@ -83,5 +83,3 @@ export interface ReadyDeps {
   ) => Promise<DockerContainerInfo | null>;
   dockerReadiness?: DockerReadinessContext;
 }
-
-export type { DisplayPopupOptions } from "#src/lib/tmux.js";

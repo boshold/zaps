@@ -1,5 +1,12 @@
+import { Socket } from "node:net";
+
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
+import { loadProjectContext } from "#src/config/project-context.js";
+import type { ResolvedConfig } from "#src/config/types.js";
+import { sessionHandlers } from "#src/daemon/handlers/session.js";
+import { Session } from "#src/daemon/session.js";
+import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import {
   backendCapabilitiesSchema,
   backendIdSchema,
@@ -12,6 +19,9 @@ import {
   sessionCreatedSchema,
   sessionListEntrySchema,
 } from "#src/lib/backend/schemas.js";
+import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
+import { TmuxRuntime, WrapperRegistry } from "#src/lib/backend/tmux/runtime.js";
+import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import type {
   BackendCapabilities,
   BackendId,
@@ -19,8 +29,18 @@ import type {
   ExecutionHandle,
   ExecutionSpec,
   RuntimeDriver,
+  SessionBackend,
   TerminalDriver,
 } from "#src/lib/backend/types.js";
+import { captureEnvironment } from "#src/lib/request-context.js";
+import { shellEscape } from "#src/lib/service/env.js";
+import { ServiceManager } from "#src/lib/service/manager.js";
+import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
+import { tmuxFor } from "#src/lib/tmux.js";
+
+import { createMockStore } from "../../_helpers/mock-session.js";
+
+vi.mock("#src/config/project-context.js", () => ({ loadProjectContext: vi.fn() }));
 
 const mixedCapabilities: BackendCapabilities = {
   panes: true,
@@ -44,6 +64,7 @@ function createCollaborators() {
   const listeners = new Set<(event: ExecutionEvent) => void>();
   let nextId = 0;
   const runtime: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     async start(spec) {
       nextId += 1;
       const handle: ExecutionHandle = {
@@ -308,5 +329,204 @@ describe("backend contracts", () => {
     await dependencies.runtime.stop(handle);
     expect(await dependencies.runtime.isRunning(handle)).toBe(false);
     expect(fixture.capabilities).toEqual(mixedCapabilities);
+  });
+});
+
+function lifecycleConfig(command: string): ResolvedConfig {
+  return {
+    project: {
+      name: "contracts",
+      services: {
+        worker: {
+          start: command,
+          detached: true,
+          url: false,
+          ready: { output: /CONTRACT_READY/u },
+        },
+      },
+    },
+    configPath: "/contract/.zaps.mts",
+    projectDir: process.cwd(),
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+}
+
+async function lifecycleBackend(kind: "shell" | "tmux" | "mixed", config: ResolvedConfig) {
+  const forbidden = vi.fn(async () => {
+    throw new Error("Unsupported terminal method invoked");
+  });
+  const terminal: TerminalDriver = {
+    reconcileLayout: forbidden,
+    focus: forbidden,
+    zoom: forbidden,
+    editOutput: forbidden,
+    taskPicker: forbidden,
+    taskOutput: forbidden,
+    runTaskInPane: forbidden,
+  };
+  if (kind !== "tmux") {
+    const shell = await ShellSessionBackend.create({ services: config.project.services });
+    const backend: SessionBackend =
+      kind === "shell"
+        ? shell
+        : {
+            id: "tmux",
+            capabilities: mixedCapabilities,
+            runtime: shell.runtime,
+            terminal,
+            getPresentation: () => ({
+              kind: "tmux",
+              tmuxSession: "private host",
+              tmuxWindow: "opaque/window",
+              originPane: "opaque/dashboard",
+              tmuxSocket: null,
+              managedTmux: false,
+              paneMap: { worker: "opaque/service" },
+            }),
+            subscribePresentation: () => () => undefined,
+            health: async () => shell.health(),
+            dispose: async () => shell.dispose(),
+          };
+    return { backend, forbidden };
+  }
+  const processes = new ProcessRunner({ onLines: () => undefined, onExit: () => undefined });
+  const tmux = {
+    ...tmuxFor(null),
+    resyncPaneSizes: vi.fn(async () => undefined),
+    selectPane: vi.fn(async () => undefined),
+    hasSession: vi.fn(async () => true),
+    paneExists: vi.fn(async () => true),
+    displayMessage: vi.fn(async () => "0"),
+  };
+  const runtime = new TmuxRuntime({
+    tmux,
+    processes,
+    sessionId: "contract",
+    zapsCommand: "unused",
+    wrappers: new WrapperRegistry(),
+    paneFor: () => {
+      throw new Error("Background contract requested a pane");
+    },
+  });
+  const backend = await TmuxSessionBackend.create({
+    tmux,
+    runtime,
+    disposeRuntime: async () => runtime.dispose(),
+    terminal,
+    host: {
+      tmuxSession: "contract",
+      tmuxWindow: "@1",
+      originPane: "%1",
+      tmuxSocket: null,
+      managedTmux: false,
+    },
+    services: config.project.services,
+  });
+  return { backend, forbidden };
+}
+
+describe.each(["shell", "tmux", "mixed"] as const)("shared %s backend lifecycle", (kind) => {
+  it("preserves shared readiness, output, restart, reload and cleanup policies", async () => {
+    const payload =
+      'console.log("CONTRACT_READY");setInterval(()=>console.log("CONTRACT_LATER"),30)';
+    const config = lifecycleConfig(`${shellEscape(process.execPath)} -e ${shellEscape(payload)}`);
+    const { backend, forbidden } = await lifecycleBackend(kind, config);
+    const handles: ExecutionHandle[] = [];
+    const original = backend.runtime.start.bind(backend.runtime);
+    vi.spyOn(backend.runtime, "start").mockImplementation(async (spec) => {
+      const handle = await original(spec);
+      handles.push(handle);
+      return handle;
+    });
+    const deps: ServiceManagerDeps = {
+      runtime: backend.runtime,
+      sessionId: "contract",
+      zapsCommand: "unused",
+      hasPresentation: () => false,
+      inspectPorts: async () => [],
+      exec: async () => undefined,
+      preflightPorts: async () => null,
+      reflowInsert: async () => undefined,
+      reflowRemove: async () => undefined,
+    };
+    const manager = new ServiceManager(config, deps);
+    const session = new Session(
+      {
+        backend,
+        config,
+        configPath: config.configPath,
+        projectDir: config.projectDir,
+        deps,
+        shellEnv: captureEnvironment(),
+        env: captureEnvironment(),
+      },
+      manager,
+    );
+    const socket = new Socket();
+    vi.spyOn(socket, "write").mockReturnValue(true);
+    const store = createMockStore();
+    store.get = (id) => (id === session.id ? session : undefined);
+    try {
+      await session.startAll();
+      expect(session.manager.getStatus("worker").state).toBe("ready");
+      await vi.waitFor(() =>
+        expect(session.logBuffers.get("worker")?.snapshot()).toContain("CONTRACT_LATER"),
+      );
+      const [first] = handles;
+      if (!first) {
+        throw new Error("Missing first execution");
+      }
+      expect(await backend.runtime.isRunning(first)).toBe(true);
+      await session.manager.restartService("worker");
+      expect(handles[1]?.id).not.toBe(first.id);
+      expect(handles[1]?.generation).toBe(2);
+      expect(await backend.runtime.isRunning(first)).toBe(false);
+      vi.mocked(loadProjectContext).mockResolvedValue({ config, env: captureEnvironment() });
+      await session.reload();
+      await session.startPromise;
+      expect(session.manager).not.toBe(manager);
+      expect(handles).toHaveLength(3);
+      expect(session.manager.getStatus("worker").state).toBe("ready");
+      await vi.waitFor(() =>
+        expect(session.logBuffers.get("worker")?.snapshot()).toContain("CONTRACT_LATER"),
+      );
+      if (!backend.capabilities.zoom || !backend.capabilities.popups) {
+        session.addSubscriber(socket);
+        session.subscriberAcknowledgement(socket)();
+        session.bindUi(socket);
+        session.uiBindingAcknowledgement(socket)();
+        const response = await sessionHandlers["terminal.action"](
+          {
+            id: "unsupported",
+            method: "terminal.action",
+            session: session.id,
+            params: { action: "zoom", target: { kind: "dashboard" } },
+          },
+          store,
+          socket,
+        );
+        expect(response).toMatchObject({ errorCode: "unsupported_capability" });
+      }
+      expect(forbidden).not.toHaveBeenCalled();
+    } finally {
+      await session.destroy();
+      socket.destroy();
+    }
+    for (const handle of handles) {
+      expect(await backend.runtime.isRunning(handle)).toBe(false);
+    }
+    await expect(
+      backend.runtime.start({
+        unitId: "late",
+        generation: 1,
+        command: "true",
+        cwd: process.cwd(),
+        env: {},
+        placement: "background",
+        raw: false,
+      }),
+    ).rejects.toThrow("closing");
   });
 });

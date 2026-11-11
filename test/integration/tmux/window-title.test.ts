@@ -16,13 +16,14 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
 import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
-import { buildTestPaneMap, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
+import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 import { waitFor } from "../helpers/wait.js";
 
 const deps = withServiceRuntime({
@@ -73,30 +74,32 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
     session = await createTestSession();
     const port1 = await getFreePort();
     const port2 = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc1", "svc2"]);
+    const paneMap: Record<string, string> = { "@tui": session.initialPaneId };
 
     const config = makeConfig({
       svc1: { start: httpServerCmd(port1), ready: { port: port1 } },
       svc2: { start: httpServerCmd(port2), ready: { port: port2 } },
     });
 
-    backend = TmuxSessionBackend.adopt(
-      {
-        tmux: tmuxFor(testTmuxSocket()),
-        runtime: deps.runtime(paneMap),
-        host: {
-          tmuxSession: session.name,
-          tmuxWindow: paneMap["@tui"],
-          originPane: session.initialPaneId,
-          tmuxSocket: testTmuxSocket(),
-          managedTmux: false,
-        },
-        services: config.project.services,
+    backend = await TmuxSessionBackend.create({
+      tmux: tmuxFor(testTmuxSocket()),
+      runtime: deps.runtime(paneMap),
+      host: {
+        tmuxSession: session.name,
+        tmuxWindow: paneMap["@tui"],
+        originPane: session.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
+        managedTmux: false,
       },
-      paneMap,
-    );
+      services: config.project.services,
+    });
+    const view = backend.getPresentation();
+    if (view.kind !== "tmux") {
+      throw new Error("Expected tmux");
+    }
+    Object.assign(paneMap, view.paneMap);
     await backend.activateWindowTitles();
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.on("stateChange", () => {
       void backend.updateServiceTitle(mgr.getAllStatuses());
     });
@@ -114,7 +117,7 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
   it("window title restored on stopAll", async () => {
     session = await createTestSession();
     const port = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+    const paneMap: Record<string, string> = { "@tui": session.initialPaneId };
 
     // Set a static title so automatic-rename doesn't interfere
     await setWindowOption(paneMap["@tui"], "automatic-rename", "off");
@@ -124,23 +127,25 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    backend = TmuxSessionBackend.adopt(
-      {
-        tmux: tmuxFor(testTmuxSocket()),
-        runtime: deps.runtime(paneMap),
-        host: {
-          tmuxSession: session.name,
-          tmuxWindow: paneMap["@tui"],
-          originPane: session.initialPaneId,
-          tmuxSocket: testTmuxSocket(),
-          managedTmux: false,
-        },
-        services: config.project.services,
+    backend = await TmuxSessionBackend.create({
+      tmux: tmuxFor(testTmuxSocket()),
+      runtime: deps.runtime(paneMap),
+      host: {
+        tmuxSession: session.name,
+        tmuxWindow: paneMap["@tui"],
+        originPane: session.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
+        managedTmux: false,
       },
-      paneMap,
-    );
+      services: config.project.services,
+    });
+    const view = backend.getPresentation();
+    if (view.kind !== "tmux") {
+      throw new Error("Expected tmux");
+    }
+    Object.assign(paneMap, view.paneMap);
     await backend.activateWindowTitles();
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.on("stateChange", () => {
       void backend.updateServiceTitle(mgr.getAllStatuses());
     });
@@ -165,7 +170,7 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
   it("automatic-rename restoration", async () => {
     session = await createTestSession();
     const port = await getFreePort();
-    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+    const paneMap: Record<string, string> = { "@tui": session.initialPaneId };
 
     // Enable automatic-rename
     await setWindowOption(paneMap["@tui"], "automatic-rename", "on");
@@ -174,23 +179,25 @@ describe.skipIf(!hasTmux())("window-title integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    backend = TmuxSessionBackend.adopt(
-      {
-        tmux: tmuxFor(testTmuxSocket()),
-        runtime: deps.runtime(paneMap),
-        host: {
-          tmuxSession: session.name,
-          tmuxWindow: paneMap["@tui"],
-          originPane: session.initialPaneId,
-          tmuxSocket: testTmuxSocket(),
-          managedTmux: false,
-        },
-        services: config.project.services,
+    backend = await TmuxSessionBackend.create({
+      tmux: tmuxFor(testTmuxSocket()),
+      runtime: deps.runtime(paneMap),
+      host: {
+        tmuxSession: session.name,
+        tmuxWindow: paneMap["@tui"],
+        originPane: session.initialPaneId,
+        tmuxSocket: testTmuxSocket(),
+        managedTmux: false,
       },
-      paneMap,
-    );
+      services: config.project.services,
+    });
+    const view = backend.getPresentation();
+    if (view.kind !== "tmux") {
+      throw new Error("Expected tmux");
+    }
+    Object.assign(paneMap, view.paneMap);
     await backend.activateWindowTitles();
-    mgr = new ServiceManager(config, paneMap, deps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, deps));
     mgr.on("stateChange", () => {
       void backend.updateServiceTitle(mgr.getAllStatuses());
     });

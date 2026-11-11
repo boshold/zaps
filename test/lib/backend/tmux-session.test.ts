@@ -46,6 +46,7 @@ function fixture(managed = false) {
     capturePane: vi.fn(async () => "output"),
   };
   const runtime: RuntimeDriver = {
+    closeAdmission: vi.fn(),
     start: vi.fn(),
     stop: vi.fn(),
     isRunning: vi.fn(),

@@ -29,7 +29,6 @@ import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/type
 import { Session } from "#src/daemon/session.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { computeRects, createLayout } from "#src/lib/tmux-layout.js";
 import {
@@ -43,7 +42,8 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
-import { prepareSessionParams } from "../../_helpers/session-backend.js";
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
+import { createTmuxSession } from "../../_helpers/session-backend.js";
 import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
@@ -169,15 +169,6 @@ function makeResolvedConfig(
 async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
   const testSession = await createTestSession();
 
-  const skip = computeBootSkip(config);
-  const { paneMap } = await createLayout(
-    testSession.initialPaneId,
-    config.project.layout,
-    config.project.services,
-    config.groups,
-    { skip, tmux: tmuxFor(testTmuxSocket()) },
-  );
-
   const ref: { session: Session | null } = { session: null };
   const detachedChildren: ChildProcess[] = [];
   const deps: ServiceManagerDeps = withServiceRuntime({
@@ -230,12 +221,10 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     },
   });
 
-  const manager = new ServiceManager(config, paneMap, deps, testSession.name);
-  const params = prepareSessionParams({
+  const params = await createTmuxSession({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
-    paneMap,
     tmuxSession: testSession.name,
     tmuxWindow: testSession.initialPaneId,
     originPane: testSession.initialPaneId,
@@ -243,6 +232,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     managedTmux: false,
     deps,
   });
+  const manager = new ServiceManager(config, params.deps);
   const session = new Session(params, manager);
   ref.session = session;
 
@@ -254,7 +244,7 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     deps,
     async cleanup() {
       try {
-        await manager.stopAll();
+        await session.destroy();
       } finally {
         await testSession.cleanup();
       }

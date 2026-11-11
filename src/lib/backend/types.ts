@@ -1,3 +1,6 @@
+import type { ResolvedConfig } from "#src/config/types.js";
+import type { ServiceStatus } from "#src/lib/service/types.js";
+
 type BackendId = "tmux" | "shell";
 
 interface BackendCapabilities {
@@ -50,7 +53,7 @@ type ExecutionEvent = ExecutionIdentity &
   );
 
 interface RuntimeDriver {
-  closeAdmission?(): void;
+  closeAdmission(): void;
   start(spec: ExecutionSpec): Promise<ExecutionHandle>;
   stop(handle: ExecutionHandle): Promise<void>;
   isRunning(handle: ExecutionHandle): Promise<boolean>;
@@ -131,11 +134,20 @@ interface TerminalDriver {
   runTaskInPane(spec: TaskPaneSpec, operation: TerminalOperation): Promise<ExecutionHandle>;
 }
 
+interface PresentationDriver {
+  hasService(name: string): boolean;
+  reload(config: ResolvedConfig): Promise<void>;
+  insert(name: string): Promise<void>;
+  remove(name: string): Promise<void>;
+  updateTitle(statuses: ServiceStatus[]): Promise<void>;
+}
+
 interface SessionBackend {
   readonly id: BackendId;
   readonly capabilities: BackendCapabilities;
   readonly runtime: RuntimeDriver;
   readonly terminal?: TerminalDriver;
+  readonly presentation?: PresentationDriver;
   getPresentation(): PresentationSnapshot;
   subscribePresentation(listener: (view: PresentationSnapshot) => void): () => void;
   health(): Promise<"alive" | "lost">;
@@ -159,4 +171,5 @@ export type {
   ConfiguredTaskCommand,
   ConfiguredTaskOutcome,
   SessionBackend,
+  PresentationDriver,
 };
