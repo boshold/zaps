@@ -3,7 +3,7 @@
  *
  * Three issues prevent direct bytecode compilation:
  * 1. yoga-layout — TLA `await loadYoga()` at module scope
- * 2. ink reconciler — TLA `await import('./devtools.js')` guarded by DEV
+ * 2. ink reconciler — development-only TLA guarded by DEV
  * 3. import.meta.* — JSC bytecode compiler doesn't support import.meta
  *    (Bun issues #14954, #18778)
  *
@@ -76,12 +76,12 @@ export * from "./generated/YGEnums.js";
       loader: "js",
     }));
 
-    // Ink reconciler: Strip the devtools TLA block
+    // Bun defines do not fold Ink's imported process binding or bracket access.
     build.onLoad({ filter: /ink\/build\/reconciler\.js$/ }, async (args) => {
-      let contents = await Bun.file(args.path).text();
-      contents = contents.replace(
-        /\/\/ We need to conditionally perform devtools[\s\S]*?^}\n/m,
-        "",
+      const source = await Bun.file(args.path).text();
+      const contents = source.replaceAll(
+        /process\.env(?:\[['"]DEV['"]\]|\.DEV\b)/g,
+        JSON.stringify("false"),
       );
       return { contents, loader: "js" };
     });

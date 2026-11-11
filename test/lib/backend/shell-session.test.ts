@@ -148,7 +148,7 @@ describe("shell session backend", () => {
     async (detached) => {
       const cwd = await mkdtemp(path.join(process.cwd(), ".shell-session-"));
       const service: ServiceConfig = Object.freeze({
-        start: 'printf "%s\\n" "$VALUE"; pwd',
+        start: String.raw`printf "%s\n" "$VALUE"; pwd`,
         detached,
         lazyPane: true,
         flags: { start: false },

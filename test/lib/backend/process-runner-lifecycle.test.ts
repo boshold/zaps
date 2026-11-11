@@ -274,7 +274,10 @@ describe("ProcessRunner ownership lifecycle", () => {
         },
       });
       try {
-        const handle = runner.spawnOwned({ ...spec, command: "printf 'payload must not run\\n'" });
+        const handle = runner.spawnOwned({
+          ...spec,
+          command: String.raw`printf 'payload must not run\n'`,
+        });
         await vi.waitFor(() => {
           expect(onExit).toHaveBeenCalledOnce();
         });

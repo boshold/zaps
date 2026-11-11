@@ -28,31 +28,53 @@ export interface AttachedClient {
 export async function attachClient(session: string): Promise<AttachedClient> {
   const sockArgs = tmuxSocketArgs();
   const attachCmd = ["tmux", ...sockArgs, "attach", "-t", session].join(" ");
+  // Script exits on stdin EOF; hold the pipe open until cleanup.
   const proc: ChildProcess = spawn("script", ["-qec", attachCmd, "/dev/null"], {
     env: ptyEnvironment(),
-    stdio: "ignore",
+    stdio: ["pipe", "ignore", "ignore"],
   });
 
-  const start = Date.now();
-  /* eslint-disable no-await-in-loop -- poll until the client attaches */
-  while (Date.now() - start < 5000) {
-    try {
-      const { stdout } = await execFileAsync("tmux", [...sockArgs, "list-clients", "-t", session]);
-      if (stdout.trim().length > 0) {
-        break;
-      }
-    } catch {
-      /* Session not ready yet */
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  /* eslint-enable no-await-in-loop */
-
-  return {
-    cleanup() {
-      proc.kill("SIGKILL");
-    },
+  let spawnError: Error | undefined;
+  proc.on("error", (error: Error) => {
+    spawnError = error;
+  });
+  const cleanup = (): void => {
+    proc.stdin?.destroy();
+    proc.kill("SIGKILL");
   };
+  const deadline = Date.now() + 5000;
+  try {
+    /* eslint-disable no-await-in-loop -- poll until the client attaches */
+    while (Date.now() < deadline) {
+      if (spawnError) {
+        throw spawnError;
+      }
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        throw new Error(
+          `Tmux client exited before attaching to ${session}: ${proc.exitCode ?? proc.signalCode}`,
+        );
+      }
+      try {
+        const { stdout } = await execFileAsync("tmux", [
+          ...sockArgs,
+          "list-clients",
+          "-t",
+          session,
+        ]);
+        if (stdout.trim().length > 0) {
+          return { cleanup };
+        }
+      } catch {
+        /* Session not ready yet. */
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    /* eslint-enable no-await-in-loop */
+    throw new Error(`Timed out attaching tmux client to ${session}`);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 export interface TestSession {
@@ -64,6 +86,8 @@ export interface TestSession {
 export async function createTestSession(): Promise<TestSession> {
   const name = `zaps-test-${randomUUID().slice(0, 8)}`;
   const initialPaneId = await newSession(name, { x: 220, y: 50 });
+  // Keep the per-file server alive while tests replace its last session.
+  await execFileAsync("tmux", [...tmuxSocketArgs(), "set-option", "-s", "exit-empty", "off"]);
   return {
     name,
     initialPaneId,

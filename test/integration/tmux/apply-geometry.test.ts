@@ -16,8 +16,10 @@ import {
   sendKeys,
   splitPane,
   tmuxFor,
+  windowLayout,
 } from "#src/lib/tmux.js";
 
+import { parseTmuxLayoutRects } from "../../_helpers/tmux-layout-output.js";
 import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
 import type { AttachedClient, TestSession } from "../helpers/tmux.js";
 import { attachClient, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
@@ -288,6 +290,10 @@ describe.skipIf(!hasTmux())("LayoutReflow.applyGeometry — real tmux", () => {
     expect(live.map(({ rect }) => rect)).toEqual(
       ["@tui", "api", "web"].map((name) => expected.get(name)),
     );
+    const layoutOutput = await windowLayout(session.name);
+    expect(parseTmuxLayoutRects(layoutOutput)).toEqual(
+      ["@tui", "api", "web"].map((name) => expected.get(name)),
+    );
   });
 });
 
@@ -308,6 +314,12 @@ describe.skipIf(!canRunAttached)("LayoutReflow.applyGeometry — attached client
   afterEach(async () => {
     client.cleanup();
     await session.cleanup();
+  });
+
+  it("rejects when a client exits before attaching to a missing session", async () => {
+    await expect(attachClient(`${session.name}-missing`)).rejects.toThrow(
+      "Tmux client exited before attaching",
+    );
   });
 
   it("delivers correct in-pane pty winsize after select-layout (attached pty)", async () => {

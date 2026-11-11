@@ -9,8 +9,7 @@ export default defineConfig({
     hookTimeout: 30_000,
     pool: "forks",
     fileParallelism: false,
-    // Fallback only — `setup-tmux-socket.ts` overrides this with a per-file
-    // Socket. Kept so a stray tmux call can never hit the user's default server.
+    // Global setup isolates all labels, including the managed server, via TMUX_TMPDIR.
     env: { ZAPS_TMUX_SOCKET: "zaps-test" },
     setupFiles: ["./test/integration/setup-tmux-socket.ts"],
     globalSetup: "./test/integration/global-setup.ts",

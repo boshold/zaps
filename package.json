@@ -1,6 +1,6 @@
 {
   "name": "@bosdev/zaps",
-  "version": "0.8.0",
+  "version": "0.13.1",
   "description": "Zero Ass Pain Setup: orchestrate dev services with tmux or a background shell backend, readiness, logs, tasks, and a keyboard-driven TUI.",
   "keywords": [
     "cli",
@@ -51,43 +51,43 @@
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run -c test/integration/vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "oxfmt --check; oxlint --type-aware --deny-warnings",
-    "lint:fix": "oxfmt --write; oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware",
+    "lint": "oxfmt --check && oxlint --type-aware --deny-warnings",
+    "lint:fix": "oxfmt --write && oxlint --fix --fix-suggestions --fix-dangerously --deny-warnings --type-aware",
     "check": "pnpm typecheck && pnpm lint:fix && pnpm build && pnpm build:native && pnpm test:coverage",
     "test:integration:shell": "vitest run -c test/integration/shell/vitest.config.ts"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31",
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "@toon-format/toon": "^4.1.1",
-    "@types/node": "^26.6.3",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@toon-format/toon": "^4.4.0",
+    "@types/node": "^26.6.6",
     "cleye": "^2.7.0",
     "fuzzysort": "^4.0.2",
-    "ink": "^7.1.1",
+    "ink": "^8.0.0",
     "jiti": "^2.7.0",
     "open": "^11.0.4",
-    "react": "^19.3.0",
+    "react": "^19.3.1",
     "yoga-layout": "^3.2.1",
-    "zod": "^4.6.5"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@bosdev/sentra-core": "^0.1.1",
-    "@sentry/node": "^11.2.0",
+    "@sentry/node": "^11.11.0",
     "@types/react": "^19.3.0",
-    "@vitest/coverage-v8": "^5.0.3",
+    "@vitest/coverage-v8": "^5.1.0",
     "esbuild": "^0.28.2",
     "ink-testing-library": "^4.0.0",
-    "oxfmt": "^0.71.0",
-    "oxlint": "^1.86.0",
-    "oxlint-tsgolint": "^7.0.2003",
+    "oxfmt": "^0.77.0",
+    "oxlint": "^1.92.0",
+    "oxlint-tsgolint": "^7.0.2006",
     "react-devtools-core": "^8.0.0",
-    "testcontainers": "^12.2.0",
+    "testcontainers": "^12.2.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.1.0"
   },
   "engines": {
     "node": ">=22.15"
   },
-  "packageManager": "pnpm@12.8.2+sha512.a5941679663d952c5f0ecc38ba98af98b4dc01b95780354f6894f2f873973cef2f7e2989d7db3ee5393938ae21f62fe06bcdf685d475ddad829a62095d2b8b11"
+  "packageManager": "pnpm@12.18.0+sha512.9d7882d5dc82147ecfc4e062aa34834e0ad0296710a1837a1115ae012127d36b7109e321ac1598a1dd0a65597681b1e99917e12ed0d749eae91187943363beb3"
 }

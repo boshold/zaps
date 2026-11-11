@@ -9,12 +9,12 @@ vi.mock("../../src/lib/tmux.js", () => ({
 }));
 
 import {
+  PaneTooSmallError,
   checksum,
   computeRects,
   createLayout,
   filterTree,
   layoutString,
-  PaneTooSmallError,
   resolvePermutation,
   splitAnchor,
   validateLayout,

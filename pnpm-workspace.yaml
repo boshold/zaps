@@ -32,11 +32,9 @@ verifyDepsBeforeRun: install
 
 overrides:
   "esbuild@>=0.27.3 <0.28.1": 0.28.2 # GHSA-g7r4-m6w7-qqqr
-  "archiver-utils>glob": ^13.0.0
+  "glob@>=9.0.0 <14.0.2": ^14.0.4 # GHSA-3g3m-2fjr-6pw4
   hono: ^4.12.7
-  "@hono/node-server": ^1.19.10
   express-rate-limit: ^8.2.2
   "minimatch@<5.1.8": ^5.1.8
   rollup: ^4.59.0
   "undici@>=7.0.0 <7.28.0": ^7.28.0 # CVE fix (Dependabot high/medium/low)
-  "vite@>=7.0.0 <7.3.5": 7.3.5 # CVE fix (Dependabot high/medium)

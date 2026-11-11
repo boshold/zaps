@@ -22,7 +22,7 @@ describe("DetachedRunner", () => {
         generation: 7,
         cwd: process.cwd(),
         env: { PATH: process.env.PATH, VALUE: "literal '$ bytes" },
-        command: 'printf "%s\\n" "$VALUE"; pwd',
+        command: String.raw`printf "%s\n" "$VALUE"; pwd`,
       });
       expect(pid).toBeGreaterThan(0);
       expect(runner.getPid("worker")).toBe(pid);
