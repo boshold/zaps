@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import { TaskPickerBody } from "../../../src/components/overlay/TaskPickerBody.js";
 import type { UiTaskMode } from "../../../src/config/types.js";
 import type { TaskInfo } from "../../../src/daemon/session.js";
+import type { BackendCapabilities } from "../../../src/lib/backend/types.js";
+import { unavailableCapabilities } from "../../../src/lib/backend/wire.js";
+import { mixedCapabilities } from "../../_helpers/ui-capabilities.js";
 
 // `TaskPicker` wraps the body in a position="absolute" box; the body holds all
 // Behavior and is absolute-free, so it is tested directly here (mirrors the
@@ -32,6 +35,7 @@ async function type(stdin: { write: (s: string) => void }, text: string) {
 function renderBody(opts: {
   tasks?: TaskInfo[];
   runningKeys?: Set<string>;
+  capabilities?: BackendCapabilities;
   defaultMode?: UiTaskMode;
   isActive?: boolean;
 }) {
@@ -40,7 +44,8 @@ function renderBody(opts: {
   const result = render(
     <TaskPickerBody
       tasks={opts.tasks ?? makeTasks()}
-      runningKeys={opts.runningKeys ?? new Set()}
+      isRunning={(key) => opts.runningKeys?.has(key) ?? false}
+      capabilities={opts.capabilities ?? mixedCapabilities}
       defaultMode={opts.defaultMode ?? "background"}
       isActive={opts.isActive ?? true}
       onClose={onClose}
@@ -98,6 +103,22 @@ describe("TaskPickerBody", () => {
     await flush();
     expect(onRun).toHaveBeenCalledWith("migrate", "pane");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores unsupported Tab and uses the effective background default", async () => {
+    const { stdin, onRun, onClose, lastFrame } = renderBody({
+      defaultMode: "pane",
+      capabilities: { ...unavailableCapabilities, popups: true },
+    });
+    await type(stdin, "migr");
+    expect(lastFrame()).not.toContain("tab: run in pane");
+    stdin.write("\t");
+    expect(onRun).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    stdin.write("\r");
+    await flush();
+    expect(onRun).toHaveBeenCalledExactlyOnceWith("migrate", "background");
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("shows an empty-filter message when nothing matches", async () => {

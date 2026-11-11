@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import os from "node:os";
-import path from "node:path";
+
+import { z } from "zod";
 
 import { getEnv } from "./env.js";
 
@@ -57,6 +57,8 @@ function exactWindowTarget(sessionName: string): string {
 }
 
 interface DisplayPopupOptions {
+  client?: string;
+  pane?: string;
   cwd?: string;
   command: string;
   title?: string;
@@ -74,10 +76,10 @@ interface DisplayPopupOptions {
 function createTmux(resolveSocket: () => string | null) {
   function socketArgs(): string[] {
     const socket = resolveSocket();
-    return socket ? ["-L", socket] : [];
+    return socket ? ["-u", "-L", socket] : ["-u"];
   }
 
-  async function run(args: string[]): Promise<string> {
+  async function run(args: string[], raw = false): Promise<string> {
     return new Promise((resolve, reject) => {
       const proc = spawn("tmux", [...socketArgs(), ...args], { stdio: ["ignore", "pipe", "pipe"] });
       let stdout = "";
@@ -90,12 +92,41 @@ function createTmux(resolveSocket: () => string | null) {
       proc.on("error", reject);
       proc.on("close", (code: number | null) => {
         if (code === 0) {
-          resolve(stdout.trim());
+          resolve(raw ? stdout : stdout.trim());
         } else {
           reject(new Error(`tmux ${args.join(" ")} failed: ${stderr.trim()}`));
         }
       });
     });
+  }
+
+  async function listClients() {
+    const out = await run([
+      "list-clients",
+      "-F",
+      "#{client_name}\t#{client_pid}\t#{session_id}\t#{session_name}\t#{window_id}",
+    ]);
+    const schema = z.tuple([
+      z.string().min(1),
+      z.coerce.number().int().positive(),
+      z.string().min(1),
+      z.string().min(1),
+      z.string().min(1),
+    ]);
+    return out
+      ? out.split("\n").map((line) => {
+          const [name, pid, sessionId, sessionName, windowId] = schema.parse(line.split("\t"));
+          return { name, pid, sessionId, sessionName, windowId };
+        })
+      : [];
+  }
+
+  async function closePopup(client: string): Promise<void> {
+    await run(["display-popup", "-C", "-c", client]);
+  }
+
+  async function capturePaneHistory(target: string): Promise<string> {
+    return run(["capture-pane", "-t", target, "-p", "-N", "-S", "-"], true);
   }
 
   async function currentPaneId(): Promise<string> {
@@ -257,17 +288,9 @@ function createTmux(resolveSocket: () => string | null) {
     await run(["kill-pane", "-t", target]);
   }
 
-  /**
-   * Detach the client this process is running under. No `-t`: that flag takes a
-   * target-CLIENT (a tty name, e.g. `/dev/pts/3`) — passing a pane id fails with
-   * `can't find client: %N`. Without it tmux resolves the current client from
-   * the caller's `$TMUX`, which is exactly the client to drop.
-   *
-   * Used by the TUI's managed-mode quit: the user lands back in the plain shell
-   * they started from while the session (and its services) live on.
-   */
-  async function detachClient(): Promise<void> {
-    await run(["detach-client"]);
+  /** Omitted target retains legacy ambient UI detach until its RPC migration. */
+  async function detachClient(target?: string): Promise<void> {
+    await run(target === undefined ? ["detach-client"] : ["detach-client", "-t", target]);
   }
 
   async function panePid(target: string): Promise<number> {
@@ -287,6 +310,11 @@ function createTmux(resolveSocket: () => string | null) {
     } catch {
       return false;
     }
+  }
+
+  async function windowExists(target: string): Promise<boolean> {
+    const out = await run(["list-windows", "-a", "-F", "#{window_id}"]);
+    return out.split("\n").includes(target);
   }
 
   async function capturePane(target: string, lines = 100): Promise<string> {
@@ -410,6 +438,12 @@ function createTmux(resolveSocket: () => string | null) {
   async function displayPopup(opts: DisplayPopupOptions): Promise<void> {
     return new Promise((resolve, reject) => {
       const args = ["display-popup", "-EE"];
+      if (opts.client) {
+        args.push("-c", opts.client);
+      }
+      if (opts.pane) {
+        args.push("-t", opts.pane);
+      }
       if (opts.cwd) {
         args.push("-d", opts.cwd);
       }
@@ -443,25 +477,17 @@ function createTmux(resolveSocket: () => string | null) {
     });
   }
 
-  async function editPaneCapture(target: string, title: string): Promise<void> {
-    const editor = getEnv("EDITOR") || "vim";
-    const template = path.join(os.tmpdir(), "zaps-capture-XXXXXX");
-    await displayPopup({
-      command: `sh -c 'f=$(mktemp ${template}) && tmux capture-pane -t ${target} -p -S - > "$f" && ${editor} "$f"; rm -f "$f"'`,
-      title,
-      width: "90%",
-      height: "90%",
-    });
-  }
-
   return {
+    getSocket: resolveSocket,
+    listClients,
+    closePopup,
+    capturePaneHistory,
     capturePane,
     currentPaneId,
     currentSession,
     detachClient,
     displayMessage,
     displayPopup,
-    editPaneCapture,
     getWindowName,
     getWindowOption,
     getWindowSize,
@@ -489,6 +515,7 @@ function createTmux(resolveSocket: () => string | null) {
     swapPanes,
     tmuxSupportsPopup,
     tmuxVersion,
+    windowExists,
     windowLayout,
     zoomPane,
   };
@@ -510,13 +537,16 @@ const defaultTmux = createTmux(() => getEnv("ZAPS_TMUX_SOCKET") ?? null);
 export type { DisplayPopupOptions, PaneInfo, SplitPaneOptions, TmuxHandle };
 export { exactWindowTarget, tmuxFor };
 export const {
+  getSocket,
+  listClients,
+  closePopup,
+  capturePaneHistory,
   capturePane,
   currentPaneId,
   currentSession,
   detachClient,
   displayMessage,
   displayPopup,
-  editPaneCapture,
   getWindowName,
   getWindowOption,
   getWindowSize,
@@ -544,6 +574,7 @@ export const {
   swapPanes,
   tmuxSupportsPopup,
   tmuxVersion,
+  windowExists,
   windowLayout,
   zoomPane,
 } = defaultTmux;

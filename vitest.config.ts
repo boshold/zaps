@@ -6,6 +6,7 @@ export default defineConfig({
     exclude: ["test/integration/**", "**/node_modules/**"],
     coverage: {
       provider: "v8",
+      reportsDirectory: "coverage/unit",
       reporter: ["text", "json-summary", "json"],
       include: ["src/**"],
       exclude: ["src/cli.tsx", "src/config/native-babel.ts"],

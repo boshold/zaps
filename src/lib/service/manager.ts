@@ -1,11 +1,14 @@
 import { EventEmitter } from "node:events";
 
 import type {
-  CombinedServiceMeta,
   DockerConfig,
+  LibraryActions,
   ResolvedConfig,
   ServiceConfig,
 } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
+import { abortable } from "#src/lib/backend/runtime/abortable.js";
+import type { ExecutionEvent, ExecutionHandle, RuntimeDriver } from "#src/lib/backend/types.js";
 import {
   buildDockerCommand,
   composeProjectArgs,
@@ -22,18 +25,15 @@ import {
   sentraTemplateFor,
 } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
-import { newRunId } from "#src/lib/task/run-id.js";
-import { runTaskWithDeps } from "#src/lib/task/runner.js";
-import type { DisplayPopupOptions } from "#src/lib/tmux.js";
 
-import { DetachedRunner } from "./detached.js";
-import type { SpawnFn } from "./detached.js";
-import { buildServiceContext, formatEnvForShell, resolveEnv, shellEscape } from "./env.js";
+import { buildServiceContext, resolveEnv } from "./env.js";
+import { resolveExecutionUnits } from "./execution-units.js";
 import { buildRestartWithMap, reverseTopoSort, topoSort } from "./graph.js";
+import { diffOutput } from "./output.js";
 import { waitForReady } from "./ready.js";
 import { canTransition, createServiceStatus, transition } from "./state.js";
 import type {
-  ExecInfo,
+  DockerReadinessContext,
   ReadyConfig,
   ReadyDeps,
   ServiceActionResult,
@@ -41,66 +41,27 @@ import type {
   ServiceStatus,
 } from "./types.js";
 
-type PaneMap = Record<string, string>;
+class GroupedDockerRebuildError extends Error {
+  public readonly code = "unsupported_config";
 
-/** Ready-detection + port-detection inputs that differ between pane and detached. */
+  public constructor(name: string) {
+    super(`Rebuild is not supported for grouped Docker service '${name}'; use plain restart.`);
+    this.name = "GroupedDockerRebuildError";
+  }
+}
+
+interface OwnedExecution {
+  generation: number;
+  handle?: ExecutionHandle;
+  requestedStop: boolean;
+  leaderExited: boolean;
+  finalized: boolean;
+  stoppedMembers?: Set<string>;
+}
+
 interface StartTarget {
-  /** `capturePane`/`ready` target — a pane id, or "" for detached (buffer-backed). */
-  readyTarget: string;
   readyDeps: ReadyDeps;
   detectPorts: () => Promise<number[]>;
-  detached: boolean;
-}
-
-/**
- * Longest tail of `prev` that equals the head of `current`, or null if none.
- */
-function overlapLength(prev: string[], current: string[]): number | null {
-  for (let overlap = Math.min(prev.length, current.length); overlap > 0; overlap -= 1) {
-    let match = true;
-    for (let i = 0; i < overlap; i += 1) {
-      if (prev[prev.length - overlap + i] !== current[i]) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return overlap;
-    }
-  }
-  return null;
-}
-
-/**
- * Find new lines between two pane captures using line-overlap diffing.
- *
- * 1. Direct overlap on the full captures handles scrolling and plain appends.
- * 2. If that fails, retry with each capture's final line excluded: tmux may be
- *    rewriting it in place (progress bars, status lines), which would otherwise
- *    desync the search and re-emit the whole window (C6). Only the stable lines
- *    are returned; the volatile final line is held until a newer line appears.
- * 3. With no alignment, equal-size windows are the same buffer rewritten —
- *    prefer reporting nothing over re-emitting everything (C6).
- */
-function diffOutput(prev: string[], current: string[]): string[] {
-  // No baseline yet — everything is new.
-  if (prev.length === 0) {
-    return current;
-  }
-
-  const direct = overlapLength(prev, current);
-  if (direct !== null) {
-    return current.slice(direct);
-  }
-
-  const prevStable = prev.slice(0, -1);
-  const currStable = current.slice(0, -1);
-  const stable = overlapLength(prevStable, currStable);
-  if (stable !== null) {
-    return currStable.slice(stable);
-  }
-
-  return prev.length === current.length ? [] : current;
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -156,21 +117,19 @@ function resolveReadyConfig(config: ServiceConfig): ReadyConfig | undefined {
 
 function buildReadyDeps(
   serviceConfig: ServiceConfig,
-  deps: ServiceManagerDeps,
+  inputs: Pick<ReadyDeps, "detectPorts" | "readOutput">,
   projectDir: string,
+  dockerReadiness?: DockerReadinessContext,
 ): ReadyDeps {
   const { docker } = serviceConfig;
   const projectArgs = docker ? composeProjectArgs(serviceConfig.cwd ?? projectDir, docker) : [];
   return {
-    detectPorts: deps.detectPorts,
-    capturePane: deps.capturePane,
+    ...inputs,
     cwd: serviceConfig.cwd ?? projectDir,
     composeFile: docker?.file,
     dockerStatus: async (svc, cwd, composeFile) =>
       getContainerInfo(svc, cwd, composeFile, projectArgs),
-    dockerRequireRecreate: docker
-      ? Boolean(docker.build || docker.forceRecreate || docker.renewVolumes)
-      : undefined,
+    dockerReadiness,
   };
 }
 
@@ -196,15 +155,35 @@ async function fireHook(
   }
 }
 
+async function waitForHook(
+  hook: (() => void | Promise<void>) | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!hook || signal.aborted) {
+    return;
+  }
+  try {
+    await abortable(fireHook(hook), signal, "Service startup cancelled");
+  } catch (error) {
+    if (!signal.aborted) {
+      throw error;
+    }
+  }
+}
+
 /**
- * Drive a detached service's `onOutput` hook per non-empty line. Errors are
+ * Drive a service's `onOutput` hook per non-empty line. Errors are
  * swallowed — `onOutput` must never crash the service (E4).
  */
-async function fireDetachedOutput(
+async function fireServiceOutput(
   onOutput: (line: string) => void | Promise<void>,
   lines: string[],
+  isCurrent: () => boolean,
 ): Promise<void> {
   for (const line of lines) {
+    if (!isCurrent()) {
+      return;
+    }
     if (line.trim() !== "") {
       try {
         // eslint-disable-next-line no-await-in-loop -- sequential per-line hook
@@ -230,13 +209,14 @@ async function tryAutoOpen(
 }
 
 export class ServiceManager extends EventEmitter {
+  private runStopHook: (hook: () => void | Promise<void>) => Promise<void> = fireHook;
   private readonly statuses: Map<string, ServiceStatus>;
   private readonly abortControllers: Map<string, AbortController>;
   private readonly config: ResolvedConfig;
-  private readonly paneMap: PaneMap;
-  private readonly session: string;
   private shuttingDown = false;
   private startAllPromise: Promise<void> | null = null;
+  private admissionClosed = false;
+  private startupCancellation = new AbortController();
   private stopAllPromise: Promise<void> | null = null;
   /** Cooperative-abort flag for an in-flight `startAll` (reload/destroy). */
   private startAllAborted = false;
@@ -244,53 +224,38 @@ export class ServiceManager extends EventEmitter {
   private readonly autoOpened = new Set<string>();
   private readonly restartWithMap: Map<string, string[]>;
   private readonly cascadingTriggers = new Set<string>();
-  private readonly monitorGenerations = new Map<string, number>();
-  /** Runs pane-less `detached: true` services (E4). */
-  private readonly detachedRunner: DetachedRunner;
+  private readonly lifecycleEpochs = new Map<string, number>();
+  private readonly outputQueues = new Map<
+    string,
+    {
+      unitId: string;
+      generation: number;
+      lifecycleEpoch: number;
+      pending: Promise<void>;
+    }
+  >();
+  private readonly runtime: RuntimeDriver;
+  private unsubscribeRuntime: () => void;
+  private readonly executions = new Map<string, OwnedExecution>();
+  private readonly unitGenerations = new Map<string, number>();
+  private readonly memberUnits = new Map<string, string>();
+  private readonly unitMembers = new Map<string, string[]>();
+  private readonly memberCleanupFailures = new Set<string>();
+  private readonly pendingMemberStarts = new Map<string, number>();
   /** Per-service operation mutex: serializes start/stop/restart/rebuild (C8). */
   private readonly opLocks = new Map<string, Promise<void>>();
   /** Docker project names already checked for a legacy-project migration warning. */
   private readonly legacyWarned = new Set<string>();
   private readonly sentraDockerWarned = new Set<string>();
-  private readonly originalWindowTitle: Promise<string>;
-  private readonly originalAutoRename: Promise<string | null>;
-  // eslint-disable-next-line promise/prefer-await-to-then -- field initializer cannot use await
-  private pendingRename: Promise<void> = Promise.resolve();
 
-  public constructor(
-    config: ResolvedConfig,
-    paneMap: PaneMap,
-    deps: ServiceManagerDeps,
-    session: string,
-  ) {
+  public constructor(config: ResolvedConfig, deps: ServiceManagerDeps) {
     super();
     this.config = config;
-    this.paneMap = paneMap;
     this.deps = deps;
-    this.session = session;
-    this.originalWindowTitle = deps.getWindowName(this.paneMap["@tui"]);
-    const tuiPane = paneMap["@tui"];
-    this.originalAutoRename = (async () => {
-      try {
-        return await deps.getWindowOption(tuiPane, "automatic-rename");
-      } catch {
-        return null;
-      }
-    })();
     this.statuses = new Map<string, ServiceStatus>();
     this.abortControllers = new Map<string, AbortController>();
 
-    this.detachedRunner = new DetachedRunner({
-      onLines: (service, lines) => {
-        this.handleDetachedLines(service, lines);
-      },
-      onExit: (service, generation) => {
-        this.handleDetachedExit(service, generation);
-      },
-      record: (pid) => deps.recordDetached?.(pid),
-      unrecord: (pid) => deps.removeDetached?.(pid),
-      spawn: deps.detachedSpawn,
-    });
+    this.runtime = deps.runtime;
 
     // Initialize statuses for all services
     for (const [name, svc] of Object.entries(config.project.services)) {
@@ -314,48 +279,17 @@ export class ServiceManager extends EventEmitter {
       this.statuses.set(name, status);
     }
 
-    this.restartWithMap = buildRestartWithMap(config.project.services);
+    for (const [name, unitId] of resolveExecutionUnits(config)) {
+      this.memberUnits.set(name, unitId);
+      this.unitMembers.set(unitId, config.project.services[name]?._combined?.allServices ?? [name]);
+    }
 
-    this.on("stateChange", () => {
-      this.updateWindowTitle();
-    });
+    this.restartWithMap = buildRestartWithMap(config.project.services);
 
     // Bind library actions so lib methods work inside hooks
     config.bindActions?.({
-      runTask: async (key) => {
-        const tasks = config.project.tasks ?? {};
-        if (!tasks[key]) {
-          throw new Error(`Unknown task: ${key}`);
-        }
-        // One runId for the whole run; every event it emits carries it so the
-        // Session can correlate history/output even across concurrent runs (Q12).
-        const runId = newRunId();
-        this.emit("taskStart", runId, key, tasks[key]?.name ?? key);
-        const visited = new Set<string>();
-        const results = new Map<string, "success" | "error">();
-        const ok = await runTaskWithDeps(
-          key,
-          {
-            tasks,
-            statuses: this.statuses,
-            projectDir: config.projectDir,
-            services: config.project.services,
-            tmux: { displayPopup: this.deps.displayPopup },
-            sentra: this.deps.sentra,
-            sentraConfig: config.project.sentra,
-            onLine: (_taskKey, line) => {
-              this.emit("taskLine", runId, line);
-            },
-            onProgress: (taskKey, result) => {
-              this.emit("taskComplete", runId, taskKey, tasks[taskKey]?.name ?? taskKey, result);
-            },
-          },
-          visited,
-          results,
-        );
-        if (!ok) {
-          throw new Error(`Task '${key}' failed`);
-        }
+      runTask: async () => {
+        throw new Error("Task execution requires a session");
       },
       startService: async (name) => {
         await this.startService(name);
@@ -366,6 +300,16 @@ export class ServiceManager extends EventEmitter {
       },
       isServiceRunning: (name) => this.statuses.get(name)?.state === "ready",
     });
+    this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
+  }
+
+  /** Bind the stable session facade before running hooks. */
+  public bindTaskExecution(
+    actions: LibraryActions,
+    runStopHook: (hook: () => void | Promise<void>) => Promise<void>,
+  ): void {
+    this.config.bindActions?.(actions);
+    this.runStopHook = runStopHook;
   }
 
   /**
@@ -394,6 +338,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   public async startAll(): Promise<void> {
+    this.assertAdmission();
     this.startAllPromise ??= this.runStartAll();
     await this.startAllPromise;
   }
@@ -405,24 +350,31 @@ export class ServiceManager extends EventEmitter {
    * Bumps every monitor generation so active crash/output monitors don't survive
    * the subsequent config swap (A5).
    */
+  public closeAdmission(): void {
+    this.admissionClosed = true;
+    this.abortStartAll();
+  }
+
+  private assertAdmission(): void {
+    if (this.admissionClosed) {
+      throw new SessionClosingError();
+    }
+  }
+
   public abortStartAll(): void {
+    this.startupCancellation.abort();
     this.startAllAborted = true;
+    for (const controller of this.abortControllers.values()) {
+      controller.abort();
+    }
     for (const name of this.statuses.keys()) {
-      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+      this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     }
   }
 
   private async runStartAll(): Promise<void> {
     this.startAllAborted = false;
-    // Capture-before-mutate: the constructor issues the original window title /
-    // Automatic-rename reads asynchronously, but `startAllServices` emits state
-    // Changes that drive `updateWindowTitle` → `renameWindow`, which flips
-    // Automatic-rename off and overwrites the name. Awaiting the captures here
-    // Guarantees they observe the pre-rename state so `stopAll` restores it
-    // Correctly (otherwise they race and record our own rename under load).
-    await Promise.all([this.originalWindowTitle, this.originalAutoRename]).catch(() => {
-      // Reads are best-effort; stopAll handles null/unknown originals.
-    });
+    this.startupCancellation = new AbortController();
     try {
       await this.startAllServices();
     } finally {
@@ -433,7 +385,7 @@ export class ServiceManager extends EventEmitter {
   private async startAllServices(): Promise<void> {
     const { services, hooks } = this.config.project;
 
-    await fireHook(hooks?.onBeforeStart);
+    await waitForHook(hooks?.onBeforeStart, this.startupCancellation.signal);
 
     // Filter to autostart services
     const autostartServices: Record<string, { dependsOn?: string[] }> = {};
@@ -481,7 +433,7 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
-    await fireHook(hooks?.onStart);
+    await waitForHook(hooks?.onStart, this.startupCancellation.signal);
   }
 
   /**
@@ -528,40 +480,33 @@ export class ServiceManager extends EventEmitter {
     const { services, hooks } = this.config.project;
     const levels = reverseTopoSort(services);
 
+    const failures: unknown[] = [];
     for (const level of levels) {
       await Promise.all(
         level.map(async (name) => {
           const status = this.statuses.get(name);
-          if (
-            status &&
-            status.state !== "stopped" &&
-            status.state !== "error" &&
-            status.state !== "unavailable"
-          ) {
+          if (status && status.state !== "unavailable") {
             try {
               await this.stopService(name);
-            } catch {
-              // Best-effort stop
+            } catch (error) {
+              failures.push(error);
             }
           }
         }),
       );
     }
 
-    await fireHook(hooks?.onStop);
+    if (hooks?.onStop) {
+      try {
+        await this.runStopHook(hooks.onStop);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
 
-    await this.pendingRename.catch(() => {
-      /* Ignored */
-    });
-
-    const autoRename = await this.originalAutoRename;
-    await (
-      autoRename === "on"
-        ? this.deps.setWindowOption(this.paneMap["@tui"], "automatic-rename", "on")
-        : this.deps.renameWindow(this.paneMap["@tui"], await this.originalWindowTitle)
-    ).catch(() => {
-      // Session may already be gone
-    });
+    if (failures.length > 0) {
+      throw new AggregateError(failures, "Service cleanup incomplete");
+    }
   }
 
   /**
@@ -593,35 +538,51 @@ export class ServiceManager extends EventEmitter {
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
   ): Promise<ServiceActionResult> {
-    // Lazy-pane services start pane-less and acquire their pane on first
-    // Start (Flow B). MUST insert BEFORE `withServiceLock`:
-    //   1. `startServiceInternal` (manager.ts:577) throws `Unknown service`
-    //      If `paneMap[name]` is missing for a non-detached service, so the
-    //      Insert is REQUIRED before the lock-guarded body runs.
-    //   2. The reflow takes the SESSION op-lock; calling it INSIDE the per-
-    //      Service lock would invert the global lock order (`reload` already
-    //      Holds op-lock then takes service-lock via stopAll/startAll) and
-    //      Deadlock a concurrent manual start + reload (Round-4 trap).
-    // Already-paned (e.g. autostart after first start, or explicit
-    // `lazyPane: true` on an autostart service) and detached services bypass
-    // The reflow entirely — non-lazy behavior is byte-identical to before.
-    // CRITICAL: skip reflowInsert during shutdown (reload/destroy). Same deadlock
-    // Class as the reflowRemove guard in `stopService` — a `onStop` hook is
-    // Allowed to call `lib.service.start`/`lib.service.restart` (config/builder.ts:49-53),
-    // And `onStop` fires during reload's stopAll loop. Without this guard:
-    //   Reload holds withOpLock → manager.stopAll → stopService(svc1) →
-    //   StopServiceInternal → onStop hook → lib.service.start(svc2) →
-    //   Deps.reflowInsert(svc2) → Session.reflowInsert → withOpLock (not
-    //   Re-entrant) → chains AFTER the outer reload fn → permanent hang.
-    // Safe to skip during shutdown: services aren't meaningfully starting
-    // During stopAll, and `_reload` rebuilds the layout fresh via `createLayout
-    // + computeBootSkip` afterwards — any service that ends up running post-
-    // Reload gets its pane via the rebuild, not via a hook-driven reflowInsert
-    // Mid-stopAll. `startServiceInternal` will throw `Unknown service` on the
-    // Missing paneMap entry (existing contract); the hook's promise rejects,
-    // Which is preferable to deadlocking the whole reload.
+    this.assertAdmission();
+    return this.withMemberStart(name, async () => this.startServiceWithPane(name, satisfiedDeps));
+  }
+
+  private async withMemberStart<T>(name: string, start: () => Promise<T>): Promise<T> {
+    const service = this.config.project.services[name];
+    if (!service?._combined) {
+      return start();
+    }
+    this.pendingMemberStarts.set(name, (this.pendingMemberStarts.get(name) ?? 0) + 1);
+    try {
+      return await start();
+    } catch (error) {
+      const status = this.getStatus(name);
+      if (
+        (status.state === "starting" || status.state === "stopping") &&
+        !this.abortControllers.get(name)?.signal.aborted
+      ) {
+        status.state = transition(status.state, "error");
+        status.lastError = error instanceof Error ? error.message : String(error);
+        this.emit("stateChange", name, status);
+      }
+      throw error;
+    } finally {
+      const remaining = (this.pendingMemberStarts.get(name) ?? 1) - 1;
+      if (remaining > 0) {
+        this.pendingMemberStarts.set(name, remaining);
+      } else {
+        this.pendingMemberStarts.delete(name);
+        const unitId = this.memberUnits.get(name) ?? name;
+        await this.withServiceLock(`@unit:${unitId}`, async () =>
+          this.disposeStoppedCombinedUnit(unitId),
+        );
+      }
+    }
+  }
+
+  private async startServiceWithPane(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+  ): Promise<ServiceActionResult> {
+    // Presentation mutations take the session lock before the service lock.
+    // Hooks during stopAll must not re-enter the session lock held by reload.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.deps.hasPresentation(name)) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.startServiceInternal(name, satisfiedDeps));
@@ -630,14 +591,23 @@ export class ServiceManager extends EventEmitter {
   private async startServiceInternal(
     name: string,
     satisfiedDeps?: ReadonlySet<string>,
+    dockerOperation?: "restart",
   ): Promise<ServiceActionResult> {
+    return this.withMemberStart(name, async () =>
+      this.runServiceStart(name, satisfiedDeps, dockerOperation),
+    );
+  }
+
+  private async runServiceStart(
+    name: string,
+    satisfiedDeps?: ReadonlySet<string>,
+    dockerOperation?: "restart",
+  ): Promise<ServiceActionResult> {
+    this.assertAdmission();
     const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    // A detached service has no pane; the missing pane is only fatal for the
-    // Pane-based start path (E4).
-    if (!serviceConfig || !status || (!serviceConfig.detached && !paneTarget)) {
+    if (!serviceConfig || !status) {
       throw new Error(`Unknown service: ${name}`);
     }
 
@@ -648,6 +618,11 @@ export class ServiceManager extends EventEmitter {
     }
 
     this.assertDepsReady(name, serviceConfig, satisfiedDeps);
+    if (!serviceConfig._combined) {
+      await this.stopRuntimeExecution(name);
+    }
+    this.assertAdmission();
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
     // Create abort controller for this service
     const controller = new AbortController();
@@ -660,10 +635,14 @@ export class ServiceManager extends EventEmitter {
 
     // Fire per-service onBeforeStart hook
     try {
-      await serviceConfig.onBeforeStart?.();
+      await waitForHook(serviceConfig.onBeforeStart, controller.signal);
     } catch (error) {
       status.lastError = `onBeforeStart hook failed: ${error instanceof Error ? error.message : String(error)}`;
       this.emit("stateChange", name, status);
+    }
+
+    if (controller.signal.aborted) {
+      return { noop: false };
     }
 
     // Port pre-flight: fail fast with an actionable message instead of a silent
@@ -671,6 +650,9 @@ export class ServiceManager extends EventEmitter {
     // Only from the `starting` transition, so a restart's own listener is gone
     // (stop completed first, per the state machine ordering).
     const conflict = await this.deps.preflightPorts(serviceConfig, this.config.projectDir);
+    if (controller.signal.aborted) {
+      return { noop: false };
+    }
     if (conflict) {
       status.state = transition(status.state, "error");
       status.lastError = conflict;
@@ -682,19 +664,148 @@ export class ServiceManager extends EventEmitter {
 
     const sentraEnv = await this.resolveServiceSentraEnv(name, serviceConfig, status);
 
-    if (serviceConfig.detached) {
-      await this.startDetachedService(name, serviceConfig, status, controller, sentraEnv);
-    } else {
-      await this.sendStartCommand(name, serviceConfig, paneTarget, sentraEnv);
-      await this.finishStart(name, serviceConfig, status, controller, {
-        readyTarget: paneTarget,
-        readyDeps: buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
-        detectPorts: async () => this.deps.detectPorts(paneTarget),
-        detached: false,
-      });
+    if (!controller.signal.aborted) {
+      await this.startExecution(
+        name,
+        serviceConfig,
+        status,
+        controller,
+        sentraEnv,
+        dockerOperation,
+      );
     }
-
     return { noop: false };
+  }
+
+  private async startExecution(
+    name: string,
+    serviceConfig: ServiceConfig,
+    status: ServiceStatus,
+    controller: AbortController,
+    sentraEnv: Record<string, string>,
+    dockerOperation?: "restart",
+  ): Promise<void> {
+    if (serviceConfig._combined) {
+      let operation: DockerReadinessContext["operation"] = "up";
+      const unitId = this.memberUnits.get(name) ?? name;
+      try {
+        await this.withServiceLock(`@unit:${unitId}`, async () => {
+          if (!controller.signal.aborted) {
+            operation = await this.prepareCombinedStart(
+              name,
+              unitId,
+              serviceConfig,
+              sentraEnv,
+              dockerOperation,
+            );
+          }
+        });
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          status.state = transition(status.state, "error");
+          status.lastError = error instanceof Error ? error.message : String(error);
+          this.emit("stateChange", name, status);
+        }
+        throw error;
+      }
+      const handle = this.executions.get(unitId)?.handle;
+      if (name === unitId && handle && !controller.signal.aborted) {
+        status.pid = await this.runtime.getPid(handle);
+      }
+      await this.finishRuntimeStart(name, unitId, serviceConfig, status, controller, operation);
+      return;
+    }
+    await this.launchRuntimeExecution(name, serviceConfig, sentraEnv);
+    const handle = this.executions.get(name)?.handle;
+    if (handle && !controller.signal.aborted) {
+      status.pid = await this.runtime.getPid(handle);
+      await this.finishRuntimeStart(name, name, serviceConfig, status, controller);
+    }
+  }
+
+  private async prepareCombinedStart(
+    name: string,
+    unitId: string,
+    serviceConfig: ServiceConfig,
+    sentraEnv: Record<string, string>,
+    dockerOperation?: "restart",
+  ): Promise<DockerReadinessContext["operation"]> {
+    const members = this.unitMembers.get(unitId) ?? [name];
+    const execution = this.executions.get(unitId);
+    if (
+      members.some((member) => this.memberCleanupFailures.has(member)) ||
+      execution?.finalized ||
+      execution?.leaderExited ||
+      execution?.requestedStop
+    ) {
+      throw new Error(`Execution cleanup required for group "${serviceConfig._combined?.group}"`);
+    }
+    if (execution) {
+      execution.stoppedMembers?.delete(name);
+      if (dockerOperation === "restart") {
+        return "restart";
+      }
+      this.memberCleanupFailures.add(name);
+      await this.deps.exec(
+        "docker",
+        buildDockerComposeArgs(
+          "start",
+          name,
+          serviceConfig.docker?.file,
+          this.dockerProjectArgs(serviceConfig),
+        ),
+        serviceConfig.cwd ?? this.config.projectDir,
+      );
+      this.memberCleanupFailures.delete(name);
+      return "start";
+    }
+    if (name !== unitId && !this.unitGenerations.has(unitId)) {
+      return "up";
+    }
+    const ownerConfig = this.config.project.services[unitId];
+    const env =
+      name === unitId
+        ? sentraEnv
+        : await this.resolveServiceSentraEnv(unitId, ownerConfig, this.getStatus(unitId));
+    await this.launchRuntimeExecution(unitId, ownerConfig, env);
+    return "up";
+  }
+
+  private async launchRuntimeExecution(
+    name: string,
+    serviceConfig: ServiceConfig,
+    sentraEnv: Record<string, string>,
+  ): Promise<void> {
+    const ctx = buildServiceContext(
+      this.statuses,
+      this.config.projectDir,
+      this.config.project.services,
+    );
+    const command = resolveCommand(serviceConfig, ctx);
+    const cwd = serviceConfig.cwd ?? this.config.projectDir;
+    const env = { ...captureEnvironment(), ...sentraEnv, ...resolveEnv(serviceConfig.env, ctx) };
+    if (serviceConfig.docker) {
+      await this.warnLegacyDockerProject(serviceConfig, cwd);
+    }
+    this.assertAdmission();
+    const generation = (this.unitGenerations.get(name) ?? 0) + 1;
+    this.unitGenerations.set(name, generation);
+    const execution: OwnedExecution = {
+      generation,
+      requestedStop: false,
+      leaderExited: false,
+      finalized: false,
+    };
+    this.executions.set(name, execution);
+    execution.handle = await this.runtime.start({
+      unitId: name,
+      generation,
+      command,
+      cwd,
+      env,
+      placement: serviceConfig.detached ? "background" : "default",
+      raw: serviceConfig.raw ?? false,
+    });
   }
 
   /**
@@ -728,52 +839,110 @@ export class ServiceManager extends EventEmitter {
     return env ?? {};
   }
 
-  /**
-   * Spawn a `detached: true` service pane-less and wait for it to become ready.
-   * Ready/port detection are PID-based (no pane); `ready.output` reads the
-   * runner's buffered child output instead of a pane capture (E4).
-   */
-  private async startDetachedService(
+  private async finishRuntimeStart(
     name: string,
+    unitId: string,
     serviceConfig: ServiceConfig,
     status: ServiceStatus,
     controller: AbortController,
-    sentraEnv: Record<string, string>,
+    operation: DockerReadinessContext["operation"] = "up",
   ): Promise<void> {
-    const ctx = buildServiceContext(
-      this.statuses,
-      this.config.projectDir,
-      this.config.project.services,
-    );
-    const command = resolveCommand(serviceConfig, ctx);
-    const cwd = serviceConfig.cwd ?? this.config.projectDir;
-    // Detached children inherit the daemon env plus the service's resolved env
-    // (pane services get this additively via a shell prefix).
-    const env: NodeJS.ProcessEnv = {
-      ...captureEnvironment(),
-      ...sentraEnv,
-      ...resolveEnv(serviceConfig.env, ctx),
+    const execution = this.executions.get(unitId);
+    const epoch = this.lifecycleEpochs.get(name);
+    const currentHandle = (): ExecutionHandle | undefined =>
+      !controller.signal.aborted &&
+      this.lifecycleEpochs.get(name) === epoch &&
+      this.executions.get(unitId) === execution
+        ? execution?.handle
+        : undefined;
+    const detectPorts = async (): Promise<number[]> => {
+      const handle = currentHandle();
+      const pid = handle && (await this.runtime.getPid(handle));
+      return pid === undefined || currentHandle() !== handle ? [] : this.deps.inspectPorts(pid);
     };
-    const generation = this.monitorGenerations.get(name) ?? 0;
-
-    const pid = this.detachedRunner.start({ service: name, command, cwd, env, generation });
-    // Surface the real child pid so `services.list` carries it (was always
-    // Undefined) and orphan/crash tooling can target the process group.
-    status.pid = pid;
-
-    const detectPorts = async (): Promise<number[]> => this.deps.detectPortsForPid?.(pid) ?? [];
-    const readyDeps: ReadyDeps = {
-      ...buildReadyDeps(serviceConfig, this.deps, this.config.projectDir),
-      detectPorts,
-      capturePane: async () => this.detachedRunner.getLines(name).join("\n"),
+    const readOutput = async (tail: number): Promise<string> => {
+      const handle = currentHandle();
+      const lines = handle ? await this.runtime.readOutput(handle, tail) : [];
+      return currentHandle() === handle ? lines.join("\n") : "";
     };
-
     await this.finishStart(name, serviceConfig, status, controller, {
-      readyTarget: "",
-      readyDeps,
+      readyDeps: buildReadyDeps(
+        serviceConfig,
+        { detectPorts, readOutput },
+        this.config.projectDir,
+        serviceConfig.docker
+          ? {
+              memberEpoch: epoch ?? 0,
+              operation,
+              effectiveLaunch: {
+                ...(operation === "up"
+                  ? this.config.project.services[unitId].docker
+                  : serviceConfig.docker),
+              },
+            }
+          : undefined,
+      ),
       detectPorts,
-      detached: true,
     });
+  }
+
+  private handleRuntimeEvent(event: ExecutionEvent): void {
+    const execution = this.executions.get(event.unitId);
+    if (!execution || execution.generation !== event.generation || execution.finalized) {
+      return;
+    }
+    const members = this.unitMembers.get(event.unitId) ?? [event.unitId];
+    if (event.kind === "output") {
+      this.handleRuntimeOutput(event, members);
+      return;
+    }
+    if (!execution.leaderExited && !execution.requestedStop) {
+      execution.leaderExited = true;
+      for (const member of members) {
+        this.abortControllers.get(member)?.abort();
+        this.lifecycleEpochs.set(member, (this.lifecycleEpochs.get(member) ?? 0) + 1);
+      }
+    }
+    if (event.kind === "leaderExit") {
+      return;
+    }
+    this.handleRuntimeExit(event, execution);
+  }
+
+  private handleRuntimeOutput(event: ExecutionEvent & { kind: "output" }, members: string[]): void {
+    // Keep draining owned output; hook queues independently fence lifecycle changes.
+    for (const member of members) {
+      this.handleRuntimeLines(member, [...event.lines], event.unitId, event.generation);
+    }
+  }
+
+  private handleRuntimeExit(
+    event: ExecutionEvent & { kind: "exit" },
+    execution: OwnedExecution,
+  ): void {
+    execution.finalized = true;
+    if (execution.requestedStop) {
+      return;
+    }
+    const members = this.unitMembers.get(event.unitId) ?? [event.unitId];
+    if (event.cleanupError) {
+      for (const member of members) {
+        this.publishCleanupFailure(member, event.cleanupError);
+      }
+      return;
+    }
+    this.executions.delete(event.unitId);
+    for (const member of members) {
+      const status = this.statuses.get(member);
+      if (status?.state === "starting") {
+        status.state = transition(status.state, "error");
+        status.lastError = event.spawnError ?? "Process exited before becoming ready";
+        delete status.readySince;
+        this.emit("stateChange", member, status);
+      } else if (status?.state === "ready") {
+        void this.handleCrash(member, this.config.project.services[member], status);
+      }
+    }
   }
 
   /**
@@ -788,19 +957,24 @@ export class ServiceManager extends EventEmitter {
     controller: AbortController,
     target: StartTarget,
   ): Promise<void> {
+    const epoch = this.lifecycleEpochs.get(name);
+    const isCurrent = (): boolean =>
+      !controller.signal.aborted && this.lifecycleEpochs.get(name) === epoch;
     try {
-      const readyPorts = await waitForReady(
-        resolveReadyConfig(serviceConfig),
-        target.readyTarget,
+      const readyPorts = await abortable(
+        waitForReady(resolveReadyConfig(serviceConfig), controller.signal, target.readyDeps),
         controller.signal,
-        target.readyDeps,
+        "Service readiness cancelled",
       );
 
-      if (controller.signal.aborted) {
+      if (!isCurrent()) {
         return;
       }
 
       const ports = readyPorts.length > 0 ? readyPorts : await target.detectPorts();
+      if (!isCurrent()) {
+        return;
+      }
 
       status.state = transition(status.state, "ready");
       status.ports = ports;
@@ -811,137 +985,66 @@ export class ServiceManager extends EventEmitter {
         this.config.projectDir,
         this.config.project.services,
       );
-      await this.onServiceReady(name, serviceConfig, status, ports, ctx, target.detached);
+      await this.onServiceReady(name, serviceConfig, status, ports, ctx, isCurrent);
     } catch (error) {
-      if (controller.signal.aborted) {
+      if (!isCurrent()) {
+        return;
+      }
+      controller.abort();
+      let message = error instanceof Error ? error.message : String(error);
+      try {
+        await (serviceConfig._combined
+          ? this.stopCombinedService(name, serviceConfig)
+          : this.stopRuntimeExecution(name));
+      } catch (cleanupError) {
+        message += `; cleanup failed: ${String(cleanupError)}`;
+      }
+      if (this.lifecycleEpochs.get(name) !== epoch) {
         return;
       }
       status.state = transition(status.state, "error");
-      status.lastError = error instanceof Error ? error.message : String(error);
+      status.lastError = message;
       delete status.readySince;
       this.emit("stateChange", name, status);
     }
   }
 
-  /**
-   * Append detached child output to the session log path (via `logLines`) and
-   * drive the `onOutput` hook — the detached analogue of the pane LogMonitor and
-   * `monitorOutput` (E4).
-   */
-  private handleDetachedLines(name: string, lines: string[]): void {
+  private handleRuntimeLines(
+    name: string,
+    lines: string[],
+    unitId: string,
+    generation: number,
+  ): void {
     this.emit("logLines", name, lines);
     const onOutput = this.config.project.services[name]?.onOutput;
-    if (onOutput) {
-      void fireDetachedOutput(onOutput, lines);
-    }
-  }
-
-  /**
-   * Handle a detached child's exit. Generation-checked so a stop/restart that
-   * bumped the generation never crash-restarts a stale child (E4). An exit while
-   * still `starting` fails fast instead of waiting out the ready timeout.
-   */
-  private handleDetachedExit(name: string, generation: number): void {
-    const status = this.statuses.get(name);
-    if (!status) {
+    if (!onOutput) {
       return;
     }
-    if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
-      return;
-    }
-    const config = this.config.project.services[name];
-
-    if (status.state === "starting") {
-      this.monitorGenerations.set(name, generation + 1);
-      this.abortControllers.get(name)?.abort();
-      if (canTransition(status.state, "error")) {
-        status.state = transition(status.state, "error");
-      }
-      status.lastError = "Process exited before becoming ready";
-      delete status.readySince;
-      this.emit("stateChange", name, status);
-      return;
-    }
-
-    if (status.state !== "ready") {
-      return;
-    }
-    this.monitorGenerations.set(name, generation + 1);
-    void this.handleCrash(name, config, status);
-  }
-
-  /**
-   * Send the start command for a service — handles combined vs regular.
-   */
-  private async sendStartCommand(
-    name: string,
-    serviceConfig: ServiceConfig,
-    paneTarget: string,
-    sentraEnv: Record<string, string>,
-  ): Promise<void> {
-    const combined = serviceConfig._combined;
-
-    if (combined && !combined.isOwner) {
-      // Combined non-owner: start individual container via docker compose
-      const [ownerName] = combined.allServices;
-      const ownerStatus = this.statuses.get(ownerName);
-      if (ownerStatus && (ownerStatus.state === "ready" || ownerStatus.state === "starting")) {
-        await this.deps.exec(
-          "docker",
-          buildDockerComposeArgs(
-            "start",
-            name,
-            serviceConfig.docker?.file,
-            this.dockerProjectArgs(serviceConfig),
-          ),
-          serviceConfig.cwd ?? this.config.projectDir,
-        );
-      }
-      // If owner not running, skip — the owner will start all containers
-      return;
-    }
-
-    // Regular or combined owner: send command to pane
-    const ctx = buildServiceContext(
-      this.statuses,
-      this.config.projectDir,
-      this.config.project.services,
-    );
-    // Precedence (low → high): request env < Sentra env < service env.
-    const serviceEnv = { ...sentraEnv, ...resolveEnv(serviceConfig.env, ctx) };
-    const requestEnv = this.deps.environment ? captureEnvironment() : {};
-    const env = { ...requestEnv, ...serviceEnv };
-    const resolvedCommand = resolveCommand(serviceConfig, ctx);
-    const cwd = serviceConfig.cwd ?? this.config.projectDir;
-
-    // One-time best-effort migration warning when containers linger under the
-    // Pre-pinning project name (B5). Never blocks start.
-    if (serviceConfig.docker) {
-      await this.warnLegacyDockerProject(serviceConfig, cwd);
-    }
-
-    if (serviceConfig.raw) {
-      const envFile = this.deps.environmentFile?.(env);
-      const envPrefix = formatEnvForShell(env);
-      const command = envFile
-        ? `cd ${JSON.stringify(cwd)} && env -i sh -c ${shellEscape('. "$1"; rm -f "$1"; shift; exec "$@"')} sh ${shellEscape(envFile)} sh -c ${shellEscape(resolvedCommand)}`
-        : `cd ${JSON.stringify(cwd)} && ${envPrefix ? `${envPrefix} ` : ""}${resolvedCommand}`;
-      try {
-        await this.deps.sendKeys(paneTarget, command);
-      } catch (error) {
-        if (envFile) {
-          this.deps.removeEnvironmentFile?.(envFile);
-        }
-        throw error;
-      }
-    } else {
-      // Wrapper mode: store exec info, send wrapper command
-      this.deps.storeExecInfo(name, { command: resolvedCommand, cwd, env: serviceEnv });
-      await this.deps.sendKeys(
-        paneTarget,
-        `${this.deps.zapsCommand} -s ${this.deps.sessionId} exec-service ${name}`,
+    const lifecycleEpoch = this.lifecycleEpochs.get(name) ?? 0;
+    const previous = this.outputQueues.get(name);
+    const sameGeneration =
+      previous?.unitId === unitId &&
+      previous.generation === generation &&
+      previous.lifecycleEpoch === lifecycleEpoch;
+    const isCurrent = (): boolean => {
+      const state = this.statuses.get(name)?.state;
+      const execution = this.executions.get(unitId);
+      return (
+        execution?.generation === generation &&
+        !execution.leaderExited &&
+        !execution.requestedStop &&
+        (this.lifecycleEpochs.get(name) ?? 0) === lifecycleEpoch &&
+        (state === "starting" || state === "ready")
       );
-    }
+    };
+    const pending = sameGeneration ? previous.pending : Promise.resolve();
+    this.outputQueues.set(name, {
+      unitId,
+      generation,
+      lifecycleEpoch,
+      // eslint-disable-next-line promise/prefer-await-to-then -- serialize runtime output batches
+      pending: pending.then(async () => fireServiceOutput(onOutput, lines, isCurrent)),
+    });
   }
 
   /** Resolve the compose `-p` project args for a docker service ([] otherwise). */
@@ -977,7 +1080,7 @@ export class ServiceManager extends EventEmitter {
     status: ServiceStatus,
     ports: number[],
     ctx: ServiceContext,
-    detached = false,
+    isCurrent: () => boolean,
   ): Promise<void> {
     const explicitUrl = resolveExplicitUrl(serviceConfig, ctx);
     if (explicitUrl === false || serviceConfig.docker) {
@@ -985,41 +1088,49 @@ export class ServiceManager extends EventEmitter {
     } else if (explicitUrl) {
       status.url = explicitUrl;
     } else {
-      status.url = await probePort(ports);
+      const url = await probePort(ports);
+      if (!isCurrent()) {
+        return;
+      }
+      status.url = url;
       if (!status.url && ports.length > 0) {
         void this.monitorUrl(name, ports);
       }
     }
 
     await tryAutoOpen(serviceConfig, name, status.url, this.autoOpened);
+    if (!isCurrent()) {
+      return;
+    }
     this.emit("stateChange", name, status);
 
     try {
-      await serviceConfig.onReady?.();
+      const signal = this.abortControllers.get(name)?.signal;
+      if (signal) {
+        await waitForHook(serviceConfig.onReady, signal);
+      }
     } catch (error) {
+      if (!isCurrent()) {
+        return;
+      }
       // Log but don't fail the service start
       status.lastError = `onReady hook failed: ${error instanceof Error ? error.message : String(error)}`;
       this.emit("stateChange", name, status);
     }
 
-    // Start crash monitor in background with current generation. Detached
-    // Services are driven by the child `exit` event and their own output stream,
-    // So the pane-based crash/output monitors don't apply (E4).
-    const gen = this.monitorGenerations.get(name) ?? 0;
-    if (!detached) {
-      void this.monitorCrash(name, gen);
-
-      // Start output monitor if onOutput is configured
-      if (serviceConfig.onOutput) {
-        void this.monitorOutput(name, gen);
-      }
+    if (!isCurrent()) {
+      return;
     }
+    const gen = this.lifecycleEpochs.get(name) ?? 0;
+    void this.monitorCrash(name, gen);
   }
 
   /**
    * Stop a single service (serialized per service).
    */
   public async stopService(name: string): Promise<ServiceActionResult> {
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
     // Stop the process inside `withServiceLock` (state machine + side effects),
     // Then drop the pane OUTSIDE the lock — same op-lock-outermost discipline
     // As `startService`. This is the ONLY call site for `reflowRemove`; crash
@@ -1039,7 +1150,7 @@ export class ServiceManager extends EventEmitter {
     // Redundant and deadlock-prone. The manual stop path (no reload/destroy
     // In flight) still runs reflowRemove as intended.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && this.paneMap[name] !== undefined) {
+    if (!this.shuttingDown && isLazy && this.deps.hasPresentation(name)) {
       await this.deps.reflowRemove(name);
     }
     return result;
@@ -1047,27 +1158,26 @@ export class ServiceManager extends EventEmitter {
 
   private async stopServiceInternal(name: string): Promise<ServiceActionResult> {
     const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
     const status = this.statuses.get(name);
 
-    // Detached services have no pane (E4).
-    if (!status || (!serviceConfig?.detached && !paneTarget)) {
+    if (!status || !serviceConfig) {
       throw new Error(`Unknown service: ${name}`);
     }
 
-    // Idempotent no-op: nothing to stop in these states (terminal or already
-    // Stopping). Avoids a raw `Invalid state transition` over IPC on repeat calls.
+    // Terminal rows can still own a live execution.
     if (
-      status.state === "stopped" ||
-      status.state === "stopping" ||
-      status.state === "error" ||
-      status.state === "unavailable"
+      status.state === "unavailable" ||
+      (!this.executions.has(this.memberUnits.get(name) ?? name) &&
+        !this.memberCleanupFailures.has(name) &&
+        (status.state === "stopped" || status.state === "stopping" || status.state === "error"))
     ) {
       return { noop: true };
     }
 
     // Transition: ready/starting/restarting -> stopping
-    status.state = transition(status.state, "stopping");
+    if (status.state !== "stopping") {
+      status.state = transition(status.state, "stopping");
+    }
     this.emit("stateChange", name, status);
 
     // Abort any pending ready poll
@@ -1077,19 +1187,17 @@ export class ServiceManager extends EventEmitter {
     }
 
     // Invalidate any active crash/output monitors
-    this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
     const combined = serviceConfig?._combined;
 
-    if (serviceConfig?.detached) {
-      // Detached service: signal the process group (SIGTERM, then SIGKILL).
-      await this.detachedRunner.stop(name);
-    } else if (combined) {
-      await this.stopCombinedService(name, serviceConfig, combined, paneTarget);
-    } else {
-      // Regular service: Ctrl-C and wait for exit
-      await this.deps.sendCtrlC(paneTarget);
-      await this.waitForPaneExit(paneTarget);
+    try {
+      await (combined
+        ? this.stopCombinedService(name, serviceConfig)
+        : this.stopRuntimeExecution(name));
+    } catch (error) {
+      this.publishCleanupFailure(name, String(error));
+      throw error;
     }
 
     // Transition: stopping -> stopped
@@ -1099,7 +1207,9 @@ export class ServiceManager extends EventEmitter {
     this.emit("stateChange", name, status);
 
     try {
-      await serviceConfig.onStop?.();
+      if (serviceConfig.onStop) {
+        await this.runStopHook(serviceConfig.onStop);
+      }
     } catch (error) {
       // Log but don't fail the service stop
       status.lastError = `onStop hook failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1109,17 +1219,40 @@ export class ServiceManager extends EventEmitter {
     return { noop: false };
   }
 
+  private publishCleanupFailure(name: string, message: string): void {
+    const status = this.getStatus(name);
+    if (canTransition(status.state, "error")) {
+      status.state = transition(status.state, "error");
+    }
+    status.lastError = `Execution cleanup failed: ${message}`;
+    delete status.readySince;
+    this.emit("stateChange", name, status);
+  }
+
+  private async stopRuntimeExecution(name: string): Promise<void> {
+    const execution = this.executions.get(name);
+    if (!execution?.handle) {
+      return;
+    }
+    execution.requestedStop = true;
+    await this.runtime.stop(execution.handle);
+    if (this.executions.get(name) === execution) {
+      this.executions.delete(name);
+    }
+  }
+
   /**
    * Stop one member of a combined docker group via `docker compose stop`, then —
-   * once every sibling is stopped — Ctrl-C the owner's pane to tear down the
-   * group's `docker compose up` (E10).
+   * once every sibling is stopped, dispose the shared command.
    */
-  private async stopCombinedService(
-    name: string,
-    serviceConfig: ServiceConfig,
-    combined: CombinedServiceMeta,
-    paneTarget: string,
-  ): Promise<void> {
+  private async stopCombinedService(name: string, serviceConfig: ServiceConfig): Promise<void> {
+    await this.withServiceLock(`@unit:${this.memberUnits.get(name) ?? name}`, async () => {
+      await this.stopCombinedMember(name, serviceConfig);
+    });
+  }
+
+  private async stopCombinedMember(name: string, serviceConfig: ServiceConfig): Promise<void> {
+    this.memberCleanupFailures.add(name);
     await this.deps.exec(
       "docker",
       buildDockerComposeArgs(
@@ -1131,62 +1264,32 @@ export class ServiceManager extends EventEmitter {
       serviceConfig.cwd ?? this.config.projectDir,
     );
 
-    const allStopped = combined.allServices.every((sib) => {
-      if (sib === name) {
-        return true;
+    this.memberCleanupFailures.delete(name);
+    const execution = this.executions.get(this.memberUnits.get(name) ?? name);
+    if (execution) {
+      execution.stoppedMembers ??= new Set();
+      execution.stoppedMembers.add(name);
+    }
+    await this.disposeStoppedCombinedUnit(this.memberUnits.get(name) ?? name);
+  }
+
+  private async disposeStoppedCombinedUnit(unitId: string): Promise<void> {
+    const members = this.unitMembers.get(unitId) ?? [unitId];
+    const execution = this.executions.get(unitId);
+    const allStopped = members.every((member) => {
+      if (this.pendingMemberStarts.has(member) || this.memberCleanupFailures.has(member)) {
+        return false;
       }
-      const sibStatus = this.statuses.get(sib);
-      return !sibStatus || sibStatus.state === "stopped" || sibStatus.state === "error";
+      const status = this.statuses.get(member);
+      return (
+        execution?.stoppedMembers?.has(member) ||
+        !status ||
+        status.state === "stopped" ||
+        status.state === "error"
+      );
     });
-
     if (allStopped) {
-      const ownerPane = this.resolveOwnerPane(combined, paneTarget);
-      await this.deps.sendCtrlC(ownerPane);
-      await this.waitForPaneExit(ownerPane);
-    }
-  }
-
-  /**
-   * Resolve the pane running the group's `docker compose up` — the owner's pane.
-   * Falls back to the given pane if no owner is found.
-   */
-  private resolveOwnerPane(combined: CombinedServiceMeta, fallback: string): string {
-    const owner = combined.allServices.find(
-      (sib) => this.config.project.services[sib]?._combined?.isOwner,
-    );
-    return owner ? (this.paneMap[owner] ?? fallback) : fallback;
-  }
-
-  /**
-   * Wait for pane process to exit with 5s timeout, force kill if needed.
-   */
-  private async waitForPaneExit(paneTarget: string): Promise<void> {
-    const stopStart = Date.now();
-    const STOP_TIMEOUT = 5000;
-    let exited = false;
-
-    while (Date.now() - stopStart < STOP_TIMEOUT) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const descendants = await this.deps.getDescendantPids(rootPid);
-      if (descendants.length <= 1) {
-        exited = true;
-        break;
-      }
-      await sleep(200);
-    }
-
-    if (!exited) {
-      const rootPid = await this.deps.panePid(paneTarget);
-      const pids = await this.deps.getDescendantPids(rootPid);
-      for (const pid of pids) {
-        if (pid !== rootPid) {
-          try {
-            process.kill(pid, "SIGKILL");
-          } catch {
-            // Process may have already exited
-          }
-        }
-      }
+      await this.stopRuntimeExecution(unitId);
     }
   }
 
@@ -1194,26 +1297,27 @@ export class ServiceManager extends EventEmitter {
    * Restart a single service (serialized per service).
    */
   public async restartService(name: string): Promise<void> {
-    // Same lazy-pane invariant as `startService`: if the service is pane-less +
-    // Lazy, ensure the pane exists BEFORE entering the lock-guarded body —
-    // `restartServiceInternal` eventually calls `startServiceInternal`, which
-    // Throws `Unknown service` on a missing pane. The OUTSIDE-the-lock
-    // Placement keeps op-lock-outermost: the Round-4 trap stays closed for
-    // Restart just as it is for start. A restart of an ALREADY-paned service
-    // (the common "restart the running worker") sees `paneMap[name]` already
-    // Set and skips this — preserving the existing pane id (P04-T04 Flow E).
-    // CRITICAL: same shuttingDown guard as `startService` — `onStop` hooks can
-    // Reach `lib.service.restart` during reload's stopAll loop; without the
-    // Guard we'd re-enter withOpLock through reflowInsert and deadlock. See
-    // `startService` for the full chain.
+    this.assertAdmission();
+    return this.withMemberStart(name, async () => this.restartServiceWithPane(name));
+  }
+
+  private async restartServiceWithPane(name: string): Promise<void> {
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
+    // Preserve an existing target; acquire missing lazy presentation before the lock.
     const isLazy = this.config.lazyPaneByService.get(name) === true;
-    if (!this.shuttingDown && isLazy && !this.paneMap[name]) {
+    if (!this.shuttingDown && isLazy && !this.deps.hasPresentation(name)) {
       await this.deps.reflowInsert(name);
     }
     return this.withServiceLock(name, async () => this.restartServiceInternal(name));
   }
 
   private async restartServiceInternal(name: string): Promise<void> {
+    return this.withMemberStart(name, async () => this.runServiceRestart(name));
+  }
+
+  private async runServiceRestart(name: string): Promise<void> {
+    this.assertAdmission();
     const status = this.statuses.get(name);
     if (!status) {
       throw new Error(`Unknown service: ${name}`);
@@ -1222,10 +1326,10 @@ export class ServiceManager extends EventEmitter {
     const serviceConfig = this.config.project.services[name];
     const combined = serviceConfig?._combined;
 
-    // For combined non-owner: use docker compose restart directly
+    // Live shared commands survive every member restart.
     if (
       combined &&
-      !combined.isOwner &&
+      this.executions.has(this.memberUnits.get(name) ?? name) &&
       (status.state === "ready" || status.state === "starting")
     ) {
       // Abort any pending ready poll and invalidate active monitors so the old
@@ -1234,21 +1338,25 @@ export class ServiceManager extends EventEmitter {
       if (controller) {
         controller.abort();
       }
-      this.monitorGenerations.set(name, (this.monitorGenerations.get(name) ?? 0) + 1);
+      this.lifecycleEpochs.set(name, (this.lifecycleEpochs.get(name) ?? 0) + 1);
 
       status.state = transition(status.state, "stopping");
       this.emit("stateChange", name, status);
 
-      await this.deps.exec(
-        "docker",
-        buildDockerComposeArgs(
-          "restart",
-          name,
-          serviceConfig.docker?.file,
-          this.dockerProjectArgs(serviceConfig),
-        ),
-        serviceConfig.cwd ?? this.config.projectDir,
-      );
+      await this.withServiceLock(`@unit:${this.memberUnits.get(name) ?? name}`, async () => {
+        this.memberCleanupFailures.add(name);
+        await this.deps.exec(
+          "docker",
+          buildDockerComposeArgs(
+            "restart",
+            name,
+            serviceConfig.docker?.file,
+            this.dockerProjectArgs(serviceConfig),
+          ),
+          serviceConfig.cwd ?? this.config.projectDir,
+        );
+        this.memberCleanupFailures.delete(name);
+      });
 
       status.state = transition(status.state, "stopped");
       delete status.readySince;
@@ -1256,12 +1364,10 @@ export class ServiceManager extends EventEmitter {
       this.emit("stateChange", name, status);
 
       status.retryCount = 0;
-      await this.startServiceInternal(name);
+      await this.startServiceInternal(name, undefined, "restart");
     } else {
       // Stop if running
-      if (status.state === "ready" || status.state === "starting") {
-        await this.stopServiceInternal(name);
-      }
+      await this.stopServiceInternal(name);
 
       // Reset retry count
       status.retryCount = 0;
@@ -1320,6 +1426,9 @@ export class ServiceManager extends EventEmitter {
     overrides: Partial<DockerConfig>,
   ): Promise<void> {
     const serviceConfig = this.config.project.services[name];
+    if (serviceConfig?._combined) {
+      throw new GroupedDockerRebuildError(name);
+    }
     if (!serviceConfig?.docker) {
       throw new Error(`Service "${name}" is not a docker service`);
     }
@@ -1368,12 +1477,7 @@ export class ServiceManager extends EventEmitter {
     const pollInterval = config.raw ? 2000 : 10_000;
     while (status.state === "ready") {
       await sleep(pollInterval);
-      // Re-check state after sleep (stopService may have changed it)
-      if (status.state !== "ready") {
-        return;
-      }
-      // Check if this monitor has been superseded by a newer generation
-      if ((this.monitorGenerations.get(name) ?? 0) !== generation) {
+      if (!this.isReadyEpoch(name, generation)) {
         return;
       }
 
@@ -1389,20 +1493,44 @@ export class ServiceManager extends EventEmitter {
         );
         crashed = !info || info.state !== "running";
       } else {
-        const rootPid = await this.deps.panePid(this.paneMap[name]);
-        const descendants = await this.deps.getDescendantPids(rootPid);
-        // If only shell PID left (no child), service has crashed
-        crashed = descendants.length <= 1;
+        const handle = this.executions.get(name)?.handle;
+        crashed = !handle || !(await this.runtime.isRunning(handle));
       }
 
       if (crashed) {
         // Re-check state and generation after async crash detection — stopService may have run
-        if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
+        if (!this.isReadyEpoch(name, generation)) {
+          return;
+        }
+        if (!combined && !(await this.cleanCrashedExecution(name, generation))) {
+          return;
+        }
+        if (!this.isReadyEpoch(name, generation + (combined ? 0 : 1))) {
           return;
         }
         await this.handleCrash(name, config, status);
         return;
       }
+    }
+  }
+
+  private isReadyEpoch(name: string, epoch: number): boolean {
+    return this.statuses.get(name)?.state === "ready" && this.lifecycleEpochs.get(name) === epoch;
+  }
+
+  private async cleanCrashedExecution(name: string, epoch: number): Promise<boolean> {
+    const execution = this.executions.get(name);
+    if (execution?.leaderExited || execution?.requestedStop) {
+      return false;
+    }
+    this.abortControllers.get(name)?.abort();
+    this.lifecycleEpochs.set(name, epoch + 1);
+    try {
+      await this.stopRuntimeExecution(name);
+      return true;
+    } catch (error) {
+      this.publishCleanupFailure(name, String(error));
+      return false;
     }
   }
 
@@ -1415,18 +1543,22 @@ export class ServiceManager extends EventEmitter {
       return;
     }
 
+    const epoch = this.lifecycleEpochs.get(name);
     const MAX_RETRIES = 5;
     let retries = 0;
 
     while (status.state === "ready" && !status.url && retries < MAX_RETRIES) {
       await sleep(2000);
-      if (status.state !== "ready" || status.url) {
+      if (status.state !== "ready" || status.url || this.lifecycleEpochs.get(name) !== epoch) {
         return;
       }
 
       retries += 1;
 
       const result = await probePort(ports);
+      if (this.lifecycleEpochs.get(name) !== epoch || status.state !== "ready") {
+        return;
+      }
       if (result) {
         status.url = result;
         await tryAutoOpen(this.config.project.services[name], name, result, this.autoOpened);
@@ -1435,124 +1567,14 @@ export class ServiceManager extends EventEmitter {
       }
     }
   }
-  /**
-   * Monitor service output and call onOutput for each new line.
-   */
-  private async monitorOutput(name: string, generation: number): Promise<void> {
-    const status = this.statuses.get(name);
-    const serviceConfig = this.config.project.services[name];
-    const paneTarget = this.paneMap[name];
-    if (!status || !serviceConfig?.onOutput || !paneTarget) {
-      return;
-    }
-
-    // Capture initial baseline
-    const baseline = await this.deps.capturePane(paneTarget, 500);
-    let prevLines = baseline.split("\n");
-
-    while (status.state === "ready") {
-      await sleep(1000);
-      if (status.state !== "ready" || (this.monitorGenerations.get(name) ?? 0) !== generation) {
-        return;
-      }
-
-      const capture = await this.deps.capturePane(paneTarget, 500);
-      const currentLines = capture.split("\n");
-      const newLines = diffOutput(prevLines, currentLines);
-      prevLines = currentLines;
-
-      for (const line of newLines) {
-        if (line.trim() !== "") {
-          try {
-            await serviceConfig.onOutput(line);
-          } catch {
-            // Swallow errors — onOutput must not crash the service
-          }
-        }
-      }
-    }
+  public resumeRuntimeObserver(): void {
+    this.unsubscribeRuntime();
+    this.unsubscribeRuntime = this.runtime.subscribe((event) => this.handleRuntimeEvent(event));
   }
 
-  private updateWindowTitle(): void {
-    if (this.shuttingDown) {
-      return;
-    }
-    const counts: Record<string, number> = {};
-    for (const status of this.statuses.values()) {
-      if (status.state === "unavailable") {
-        continue;
-      }
-      counts[status.state] = (counts[status.state] ?? 0) + 1;
-    }
-
-    const symbols: [string, string][] = [
-      ["error", "✖"],
-      ["starting", "◐"],
-      ["restarting", "◐"],
-      ["stopping", "◐"],
-      ["ready", "●"],
-      ["stopped", "○"],
-    ];
-
-    const parts: string[] = [];
-    for (const [state, symbol] of symbols) {
-      const count = counts[state] ?? 0;
-      if (count > 0) {
-        parts.push(`${symbol}${count}`);
-      }
-    }
-
-    const title = parts.length > 0 ? `zaps (${parts.join(" ")})` : "zaps";
-    this.pendingRename = this.chainRename(title);
-    void this.pendingRename;
-  }
-
-  private async chainRename(title: string): Promise<void> {
-    await this.pendingRename.catch(() => {
-      /* Ignored */
-    });
-    await this.deps.renameWindow(this.paneMap["@tui"], title).catch(() => {
-      // Best-effort cosmetic title update; the tmux window/server may be gone (e.g. teardown).
-    });
-  }
-
-  public handleExecExited(
-    service: string,
-    _code: number,
-    _signal: string | null,
-    spawnError?: string,
-  ): void {
-    const status = this.statuses.get(service);
-    if (!status) {
-      return;
-    }
-
-    // Wrapper failed to spawn the command (E11): abort any in-flight start and
-    // Fail fast with the spawn message instead of leaving the service stuck in
-    // `starting` until the 60s ready timeout.
-    if (spawnError !== undefined) {
-      this.abortControllers.get(service)?.abort();
-      this.monitorGenerations.set(service, (this.monitorGenerations.get(service) ?? 0) + 1);
-      if (canTransition(status.state, "error")) {
-        status.state = transition(status.state, "error");
-      }
-      status.lastError = spawnError;
-      delete status.readySince;
-      this.emit("stateChange", service, status);
-      return;
-    }
-
-    if (status.state !== "ready") {
-      return;
-    }
-
-    const config = this.config.project.services[service];
-    const gen = this.monitorGenerations.get(service) ?? 0;
-
-    // Invalidate current crash monitor generation to prevent double-trigger
-    this.monitorGenerations.set(service, gen + 1);
-
-    void this.handleCrash(service, config, status);
+  public disposeObservers(): void {
+    this.unsubscribeRuntime();
+    this.removeAllListeners();
   }
 
   private async handleCrash(
@@ -1577,7 +1599,7 @@ export class ServiceManager extends EventEmitter {
   ): Promise<void> {
     const restartConfig = config.restart;
     if (restartConfig && status.retryCount < (restartConfig.maxRetries ?? 3)) {
-      const gen = this.monitorGenerations.get(name) ?? 0;
+      const gen = this.lifecycleEpochs.get(name) ?? 0;
       status.state = transition(status.state, "restarting");
       status.retryCount += 1;
       delete status.readySince;
@@ -1593,7 +1615,7 @@ export class ServiceManager extends EventEmitter {
         // The restarting state) — the superseding op owns the state (C3).
         if (
           this.shuttingDown ||
-          (this.monitorGenerations.get(name) ?? 0) !== gen ||
+          (this.lifecycleEpochs.get(name) ?? 0) !== gen ||
           status.state !== "restarting"
         ) {
           return;
@@ -1602,12 +1624,9 @@ export class ServiceManager extends EventEmitter {
         // The restart must never reject out of handleCrash (a leaked rejection
         // Reaches Node and could kill the daemon — C2); on failure, go to error.
         try {
-          // Wait for the crashed pane process (and any orphans) to fully exit
-          // Before re-sending start keys, so the restart can't collide with a
-          // Lingering process on the same port (C3). Pane-based services only;
-          // Combined/docker services manage lifecycle via compose, not the pane.
-          if (!config._combined && !config.detached) {
-            await this.waitForPaneExit(this.paneMap[name]);
+          // Verify prior ownership is cleared before replacement.
+          if (!config._combined) {
+            await this.stopRuntimeExecution(name);
           }
           await this.startServiceInternal(name);
           await this.cascadeRestart(name);
@@ -1631,54 +1650,21 @@ export class ServiceManager extends EventEmitter {
 
 export interface ServiceManagerEvents {
   stateChange: (name: string, status: ServiceStatus) => void;
-  /** Run started; `runId` correlates this run's events/history (Q12). */
-  taskStart: (runId: string, taskKey: string, taskName: string) => void;
-  taskComplete: (
-    runId: string,
-    taskKey: string,
-    taskName: string,
-    result: "success" | "error",
-  ) => void;
-  /** A task output line from the hook-path runner; the session appends it to the
-   * run's `TaskOutputStore` buffer (keyed by `runId`). */
-  taskLine: (runId: string, line: string) => void;
   /** New detached-child log lines — the session appends + broadcasts them (E4). */
   logLines: (name: string, lines: string[]) => void;
 }
 
 export interface ServiceManagerDeps {
-  sendKeys: (target: string, keys: string) => Promise<void>;
-  sendCtrlC: (target: string) => Promise<void>;
-  panePid: (target: string) => Promise<number>;
-  detectPorts: (paneTarget: string) => Promise<number[]>;
-  /** PID-based port detection for detached services (no pane) (E4). */
-  detectPortsForPid?: (pid: number) => Promise<number[]>;
-  capturePane: (target: string, lines: number) => Promise<string>;
-  getDescendantPids: (rootPid: number) => Promise<number[]>;
-  /** Record a spawned detached child PID for orphan protection (R10). */
-  recordDetached?: (pid: number) => void;
-  /** Drop a recorded detached child PID on clean stop/exit (R10). */
-  removeDetached?: (pid: number) => void;
-  /** Overridable spawn for detached children (tests inject a fake) (E4). */
-  detachedSpawn?: SpawnFn;
-  renameWindow: (target: string, name: string) => Promise<void>;
-  getWindowName: (target: string) => Promise<string>;
-  getWindowOption: (target: string, option: string) => Promise<string>;
-  setWindowOption: (target: string, option: string, value: string) => Promise<void>;
-  /** Popup surface for hook-path popup tasks; bound to the session's tmux socket. */
-  displayPopup: (opts: DisplayPopupOptions) => Promise<void>;
+  runtime: RuntimeDriver;
+  sessionId: string;
+  zapsCommand: string;
+  hasPresentation: (name: string) => boolean;
+  inspectPorts: (rootPid: number) => Promise<number[]>;
   exec: (cmd: string, args: string[], cwd?: string) => Promise<void>;
   /** Pre-flight expected host ports; returns a conflict message or null (B2). */
   preflightPorts: (serviceConfig: ServiceConfig, projectDir: string) => Promise<string | null>;
-  storeExecInfo: (service: string, info: ExecInfo) => void;
-  sessionId: string;
-  zapsCommand: string;
   /** Latest request-derived environment for this session. */
   environment?: () => Record<string, string>;
-  /** Write a private, short-lived shell env file for raw pane commands. */
-  environmentFile?: (env: Record<string, string>) => string;
-  /** Remove an env file when the pane command could not be sent. */
-  removeEnvironmentFile?: (filePath: string) => void;
   /**
    * Lazy-pane reflow hooks (P04-T04). Both run under the SESSION op-lock so they
    * Serialize against each other AND against `_reload` (no half-applied geometry
@@ -1693,4 +1679,4 @@ export interface ServiceManagerDeps {
   sentra?: SentraDeps;
 }
 
-export { diffOutput };
+export { diffOutput, GroupedDockerRebuildError };

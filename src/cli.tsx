@@ -2,7 +2,14 @@
 import { cli, command } from "cleye";
 import type { Command } from "cleye";
 
-import { ensureTmuxContext, reattachManaged } from "./cli/bootstrap-tmux.js";
+import { StartupArgumentError, parseStartupArguments } from "./cli/backend-selection.js";
+import type { StartupIntent } from "./cli/backend-selection.js";
+import {
+  MANAGED_BOOTSTRAP_FLAG,
+  managedBootstrapReporter,
+  reattachManaged,
+} from "./cli/bootstrap-tmux.js";
+import type { ManagedStartup } from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -12,7 +19,6 @@ import {
   formatTable,
   parsePositiveInt,
   requestDaemon,
-  resolveCommand,
   resolveCommandArgv,
   resolveListedSessionId,
   resolveRuntime,
@@ -31,30 +37,28 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
+import { listStartupSessions } from "./cli/startup-session.js";
+import { renderStartupError, requireUiTerminal, runStartup } from "./cli/startup.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
-import { DaemonClient } from "./client/daemon-client.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
 import { isDaemonRunning, socketPath } from "./daemon/lifecycle.js";
+import { parseSessionList } from "./lib/backend/wire.js";
 import { getEnv } from "./lib/env.js";
 import { ipcRequest, ipcSubscribe } from "./lib/ipc/client.js";
-import type { IpcSubscription } from "./lib/ipc/client.js";
 import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
-import { captureEnvironment, consumeEnvironmentSnapshot } from "./lib/request-context.js";
-import { installResizeReset } from "./lib/screen-reset.js";
+import { captureEnvironment } from "./lib/request-context.js";
 import { computeProjectSessionId } from "./lib/sentra/session-id.js";
-import type { ServiceStatus } from "./lib/service/types.js";
-import { currentPaneId, currentSession, selectPane, sendKeys } from "./lib/tmux.js";
+import { currentSession } from "./lib/tmux.js";
 
 declare const __VERSION__: string;
 declare const __BUILD_TIME__: string;
 declare const __BUILD_BRANCH__: string;
-
-consumeEnvironmentSnapshot();
 
 const VERSION = `${typeof __VERSION__ !== "undefined" ? __VERSION__ : "dev"} (${resolveRuntime()}) built ${typeof __BUILD_TIME__ !== "undefined" ? __BUILD_TIME__ : "from source"}${typeof __BUILD_BRANCH__ !== "undefined" ? ` [${__BUILD_BRANCH__}]` : ""}`;
 
@@ -126,376 +130,51 @@ function rejectExcessArgs(name: string, args: readonly string[], expected: numbe
   }
 }
 
-// --- TUI ---
+const startupFlags = {
+  background: {
+    type: Boolean,
+    alias: "b",
+    description: "Start in the background, preferring shell for new sessions",
+  },
+  backend: {
+    type: String,
+    alias: "B",
+    placeholder: "<backend>",
+    description: "Execution backend (tmux or shell)",
+  },
+};
 
-async function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function readStdoutSize(): string {
-  return `${String(process.stdout.columns)}x${String(process.stdout.rows)}`;
-}
-
-/**
- * Wait until the terminal size stops changing before the first Ink paint.
- *
- * Inside tmux, `zaps up` splits its service/log panes around launch, so the
- * `@tui` pane keeps resizing for a few hundred ms. Ink only clears the screen on
- * a width *decrease* (see ink `resized`/`shouldClearTerminalForFrame`), so a
- * first frame painted mid-resize — typically while the pane is still *growing*
- * into its final width — is left on screen as residue until a manual tmux resize
- * triggers a clear. Settling the size first lets us paint exactly once at the
- * final dimensions. Resolves fast (~150ms) when the size is already stable.
- */
-async function waitForStableSize(maxMs = 1000, stableMs = 150, stepMs = 50): Promise<void> {
-  if (!process.stdout.isTTY) {
-    return;
-  }
-  let prev = readStdoutSize();
-  let stableFor = 0;
-  for (let waited = 0; waited < maxMs; waited += stepMs) {
-    await sleep(stepMs);
-    const cur = readStdoutSize();
-    if (cur === prev) {
-      stableFor += stepMs;
-      if (stableFor >= stableMs) {
-        return;
-      }
-    } else {
-      stableFor = 0;
-      prev = cur;
-    }
-  }
-}
-
-async function runTui(opts: {
-  sessionId: string;
-  socketPath: string;
-  autoStart?: boolean;
-}): Promise<void> {
-  const client = new DaemonClient(opts.socketPath, opts.sessionId);
-  client.connect();
-
-  // Parallel: load yoga + attach to daemon (no config loading needed)
-  const [yogaMod, snapshot] = await Promise.all([import("yoga-layout"), client.attach()]);
-  await (yogaMod.default as unknown as Record<string, unknown>).__yogaReady;
-
-  // Skip splash on reattach (services already running)
-  const allStopped = snapshot.statuses.every((s) => s.state === "stopped");
-  const showSplash = Boolean(opts.autoStart) && allStopped;
-
-  process.stdout.write("\x1b[?1049h");
-
-  if (showSplash) {
-    const { managedSplashHint, renderSplash } = await import("./components/logo.js");
-    const { resolveIconTier } = await import("./components/theme/IconTheme.js");
-    const { listPanes } = await import("./lib/tmux.js");
-    const splashTier = resolveIconTier(snapshot.ui?.icons);
-    const hint = managedSplashHint(getEnv("ZAPS_MANAGED_TMUX"));
-    const tmuxSession = await currentSession();
-    const panes = await listPanes(tmuxSession);
-    const tuiPane = panes.find((p) => p.id === snapshot.paneMap["@tui"]);
-    if (tuiPane) {
-      renderSplash({ cols: tuiPane.width, rows: tuiPane.height }, splashTier, hint);
-    } else {
-      renderSplash(undefined, splashTier, hint);
-    }
-  }
-
-  // Parallel: load ink + App component
-  const [{ render }, { App }] = await Promise.all([import("ink"), import("./components/App.js")]);
-
-  // Let the pane size settle (after zaps' own pane splits), then clear so the
-  // First frame paints once, clean, at the final size — no splash or mid-resize
-  // Residue left behind for a manual tmux resize to mop up.
-  await waitForStableSize();
-  if (process.stdout.isTTY) {
-    process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-  }
-
-  // Zaps keeps splitting/resizing the @tui pane after mount. Ink only force-
-  // Clears on a width *decrease*, so growing into the final size leaves frame
-  // Residue. Mop up the cases Ink misses; the live reflow then repaints clean.
-  const stopResizeReset = installResizeReset(process.stdout);
-
-  const { waitUntilExit } = render(
-    <App
-      client={client}
-      paneMap={snapshot.paneMap}
-      projectName={snapshot.name}
-      tasks={snapshot.tasks ?? []}
-      servicesMeta={snapshot.servicesMeta ?? []}
-      initialStatuses={snapshot.statuses}
-      initialTaskHistory={snapshot.taskHistory ?? []}
-      autoStart={showSplash}
-      configStale={snapshot.configStale}
-      ui={snapshot.ui}
-    />,
-    {
-      patchConsole: false,
-      // On a real pty, paint frames even when CI env vars leak into the pane
-      // (a tmux server started on CI hands CI=true to every pane, and Ink's
-      // Is-in-ci check would then skip every frame until unmount).
-      interactive: process.stdout.isTTY ? true : undefined,
-    },
-  );
-
-  await waitUntilExit();
-
-  stopResizeReset();
-  process.stdout.write("\x1b[?1049l");
-  client.disconnect();
-}
-
-const DETACH_INACTIVITY_MS = 120_000;
-
-/**
- * `zaps up -d`: subscribe to the session, then issue a SINGLE `services.startAll`
- * that joins the daemon's deduped in-flight run. Blocks until the run settles,
- * bounded by an inactivity timeout that resets on every subscription event (no
- * fixed wall-clock cap). Throws `CliError` on disconnect/inactivity; throws when
- * any service ended in `error` so the caller can exit non-zero.
- */
-async function runDetachedStartAll(sock: string, sid: string, sessionName: string): Promise<void> {
-  const ctl: {
-    sub?: IpcSubscription;
-    inactivity?: ReturnType<typeof setTimeout>;
-    done: boolean;
-    anyError: boolean;
-  } = { done: false, anyError: false };
-
-  await new Promise<void>((resolve, reject) => {
-    const finish = (action: () => void): void => {
-      if (ctl.done) {
-        return;
-      }
-      ctl.done = true;
-      if (ctl.inactivity) {
-        clearTimeout(ctl.inactivity);
-      }
-      ctl.sub?.close();
-      action();
-    };
-    const arm = (): void => {
-      if (ctl.done) {
-        return;
-      }
-      if (ctl.inactivity) {
-        clearTimeout(ctl.inactivity);
-      }
-      ctl.inactivity = setTimeout(() => {
-        finish(() =>
-          reject(
-            new CliError(
-              `zaps up -d: no activity from the daemon for ${DETACH_INACTIVITY_MS / 1000}s; aborting.`,
-            ),
-          ),
-        );
-      }, DETACH_INACTIVITY_MS);
-      ctl.inactivity.unref?.();
-    };
-    // Single startAll that joins the deduped in-flight run; no wall-clock cap
-    // (0) — the inactivity timer and socket-close handler bound it instead.
-    const drive = async (): Promise<void> => {
-      await ctl.sub?.ready;
-      const startRes = await ctl.sub?.request("services.startAll", undefined, 0);
-      if (startRes?.error) {
-        finish(() => reject(new CliError(`Error starting services: ${startRes.error}`)));
-        return;
-      }
-      const listRes = await ctl.sub?.request("services.list", undefined, 0);
-      const statuses = (listRes?.result as ServiceStatus[] | undefined) ?? [];
-      ctl.anyError = statuses.some((s) => s.state === "error");
-      finish(() => resolve());
-    };
-
-    ctl.sub = ipcSubscribe(sock, sid, ["service.stateChange", "log.lines"], {
-      onEvent: () => {
-        arm();
-      },
-      onClose: () => {
-        finish(() => reject(new CliError("error: daemon connection closed")));
-      },
-      onError: (err) => {
-        finish(() => reject(new CliError(`Error starting services: ${err}`)));
-      },
-    });
-    arm();
-    void drive().catch((error: unknown) => {
-      finish(() => reject(error instanceof Error ? error : new Error(String(error))));
-    });
-  });
-
-  if (ctl.anyError) {
-    throw new CliError(`Session ${sessionName}: one or more services failed to start.`);
-  }
-  process.stdout.write(`Session ${sessionName} started (detached).\n`);
-}
-
-async function upFlow(detach?: boolean): Promise<void> {
-  const configPath = discoverConfig(process.cwd());
-  if (!configPath) {
-    process.stderr.write("No config found. Run `zaps init` to create one.\n");
-    process.exit(1);
-  }
-
-  const invokeDir = process.cwd();
-  const loaded = await loadProjectContext(configPath, invokeDir, captureEnvironment()).catch(
-    (error: unknown) => renderCliError(error),
-  );
-
-  // Outside tmux we never get here: `upCommand` bootstraps a managed session
-  // First and only falls through once `$TMUX` is set.
-  const originPane = await currentPaneId();
-  const tmuxSession = await currentSession(originPane);
-
-  const zapsCommand = resolveCommand();
-  const sock = await ensureDaemon(resolveCommandArgv());
-
-  const res = await ipcRequest(sock, "session.create", {
-    configPath,
-    projectDir: invokeDir,
-    resolvedProjectDir: loaded.config.projectDir,
-    tmuxSession,
-    originPane,
-    tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
-    managedTmux: getEnv("ZAPS_MANAGED_TMUX") === "1",
-  });
-
-  if (res.error) {
-    process.stderr.write(`Error: ${res.error}\n`);
-    process.exit(1);
-  }
-
-  const session = res.result as {
-    id: string;
-    name: string;
-    paneMap: Record<string, string>;
-    focusPane?: string;
-  };
-
-  if (detach) {
-    // Start services without attaching the TUI; block until the run settles.
-    try {
-      await runDetachedStartAll(sock, session.id, session.name);
-    } catch (error) {
-      if (error instanceof CliError) {
-        renderCliError(error);
-      }
-      throw error;
-    }
-    return;
-  }
-
-  const tuiPaneId = session.paneMap["@tui"];
-  // Honor the daemon-computed focus (layout `focus: true`); defaults to @tui.
-  // Without a focused leaf this matches the old unconditional select behavior.
-  const focusPane = session.focusPane ?? tuiPaneId;
-
-  if (tuiPaneId === originPane) {
-    // The TUI render blocks until exit, so focus before handing the pane to Ink.
-    await selectPane(focusPane);
-    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true });
-  } else {
-    await sendKeys(
-      tuiPaneId,
-      `${zapsCommand} ui --session ${session.id} --socket ${sock} --start; exit`,
-    );
-    await selectPane(focusPane);
-  }
-}
-
-/**
- * Resolve this process's tmux context for `zaps` / `zaps up`. Outside tmux this
- * spawns (or re-attaches to, or refuses) the project's managed tmux session and
- * the caller exits with the returned code; inside tmux it proceeds unchanged.
- * A missing config fails here with the same message `upFlow` would print, so no
- * tmux session is ever created for a non-project directory.
- */
-async function bootstrapTmux(
-  detach: boolean,
-): Promise<{ proceed: true } | { exitCode: number; proceed: false }> {
-  const configPath = discoverConfig(process.cwd());
-  if (!configPath) {
-    process.stderr.write("No config found. Run `zaps init` to create one.\n");
-    process.exit(1);
-  }
-  const loaded = await loadProjectContext(configPath, process.cwd(), captureEnvironment()).catch(
-    (error: unknown) => renderCliError(error),
-  );
-  return ensureTmuxContext({ configPath, projectDir: loaded.config.projectDir, detach });
-}
-
-// --- Smart default: attach if running, else up ---
+let startupInvocation: { intent: StartupIntent; managedBootstrap: boolean } | undefined = undefined;
 
 const upCommand = command(
   {
     name: "up",
     flags: {
       ...sessionFlag,
+      ...startupFlags,
       detach: { type: Boolean, alias: "d", description: "Start without attaching TUI" },
     },
-    help: { description: "Create session, start services, attach TUI" },
+    help: { description: "Create or reuse a session and attach the TUI" },
   },
   async (parsed) => {
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("up", parsed._, 0);
-    const opts = { detach: parsed.flags.detach };
-    const sessionOpt = globalSession();
-    if (sessionOpt && isDaemonRunning()) {
-      const sock = socketPath();
-      const res = await ipcRequest(sock, "session.list");
-      if (!res.error) {
-        const sessions = res.result as SessionInfo[];
-        try {
-          const target = resolveTargetSession(sessions, sessionOpt);
-          const current = findSessionByDir(sessions, process.cwd());
-          if (current) {
-            if (target.id !== current.id) {
-              process.stderr.write(
-                `Session "${target.name}" is from a different project. Use \`zaps attach -s ${sessionOpt}\` instead.\n`,
-              );
-              process.exit(1);
-            }
-          }
-        } catch (error) {
-          if (error instanceof CliError) {
-            renderCliError(error);
-          }
-          throw error;
-        }
-      }
+    if (!startupInvocation) {
+      renderCliError(new StartupArgumentError("invalid_request", "Invalid startup arguments."));
     }
-
-    // Outside tmux, hand over to a zaps-managed tmux session (or refuse) before
-    // Anything else runs; inside tmux this falls straight through.
-    const bootstrap = await bootstrapTmux(Boolean(opts.detach));
-    if (!bootstrap.proceed) {
-      // `process.exitCode` + return, never `process.exit()`: the bootstrap has
-      // Just written user-facing lines, and exiting outright discards whatever
-      // Is still buffered on a piped stdout/stderr.
-      process.exitCode = bootstrap.exitCode;
-      return;
+    const managed: ManagedStartup | undefined = startupInvocation.managedBootstrap
+      ? { canRollback: true }
+      : undefined;
+    const report = managed ? managedBootstrapReporter(managed) : undefined;
+    if (managed && report) {
+      managed.onUiReady = () => report({ exitCode: 0 });
     }
-
-    // Smart default: if session already running for this project, attach
-    if (!opts.detach && isDaemonRunning()) {
-      const configPath = discoverConfig(process.cwd());
-      if (configPath) {
-        const sock = socketPath();
-        const res = await ipcRequest(sock, "session.list");
-        if (!res.error) {
-          const sessions = res.result as SessionInfo[];
-          const match = findSessionByDir(sessions, process.cwd());
-          if (match) {
-            await runTui({ sessionId: match.id, socketPath: sock });
-            return;
-          }
-        }
-      }
+    try {
+      await runStartup(startupInvocation.intent, globalSession(), managed);
+      report?.({ exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) });
+    } catch (error) {
+      renderStartupError(error, report ? (message) => report({ exitCode: 1, message }) : undefined);
     }
-
-    await upFlow(opts.detach);
   },
 );
 
@@ -639,7 +318,7 @@ const lsCommand = command(
     const res = await requestDaemon(sock, "session.list").catch((error: unknown) => {
       if (error instanceof CliError && error.message === DAEMON_NOT_RUNNING) {
         if (format !== "text") {
-          writeData([] as SessionInfo[], format);
+          writeData([], format);
         } else {
           process.stdout.write(`${DAEMON_NOT_RUNNING}\n`);
         }
@@ -654,7 +333,7 @@ const lsCommand = command(
       process.stderr.write(`Error: ${res.error}\n`);
       process.exit(1);
     }
-    const sessions = res.result as SessionInfo[];
+    const sessions = parseSessionList(res.result);
     if (format !== "text") {
       writeData(sessions, format);
       return;
@@ -1158,23 +837,18 @@ const attachCommand = command(
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("attach", parsed._, 0);
 
-    const sock = socketPath();
-    const res = await requestDaemon(sock, "session.list").catch((error: unknown) =>
-      renderCliError(error),
-    );
-    if (res.error) {
-      process.stderr.write(`Error: ${res.error}\n`);
-      process.exit(1);
-    }
-
-    const sessions = res.result as SessionInfo[];
-    if (sessions.length === 0) {
-      process.stderr.write("No active sessions.\n");
-      process.exit(1);
-    }
-
     try {
+      requireUiTerminal();
+      const sock = socketPath();
+      const sessions = await listStartupSessions(sock);
+      if (sessions.length === 0) {
+        throw new CliError("No active sessions.");
+      }
       const targetSession = resolveTargetSession(sessions, globalSession());
+      if (targetSession.backend === "shell") {
+        await runTui({ sessionId: targetSession.id, socketPath: sock });
+        return;
+      }
       const conflict = await attachConflict(targetSession);
       if (conflict) {
         process.stderr.write(`${conflict}\n`);
@@ -1194,10 +868,7 @@ const attachCommand = command(
       }
       await runTui({ sessionId: targetSession.id, socketPath: sock });
     } catch (error) {
-      if (error instanceof CliError) {
-        renderCliError(error);
-      }
-      throw error;
+      renderStartupError(error);
     }
   },
 );
@@ -1273,10 +944,20 @@ const execServiceCommand = command(
   {
     name: "exec-service",
     parameters: ["<name>"],
-    flags: { ...sessionFlag },
+    flags: {
+      ...sessionFlag,
+      executionId: { type: String, description: "Internal execution identity" },
+    },
     help: { description: "Execute a service via wrapper (internal)" },
   },
   async (parsed) => {
+    if (
+      process.argv.some((arg) => arg === "--execution-id" || arg.startsWith("--execution-id=")) &&
+      !parsed.flags.executionId
+    ) {
+      process.stderr.write("Error: --execution-id argument missing\n");
+      process.exit(1);
+    }
     adoptGlobalSession(parsed.flags.session);
     rejectExcessArgs("exec-service", parsed._, 1);
     const { name } = parsed._;
@@ -1286,7 +967,7 @@ const execServiceCommand = command(
       process.exit(1);
     }
     const { execService } = await import("./cli/exec-service.js");
-    await execService(name, session);
+    await execService(name, session, parsed.flags.executionId);
   },
 );
 
@@ -1618,6 +1299,7 @@ function runRootCli(argv: string[]): void {
       commands: rootCommands,
       flags: {
         ...sessionFlag,
+        ...startupFlags,
         version: { type: Boolean, alias: "V", description: "output the version number" },
       },
       help: {
@@ -1695,8 +1377,21 @@ async function runSentraSmokeCheck(): Promise<void> {
 if (process.env.ZAPS_SENTRA_SMOKE === "1") {
   void runSentraSmokeCheck();
 } else {
-  if (process.argv.length === 2) {
-    process.argv.push("up");
+  try {
+    const argv = process.argv.slice(2);
+    const managedBootstrap =
+      argv[0] === MANAGED_BOOTSTRAP_FLAG &&
+      argv[1] === "up" &&
+      argv[2] === "-B" &&
+      argv[3] === "tmux" &&
+      (argv.length === 4 || (argv.length === 5 && argv[4] === "-d")) &&
+      getEnv("ZAPS_MANAGED_TMUX") === "1";
+    const parsed = parseStartupArguments(managedBootstrap ? argv.slice(1) : argv);
+    if (parsed.kind === "startup") {
+      startupInvocation = { intent: parsed.intent, managedBootstrap };
+    }
+    runRootCli(consumeLeadingSessionFlag(parsed.argv));
+  } catch (error) {
+    renderStartupError(error);
   }
-  runRootCli(consumeLeadingSessionFlag(process.argv.slice(2)));
 }

@@ -17,6 +17,8 @@ interface Harness {
   out: string[];
   err: string[];
   tmuxCalls: string[][];
+  inner: { outcome?: { exitCode: number; message?: string; rollback?: true } };
+  recordOutcome(): void;
 }
 
 /**
@@ -27,6 +29,13 @@ function harness(overrides: Partial<BootstrapDeps> = {}): Harness {
   const out: string[] = [];
   const err: string[] = [];
   const tmuxCalls: string[][] = [];
+  let resultPath: string | undefined = undefined;
+  const inner: Harness["inner"] = { outcome: { exitCode: 0 } };
+  function recordOutcome(): void {
+    if (resultPath && inner.outcome) {
+      fs.writeFileSync(resultPath, JSON.stringify(inner.outcome));
+    }
+  }
   const deps: BootstrapDeps = {
     io: {
       stdout: (text) => out.push(text),
@@ -45,22 +54,35 @@ function harness(overrides: Partial<BootstrapDeps> = {}): Harness {
     },
     runTmux: vi.fn(async (args: string[]) => {
       tmuxCalls.push(args);
+      if (args[2] === "respawn-pane") {
+        recordOutcome();
+      }
       return 0;
+    }),
+    createTmux: vi.fn(async (args: string[]) => {
+      tmuxCalls.push(args);
+      const snapshot = args.find((arg) => arg.startsWith("ZAPS_ENVIRONMENT_SNAPSHOT="));
+      if (snapshot) {
+        resultPath = path.join(
+          path.dirname(snapshot.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length)),
+          "result.json",
+        );
+      }
+      return "$3|%3|42";
+    }),
+    startTmuxClient: vi.fn((args: string[]) => {
+      tmuxCalls.push(args);
+      recordOutcome();
+      return { result: Promise.resolve(0), close: vi.fn() };
     }),
     daemonSession: vi.fn().mockResolvedValue(undefined),
     currentTmuxSession: vi.fn().mockResolvedValue(undefined),
     zapsArgv: () => ["/usr/bin/zaps"],
     size: () => ({ width: 200, height: 50 }),
     settleTimeoutMs: 200,
-    sessionVisibleTimeoutMs: 100,
     ...overrides,
   };
-  return { deps, out, err, tmuxCalls };
-}
-
-/** `hasSession`: false for the staleness probe, true once the session exists. */
-function sessionAppearsAfterCreate(h: Harness): void {
-  h.deps.tmux.hasSession = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+  return { deps, out, err, tmuxCalls, inner, recordOutcome };
 }
 
 async function run(h: Harness, detach = false): Promise<{ exitCode?: number; proceed: boolean }> {
@@ -229,39 +251,38 @@ describe("ensureTmuxContext — re-attach", () => {
   });
 });
 
-describe("ensureTmuxContext — attached create (F1)", () => {
-  it("creates the session in the foreground and mirrors tmux's exit code", async () => {
+describe("ensureTmuxContext — managed creation", () => {
+  it("configures the new host, then queues foreground attach before inner startup", async () => {
     const h = harness();
-    sessionAppearsAfterCreate(h);
-    h.deps.runTmux = vi.fn(async (args: string[]) => {
-      h.tmuxCalls.push(args);
-      return args[2] === "new-session" ? 7 : 0;
-    });
-    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 7 });
+    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 0 });
 
+    expect(h.tmuxCalls.map((args) => args[2])).toEqual([
+      "new-session",
+      "set-option",
+      "attach-session",
+    ]);
     const create = callFor(h, "new-session");
-    expect(create).toBeDefined();
-    expect(create?.slice(-3)).toEqual(["--", "/usr/bin/zaps", "up"]);
-    expect(create).toContain("ZAPS_MANAGED_TMUX=1");
-    expect(create).toContain("ZAPS_TMUX_SOCKET=zaps");
-    // Foreground: the child owns the terminal.
-    expect(vi.mocked(h.deps.runTmux).mock.calls[0][1]).toBe(true);
-  });
-
-  it("applies the managed options once the session shows up", async () => {
-    const h = harness();
-    sessionAppearsAfterCreate(h);
-    await run(h);
-    expect(h.tmuxCalls).toContainEqual([
-      "-L",
-      "zaps",
+    const name = create?.find((arg) => arg.startsWith("zaps-zaps-bootstrap-test-"));
+    expect(create).toContain("-d");
+    expect(create?.slice(create.indexOf("--"))).toEqual([
+      "--",
+      "/bin/sh",
+      "-c",
+      "while IFS= read -r line; do :; done",
+      ";",
       "set-option",
       "-t",
-      expect.stringMatching(/^=zaps-zaps-bootstrap-test-.*:$/u) as unknown as string,
+      `=${name}:`,
       "destroy-unattached",
       "off",
+      ";",
+      "set-option",
+      "-t",
+      `=${name}:`,
+      "@zaps-bootstrap-pending",
+      "on",
     ]);
-    expect(h.tmuxCalls).toContainEqual([
+    expect(h.tmuxCalls[1]).toEqual([
       "-L",
       "zaps",
       "set-option",
@@ -271,70 +292,152 @@ describe("ensureTmuxContext — attached create (F1)", () => {
       "remain-on-exit",
       "on",
     ]);
-  });
-
-  it("prints the detach hint after the foreground client exits (F2)", async () => {
-    const h = harness();
-    sessionAppearsAfterCreate(h);
-    await run(h);
-    expect(h.out.join("")).toContain("detached — services still running");
-  });
-
-  it("still exits with tmux's code when the session never appears", async () => {
-    // HasSession stays false: options are skipped, the result is unaffected.
-    const h = harness();
-    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 0 });
-  });
-});
-
-describe("ensureTmuxContext — detached create (F4)", () => {
-  it("creates bare, sets options, then respawns the pane with zaps", async () => {
-    const h = harness();
-    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
-
-    const verbs = h.tmuxCalls.map((args) => args.slice(2, 3).join(""));
-    expect(verbs).toEqual(["new-session", "set-option", "set-option", "respawn-pane"]);
-
-    const create = callFor(h, "new-session");
-    // No command: the pane options must land before zaps can exit.
-    expect(create).not.toContain("--");
-    expect(create).toContain("-d");
-    expect(create?.slice(4, 8)).toEqual(["-x", "200", "-y", "50"]);
-
-    const respawn = callFor(h, "respawn-pane");
-    expect(respawn).toEqual([
+    expect(callFor(h, "attach-session")).toEqual([
       "-L",
       "zaps",
+      "attach-session",
+      "-t",
+      "$3",
+      ";",
       "respawn-pane",
       "-k",
       "-t",
       "%3",
       "--",
       "/usr/bin/zaps",
+      "--managed-bootstrap",
       "up",
-      "-d",
+      "-B",
+      "tmux",
     ]);
-    expect(h.out.join("")).toContain("started (detached, managed tmux)");
   });
 
-  it("forwards the daemon-locating env into the session", async () => {
+  it("uses the actual client exit code after the inner UI is ready", async () => {
+    const h = harness();
+    h.deps.startTmuxClient = vi.fn(() => {
+      h.recordOutcome();
+      return { result: Promise.resolve(7), close: vi.fn() };
+    });
+    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 7 });
+    expect(callFor(h, "if-shell")).toBeUndefined();
+  });
+
+  it("returns a foreground conflict without waiting for the attached client", async () => {
+    const h = harness();
+    h.inner.outcome = { exitCode: 1, message: "backend_conflict: shell won", rollback: true };
+    let close: () => void = () => undefined;
+    const result = new Promise<number>((resolve) => {
+      close = () => resolve(0);
+    });
+    const stop = vi.fn(close);
+    h.deps.startTmuxClient = vi.fn(() => {
+      h.recordOutcome();
+      return { result, close: stop };
+    });
+    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("backend_conflict: shell won");
+    expect(h.out).toEqual([]);
+    expect(callFor(h, "if-shell")).toEqual([
+      "-L",
+      "zaps",
+      "if-shell",
+      "-F",
+      "-t",
+      "$3",
+      "#{==:#{pid},42}",
+      "kill-session -t '$3'",
+    ]);
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("closes only the foreground client when the create outcome is uncertain", async () => {
+    const h = harness();
+    h.inner.outcome = { exitCode: 1, message: "daemon connection closed" };
+    let close: () => void = () => undefined;
+    const result = new Promise<number>((resolve) => {
+      close = () => resolve(0);
+    });
+    const stop = vi.fn(close);
+    h.deps.startTmuxClient = vi.fn(() => {
+      h.recordOutcome();
+      return { result, close: stop };
+    });
+    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("daemon connection closed");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(h.deps.daemonSession).toHaveBeenCalledOnce();
+    expect(callFor(h, "if-shell")).toBeUndefined();
+  });
+
+  it("uses the recorded detached result when the dead pane status is unreadable", async () => {
+    const h = harness();
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1|");
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
+    expect(h.out.join("")).toContain("started (detached, managed tmux)");
+    expect(callFor(h, "respawn-pane")?.at(-1)).toBe("-d");
+  });
+
+  it("does not turn registered hook failure or unreadable status into success", async () => {
+    const h = harness();
+    h.inner.outcome = { exitCode: 1, message: "startup hook failed" };
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1|");
+    h.deps.daemonSession = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation(async () => ({
+        name: "app",
+        tmuxSession:
+          callFor(h, "new-session")?.find((arg) => arg.startsWith("zaps-zaps-bootstrap-test-")) ??
+          "",
+        managed: true,
+        tuiPane: "%3",
+      }));
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("startup hook failed");
+    expect(h.out).toEqual([]);
+    expect(callFor(h, "if-shell")).toBeUndefined();
+  });
+
+  it("preserves a registered host but fails when its dead pane has no status or handoff", async () => {
+    const h = harness();
+    h.inner.outcome = undefined;
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1|");
+    h.deps.daemonSession = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementation(async () => ({
+        name: "app",
+        tmuxSession:
+          callFor(h, "new-session")?.find((arg) => arg.startsWith("zaps-zaps-bootstrap-test-")) ??
+          "",
+        managed: true,
+        tuiPane: "%3",
+      }));
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("died before reporting a result");
+    expect(h.out).toEqual([]);
+    expect(callFor(h, "if-shell")).toBeUndefined();
+  });
+
+  it("forwards routing variables and removes the private handoff after completion", async () => {
     const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-bootstrap-runtime-"));
     vi.stubEnv("XDG_RUNTIME_DIR", runtimeDir);
     vi.stubEnv("ZAPS_SOCKET_PATH", "/tmp/custom.sock");
     const h = harness();
+    const create = h.deps.createTmux;
     let forwarded: Record<string, string> = {};
-    h.deps.runTmux = vi.fn(async (args: string[]) => {
-      h.tmuxCalls.push(args);
-      if (args[2] === "new-session") {
-        const entry = args.find((arg) => arg.startsWith("ZAPS_ENVIRONMENT_SNAPSHOT="));
-        const filePath = entry?.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length);
-        if (filePath) {
-          forwarded = z
-            .record(z.string(), z.string())
-            .parse(JSON.parse(fs.readFileSync(filePath, "utf8")));
-        }
+    let snapshot: string | undefined;
+    h.deps.createTmux = vi.fn(async (args: string[]) => {
+      const entry = args.find((arg) => arg.startsWith("ZAPS_ENVIRONMENT_SNAPSHOT="));
+      snapshot = entry?.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length);
+      if (snapshot) {
+        forwarded = z
+          .record(z.string(), z.string())
+          .parse(JSON.parse(fs.readFileSync(snapshot, "utf8")));
       }
-      return 0;
+      expect(args).toContain(`XDG_RUNTIME_DIR=${runtimeDir}`);
+      expect(args).toContain("ZAPS_SOCKET_PATH=/tmp/custom.sock");
+      return create(args);
     });
     try {
       await run(h, true);
@@ -342,87 +445,48 @@ describe("ensureTmuxContext — detached create (F4)", () => {
         XDG_RUNTIME_DIR: runtimeDir,
         ZAPS_SOCKET_PATH: "/tmp/custom.sock",
       });
+      expect(snapshot && fs.existsSync(path.dirname(snapshot))).toBe(false);
     } finally {
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }
   });
 
-  it("replays the inner output and propagates the exit code on failure", async () => {
+  it("replays pane output and propagates a known failure without a result", async () => {
     const h = harness();
-    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1|3|");
+    h.inner.outcome = undefined;
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1|3");
     h.deps.tmux.capturePane = vi.fn().mockResolvedValue("Error: bad config\n\n");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 3 });
     expect(h.err.join("")).toContain("Error: bad config");
-    // No orphan session left behind.
-    expect(h.deps.tmux.killSession).toHaveBeenCalledWith(
-      expect.stringContaining("zaps-zaps-bootstrap-test-"),
-    );
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 
-  it("kills the session and exits 1 when the inner run never settles", async () => {
-    // Pane still alive at the deadline: no exit code to propagate.
+  it("preserves the provisioned host when startup times out", async () => {
     const h = harness();
-    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("0||");
+    h.inner.outcome = undefined;
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("0|");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("Timed out waiting for");
-    expect(h.deps.tmux.killSession).toHaveBeenCalled();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 
-  it("reports a pane that died without a readable status", async () => {
-    const h = harness({ settleTimeoutMs: 5000 });
+  it("reports failure for a vanished pane with no result", async () => {
+    const h = harness();
+    h.inner.outcome = undefined;
     h.deps.tmux.displayMessage = vi.fn().mockRejectedValue(new Error("can't find pane"));
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("died before reporting a result");
   });
 
-  it("falls back to the daemon when the dead pane's status never lands", async () => {
-    // Reap-lag zombie: pane dead, status unreadable forever — but the daemon
-    // Registered the session, which only happens when the inner run succeeded.
-    const h = harness({
-      settleTimeoutMs: 5000,
-      daemonSession: vi.fn().mockResolvedValueOnce(undefined).mockResolvedValue({
-        name: "app",
-        tmuxSession: "zaps-app-x",
-        managed: true,
-        tuiPane: "%3",
-      }),
-    });
-    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1||");
-    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
-    expect(h.out.join("")).toContain("started (detached, managed tmux)");
-    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
-  });
-
-  it("still fails on an unreadable status when the daemon knows nothing", async () => {
-    // Pre-session failures never register a daemon session, so the fallback
-    // Cannot mask them.
-    const h = harness({ settleTimeoutMs: 5000 });
-    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("1||");
-    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
-    expect(h.err.join("")).toContain("died before reporting a result");
-    expect(h.deps.tmux.killSession).toHaveBeenCalled();
-  });
-
-  it("gives up when tmux cannot create the session", async () => {
+  it("does not attempt cleanup when creation never returned an owned host", async () => {
     const h = harness();
-    h.deps.runTmux = vi.fn(async (args: string[]) => {
-      h.tmuxCalls.push(args);
-      return args[2] === "new-session" ? 1 : 0;
-    });
+    h.deps.createTmux = vi.fn().mockRejectedValue(new Error("session already exists"));
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("Failed to create managed tmux session");
-    expect(h.tmuxCalls).toHaveLength(1);
+    expect(h.tmuxCalls).toHaveLength(0);
   });
 
-  it("cleans up when the session disappears before the pane can be read", async () => {
-    const h = harness();
-    h.deps.tmux.listPanes = vi.fn().mockResolvedValue([]);
-    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
-    expect(h.err.join("")).toContain("vanished before it could start");
-    expect(h.deps.tmux.killSession).toHaveBeenCalled();
-  });
-
-  it("cleans up when the pane cannot be respawned with zaps", async () => {
+  it("reports a failed respawn without inferring rollback authority", async () => {
     const h = harness();
     h.deps.runTmux = vi.fn(async (args: string[]) => {
       h.tmuxCalls.push(args);
@@ -430,7 +494,7 @@ describe("ensureTmuxContext — detached create (F4)", () => {
     });
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("Failed to start zaps in managed tmux session");
-    expect(h.deps.tmux.killSession).toHaveBeenCalled();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 });
 
@@ -438,11 +502,77 @@ describe("ensureTmuxContext — stale session (F9)", () => {
   it("kills the leftover session before creating a fresh one", async () => {
     const h = harness();
     h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi
+      .fn()
+      .mockResolvedValueOnce("$5|%5|42|")
+      .mockResolvedValue("1|0");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
-    expect(h.deps.tmux.killSession).toHaveBeenCalledWith(
-      expect.stringContaining("zaps-zaps-bootstrap-test-"),
-    );
-    expect(h.tmuxCalls[0][2]).toBe("new-session");
+    expect(h.tmuxCalls[0]).toEqual([
+      "-L",
+      "zaps",
+      "if-shell",
+      "-F",
+      "-t",
+      "$5",
+      "#{&&:#{==:#{pid},42},#{==:#{@zaps-bootstrap-pending},}}",
+      "kill-session -t '$5'",
+    ]);
+    expect(h.tmuxCalls[1][2]).toBe("new-session");
+  });
+
+  it("preserves an unmarked host registered after the initial daemon lookup", async () => {
+    let observedHost = false;
+    const owner: DaemonSessionView = {
+      name: "app",
+      tmuxSession: "zaps-zaps-bootstrap-test-registered",
+      managed: true,
+      tuiPane: "%5",
+    };
+    const lookup = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        expect(observedHost).toBe(true);
+        return owner;
+      });
+    const h = harness({ daemonSession: lookup });
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn(async (target: string) => {
+      observedHost = true;
+      owner.tmuxSession = target.slice(1, -1);
+      return "$5|%5|42|";
+    });
+
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(lookup).toHaveBeenNthCalledWith(2, CONFIG_PATH, PROJECT_DIR);
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
+    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unmarked host when the fresh ownership lookup fails", async () => {
+    const lookup = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("daemon disconnected"));
+    const h = harness({ daemonSession: lookup });
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("$5|%5|42|");
+
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(lookup).toHaveBeenNthCalledWith(2, CONFIG_PATH, PROJECT_DIR);
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
+    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves a pending host on retry even when the daemon list is empty", async () => {
+    const h = harness();
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("$5|%5|42|on");
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
   });
 
   it("never reaps a session the daemon still owns", async () => {

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useOverlay } from "#src/hooks/useOverlay.js";
+import { useZaps } from "#src/hooks/useZaps.js";
 
 import { FailedOutputBody } from "./FailedOutputBody.js";
 import type { FailedOutputState } from "./FailedOutputBody.js";
@@ -16,10 +17,7 @@ interface FailedOutputOverlayProps {
   taskName: string;
   /** Fetch the retained run buffer (Router injects `client.getTaskOutput`). */
   fetchOutput: (runId: string) => Promise<TaskOutputSnapshot>;
-  /** Escalate to a tmux popup; omitted when tmux/popup is unavailable. */
-  showPopup?: (title: string, lines: string[]) => Promise<void>;
-  /** `ui.failOutput === "popup"` → escalate immediately on open, then close. */
-  startInPopup?: boolean;
+  showPopup: (runId: string) => void;
   /** Called once on close (Esc → pop → unmount) to acknowledge the sticky toast. */
   onClose: () => void;
 }
@@ -36,16 +34,14 @@ function FailedOutputOverlay({
   taskName,
   fetchOutput,
   showPopup,
-  startInPopup,
   onClose,
 }: FailedOutputOverlayProps) {
   const { cols, rows } = useDimensions();
-  const { isTop, pop } = useOverlay();
+  const { isTop } = useOverlay();
+  const { capabilities } = useZaps();
   const [state, setState] = useState<FailedOutputState>("loading");
   const [lines, setLines] = useState<string[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  // Same title the in-app body shows, so the escalated popup reads identically.
-  const popupTitle = `Failed: ${taskName}`;
 
   // Acknowledge exactly once on unmount, reading the latest onClose via a ref so
   // A changed callback identity can't retrigger the effect (or ack early).
@@ -53,7 +49,7 @@ function FailedOutputOverlay({
   onCloseRef.current = onClose;
   useEffect(() => () => onCloseRef.current(), []);
 
-  // Fetch the buffer on open. A cancelled flag guards against setState/pop after
+  // Fetch the buffer on open. A cancelled flag guards against setState after
   // Unmount (the overlay can be popped while the request is in flight).
   useEffect(() => {
     let cancelled = false;
@@ -67,16 +63,6 @@ function FailedOutputOverlay({
         // Anchor to the tail — the failure is usually at the end of the output.
         setSelectedIndex(Math.max(0, snapshot.lines.length - 1));
         setState("ready");
-        if (startInPopup && showPopup) {
-          try {
-            await showPopup(popupTitle, snapshot.lines);
-            if (!cancelled) {
-              pop();
-            }
-          } catch {
-            /* Popup failed — stay in the overlay showing the output. */
-          }
-        }
       } catch (error: unknown) {
         if (cancelled) {
           return;
@@ -88,18 +74,7 @@ function FailedOutputOverlay({
     return () => {
       cancelled = true;
     };
-  }, [runId, fetchOutput, showPopup, startInPopup, popupTitle, pop]);
-
-  const escalate = async () => {
-    if (!showPopup) {
-      return;
-    }
-    try {
-      await showPopup(popupTitle, lines);
-    } catch {
-      /* Popup unavailable / tmux error — stay in the overlay. */
-    }
-  };
+  }, [runId, fetchOutput]);
 
   useInput(
     (input, key) => {
@@ -111,8 +86,8 @@ function FailedOutputOverlay({
         setSelectedIndex((i) => Math.min(Math.max(0, lines.length - 1), i + 1));
         return;
       }
-      if (input === "p") {
-        void escalate();
+      if (input === "p" && state === "ready" && capabilities.popups) {
+        showPopup(runId);
       }
     },
     { isActive: isTop(FAILED_OUTPUT_ID) },
@@ -143,7 +118,7 @@ function FailedOutputOverlay({
         lines={lines}
         selectedIndex={selectedIndex}
         maxHeight={maxHeight}
-        canEscalate={Boolean(showPopup)}
+        canEscalate={state === "ready" && capabilities.popups}
       />
     </Box>
   );

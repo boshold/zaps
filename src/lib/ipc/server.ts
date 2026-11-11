@@ -2,6 +2,7 @@ import fs from "node:fs";
 import net from "node:net";
 
 import type { ResolvedConfig } from "#src/config/types.js";
+import type { TaskExecutionService } from "#src/daemon/task-execution.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 
 import { handleRequest } from "./handler.js";
@@ -12,11 +13,18 @@ export class IpcServer {
   private readonly socketPath: string;
   private readonly manager: ServiceManager;
   private readonly config: ResolvedConfig;
+  private readonly taskExecution?: TaskExecutionService;
 
-  public constructor(socketPath: string, manager: ServiceManager, config: ResolvedConfig) {
+  public constructor(
+    socketPath: string,
+    manager: ServiceManager,
+    config: ResolvedConfig,
+    taskExecution?: TaskExecutionService,
+  ) {
     this.socketPath = socketPath;
     this.manager = manager;
     this.config = config;
+    this.taskExecution = taskExecution;
   }
 
   public async start(): Promise<void> {
@@ -65,7 +73,13 @@ export class IpcServer {
       return;
     }
 
-    const response = await handleRequest(req, this.manager, this.config, socket);
+    const response = await handleRequest(
+      req,
+      this.manager,
+      this.config,
+      socket,
+      this.taskExecution,
+    );
     socket.write(`${JSON.stringify(response)}\n`);
   }
 

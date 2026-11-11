@@ -2,6 +2,7 @@ import { render } from "ink-testing-library";
 import { act, useEffect } from "react";
 import { describe, expect, it, vi } from "vitest";
 
+import { DaemonClient } from "../../../src/client/daemon-client.js";
 import { FailedOutputBody } from "../../../src/components/overlay/FailedOutputBody.js";
 import {
   FAILED_OUTPUT_ID,
@@ -10,6 +11,8 @@ import {
 import { OverlayHost } from "../../../src/components/overlay/OverlayHost.js";
 import type { TaskOutputSnapshot } from "../../../src/daemon/task-output-store.js";
 import { OverlayProvider, useOverlay } from "../../../src/hooks/useOverlay.js";
+import { AppProvider } from "../../../src/hooks/useZaps.js";
+import { fullCapabilities } from "../../_helpers/ui-capabilities.js";
 
 // FailedOutputOverlay renders position="absolute" (uncapturable by
 // Ink-testing-library), so its behavior is asserted via spies + the overlay
@@ -44,8 +47,7 @@ interface OverlayProps {
   runId?: string;
   taskName?: string;
   fetchOutput: (runId: string) => Promise<TaskOutputSnapshot>;
-  showPopup?: (title: string, lines: string[]) => Promise<void>;
-  startInPopup?: boolean;
+  showPopup?: (runId: string) => void;
   onClose?: () => void;
 }
 
@@ -59,8 +61,7 @@ function Pusher({ cfg }: { cfg: OverlayProps }) {
           runId={cfg.runId ?? "run_1"}
           taskName={cfg.taskName ?? "Build"}
           fetchOutput={cfg.fetchOutput}
-          showPopup={cfg.showPopup}
-          startInPopup={cfg.startInPopup}
+          showPopup={cfg.showPopup ?? (() => undefined)}
           onClose={cfg.onClose ?? (() => undefined)}
         />
       ),
@@ -70,13 +71,26 @@ function Pusher({ cfg }: { cfg: OverlayProps }) {
   return null;
 }
 
-function renderOverlay(cfg: OverlayProps) {
-  return render(
-    <OverlayProvider>
-      <Pusher cfg={cfg} />
-      <OverlayHost />
-    </OverlayProvider>,
+function OverlayHarness({ cfg }: { cfg: OverlayProps }) {
+  return (
+    <AppProvider
+      client={new DaemonClient("/unused", "test")}
+      paneMap={{}}
+      projectName="test"
+      tasks={[]}
+      servicesMeta={[]}
+      capabilities={fullCapabilities}
+    >
+      <OverlayProvider>
+        <Pusher cfg={cfg} />
+        <OverlayHost />
+      </OverlayProvider>
+    </AppProvider>
   );
+}
+
+function renderOverlay(cfg: OverlayProps) {
+  return render(<OverlayHarness cfg={cfg} />);
 }
 
 describe("FailedOutputBody", () => {
@@ -146,33 +160,23 @@ describe("FailedOutputOverlay", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("escalates to a popup on `p` with the prefixed title", async () => {
-    const showPopup = vi.fn(async () => undefined);
+  it("escalates to a popup on `p` with the retained run ID", async () => {
+    const showPopup = vi.fn();
     const { stdin } = renderOverlay({ fetchOutput: async () => snapshot(), showPopup });
     await settle();
     await press(stdin, "p");
-    expect(showPopup).toHaveBeenCalledWith("Failed: Build", ["compiling…", "boom: failed"]);
+    expect(showPopup).toHaveBeenCalledExactlyOnceWith("run_1");
   });
 
   it("does not re-fetch (or reset scroll) on a re-render with a stable fetchOutput", async () => {
     const fetchOutput = vi.fn(async () => snapshot());
     const cfg: OverlayProps = { fetchOutput };
-    const { rerender } = render(
-      <OverlayProvider>
-        <Pusher cfg={cfg} />
-        <OverlayHost />
-      </OverlayProvider>,
-    );
+    const { rerender } = renderOverlay(cfg);
     await settle();
     expect(fetchOutput).toHaveBeenCalledTimes(1);
     // A re-render (what a terminal RESIZE triggers via OverlayHost) must not
     // Re-run the load effect — the fetcher identity is stable.
-    rerender(
-      <OverlayProvider>
-        <Pusher cfg={cfg} />
-        <OverlayHost />
-      </OverlayProvider>,
-    );
+    rerender(<OverlayHarness cfg={cfg} />);
     await settle();
     expect(fetchOutput).toHaveBeenCalledTimes(1);
   });
@@ -187,16 +191,6 @@ describe("FailedOutputOverlay", () => {
     expect(fetchOutput).toHaveBeenCalledTimes(1);
     // Still closeable + acks.
     await press(stdin, "\x1B");
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("with startInPopup, escalates immediately then closes", async () => {
-    const showPopup = vi.fn(async () => undefined);
-    const onClose = vi.fn();
-    renderOverlay({ fetchOutput: async () => snapshot(), showPopup, startInPopup: true, onClose });
-    await settle();
-    expect(showPopup).toHaveBeenCalledTimes(1);
-    // Auto-escalation pops the overlay, which acks on unmount.
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

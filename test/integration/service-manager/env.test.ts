@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
-import { capturePane } from "#src/lib/tmux.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -37,13 +37,13 @@ describe.skipIf(!hasTmux())("env integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
-    // Verify env was passed by checking the command in pane capture
-    const output = await capturePane(paneMap.svc, 50);
-    expect(output).toContain("FOO=");
+    const response = await fetch(`http://127.0.0.1:${port}`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("bar-value");
   });
 
   it("dynamic env from service context", async () => {
@@ -62,14 +62,14 @@ describe.skipIf(!hasTmux())("env integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startAll();
 
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("api").state).toBe("ready");
 
-    // The api pane should show the env prefix with DB_PORT
-    const output = await capturePane(paneMap.api, 50);
-    expect(output).toContain("DB_PORT=");
+    const response = await fetch(`http://127.0.0.1:${apiPort}`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(String(dbPort));
   });
 });

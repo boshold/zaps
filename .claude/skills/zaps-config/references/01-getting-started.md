@@ -1,4 +1,41 @@
-# Getting Started
+# Getting started
+
+## Backend selection and startup
+
+New sessions use tmux by default. Select a backend at startup, not in project
+config or a saved preference:
+
+| Command                                  | New backend | UI                  |
+| ---------------------------------------- | ----------- | ------------------- |
+| `zaps` / `zaps up`                       | tmux        | Open                |
+| `zaps -b` / `zaps up --background`       | shell       | None                |
+| `zaps -B shell` / `zaps --backend shell` | shell       | Open directly       |
+| `zaps -b -B tmux`                        | tmux        | None                |
+| `zaps up -d`                             | tmux        | None; legacy detach |
+
+Existing sessions retain their backend without an explicit `-B`. An explicit
+mismatch returns `backend_conflict`; use `zaps down` before changing backends.
+`-b` and `-B` apply only to root startup or `up`; `-d` belongs after `up`.
+There is no automatic shell fallback when tmux is missing.
+
+Start shell in background, then open the same UI without restarting services:
+
+```sh
+zaps -b && zaps
+```
+
+`zaps attach` also opens an existing UI. Background startup waits for the normal
+startup/readiness result, and the daemon owns the processes after the caller or
+terminal exits. UI startup requires TTY stdin and stdout; background startup does
+not. `q`/`Ctrl-C` leaves services running; confirmed `Ctrl-D` or `zaps down` destroys
+the session. See [UI](10-ui.md) for managed-client detach limits.
+
+Linux/macOS need `ps` plus Linux `ss` or macOS `lsof` for PID-based readiness.
+Tmux >= 3.5 is required only for tmux sessions. Shell commands use noninteractive
+`sh`, without interactive input or a PTY; invoke an interpreter explicitly for
+Bash-specific scripts. Logs stay in daemon memory. UI quit preserves them, but
+session destruction or daemon failure loses them. Services do not survive daemon
+failure and are not adopted or automatically restored afterward.
 
 ## Config File Discovery
 

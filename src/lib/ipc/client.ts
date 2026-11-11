@@ -1,5 +1,7 @@
 import net from "node:net";
 
+import { z } from "zod";
+
 import { captureRequestContext } from "#src/lib/request-context.js";
 
 import type { DaemonEvent, IpcMessage, IpcRequest, IpcResponse } from "./protocol.js";
@@ -198,10 +200,21 @@ export function ipcSubscribe(
   const socket = net.createConnection(socketPath);
   let connected = false;
   const subscribeId = generateId();
+  let subscriptionAccepted = false;
+  let resolveSubscribed: (() => void) | undefined = undefined;
+  let rejectSubscribed: ((error: Error) => void) | undefined = undefined;
+  const subscribed = new Promise<void>((resolve, reject) => {
+    resolveSubscribed = resolve;
+    rejectSubscribed = reject;
+  });
+  // Legacy subscribers may only consume events.
+  void subscribed.catch(() => {
+    /* Rejection remains observable by handshake callers. */
+  });
 
   interface Pending {
     resolve: (res: IpcResponse) => void;
-    reject: (err: Error) => void;
+    reject: (error: unknown) => void;
     timer?: ReturnType<typeof setTimeout>;
   }
   const pending = new Map<string, Pending>();
@@ -254,35 +267,92 @@ export function ipcSubscribe(
           clearTimeout(waiter.timer);
         }
         pending.delete(msg.id);
-        waiter.resolve(msg);
+        try {
+          waiter.resolve(msg);
+        } catch (error) {
+          waiter.reject(error);
+        }
+        return;
+      }
+      if (msg.id === subscribeId) {
+        if (msg.error !== undefined) {
+          rejectSubscribed?.(new Error(msg.error));
+          onError?.(msg.error);
+        } else if (z.object({ subscribed: z.literal(true) }).safeParse(msg.result).success) {
+          subscriptionAccepted = true;
+          resolveSubscribed?.();
+          onSubscribed?.();
+        } else {
+          rejectSubscribed?.(new Error("Invalid subscribe acknowledgement"));
+        }
         return;
       }
       // An unmatched error response is a daemon error-ack (e.g. the subscribe
       // Ack for "Unknown session") — surface it instead of dropping it (E8).
       if (msg.error !== undefined) {
         onError?.(msg.error);
-      } else if (msg.id === subscribeId) {
-        onSubscribed?.();
       }
     }),
   );
 
-  socket.on("close", () => {
+  let closed = false;
+  const finish = (error: Error): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
     connected = false;
+    subscriptionAccepted = false;
     resolveReady?.();
-    rejectAllPending(new Error("daemon connection closed"));
+    rejectSubscribed?.(error);
+    rejectAllPending(error);
     onClose?.();
-  });
+  };
+  socket.on("close", () => finish(new Error("daemon connection closed")));
+  socket.on("error", (error) => finish(error));
 
-  socket.on("error", (e) => {
-    connected = false;
-    resolveReady?.();
-    rejectAllPending(e instanceof Error ? e : new Error(String(e)));
-    onClose?.();
-  });
+  function request(method: string, params?: unknown, timeoutMs?: number): Promise<IpcResponse>;
+  function request<T>(
+    method: string,
+    params: unknown,
+    timeoutMs: number | undefined,
+    accept: (response: IpcResponse) => T,
+  ): Promise<T>;
+  async function request<T>(
+    method: string,
+    params?: unknown,
+    timeoutMs = 30_000,
+    accept?: (response: IpcResponse) => T,
+  ): Promise<IpcResponse | T> {
+    const id = generateId();
+    const req: IpcRequest = { id, method, session, params, context: captureRequestContext() };
+    return new Promise((resolve, reject) => {
+      if (!connected) {
+        reject(new Error("Not connected"));
+        return;
+      }
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              pending.delete(id);
+              reject(new Error("Request timed out"));
+            }, timeoutMs)
+          : undefined;
+      pending.set(id, {
+        resolve: (response) => resolve(accept ? accept(response) : response),
+        reject,
+        timer,
+      });
+      socket.write(`${JSON.stringify(req)}\n`);
+    });
+  }
 
   return {
     ready,
+    subscribed,
+    get subscriptionAccepted(): boolean {
+      return subscriptionAccepted;
+    },
     send(method: string, params?: unknown): void {
       if (!connected) {
         return;
@@ -296,26 +366,9 @@ export function ipcSubscribe(
       };
       socket.write(`${JSON.stringify(req)}\n`);
     },
-    async request(method: string, params?: unknown, timeoutMs = 30_000): Promise<IpcResponse> {
-      const id = generateId();
-      const req: IpcRequest = { id, method, session, params, context: captureRequestContext() };
-      return new Promise((resolve, reject) => {
-        if (!connected) {
-          reject(new Error("Not connected"));
-          return;
-        }
-        const timer =
-          timeoutMs > 0
-            ? setTimeout(() => {
-                pending.delete(id);
-                reject(new Error("Request timed out"));
-              }, timeoutMs)
-            : undefined;
-        pending.set(id, { resolve, reject, timer });
-        socket.write(`${JSON.stringify(req)}\n`);
-      });
-    },
+    request,
     close(): void {
+      finish(new Error("daemon connection closed"));
       socket.destroy();
     },
     get connected(): boolean {
@@ -337,9 +390,19 @@ export interface SubscribeHandlers {
 export interface IpcSubscription {
   /** Resolves when the socket connects (or settles on close) — never rejects. */
   readonly ready: Promise<void>;
+  /** Resolves only after a successful subscribe ACK; rejects on failure/loss. */
+  readonly subscribed: Promise<void>;
+  readonly subscriptionAccepted: boolean;
   send(method: string, params?: unknown): void;
   /** `timeoutMs <= 0` disables the per-request timeout (inactivity-bounded use). */
   request(method: string, params?: unknown, timeoutMs?: number): Promise<IpcResponse>;
+  /** Accept the ACK synchronously before dispatching later socket frames. */
+  request<T>(
+    method: string,
+    params: unknown,
+    timeoutMs: number | undefined,
+    accept: (response: IpcResponse) => T,
+  ): Promise<T>;
   close(): void;
   readonly connected: boolean;
 }

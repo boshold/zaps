@@ -2,18 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 
-// Mock diffOutput to avoid importing the full manager
-vi.mock("#src/lib/service/manager.js", () => ({
-  diffOutput: (prev: string[], current: string[]) => {
-    if (prev.length === 0) {
-      return current.filter((l) => l !== "");
-    }
-    // Simple diff: find lines in current that are new
-    const prevSet = new Set(prev);
-    return current.filter((l) => l !== "" && !prevSet.has(l));
-  },
-}));
-
 const { LogMonitor } = await import("../../src/daemon/log-monitor.js");
 
 describe("LogMonitor", () => {
@@ -149,27 +137,17 @@ describe("LogMonitor", () => {
     monitor.stop("unknown");
   });
 
-  it("stop() clears inFlight and prevCaptures so maps stay bounded (D6)", async () => {
-    const { capturePane, monitor } = setup();
+  it("stop releases capture bookkeeping across repeated restarts (D6)", async () => {
+    const { capturePane, listener, monitor } = setup();
     capturePane.mockResolvedValue("line1");
-    const internals = monitor as unknown as {
-      timers: Map<string, unknown>;
-      inFlight: Map<string, unknown>;
-      prevCaptures: Map<string, unknown>;
-    };
-
-    // Repeated start/stop cycles must not grow any bookkeeping map.
     for (let i = 0; i < 5; i += 1) {
       monitor.start("%1", "%1", 100);
-      // eslint-disable-next-line no-await-in-loop -- drive one capture per cycle
       await vi.advanceTimersByTimeAsync(100);
-      expect(internals.inFlight.size).toBe(1);
-      expect(internals.prevCaptures.size).toBe(1);
-
+      expect(capturePane).toHaveBeenCalledTimes(i + 1);
+      expect(listener).toHaveBeenCalledTimes(i + 1);
       monitor.stop("%1");
-      expect(internals.timers.size).toBe(0);
-      expect(internals.inFlight.size).toBe(0);
-      expect(internals.prevCaptures.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(capturePane).toHaveBeenCalledTimes(i + 1);
     }
   });
 

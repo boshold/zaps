@@ -269,7 +269,7 @@ describe.skipIf(!hasTmux())("LayoutReflow.applyGeometry — real tmux", () => {
     expect(probed).toEqual(expectedSize);
   });
 
-  it("round-trips through windowLayout — the emitted layout string is what tmux now reports", async () => {
+  it("round-trips the applied layout through live pane geometry", async () => {
     const { paneMap } = await buildThreeColumnWindow(session);
 
     const layout: LayoutNode = {
@@ -283,11 +283,17 @@ describe.skipIf(!hasTmux())("LayoutReflow.applyGeometry — real tmux", () => {
     const reflow = makeReflow(layout, paneMap, session.name);
     await reflow.applyGeometry(new Set(["@tui", "api", "web"]));
 
-    const live = await windowLayout(session.name);
     const { width, height } = await getWindowSize(session.name);
     const expected = computeRects(layout, width, height);
-    const expectedOrder = ["@tui", "api", "web"].map((name) => expected.get(name));
-    expect(parseTmuxLayoutRects(live)).toEqual(expectedOrder);
+    const live = await listPaneGeoms(session.name);
+    expect(live.map(({ id }) => id)).toEqual([paneMap["@tui"], paneMap.api, paneMap.web]);
+    expect(live.map(({ rect }) => rect)).toEqual(
+      ["@tui", "api", "web"].map((name) => expected.get(name)),
+    );
+    const layoutOutput = await windowLayout(session.name);
+    expect(parseTmuxLayoutRects(layoutOutput)).toEqual(
+      ["@tui", "api", "web"].map((name) => expected.get(name)),
+    );
   });
 });
 

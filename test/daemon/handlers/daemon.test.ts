@@ -185,7 +185,7 @@ describe("daemon handlers", () => {
       };
       await daemonHandlers["session.create"](req, store);
       expect(store.create).toHaveBeenCalledWith(
-        expect.objectContaining({ tmuxSocket: null, managedTmux: false }),
+        expect.objectContaining({ backend: "tmux", tmuxSession: "main" }),
       );
     });
 
@@ -266,5 +266,82 @@ describe("daemon handlers", () => {
       const res = await daemonHandlers["session.destroy"](req, store);
       expect(res.error).toContain("Unknown session");
     });
+  });
+});
+
+describe("backend create boundary", () => {
+  const params = { backend: "shell", configPath: "/fake/.zaps.mts", projectDir: "/fake" };
+
+  it("publishes shell metadata without injecting tmux defaults", async () => {
+    const session = createMockSession({
+      backend: {
+        id: "shell",
+        capabilities: {
+          panes: false,
+          zoom: false,
+          popups: false,
+          taskPanes: false,
+          rawInput: false,
+          layout: false,
+        },
+      },
+      compatibilityProjection: () => ({ backend: "shell", paneMap: {} }),
+    });
+    const store = createMockStore([session]);
+    const response = await daemonHandlers["session.create"](
+      { id: "r", method: "session.create", params },
+      store,
+    );
+    expect(response.result).toMatchObject({ backend: "shell", paneMap: {} });
+    expect(response.result).not.toHaveProperty("focusPane");
+    expect(store.create).toHaveBeenCalledWith(expect.objectContaining(params));
+    expect(store.create).not.toHaveBeenCalledWith(expect.objectContaining({ tmuxSocket: null }));
+    const list = await daemonHandlers["session.list"]({ id: "l", method: "session.list" }, store);
+    expect(list.result).toEqual([expect.objectContaining({ backend: "shell" })]);
+    const status = await daemonHandlers["daemon.status"](
+      { id: "s", method: "daemon.status" },
+      store,
+    );
+    expect(status.result).toMatchObject({ supportedBackends: ["tmux", "shell"] });
+  });
+
+  it.each([
+    { tmuxSession: "main" },
+    { originPane: "%0" },
+    { tmuxSocket: null },
+    { managedTmux: false },
+  ])("rejects shell host fields %j before store", async (fields) => {
+    const store = createMockStore();
+    const response = await daemonHandlers["session.create"](
+      { id: "r", method: "session.create", params: { ...params, ...fields } },
+      store,
+    );
+    expect(response).toMatchObject({ errorCode: "invalid_request" });
+    expect(store.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["future", undefined, null])(
+    "rejects explicit unsupported backend %j",
+    async (backend) => {
+      const store = createMockStore();
+      const response = await daemonHandlers["session.create"](
+        { id: "r", method: "session.create", params: { ...params, backend } },
+        store,
+      );
+      expect(response).toMatchObject({ errorCode: "invalid_backend" });
+      expect(store.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects malformed context before creation", async () => {
+    const store = createMockStore();
+    const req = { id: "r", method: "session.create", params };
+    Object.defineProperty(req, "context", { value: { cwd: "relative", env: {} } });
+    const response = await daemonHandlers["session.create"](req, store);
+    expect(response).toMatchObject({
+      error: "invalid request context",
+      errorCode: "invalid_request",
+    });
+    expect(store.create).not.toHaveBeenCalled();
   });
 });

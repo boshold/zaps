@@ -2,23 +2,14 @@ import { EventEmitter } from "node:events";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
+import { TaskExecutionService } from "#src/daemon/task-execution.js";
+import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+
 import { handleRequest } from "../../../src/lib/ipc/handler.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import type { ServiceManager } from "../../../src/lib/service/manager.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
-
-vi.mock("../../../src/lib/exec.js", () => ({
-  execCommand: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../../../src/lib/service/env.js", () => ({
-  buildServiceContext: vi.fn(() => ({})),
-  resolveEnv: vi.fn(() => ({})),
-}));
-
-vi.mock("../../../src/lib/task/runner.js", () => ({
-  runTaskWithDeps: vi.fn().mockResolvedValue(true),
-}));
 
 function createManager(): ServiceManager {
   const emitter = new EventEmitter();
@@ -48,6 +39,39 @@ const baseConfig = {
   projectDir: "/test",
 };
 
+const owners: TaskExecutionService[] = [];
+function taskFixture(manager: ServiceManager, tasks: Record<string, TaskConfig>) {
+  const config: ResolvedConfig = {
+    ...baseConfig,
+    project: { ...baseConfig.project, tasks },
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+  const execute = vi
+    .fn<CommandExecutor["execute"]>()
+    .mockImplementation(async (_command, options) => {
+      options.onLine?.("output");
+      return { success: true, exitCode: 0, output: ["output"] };
+    });
+  const displayPopup = vi.fn();
+  const owner = new TaskExecutionService(
+    {
+      id: "legacy",
+      config,
+      env: {},
+      manager,
+      deps: {},
+      broadcast: () => {
+        /* Noop */
+      },
+    },
+    () => ({ execute }),
+  );
+  owners.push(owner);
+  return { config, owner, execute, displayPopup };
+}
+
 describe("handleRequest", () => {
   let manager: ServiceManager;
 
@@ -56,7 +80,8 @@ describe("handleRequest", () => {
     manager = createManager();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(owners.splice(0).map(async (owner) => owner.dispose()));
     vi.restoreAllMocks();
   });
 
@@ -178,42 +203,99 @@ describe("handleRequest", () => {
     expect(res.error).toContain("Unknown task");
   });
 
-  it("handles tasks.run success", async () => {
-    const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-      runTaskWithDeps: ReturnType<typeof vi.fn>;
-    };
-    runTaskWithDeps.mockResolvedValue(true);
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { test: { name: "Test", run: "npm test" } },
+  it("routes popup dependency graphs through the injected background service", async () => {
+    const { config, owner, execute, displayPopup } = taskFixture(manager, {
+      dep: { name: "Dep", popup: true, commands: "dep" },
+      root: {
+        name: "Root",
+        popup: true,
+        dependsOn: ["dep"],
+        commands: () => "root",
+        env: { LOCAL: "task" },
       },
-    };
+    });
     const socket = createMockSocket();
-    const req: IpcRequest = { id: "r13", method: "tasks.run", params: { key: "test" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
+    Object.assign(socket, { writable: true, destroyed: false });
+    const res = await handleRequest(
+      { id: "run", method: "tasks.run", params: { key: "root" } },
+      manager,
+      config,
+      socket as never,
+      owner,
+    );
+    expect(res.result).toMatchObject({ success: true, runId: expect.any(String) });
+    expect(execute.mock.calls.map(([command]) => command)).toEqual(["dep", "root"]);
+    expect(execute).toHaveBeenLastCalledWith(
+      "root",
+      expect.objectContaining({ env: { LOCAL: "task" } }),
+    );
+    expect(displayPopup).not.toHaveBeenCalled();
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"line"'));
+    expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"progress"'));
   });
 
-  it("handles popup task non-interactively", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
+  it("runs callback tasks and propagates prerequisite failure", async () => {
+    const callback = vi.fn(async () => {
+      /* Noop */
+    });
+    const { config, owner, execute } = taskFixture(manager, {
+      dep: { name: "Dep", popup: true, commands: "fail" },
+      root: { name: "Root", popup: true, dependsOn: ["dep"], run: callback },
+    });
+    execute.mockResolvedValue({ success: false, exitCode: 1, output: [] });
+    const request: IpcRequest = { id: "run", method: "tasks.run", params: { key: "root" } };
+    const res = await handleRequest(request, manager, config, createMockSocket() as never, owner);
+    expect(res.result).toMatchObject({ success: false });
+    expect(callback).not.toHaveBeenCalled();
+    execute.mockResolvedValue({ success: true, exitCode: 0, output: [] });
+    const success = await handleRequest(
+      request,
+      manager,
+      config,
+      createMockSocket() as never,
+      owner,
+    );
+    expect(success.result).toMatchObject({ success: true });
+    expect(callback).toHaveBeenCalledOnce();
+  });
 
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."] } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "r14", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
+  it("uses the captured task cwd for string commands and settles thrown execution failures", async () => {
+    const { config, owner, execute } = taskFixture(manager, {
+      root: { name: "Root", popup: true, commands: "root", cwd: "/custom" },
+    });
+    const request: IpcRequest = { id: "run", method: "tasks.run", params: { key: "root" } };
+    const success = await handleRequest(
+      request,
+      manager,
+      config,
+      createMockSocket() as never,
+      owner,
+    );
+    expect(success.result).toMatchObject({ success: true });
+    expect(execute).toHaveBeenCalledWith(
+      "root",
+      expect.objectContaining({ cwd: "/custom", env: {} }),
+    );
+    execute.mockRejectedValue(new Error("exec failed"));
+    const failed = await handleRequest(
+      request,
+      manager,
+      config,
+      createMockSocket() as never,
+      owner,
+    );
+    expect(failed.result).toMatchObject({ success: false });
+  });
+
+  it("rejects task execution without a session owner", async () => {
+    const { config } = taskFixture(manager, { root: { name: "Root", commands: "root" } });
+    const res = await handleRequest(
+      { id: "run", method: "tasks.run", params: { key: "root" } },
+      manager,
+      config,
+      createMockSocket() as never,
+    );
+    expect(res.error).toBe("Task execution requires a session");
   });
 
   it("catches handler errors", async () => {
@@ -224,49 +306,6 @@ describe("handleRequest", () => {
     const req: IpcRequest = { id: "r15", method: "services.list" };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.error).toBe("unexpected");
-  });
-
-  it("popup task with no commands returns success: false", async () => {
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: {
-          lint: {
-            name: "Lint",
-            popup: true,
-            run: async () => {
-              /* Noop */
-            },
-          },
-        },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "r16", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    // Popup=true + run (no commands) → isPopup=false, uses runTaskWithDeps
-    expect(res.result).toEqual({ success: true });
-  });
-
-  it("popup task with function commands resolves them", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: [() => "dynamic-lint"] } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "r17", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    expect(execCommand).toHaveBeenCalledWith("dynamic-lint", expect.anything());
   });
 
   it("services.details returns hasDocker true when docker config exists", async () => {
@@ -284,91 +323,6 @@ describe("handleRequest", () => {
     expect(result.hasDocker).toBe(true);
   });
 
-  it("popup task with no commands falls through to runTaskWithDeps", async () => {
-    // Popup=true + no commands → isPopup=false → uses runTaskWithDeps
-    const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-      runTaskWithDeps: ReturnType<typeof vi.fn>;
-    };
-    runTaskWithDeps.mockResolvedValue(false);
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: {
-          lint: {
-            name: "Lint",
-            popup: true,
-            run: async () => {
-              /* Noop */
-            },
-          },
-        },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "rnc1", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: false });
-  });
-
-  it("popup task with env passes resolved env to execCommand", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
-
-    const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
-      resolveEnv: ReturnType<typeof vi.fn>;
-    };
-    resolveEnv.mockReturnValue({ NODE_ENV: "test" });
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: {
-          lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } },
-        },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "re1", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    expect(execCommand).toHaveBeenCalledWith(
-      "eslint .",
-      expect.objectContaining({ env: { NODE_ENV: "test" } }),
-    );
-  });
-
-  it("tasks.run invokes onLine and onProgress callbacks", async () => {
-    const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-      runTaskWithDeps: ReturnType<typeof vi.fn>;
-    };
-    runTaskWithDeps.mockImplementation(
-      (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
-        deps.onLine?.("test", "output");
-        deps.onProgress?.("test", "success");
-        return true;
-      },
-    );
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { test: { name: "Test", commands: "npm test" } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "rcb1", method: "tasks.run", params: { key: "test" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    // Verify socket received events
-    expect(socket.write).toHaveBeenCalled();
-  });
-
   it("catches non-Error objects in handleRequest", async () => {
     vi.mocked(manager.getAllStatuses).mockImplementation(() => {
       throw "string error"; // eslint-disable-line no-throw-literal
@@ -377,93 +331,5 @@ describe("handleRequest", () => {
     const req: IpcRequest = { id: "rne1", method: "services.list" };
     const res = await handleRequest(req, manager, baseConfig as never, socket as never);
     expect(res.error).toBe("string error");
-  });
-
-  it("popup task with custom cwd uses task cwd", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."], cwd: "/custom" } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "rcwd1", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    expect(execCommand).toHaveBeenCalledWith(
-      "eslint .",
-      expect.objectContaining({ cwd: "/custom" }),
-    );
-  });
-
-  it("popup task with single string command (not array)", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: "eslint ." } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "rsc1", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    expect(execCommand).toHaveBeenCalledWith("eslint .", expect.anything());
-  });
-
-  it("popup task with empty resolvedEnv omits env from execCommand", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockResolvedValue(undefined);
-
-    const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
-      resolveEnv: ReturnType<typeof vi.fn>;
-    };
-    resolveEnv.mockReturnValue({});
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: ["eslint ."] } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "ree1", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: true });
-    const callOpts = execCommand.mock.calls[0][1] as Record<string, unknown>;
-    expect(callOpts).not.toHaveProperty("env");
-  });
-
-  it("popup task failure returns success: false", async () => {
-    const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-      execCommand: ReturnType<typeof vi.fn>;
-    };
-    execCommand.mockRejectedValue(new Error("exec failed"));
-
-    const config = {
-      ...baseConfig,
-      project: {
-        ...baseConfig.project,
-        tasks: { lint: { name: "Lint", popup: true, commands: ["fail"] } },
-      },
-    };
-    const socket = createMockSocket();
-    const req: IpcRequest = { id: "r18", method: "tasks.run", params: { key: "lint" } };
-    const res = await handleRequest(req, manager, config as never, socket as never);
-    expect(res.result).toEqual({ success: false });
   });
 });

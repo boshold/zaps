@@ -1,14 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { EventEmitter } from "node:events";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
-import type { ServiceManager } from "#src/lib/service/manager.js";
-import { sendKeys, splitPane } from "#src/lib/tmux.js";
+import { ServiceManager } from "#src/lib/service/manager.js";
+import { sendKeys } from "#src/lib/tmux.js";
 
+import { createTmuxSession } from "../../_helpers/session-backend.js";
 import { makeConfig } from "../helpers/config.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
@@ -22,17 +21,6 @@ import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
  * Printed to it must surface for EVERY member — including the non-first one —
  * Via both the shared buffer and a `log.lines` event per member name.
  */
-function fakeManager(): ServiceManager {
-  const emitter = new EventEmitter();
-  return Object.assign(emitter, {
-    startAll: async () => undefined,
-    stopAll: async () => undefined,
-    abortStartAll: () => undefined,
-    getAllStatuses: () => [],
-    removeAllListeners: () => emitter,
-  }) as unknown as ServiceManager;
-}
-
 describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
   let tmux: TestSession;
   let session: Session | undefined;
@@ -51,17 +39,9 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
 
   it("surfaces shared-pane output for every member, never the group name", async () => {
     tmux = await createTestSession();
-    const sharedPane = await splitPane(tmux.initialPaneId, "v");
-
-    // Alpha and beta are one combined group sharing `sharedPane`.
-    const paneMap: Record<string, string> = {
-      "@tui": tmux.initialPaneId,
-      alpha: sharedPane,
-      beta: sharedPane,
-    };
     const config = makeConfig({
       alpha: {
-        start: "true",
+        start: "node -e 'setInterval(()=>{},1000)'",
         _combined: { group: "combo", allServices: ["alpha", "beta"], isOwner: true },
       },
       beta: {
@@ -71,19 +51,19 @@ describe.skipIf(!hasTmux())("combined-pane log fan-out (D2)", () => {
       },
     });
 
-    const params: SessionCreateParams = {
+    const params = await createTmuxSession({
       configPath: "/test/.zaps.mts",
       projectDir: "/test",
       config,
-      paneMap,
       tmuxSession: tmux.name,
       tmuxWindow: tmux.initialPaneId,
       originPane: tmux.initialPaneId,
       tmuxSocket: testTmuxSocket(),
       managedTmux: false,
-      deps: tmuxDeps as unknown as SessionCreateParams["deps"],
-    };
-    session = new Session(params, fakeManager());
+      deps: tmuxDeps,
+    });
+    const sharedPane = params.backend.paneFor("alpha");
+    session = new Session(params, new ServiceManager(config, params.deps));
 
     // Both members must resolve to one shared buffer; the group never owns one.
     expect(session.logBuffers.get("alpha")).toBe(session.logBuffers.get("beta"));

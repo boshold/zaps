@@ -37,7 +37,7 @@ function renderDashboard(opts: {
         statuses={opts.statuses}
         selectedIndex={0}
         taskHistory={[]}
-        banner={opts.banner ? <DisconnectBanner /> : undefined}
+        banner={opts.banner ? <DisconnectBanner canQuitOffline /> : undefined}
       />
     </AppProvider>,
   );

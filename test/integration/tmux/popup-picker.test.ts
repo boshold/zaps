@@ -3,14 +3,23 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import {
+  TmuxTerminalLeaseRegistry,
+  TmuxTerminalOperations,
+} from "#src/lib/backend/tmux/operations.js";
+import { shellEscape } from "#src/lib/service/env.js";
+import {
   buildFzfScript,
   parseSelection,
   popupPickerAvailable,
   runPopupPicker,
 } from "#src/lib/task/popup-picker.js";
-import { tmuxSupportsPopup, tmuxVersion } from "#src/lib/tmux.js";
+import { tmuxFor } from "#src/lib/tmux.js";
 
-import { hasTmux } from "../helpers/skip.js";
+import { hasScriptPty, hasTmux, isCI } from "../helpers/skip.js";
+import { attachClient, createTestSession, testTmuxSocket } from "../helpers/tmux.js";
+
+const handle = tmuxFor(testTmuxSocket());
+const env = { PATH: process.env.PATH ?? "" };
 
 function hasFzf(): boolean {
   try {
@@ -21,23 +30,25 @@ function hasFzf(): boolean {
   }
 }
 
+const available = hasTmux() && hasFzf();
+
 describe.skipIf(!hasTmux())("popup-picker tmux integration", () => {
   it("detects the real tmux version and popup support", async () => {
-    const version = await tmuxVersion();
+    const version = await handle.tmuxVersion();
     expect(version).not.toBeNull();
     expect(version?.major).toBeGreaterThanOrEqual(1);
     // The harness's tmux is modern (>= 3.2), so popups are supported.
-    expect(await tmuxSupportsPopup()).toBe(true);
+    expect(await handle.tmuxSupportsPopup()).toBe(true);
   });
 
-  it.skipIf(!hasFzf())(
+  it.skipIf(!available)(
     "reports the popup picker as available when tmux + fzf are present",
     async () => {
-      expect(await popupPickerAvailable()).toBe(true);
+      expect(await popupPickerAvailable(handle, env)).toBe(true);
     },
   );
 
-  it.skipIf(!hasFzf())("real fzf emits the key-bearing line the parser recovers", () => {
+  it.skipIf(!available)("real fzf emits the key-bearing line the parser recovers", () => {
     // `--filter` is fzf's non-interactive mode: it prints matching original lines
     // (the same lines the popup would emit on selection). This proves the
     // `key\tname` / `--with-nth=2..` contract holds against the real binary.
@@ -55,13 +66,44 @@ describe.skipIf(!hasTmux())("popup-picker tmux integration", () => {
     expect(script).toContain("> '/tmp/out'");
   });
 
-  // The live `display-popup` launch is intentionally NOT covered here: tmux
-  // `display-popup` requires an attached client ("no current client" otherwise),
-  // Which the headless test harness (detached sessions, no terminal) cannot
-  // Provide. The temp-file passback is covered hermetically in the unit test
-  // (test/lib/task/popup-picker.test.ts) by stubbing `displayPopup`. Per
-  // P04-T05's note, the live-popup path is left to manual verification.
-  it.skip("launches fzf in a live display-popup and runs the selection", async () => {
-    await runPopupPicker([{ key: "noop", name: "No-op" }]);
-  });
+  it.skipIf(!available || !hasScriptPty() || isCI)(
+    "returns the selection from an owned popup",
+    async () => {
+      const session = await createTestSession();
+      const operations = new TmuxTerminalOperations(
+        handle,
+        session.name,
+        session.initialPaneId,
+        new TmuxTerminalLeaseRegistry(),
+      );
+      const client = await attachClient(session.name);
+      try {
+        const key = await operations.run(
+          {
+            owner: { kind: "ui", socketId: "popup-picker", sessionId: session.name },
+            env,
+            cwd: process.cwd(),
+            signal: new AbortController().signal,
+          },
+          async (operation) =>
+            runPopupPicker([{ key: "seed", name: "Seed database" }], {
+              operation,
+              buildScript: (input, output) =>
+                `fzf --filter=seed --with-nth=2.. < ${shellEscape(input)} > ${shellEscape(output)}`,
+            }),
+        );
+        expect(key).toBe("seed");
+      } finally {
+        try {
+          await operations.dispose();
+        } finally {
+          try {
+            client.cleanup();
+          } finally {
+            await session.cleanup();
+          }
+        }
+      }
+    },
+  );
 });

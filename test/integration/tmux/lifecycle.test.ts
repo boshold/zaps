@@ -16,7 +16,8 @@
  * Asserts pane count / paneMap / live geometry / daemon service state. All
  * Tests gate on `hasTmux()`; bounded timeouts so deadlocks FAIL fast.
  */
-import { EventEmitter } from "node:events";
+import { spawn } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,10 +27,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { computeBootSkip, loadConfig } from "#src/config/loader.js";
 import type { LayoutNode, ResolvedConfig, ServiceConfig } from "#src/config/types.js";
 import { Session } from "#src/daemon/session.js";
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
-import type { ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { computeRects, createLayout } from "#src/lib/tmux-layout.js";
 import {
@@ -43,48 +42,21 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
+import { createTmuxSession } from "../../_helpers/session-backend.js";
+import { withServiceRuntime } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
 
 // --- Helpers ---------------------------------------------------------------
 
-/**
- * Minimal `ChildProcess`-shaped fake for the detached-service test. Mirrors the
- * `FakeDetachedChild` in `test/lib/service/manager.test.ts` — same shape, kept
- * Inline here so the integration suite is self-contained.
- */
-class FakeDetachedChild extends EventEmitter {
-  public readonly stdout = new EventEmitter();
-  public readonly stderr = new EventEmitter();
-  public readonly pid: number;
-
-  public constructor(pid: number) {
-    super();
-    this.pid = pid;
-  }
-
-  // eslint-disable-next-line class-methods-use-this -- ChildProcess interface requires instance methods
-  public kill(): void {
-    /* No-op; the test doesn't terminate the fake child */
-  }
-
-  // eslint-disable-next-line class-methods-use-this -- ChildProcess interface requires instance methods
-  public unref(): void {
-    /* No-op */
-  }
-}
-
 interface LiveSession {
   testSession: TestSession;
   session: Session;
   manager: ServiceManager;
-  /**
-   * Fake detached children registered by `detachedSpawn`. The detached test
-   * Uses these to emit `exit` on stop (real `process.kill` doesn't reach the
-   * Fake; the test mirrors the unit-test pattern at `manager.test.ts:3167`).
-   */
-  detachedChildren: FakeDetachedChild[];
+  detachedChildren: ChildProcess[];
+  deps: ServiceManagerDeps;
   cleanup: () => Promise<void>;
 }
 
@@ -197,19 +169,9 @@ function makeResolvedConfig(
 async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
   const testSession = await createTestSession();
 
-  const skip = computeBootSkip(config);
-  const { paneMap } = await createLayout(
-    testSession.initialPaneId,
-    config.project.layout,
-    config.project.services,
-    config.groups,
-    { skip, tmux: tmuxFor(testTmuxSocket()) },
-  );
-
   const ref: { session: Session | null } = { session: null };
-  const detachedChildren: FakeDetachedChild[] = [];
-  let nextDetachedPid = 7000;
-  const deps: ServiceManagerDeps = {
+  const detachedChildren: ChildProcess[] = [];
+  const deps: ServiceManagerDeps = withServiceRuntime({
     sendKeys,
     sendCtrlC,
     panePid,
@@ -240,24 +202,11 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     },
     sessionId: "p04-t05",
     zapsCommand: "zaps",
-    // Detached services (E4) bypass the pane flow entirely — they spawn via
-    // `detachedSpawn` and use PID-based port detection. We inject a FAKE spawn
-    // So the detached-service test can run without touching the OS; the fake
-    // Child's `stdout`/`stderr` event emitters satisfy DetachedRunner's
-    // Interface. `detectPortsForPid` returns empty so the service goes ready
-    // Immediately without a port check.
-    detachedSpawn: ((file: string, argv: string[]) => {
-      void file;
-      void argv;
-      const child = new FakeDetachedChild(nextDetachedPid);
-      nextDetachedPid += 1;
+    detachedSpawn: (file: string, argv: string[], options: SpawnOptions) => {
+      const child = spawn(file, argv, options);
       detachedChildren.push(child);
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion -- spawn shape matches ChildProcess subset
-      return child as unknown as ReturnType<NonNullable<ServiceManagerDeps["detachedSpawn"]>>;
-    }) as unknown as ServiceManagerDeps["detachedSpawn"],
-    // Return a synthetic port so a detached service reaches `ready`
-    // Immediately without a real listener (mirrors the unit-test pattern).
-    detectPortsForPid: async () => [4000],
+      return child;
+    },
     reflowInsert: async (name: string) => {
       if (!ref.session) {
         throw new Error("reflowInsert: session not yet wired");
@@ -270,21 +219,20 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
       }
       await ref.session.reflowRemove(name);
     },
-  };
+  });
 
-  const manager = new ServiceManager(config, paneMap, deps, testSession.name);
-  const params: SessionCreateParams = {
+  const params = await createTmuxSession({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
-    paneMap,
     tmuxSession: testSession.name,
     tmuxWindow: testSession.initialPaneId,
     originPane: testSession.initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
     deps,
-  };
+  });
+  const manager = new ServiceManager(config, params.deps);
   const session = new Session(params, manager);
   ref.session = session;
 
@@ -293,21 +241,13 @@ async function buildLiveSession(config: ResolvedConfig): Promise<LiveSession> {
     session,
     manager,
     detachedChildren,
+    deps,
     async cleanup() {
-      // Before driving stopAll, signal every still-alive fake detached child
-      // To exit — DetachedRunner.stop awaits the real OS process to emit
-      // `exit`, which a fake never does. Without this, afterEach hangs.
-      for (const child of detachedChildren) {
-        if (child.listenerCount("exit") > 0) {
-          child.emit("exit", null, "SIGTERM");
-        }
-      }
       try {
-        await manager.stopAll();
-      } catch {
-        /* Best-effort */
+        await session.destroy();
+      } finally {
+        await testSession.cleanup();
       }
-      await testSession.cleanup();
     },
   };
 }
@@ -904,7 +844,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
         // Non-autostart, detached. P04-T02 forces lazy=false even if
         // Flags.start === false. We model that here directly (matches
         // What `resolveLazyPanes` would emit).
-        bgWorker: { start: "node w.js", detached: true, flags: { start: false } },
+        bgWorker: { start: idleCmd, detached: true, flags: { start: false } },
         tail: { start: idleCmd },
       },
       layout,
@@ -922,7 +862,7 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
     // Swap in a counter, assert it stayed zero across start/stop.
     let reflowInsertCalls = 0;
     let reflowRemoveCalls = 0;
-    const mgrDeps = (live.manager as unknown as { deps: ServiceManagerDeps }).deps;
+    const mgrDeps = live.deps;
     const origInsert = mgrDeps.reflowInsert;
     const origRemove = mgrDeps.reflowRemove;
     mgrDeps.reflowInsert = async (n: string) => {
@@ -934,28 +874,22 @@ describe.skipIf(!hasTmux())("Phase 4 lifecycle integration", () => {
       await origRemove(n);
     };
 
-    // (2) Start the detached service. The fake `detachedSpawn` returns a
-    // Pseudo-child whose stdout never emits; `detectPortsForPid` returns []
-    // → service goes to `ready` immediately. No pane allocation happens
-    // (manager's detached branch in `startServiceInternal`).
     await live.manager.startService("bgWorker");
     await waitForState(live.manager, "bgWorker", "ready");
     expect(live.session.paneMap.bgWorker).toBeUndefined();
     expect(await paneCount(live.testSession.name)).toBe(2);
     expect(reflowInsertCalls).toBe(0);
 
-    // (3) Stop the detached service. Same invariant — pane logic untouched.
-    // DetachedRunner.stop awaits the OS-level `exit` event; the fake doesn't
-    // Emit one on its own (mirrors `manager.test.ts:3167`'s pattern), so we
-    // Trigger it manually after kicking the stop.
-    const stopPromise = live.manager.stopService("bgWorker");
-    // Give the lock body a tick to enter `detachedRunner.stop` and arm
-    // `onStopped`; then emit exit to unblock it.
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    for (const child of live.detachedChildren) {
-      child.emit("exit", null, "SIGTERM");
+    const [child] = live.detachedChildren;
+    expect(child?.pid).toBeGreaterThan(0);
+    expect(child?.exitCode).toBeNull();
+    await live.manager.stopService("bgWorker");
+    await waitUntil(() => child?.exitCode !== null || child?.signalCode !== null);
+    if (child?.pid === undefined) {
+      throw new Error("Missing detached child PID");
     }
-    await stopPromise;
+    const stoppedPid = child.pid;
+    expect(() => process.kill(stoppedPid, 0)).toThrow();
     expect(live.manager.getStatus("bgWorker").state).toBe("stopped");
     expect(live.session.paneMap.bgWorker).toBeUndefined();
     expect(reflowRemoveCalls).toBe(0);

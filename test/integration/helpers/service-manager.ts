@@ -1,4 +1,13 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { createProcessInspection } from "#src/lib/backend/runtime/process-inspection.js";
+import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
+import { TmuxRuntime, WrapperRegistry } from "#src/lib/backend/tmux/runtime.js";
 import { detectPorts, getDescendantPids } from "#src/lib/port.js";
+import { shellEscape } from "#src/lib/service/env.js";
 import type { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import {
@@ -14,9 +23,69 @@ import {
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../../_helpers/service-runtime.js";
+
 import { testTmuxSocket } from "./tmux.js";
 
-export const tmuxDeps = {
+type LegacyDeps = Omit<ServiceManagerDeps, "runtime" | "inspectPorts">;
+function withServiceRuntime<T extends LegacyDeps>(
+  deps: T,
+): T & Pick<ServiceManagerDeps, "runtime" | "inspectPorts"> {
+  return Object.assign(deps, {
+    runtime: (targets: Record<string, string>) =>
+      new TmuxRuntime({
+        tmux: {
+          ...tmuxFor(testTmuxSocket()),
+          sendKeys: deps.sendKeys,
+          sendCtrlC: deps.sendCtrlC,
+          panePid: deps.panePid,
+          capturePane: async (target: string, lines?: number) =>
+            deps.capturePane(target, lines ?? 500),
+        },
+        processes: new ProcessRunner({
+          onLines: () => {
+            /* Runtime event sink. */
+          },
+          onExit: () => {
+            /* Runtime event sink. */
+          },
+          spawn: deps.detachedSpawn,
+          record: async (pid) => deps.recordDetached?.(pid),
+          unrecord: async (pid) => deps.removeDetached?.(pid),
+        }),
+        environmentFile: (env) => {
+          const file = path.join(os.tmpdir(), `zaps-test-env-${randomUUID()}`);
+          fs.writeFileSync(
+            file,
+            Object.entries(env)
+              .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(key))
+              .map(([key, value]) => `export ${key}=${shellEscape(value)}`)
+              .join("\n"),
+            { flag: "wx", mode: 0o600 },
+          );
+          return file;
+        },
+        removeEnvironmentFile: (file) => fs.rmSync(file, { force: true }),
+        wrappers: new WrapperRegistry(),
+        sessionId: deps.sessionId,
+        zapsCommand: deps.zapsCommand,
+        paneFor: (name) => {
+          const pane = targets[name];
+          if (!pane) {
+            throw new Error(`No pane: ${name}`);
+          }
+          return pane;
+        },
+        getDescendantPids: deps.getDescendantPids,
+      }),
+    inspectPorts: async (pid: number) =>
+      deps.detectPortsForPid
+        ? deps.detectPortsForPid(pid)
+        : createProcessInspection().detectPortsForPid(pid),
+  });
+}
+
+export const tmuxDeps = withServiceRuntime({
   sendKeys,
   sendCtrlC,
   panePid,
@@ -43,7 +112,7 @@ export const tmuxDeps = {
   reflowRemove: async () => {
     /* No-op */
   },
-};
+});
 
 export async function waitForState(
   mgr: ServiceManager,
@@ -71,3 +140,5 @@ export async function waitForState(
     mgr.on("stateChange", listener);
   });
 }
+
+export { withServiceRuntime };

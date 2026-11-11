@@ -4,7 +4,17 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { isValidElement } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { runTui } from "../src/cli/run-tui.js";
+import { App } from "../src/components/App.js";
+import { unavailableCapabilities } from "../src/lib/backend/wire.js";
+import type { IpcResponse } from "../src/lib/ipc/protocol.js";
+
+import { acceptMockResponse } from "./_helpers/accept-mock-response.js";
+import { deferred } from "./_helpers/deferred.js";
+import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
 
 // Mock all external dependencies before importing the module under test
 
@@ -154,31 +164,141 @@ describe("CLI — up command", () => {
     await mockSendKeys(tuiPaneId, "zaps ui --start; exit");
     expect(mockSendKeys).toHaveBeenCalledWith("%1", "zaps ui --start; exit");
   });
+});
 
-  it("outer flow calls runTui directly when @tui is origin pane", async () => {
-    // Simulate the outer flow: originPane == tuiPaneId → direct call (no sendKeys)
-    mockDiscoverConfig.mockReturnValue("/fake/.zaps.ts");
-    mockLoadConfig.mockResolvedValue({
-      project: {
-        name: "test-proj",
-        services: { api: { start: "npm dev" } },
+const mockIpcRequest = vi.fn();
+const mockIpcSubscribe = vi.fn();
+const mockLoadYoga = vi.fn();
+
+vi.mock("../src/lib/ipc/client.js", () => ({
+  ipcRequest: (...args: unknown[]) => mockIpcRequest(...args),
+  ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
+}));
+vi.mock("yoga-layout", () => ({ default: mockLoadYoga() }));
+
+const { render: renderInk } = await import("ink");
+
+describe("CLI — runTui", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadYoga.mockReturnValue({});
+    mockWaitUntilExit.mockResolvedValue();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("renders only after subscribe, status, and attach on the UI socket", async () => {
+    const subscribed = deferred<void>();
+    const advertised = deferred<IpcResponse>();
+    const attached = deferred<IpcResponse>();
+    const yogaReady = deferred<void>();
+    const yogaRead = deferred<void>();
+    mockLoadYoga.mockReturnValue(
+      new Proxy(
+        {},
+        {
+          get(_target, property): unknown {
+            if (property === "__yogaReady") {
+              yogaRead.resolve();
+              return yogaReady.promise;
+            }
+            throw new Error("Yoga not ready");
+          },
+        },
+      ),
+    );
+    const request = vi.fn(async (method: string) =>
+      method === "daemon.status" ? advertised.promise : attached.promise,
+    );
+    const close = vi.fn();
+    mockIpcSubscribe.mockReturnValue({
+      subscribed: subscribed.promise,
+      request: acceptMockResponse(request),
+      send: vi.fn(),
+      connected: true,
+      close,
+    });
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const snapshot = makeSessionSnapshot({
+      capabilities: { ...unavailableCapabilities, panes: true },
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [],
+          retryCount: 0,
+          actions: { focus: true, zoom: false, editOutput: false },
+        },
+      ],
+    });
+
+    const tui = runTui({ socketPath: "/test.sock", sessionId: "sess1" });
+    await vi.waitFor(() => expect(mockLoadYoga).toHaveBeenCalledOnce());
+    expect(mockIpcSubscribe).toHaveBeenCalledOnce();
+    expect(request).not.toHaveBeenCalled();
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    subscribed.resolve();
+    await vi.waitFor(() => expect(request).toHaveBeenCalledExactlyOnceWith("daemon.status"));
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    advertised.resolve({
+      id: "status",
+      result: { pid: 1, sessions: [], supportedBackends: ["tmux", "shell"] },
+    });
+    await vi.waitFor(() =>
+      expect(request).toHaveBeenNthCalledWith(
+        2,
+        "session.attach",
+        { ui: true },
+        undefined,
+        expect.any(Function),
+      ),
+    );
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+
+    attached.resolve({ id: "attach", result: snapshot });
+    await yogaRead.promise;
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(renderInk).not.toHaveBeenCalled();
+    yogaReady.resolve();
+    await tui;
+    expect(renderInk).toHaveBeenCalledOnce();
+    const rendered = vi.mocked(renderInk).mock.calls[0]?.[0];
+    expect(isValidElement(rendered) && rendered.type === App).toBe(true);
+    expect(rendered).toMatchObject({
+      props: {
+        backend: "tmux",
+        capabilities: snapshot.capabilities,
+        initialStatuses: snapshot.statuses,
       },
-      configPath: "/fake/.zaps.ts",
-      projectDir: "/fake",
     });
-    mockCreateLayout.mockResolvedValue({
-      paneMap: { "@tui": "%0", api: "%1" },
-      focusPane: "%0",
+    expect(vi.mocked(renderInk).mock.calls[0]?.[1]).toMatchObject({ exitOnCtrlC: false });
+    expect(mockIpcRequest).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("closes the subscription without painting when the initial attach fails", async () => {
+    const close = vi.fn();
+    mockIpcSubscribe.mockReturnValue({
+      subscribed: Promise.resolve(),
+      request: acceptMockResponse(async (method) =>
+        method === "daemon.status"
+          ? { id: "status", result: { pid: 1, sessions: [] } }
+          : { id: "attach", error: "attach failed" },
+      ),
+      send: vi.fn(),
+      connected: true,
+      close,
     });
-    mockSetEnv.mockResolvedValue();
-
-    const originPane = "%0";
-    const paneMap = { "@tui": "%0", api: "%1" };
-    const tuiPaneId = paneMap["@tui"];
-
-    // Same pane: should NOT use sendKeys
-    expect(tuiPaneId).toBe(originPane);
-    expect(mockSendKeys).not.toHaveBeenCalled();
+    const output = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await expect(runTui({ socketPath: "/test.sock", sessionId: "sess1" })).rejects.toThrow(
+      "attach failed",
+    );
+    expect(renderInk).not.toHaveBeenCalled();
+    expect(output).not.toHaveBeenCalledWith("\x1b[?1049h");
+    expect(close).toHaveBeenCalledOnce();
   });
 });
 
@@ -461,6 +581,31 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
   );
 
   it(
+    "parses the hidden service execution identity flag",
+    () => {
+      const id = "76131720-a79e-4716-8c58-c476a52cd319";
+      const valid = runCli(["exec-service", "api", "--execution-id", id, "-s", "parser-test"]);
+      expect(valid.stderr).toContain("Cannot connect to zaps daemon");
+      expect(valid.stderr).not.toContain("Unknown flag");
+      const missing = runCli(["exec-service", "api", "--execution-id"]);
+      expect(missing.status).not.toBe(0);
+      expect(missing.stderr).toMatch(/value|argument/i);
+      const excess = runCli([
+        "exec-service",
+        "api",
+        "extra",
+        "--execution-id",
+        id,
+        "-s",
+        "parser-test",
+      ]);
+      expect(excess.status).not.toBe(0);
+      expect(excess.stderr).toContain("too many arguments");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
     "prime-agent is listed exactly once when a coding-agent env var is set",
     () => {
       const res = runCli(["--help"], { CLAUDECODE: "1", CURSOR_TRACE_DIR: "/tmp" });
@@ -663,13 +808,82 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
         const bare = runCli([], {}, emptyDir);
         const explicit = runCli(["up"], {}, emptyDir);
         expect(bare.status).toBe(1);
-        expect(bare.stderr).toBe("No config found. Run `zaps init` to create one.\n");
+        expect(bare.stderr).toContain("invalid_request: The UI requires interactive terminal");
+        expect(bare.stderr).toContain("zaps -b");
         expect(explicit.status).toBe(bare.status);
         expect(explicit.stderr).toBe(bare.stderr);
         expect(explicit.stdout).toBe(bare.stdout);
       } finally {
         fs.rmSync(emptyDir, { recursive: true, force: true });
       }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([
+    ["--help"],
+    ["up", "--help"],
+    ["up", "-dh"],
+    ["up", "-dsh"],
+    ["-b", "--help"],
+    ["help", "up"],
+  ])(
+    "documents startup options in %j",
+    (...argv) => {
+      const result = runCli(argv);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("-b, --background");
+      expect(result.stdout).toContain("-B, --backend");
+      expect(result.stdout.includes("-d, --detach")).toBe(argv.includes("up"));
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([
+    ["-b"],
+    ["--background"],
+    ["up", "-b"],
+    ["-s", "project", "-b", "up"],
+    ["--backend=tmux", "up", "-b"],
+    ["-b", "up", "-B", "shell", "--backend=shell"],
+    ["up", "--detach", "-B", "shell"],
+    ["up", "-ds", "project"],
+  ])(
+    "accepts headless startup %j",
+    (...argv) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-headless-"));
+      try {
+        const result = runCli(argv, {}, directory);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toBe("No config found. Run `zaps init` to create one.\n");
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([
+    { argv: ["-d"], error: "Unknown flag: --d" },
+    { argv: ["-d", "up"], error: "invalid_request" },
+    { argv: ["-b", "-d"], error: "invalid_request" },
+    { argv: ["up", "-b", "extra"], error: "too many arguments" },
+    { argv: ["up", "--", "-b"], error: "too many arguments" },
+    { argv: ["-B"], error: "requires a value" },
+    { argv: ["--backend", "other"], error: "invalid_backend" },
+    { argv: ["-B", "tmux", "up", "-B", "shell"], error: "Conflicting backend options" },
+    { argv: ["-b", "ps"], error: "invalid_request" },
+    { argv: ["attach", "-B", "shell"], error: "invalid_request" },
+    { argv: ["daemon", "status", "-b"], error: "invalid_request" },
+  ])(
+    "rejects startup arguments $argv before effects",
+    ({ argv, error }) => {
+      const before = fs.readdirSync(runtimeDir, { recursive: true });
+      const result = runCli(argv);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(error);
+      expect(result.stdout + result.stderr).not.toContain("\x1b");
+      expect(fs.readdirSync(runtimeDir, { recursive: true })).toEqual(before);
     },
     CLI_TIMEOUT,
   );

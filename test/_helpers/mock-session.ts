@@ -5,6 +5,7 @@ import { vi } from "vitest";
 
 import { LogBuffer } from "../../src/daemon/log-buffer.js";
 import type { SessionStore } from "../../src/daemon/server.js";
+import { compatibilityProjection } from "../../src/daemon/session.js";
 import type { Session } from "../../src/daemon/session.js";
 import { TaskOutputStore } from "../../src/daemon/task-output-store.js";
 import type { SentraDeps } from "../../src/lib/sentra/config.js";
@@ -17,6 +18,10 @@ import type { TmuxHandle } from "../../src/lib/tmux.js";
 const MOCK_PORT_STATE_PATH = path.join(os.tmpdir(), `zaps-mock-sentra-${process.pid}.json`);
 
 export interface MockSession {
+  backend: {
+    id: "tmux" | "shell";
+    capabilities: import("../../src/lib/backend/types.js").BackendCapabilities;
+  };
   id: string;
   name: string;
   configPath: string;
@@ -43,14 +48,18 @@ export interface MockSession {
   paneRunInfo: Map<string, PaneRunInfo>;
   taskOutput: TaskOutputStore;
   manager: {
-    getAllStatuses: ReturnType<typeof vi.fn>;
+    getAllStatuses: ReturnType<typeof vi.fn<() => Parameters<Session["projectStatus"]>[0][]>>;
     getStatus: ReturnType<typeof vi.fn>;
     startService: ReturnType<typeof vi.fn>;
     stopService: ReturnType<typeof vi.fn>;
     restartService: ReturnType<typeof vi.fn>;
     startAll: ReturnType<typeof vi.fn>;
     stopAll: ReturnType<typeof vi.fn>;
-    handleExecExited: ReturnType<typeof vi.fn>;
+    handleExecExited: ReturnType<
+      typeof vi.fn<
+        (service: string, code: number, signal: string | null, spawnError?: string) => void
+      >
+    >;
     on: ReturnType<typeof vi.fn>;
     emit: ReturnType<typeof vi.fn>;
   };
@@ -73,12 +82,26 @@ export interface MockSession {
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
   focusPane: string;
+  compatibilityProjection: Session["compatibilityProjection"];
+  projectStatuses: Session["projectStatuses"];
+  projectStatus: Session["projectStatus"];
 }
 
 export function createMockSession(overrides: Partial<MockSession> = {}): MockSession {
   const logBuffers = overrides.logBuffers ?? new Map([["api", new LogBuffer(100)]]);
   const subscribers = overrides.subscribers ?? new Set<unknown>();
   return {
+    backend: {
+      id: "tmux",
+      capabilities: {
+        panes: true,
+        zoom: true,
+        popups: true,
+        taskPanes: true,
+        rawInput: true,
+        layout: true,
+      },
+    },
     id: "abc123",
     name: "test-project",
     configPath: "/fake/.zaps.mts",
@@ -129,17 +152,56 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     subscribers,
     addSubscriber: vi.fn((socket: unknown) => subscribers.add(socket)),
     removeSubscriber: vi.fn((socket: unknown) => subscribers.delete(socket)),
+    compatibilityProjection() {
+      return compatibilityProjection({
+        kind: "tmux",
+        tmuxSession: this.tmuxSession,
+        tmuxWindow: "@1",
+        originPane: this.originPane,
+        tmuxSocket: this.tmuxSocket,
+        managedTmux: this.managedTmux,
+        paneMap: this.paneMap,
+        focusPane: this.focusPane,
+      });
+    },
+    projectStatus(status) {
+      return { ...status, actions: { focus: true, zoom: true, editOutput: true } };
+    },
+    projectStatuses() {
+      return this.manager
+        .getAllStatuses()
+        .map((status: Parameters<Session["projectStatus"]>[0]) => this.projectStatus(status));
+    },
     focusPane: "%0",
     createdAt: Date.now(),
     taskHistory: [],
     deps: overrides.deps ?? { zapsCommand: "zaps", sessionId: "abc123" },
     attachSnapshot: vi.fn(() => ({
+      backend: "tmux",
+      capabilities: {
+        panes: true,
+        zoom: true,
+        popups: true,
+        taskPanes: true,
+        rawInput: true,
+        layout: true,
+      },
+      managed: false,
+      configStale: false,
       id: "abc123",
       name: "test-project",
       paneMap: { "@tui": "%0", api: "%1" },
       tmuxSession: "test-tmux",
       originPane: "%0",
-      statuses: [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }],
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [3000],
+          retryCount: 0,
+          actions: { focus: true, zoom: true, editOutput: true },
+        },
+      ],
       logSnapshots: { api: [] },
       configPath: "/fake/.zaps.mts",
       projectDir: "/fake",

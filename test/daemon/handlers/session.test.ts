@@ -1,49 +1,184 @@
+import { Socket } from "node:net";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
+import type { UiBinding } from "#src/daemon/session.js";
+import { TaskExecutionService } from "#src/daemon/task-execution.js";
+import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
+import {
+  TmuxTerminalLeaseRegistry,
+  TmuxTerminalOperations,
+} from "#src/lib/backend/tmux/operations.js";
+import type { OperationTmux } from "#src/lib/backend/tmux/operations.js";
+import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
+import type {
+  BackendCapabilities,
+  PresentationSnapshot,
+  SessionBackend,
+  TerminalDriver,
+} from "#src/lib/backend/types.js";
+import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
+import { createServiceStatus } from "#src/lib/service/state.js";
 
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
 import type { IpcRequest } from "../../../src/lib/ipc/protocol.js";
 import { SENTRA_BLOCK, fakeSentra, fakeSentraDsn } from "../../_helpers/fake-sentra.js";
-import { createMockSession, createMockStore } from "../../_helpers/mock-session.js";
+import {
+  createMockSession as createBaseMockSession,
+  createMockStore,
+} from "../../_helpers/mock-session.js";
 import { createMockSocket } from "../../_helpers/mock-socket.js";
 
-vi.mock("../../../src/lib/exec.js", () => ({
-  execCommand: vi.fn().mockResolvedValue(undefined),
-}));
-
-vi.mock("../../../src/lib/service/env.js", () => ({
+vi.mock("../../../src/lib/service/env.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/lib/service/env.js")>()),
   buildServiceContext: vi.fn(() => ({})),
   resolveEnv: vi.fn(() => ({})),
 }));
 
-vi.mock("../../../src/lib/task/runner.js", () => ({
-  runTaskWithDeps: vi.fn().mockResolvedValue(true),
-}));
+function createMockSession(...args: Parameters<typeof createBaseMockSession>) {
+  const session = createBaseMockSession(...args);
+  const terminal = {
+    reconcileLayout: vi.fn<TerminalDriver["reconcileLayout"]>().mockResolvedValue(undefined),
+    focus: vi.fn<TerminalDriver["focus"]>().mockResolvedValue(undefined),
+    zoom: vi.fn<TerminalDriver["zoom"]>().mockResolvedValue(undefined),
+    editOutput: vi.fn<TerminalDriver["editOutput"]>().mockResolvedValue(undefined),
+    taskPicker: vi.fn<TerminalDriver["taskPicker"]>().mockResolvedValue(null),
+    taskOutput: vi.fn<TerminalDriver["taskOutput"]>().mockResolvedValue(undefined),
+    runTaskInPane: vi
+      .fn<TerminalDriver["runTaskInPane"]>()
+      .mockImplementation(async (spec, operation) => {
+        operation.signal.throwIfAborted();
+        session.panesByRun.set(spec.runId, spec.target === "pane" ? "%split" : "%win");
+        return {
+          id: spec.runId,
+          unitId: spec.execution.unitId,
+          generation: spec.execution.generation,
+        };
+      }),
+  } satisfies TerminalDriver;
+  return Object.assign(session, {
+    backend: { terminal, capabilities: { taskPanes: true } },
+    taskExecution: { accepting: true },
+  });
+}
 
-vi.mock("../../../src/lib/tmux.js", () => {
-  // Handlers reach tmux through `session.tmux`, so the factory returns the SAME
-  // Stub surface for the module exports and for `tmuxFor()` — assertions on the
-  // Named exports still observe every call.
-  const api = {
-    newWindow: vi.fn().mockResolvedValue("%win"),
-    splitPane: vi.fn().mockResolvedValue("%split"),
-    sendKeys: vi.fn().mockResolvedValue(undefined),
+const taskOwners: TaskExecutionService[] = [];
+
+function taskSession(tasks: Record<string, TaskConfig>) {
+  const session = createMockSession();
+  const config: ResolvedConfig = {
+    project: { name: "test", services: {}, tasks },
+    configPath: "/fake/.zaps.mts",
+    projectDir: "/fake",
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
   };
-  return { ...api, tmuxFor: vi.fn(() => api) };
-});
-
-// `run-in-pane.js` is now pure (joinTaskCommands/buildWrapperCommand) — used real.
+  const execute = vi.fn<CommandExecutor["execute"]>().mockImplementation(async (_command, opts) => {
+    opts.onLine?.("command output");
+    return { success: true, exitCode: 0, output: ["command output"] };
+  });
+  const displayPopup = vi.fn().mockResolvedValue(undefined);
+  const env = { TOKEN: "session" };
+  const broadcast = vi.fn<(event: DaemonEvent) => void>();
+  const owner = new TaskExecutionService(
+    {
+      id: session.id,
+      config,
+      env,
+      manager: {
+        startService: async () => ({ noop: false }),
+        restartService: async () => {
+          /* Noop */
+        },
+        stopService: async () => ({ noop: false }),
+        getAllStatuses: () => [createServiceStatus("api")],
+      },
+      deps: {},
+      backend: {
+        terminal: {
+          runConfiguredTask: async (request) => {
+            await displayPopup(request);
+            return { kind: "completed", exitCode: 0 };
+          },
+        },
+      },
+      broadcast,
+    },
+    () => ({ execute }),
+  );
+  taskOwners.push(owner);
+  return {
+    session: Object.assign(session, { config, env, taskExecution: owner, broadcast }),
+    owner,
+    execute,
+    displayPopup,
+  };
+}
 
 describe("session handlers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(taskOwners.splice(0).map(async (owner) => owner.dispose()));
     vi.restoreAllMocks();
   });
 
   describe("session.attach", () => {
+    it.each([undefined, {}, { ui: false }])(
+      "preserves snapshot-only attachment for %j",
+      async (params) => {
+        const bindUi = vi.fn();
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBeUndefined();
+        expect(session.attachSnapshot).toHaveBeenCalledOnce();
+        expect(bindUi).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([null, [], true, { ui: "true" }, { ui: true, client: "other" }])(
+      "rejects malformed attachment without effects: %j",
+      async (params) => {
+        const bindUi = vi.fn();
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBe("invalid_request");
+        expect(bindUi).not.toHaveBeenCalled();
+        expect(session.attachSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["invalid_request", "session_closing"])(
+      "rejects invalid binding before snapshot: %s",
+      async (message) => {
+        const bindUi = vi.fn(() => {
+          throw new Error(message);
+        });
+        const session = Object.assign(createMockSession(), { bindUi });
+        const res = await sessionHandlers["session.attach"](
+          { id: "a", method: "session.attach", session: session.id, params: { ui: true } },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.error).toBe(message);
+        expect(session.attachSnapshot).not.toHaveBeenCalled();
+      },
+    );
+
     it("returns attach snapshot", async () => {
       const session = createMockSession();
       const store = createMockStore([session]);
@@ -349,6 +484,71 @@ describe("session handlers", () => {
     });
   });
 
+  describe("services.rebuild", () => {
+    it.each([true, false])(
+      "rejects grouped rebuild before manager entry (owner=%s)",
+      async (isOwner) => {
+        const session = createMockSession();
+        session.config.project.services.api = {
+          docker: { service: "api", build: true },
+          _combined: { group: "infra", allServices: ["api", "db"], isOwner },
+        };
+        const manager = Object.assign(session.manager, { restartWithDockerOverrides: vi.fn() });
+        const configBefore = structuredClone(session.config.project.services);
+        const panesBefore = { ...session.paneMap };
+        const execBefore = new Map(session.execInfo);
+        const buffersBefore = new Map(session.logBuffers);
+        const store = createMockStore([session]);
+        for (const overrides of [{}, { build: true, forceRecreate: true }]) {
+          const res = await sessionHandlers["services.rebuild"](
+            {
+              id: "rebuild",
+              method: "services.rebuild",
+              session: session.id,
+              params: { name: "api", overrides },
+            },
+            store,
+            createMockSocket() as never,
+          );
+          expect(res).toEqual({
+            id: "rebuild",
+            errorCode: "unsupported_config",
+            error: "Rebuild is not supported for grouped Docker service 'api'; use plain restart.",
+          });
+        }
+        expect(manager.restartWithDockerOverrides).not.toHaveBeenCalled();
+        expect(manager.startService).not.toHaveBeenCalled();
+        expect(manager.stopService).not.toHaveBeenCalled();
+        expect(manager.restartService).not.toHaveBeenCalled();
+        expect(manager.emit).not.toHaveBeenCalled();
+        expect(session.config.project.services).toEqual(configBefore);
+        expect(session.paneMap).toEqual(panesBefore);
+        expect(session.execInfo).toEqual(execBefore);
+        expect(session.logBuffers).toEqual(buffersBefore);
+      },
+    );
+
+    it("retains standalone rebuild", async () => {
+      const session = createMockSession();
+      session.config.project.services.api = { docker: { service: "api" } };
+      const manager = Object.assign(session.manager, {
+        restartWithDockerOverrides: vi.fn().mockResolvedValue(undefined),
+      });
+      const res = await sessionHandlers["services.rebuild"](
+        {
+          id: "rebuild",
+          method: "services.rebuild",
+          session: session.id,
+          params: { name: "api", overrides: { build: true } },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toEqual({ rebuilt: "api" });
+      expect(manager.restartWithDockerOverrides).toHaveBeenCalledWith("api", { build: true });
+    });
+  });
+
   describe("services.restart", () => {
     it("restarts service", async () => {
       const session = createMockSession();
@@ -647,245 +847,119 @@ describe("session handlers", () => {
 
   describe("tasks.run", () => {
     it("returns error for unknown task", async () => {
-      const session = createMockSession();
-      session.config.project.tasks = {};
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r23",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "missing" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      const { session } = taskSession({});
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "missing" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
       expect(res.error).toContain("Unknown task");
     });
 
-    it("runs regular task via runTaskWithDeps", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockResolvedValue(true);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        build: { name: "Build", run: "npm run build" },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r24",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "build" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      const result = res.result as { success: boolean; runId: string };
-      expect(result.success).toBe(true);
-      // The run's id is returned for correlation, and threaded into the records.
-      expect(result.runId).toEqual(expect.any(String));
-      expect(session.pushTaskRecord).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: result.runId, result: "running", mode: "background" }),
-      );
-      expect(session.pushTaskRecord).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: result.runId, result: "success" }),
-      );
-      expect(session.broadcast).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: "task.start",
-          data: expect.objectContaining({ runId: result.runId }),
-        }),
-      );
-    });
-
-    it("runs popup task non-interactively", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-    });
-
-    it("runs popup task with function command", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: [() => "dynamic-cmd"] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25b",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith("dynamic-cmd", expect.anything());
-    });
-
-    it("returns success: false when popup task throws", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockRejectedValue(new Error("exec failed"));
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["fail"] },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25c",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: false });
-    });
-
-    it("runs task and invokes onLine/onProgress callbacks", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockImplementation(
-        (_key: string, deps: { onLine?: Function; onProgress?: Function }) => {
-          deps.onLine?.("build", "output line");
-          deps.onProgress?.("build", "success");
-          return true;
-        },
-      );
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        build: { name: "Build", commands: "npm run build" },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25f",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "build" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      // Verify socket received line and progress events
-      expect(socket.write).toHaveBeenCalled();
-      const writes = socket.write.mock.calls.map((c: string[]) => JSON.parse(c[0]));
-      expect(writes.some((w: { event?: string }) => w.event === "line")).toBe(true);
-      expect(writes.some((w: { event?: string }) => w.event === "progress")).toBe(true);
-    });
-
-    it("runs popup task with no commands uses runTaskWithDeps", async () => {
-      // Popup=true but no commands → isPopup=false → falls through to runTaskWithDeps
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      runTaskWithDeps.mockResolvedValue(false);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: {
-          name: "Lint",
-          popup: true,
-          run: async () => {
-            /* Noop */
+    it.each([false, true])("runs popup DAG in background with UI binding %s", async (bound) => {
+      const { session, execute, displayPopup, owner } = taskSession({
+        shared: { name: "Shared", popup: true, commands: "shared" },
+        nested: { name: "Nested", popup: true, commands: () => "nested", dependsOn: ["shared"] },
+        callback: {
+          name: "Callback",
+          dependsOn: ["shared"],
+          run: async (ctx) => {
+            ctx.stdout.write("callback output\n");
+            await ctx.exec("callback");
           },
         },
-      };
-      const store = createMockStore([session]);
+        root: { name: "Root", popup: true, commands: "root", dependsOn: ["nested", "callback"] },
+      });
       const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25e",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
+      Object.assign(socket, { writable: true, destroyed: false });
+      if (bound) {
+        session.subscribers.add(socket);
+      }
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(res.result).toMatchObject({ success: true, runId: expect.any(String) });
+      expect(execute.mock.calls.map(([command]) => command)).toEqual([
+        "shared",
+        "nested",
+        "callback",
+        "root",
+      ]);
+      expect(displayPopup).not.toHaveBeenCalled();
+      expect(owner.history).toEqual([
+        expect.objectContaining({ taskKey: "root", result: "success" }),
+      ]);
+      const runId = owner.history[0]?.runId ?? "missing";
+      expect(owner.output.get(runId)?.lines).toContain("callback output");
+      expect(session.broadcast.mock.calls.map(([event]) => event.event)).toEqual([
+        "task.start",
+        "task.complete",
+      ]);
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"line"'));
+      expect(socket.write).toHaveBeenCalledWith(expect.stringContaining('"event":"progress"'));
+    });
+
+    it("failed popup prerequisite suppresses root and completes once", async () => {
+      const { session, execute, owner } = taskSession({
+        dep: { name: "Dep", popup: true, commands: "fail" },
+        root: { name: "Root", popup: true, commands: "root", dependsOn: ["dep"] },
+      });
+      execute.mockResolvedValue({ success: false, exitCode: 1, output: [] });
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
       expect(res.result).toMatchObject({ success: false });
+      expect(execute.mock.calls.map(([command]) => command)).toEqual(["fail"]);
+      expect(owner.history).toEqual([
+        expect.objectContaining({ taskKey: "root", result: "error" }),
+      ]);
+      expect(
+        session.broadcast.mock.calls.filter(([event]) => event.event === "task.complete"),
+      ).toHaveLength(1);
     });
 
-    it("runs popup task with custom cwd", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."], cwd: "/custom" },
-      };
-      const store = createMockStore([session]);
+    it("closed request output sinks leave execution and retention intact", async () => {
+      const { session, owner } = taskSession({ root: { name: "Root", commands: "root" } });
       const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25cwd",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
-      expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith(
-        "eslint .",
-        expect.objectContaining({ cwd: "/custom" }),
+      Object.assign(socket, { writable: false, destroyed: true });
+      socket.write.mockImplementation(() => {
+        throw new Error("closed");
+      });
+      const res = await sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        socket as never,
       );
-    });
-
-    it("runs popup task with env", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-
-      const { resolveEnv } = (await import("../../../src/lib/service/env.js")) as unknown as {
-        resolveEnv: ReturnType<typeof vi.fn>;
-      };
-      resolveEnv.mockReturnValue({ NODE_ENV: "test" });
-
-      const session = createMockSession();
-      session.config.project.tasks = {
-        lint: { name: "Lint", popup: true, commands: ["eslint ."], env: { NODE_ENV: "test" } },
-      };
-      const store = createMockStore([session]);
-      const socket = createMockSocket();
-      const req: IpcRequest = {
-        id: "r25d",
-        method: "tasks.run",
-        session: session.id,
-        params: { key: "lint" },
-      };
-      const res = await sessionHandlers["tasks.run"](req, store, socket as never);
       expect(res.result).toMatchObject({ success: true });
-      expect(execCommand).toHaveBeenCalledWith(
-        "eslint .",
-        expect.objectContaining({ env: { NODE_ENV: "test" } }),
-      );
+      expect(socket.write).not.toHaveBeenCalled();
+      expect(owner.output.get(owner.history[0]?.runId ?? "missing")?.lines).toEqual([
+        "command output",
+      ]);
     });
   });
 
   describe("tasks.runInPane", () => {
+    it("runs only root commands even when dependencies are configured", async () => {
+      const session = createMockSession();
+      const dependency = vi.fn();
+      session.config.project.tasks = {
+        dep: { name: "Dep", run: dependency },
+        root: { name: "Root", commands: "echo root", dependsOn: ["dep"] },
+      };
+      const result = await sessionHandlers["tasks.runInPane"](
+        { id: "pane", method: "tasks.runInPane", session: session.id, params: { key: "root" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(result.result).toMatchObject({ runId: expect.any(String) });
+      expect([...session.paneRunInfo.values()].map((info) => info.command)).toEqual(["echo root"]);
+      expect(dependency).not.toHaveBeenCalled();
+    });
+
     it("returns unknown_task for a missing key", async () => {
       const session = createMockSession();
       session.config.project.tasks = {};
@@ -902,13 +976,6 @@ describe("session handlers", () => {
     });
 
     it("creates a new window by default and returns runId + paneId", async () => {
-      const { newWindow, splitPane, sendKeys } =
-        (await import("../../../src/lib/tmux.js")) as unknown as {
-          newWindow: ReturnType<typeof vi.fn>;
-          splitPane: ReturnType<typeof vi.fn>;
-          sendKeys: ReturnType<typeof vi.fn>;
-        };
-
       const session = createMockSession();
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
@@ -923,10 +990,23 @@ describe("session handlers", () => {
       const result = res.result as { runId: string; paneId: string };
       expect(result.runId).toEqual(expect.any(String));
       expect(result.paneId).toBe("%win");
-      expect(newWindow).toHaveBeenCalledWith("test-tmux");
-      expect(splitPane).not.toHaveBeenCalled();
-      // The launched command is the exec-task wrapper invocation for this run.
-      expect(sendKeys).toHaveBeenCalledWith("%win", `zaps -s abc123 exec-task ${result.runId}`);
+      expect(session.backend.terminal.runTaskInPane).toHaveBeenCalledExactlyOnceWith(
+        {
+          taskKey: "build",
+          runId: result.runId,
+          target: "window",
+          execution: {
+            unitId: "build",
+            generation: 0,
+            command: `zaps -s abc123 exec-task ${result.runId}`,
+            cwd: "/fake",
+            env: {},
+            placement: "default",
+            raw: false,
+          },
+        },
+        { id: result.runId, cwd: "/fake", env: {}, signal: expect.any(AbortSignal) },
+      );
       // Stores runId → paneId so the pane can later be addressed (T04).
       expect(session.panesByRun.get(result.runId)).toBe("%win");
       // Stashes the resolve info the wrapper fetches over IPC.
@@ -950,10 +1030,6 @@ describe("session handlers", () => {
     });
 
     it("splits a pane when target=pane", async () => {
-      const { splitPane } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        splitPane: ReturnType<typeof vi.fn>;
-      };
-
       const session = createMockSession();
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
@@ -966,17 +1042,15 @@ describe("session handlers", () => {
       };
       const res = await sessionHandlers["tasks.runInPane"](req, store, socket as never);
       expect((res.result as { paneId: string }).paneId).toBe("%split");
-      // Splits off the reserved TUI pane.
-      expect(splitPane).toHaveBeenCalledWith("%0", "v");
+      expect(session.backend.terminal.runTaskInPane).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ taskKey: "build", target: "pane" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
 
     it("returns tmux_failed when pane creation fails", async () => {
-      const { newWindow } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        newWindow: ReturnType<typeof vi.fn>;
-      };
-      newWindow.mockRejectedValueOnce(new Error("tmux down"));
-
       const session = createMockSession();
+      session.backend.terminal.runTaskInPane.mockRejectedValueOnce(new Error("tmux down"));
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -1012,13 +1086,12 @@ describe("session handlers", () => {
       expect(res.error).toContain("no shell commands");
     });
 
-    it("returns tmux_failed and finishes the run as error when sendKeys fails", async () => {
-      const { sendKeys } = (await import("../../../src/lib/tmux.js")) as unknown as {
-        sendKeys: ReturnType<typeof vi.fn>;
-      };
-      sendKeys.mockRejectedValueOnce(new Error("pane gone"));
-
+    it("returns tmux_failed and finishes the run as error when terminal launch fails", async () => {
       const session = createMockSession();
+      session.backend.terminal.runTaskInPane.mockImplementationOnce(async (spec) => {
+        session.panesByRun.set(spec.runId, "%win");
+        throw new Error("pane gone");
+      });
       session.config.project.tasks = { build: { name: "Build", commands: "echo hi" } };
       const store = createMockStore([session]);
       const socket = createMockSocket();
@@ -1219,10 +1292,67 @@ describe("session handlers", () => {
     });
   });
 
+  it("validates wrapper identity before consuming replacement metadata or reporting exits", async () => {
+    const session = createMockSession();
+    const store = createMockStore([session]);
+    const socket = createMockSocket();
+    const registry = serviceWrappers(session);
+    const oldId = "27eb6438-b454-42fb-97ef-210886924d5b";
+    const newId = "342ac78f-e03a-4c23-a39d-2372acbf2749";
+    const info = { command: "new command", cwd: "/test", env: { SECRET: "new" } };
+    const exited = vi.fn();
+    registry.register({ id: oldId, unitId: "dev", generation: 1 }, "dev", info, exited);
+    registry.register({ id: newId, unitId: "dev", generation: 2 }, "dev", info, exited);
+    for (const params of [
+      { service: "dev", executionId: oldId },
+      { service: "dev" },
+      { service: "other", executionId: newId },
+      { service: "dev", executionId: 123 },
+    ]) {
+      const request = { id: "stale", session: session.id, params };
+      const resolve = await sessionHandlers["exec-service.resolve"](
+        { ...request, method: "exec-service.resolve" },
+        store,
+        socket as never,
+      );
+      expect(resolve.error).toBeDefined();
+      await sessionHandlers["exec-service.exited"](
+        { ...request, method: "exec-service.exited", params: { ...params, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(exited).not.toHaveBeenCalled();
+    }
+    const request = {
+      id: "new",
+      session: session.id,
+      params: { service: "dev", executionId: newId },
+    };
+    const resolved = await sessionHandlers["exec-service.resolve"](
+      { ...request, method: "exec-service.resolve" },
+      store,
+      socket as never,
+    );
+    expect(resolved.result).toEqual(info);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await sessionHandlers["exec-service.exited"](
+        { ...request, method: "exec-service.exited", params: { ...request.params, code: 1 } },
+        store,
+        socket as never,
+      );
+      expect(result.result).toEqual({ ok: true });
+    }
+    expect(exited).toHaveBeenCalledTimes(1);
+  });
+
   describe("exec-service.resolve", () => {
     it("returns exec info and deletes it", async () => {
       const session = createMockSession();
-      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: { DB: "x" } });
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: { DB: "x" } },
+        vi.fn(),
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1252,7 +1382,11 @@ describe("session handlers", () => {
 
     it("returns error for second resolve (one-time delete)", async () => {
       const session = createMockSession();
-      session.execInfo.set("dev", { command: "pnpm dev", cwd: "/test", env: {} });
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        vi.fn(),
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1287,6 +1421,13 @@ describe("session handlers", () => {
   describe("exec-service.exited", () => {
     it("calls handleExecExited with correct args", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1302,6 +1443,13 @@ describe("session handlers", () => {
 
     it("defaults null signal when omitted", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1316,6 +1464,13 @@ describe("session handlers", () => {
 
     it("forwards spawnError to handleExecExited", async () => {
       const session = createMockSession();
+      serviceWrappers(session).registerLegacy(
+        "dev",
+        { command: "pnpm dev", cwd: "/test", env: {} },
+        (exit) => {
+          session.manager.handleExecExited("dev", exit.code, exit.signal ?? null, exit.spawnError);
+        },
+      );
       const store = createMockStore([session]);
       const socket = createMockSocket();
       const req: IpcRequest = {
@@ -1428,48 +1583,438 @@ describe("session handlers", () => {
       );
     });
 
-    it("injects the DSN into non-interactive popup runs", async () => {
-      const { execCommand } = (await import("../../../src/lib/exec.js")) as unknown as {
-        execCommand: ReturnType<typeof vi.fn>;
-      };
-      execCommand.mockResolvedValue(undefined);
-      const { session } = sentraSession();
-
+    it.each([true, false])("injects Sentra into background popup=%s runs", async (popup) => {
+      const { session, execute } = taskSession({
+        lint: { name: "Lint", popup, commands: "eslint .", sentra: true },
+      });
+      const sentra = fakeSentra();
+      session.config.project.sentra = SENTRA_BLOCK;
+      session.taskExecution = new TaskExecutionService(
+        {
+          id: session.id,
+          config: session.config,
+          env: session.env,
+          manager: {
+            startService: async () => ({ noop: false }),
+            restartService: async () => {
+              /* Noop */
+            },
+            stopService: async () => ({ noop: false }),
+            getAllStatuses: () => [createServiceStatus("api")],
+          },
+          deps: { sentra },
+          broadcast: (event) => {
+            session.broadcast(event);
+          },
+        },
+        () => ({ execute }),
+      );
+      taskOwners.push(session.taskExecution);
       await sessionHandlers["tasks.run"](
         { id: "s2", method: "tasks.run", session: session.id, params: { key: "lint" } },
         createMockStore([session]),
         createMockSocket() as never,
       );
-
-      expect(execCommand).toHaveBeenCalledWith(
+      expect(execute).toHaveBeenCalledWith(
         "eslint .",
         expect.objectContaining({
-          env: expect.objectContaining({
-            SENTRY_DSN: fakeSentraDsn("lint"),
-            SHARED: `sentra:${fakeSentraDsn("lint")}`,
-          }),
+          env: expect.objectContaining({ SENTRY_DSN: fakeSentraDsn("lint") }),
         }),
       );
     });
+  });
+});
 
-    it("passes sentra deps and config to background task runs", async () => {
-      const { runTaskWithDeps } = (await import("../../../src/lib/task/runner.js")) as {
-        runTaskWithDeps: ReturnType<typeof vi.fn>;
-      };
-      const { session, sentra } = sentraSession();
-
-      await sessionHandlers["tasks.run"](
-        { id: "s3", method: "tasks.run", session: session.id, params: { key: "e2e" } },
-        createMockStore([session]),
-        createMockSocket() as never,
-      );
-
-      expect(runTaskWithDeps).toHaveBeenCalledWith(
-        "e2e",
-        expect.objectContaining({ sentra, sentraConfig: SENTRA_BLOCK }),
-        expect.any(Set),
-        expect.any(Map),
-      );
+describe("terminal.action", () => {
+  function fixture() {
+    const socket = new Socket();
+    const session = createMockSession();
+    const binding = {
+      acknowledged: true,
+      socket,
+      sessionId: session.id,
+      socketId: "binding",
+      controller: new AbortController(),
+    };
+    const terminal = {
+      ...session.backend.terminal,
+      focus: vi.fn<TerminalDriver["focus"]>().mockResolvedValue(undefined),
+      zoom: vi.fn<TerminalDriver["zoom"]>().mockResolvedValue(undefined),
+      editOutput: vi.fn<TerminalDriver["editOutput"]>().mockResolvedValue(undefined),
+      taskPicker: vi.fn<TerminalDriver["taskPicker"]>().mockResolvedValue(null),
+      taskOutput: vi.fn<TerminalDriver["taskOutput"]>().mockResolvedValue(undefined),
+    } satisfies TerminalDriver;
+    const capabilities: Record<keyof BackendCapabilities, boolean> = {
+      panes: true,
+      zoom: true,
+      popups: true,
+      taskPanes: true,
+      rawInput: true,
+      layout: true,
+    };
+    const view = {
+      kind: "tmux",
+      tmuxSession: session.tmuxSession,
+      tmuxWindow: "window",
+      originPane: session.originPane,
+      tmuxSocket: session.tmuxSocket,
+      managedTmux: session.managedTmux,
+      paneMap: session.paneMap,
+    } satisfies PresentationSnapshot;
+    const backend = {
+      id: "tmux",
+      terminal,
+      capabilities,
+      getPresentation: vi.fn<SessionBackend["getPresentation"]>(() => view),
+    } satisfies Pick<SessionBackend, "id" | "terminal" | "capabilities" | "getPresentation">;
+    const full = Object.assign(session, {
+      env: { TOKEN: "service" },
+      taskExecution: { accepting: true },
+      getUiBinding: vi.fn<() => UiBinding | undefined>(() => binding),
+      backend,
     });
+    const store = createMockStore([full]);
+    const invoke = async (params: unknown, context?: IpcRequest["context"]) =>
+      sessionHandlers["terminal.action"](
+        { id: "terminal", method: "terminal.action", session: session.id, params, context },
+        store,
+        socket,
+      );
+    return { socket, binding, terminal, capabilities, full, invoke, view };
+  }
+
+  it.each([
+    { action: "focus", target: { kind: "pane", id: "%2" } },
+    { action: "zoom", target: { kind: "dashboard", client: "other" } },
+    { action: "editOutput", service: "api", editor: "bad" },
+    { action: "taskPicker", command: "bad" },
+    { action: "taskOutput", runId: "run", socket: "other" },
+    { action: "focus", target: { kind: "service", name: "unknown" } },
+    { action: "taskOutput", runId: "unknown" },
+  ])("rejects invalid targets/extra arguments %j", async (params) => {
+    const f = fixture();
+    expect(await f.invoke(params)).toMatchObject({ errorCode: "invalid_request" });
+    expect(f.terminal.focus).not.toHaveBeenCalled();
+    expect(f.terminal.taskOutput).not.toHaveBeenCalled();
+  });
+
+  it("requires the actual active binding and admission", async () => {
+    const f = fixture();
+    f.full.getUiBinding.mockReturnValueOnce(undefined);
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "invalid_request",
+    });
+    f.binding.acknowledged = false;
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "invalid_request",
+    });
+    f.binding.acknowledged = true;
+    f.binding.sessionId = "other";
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "invalid_request",
+    });
+    f.binding.sessionId = f.full.id;
+    f.binding.controller.abort();
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "invalid_request",
+    });
+    f.full.taskExecution.accepting = false;
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "session_closing",
+    });
+    expect(f.terminal.taskPicker).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported capabilities and absent presentations", async () => {
+    const f = fixture();
+    f.capabilities.popups = false;
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      errorCode: "unsupported_capability",
+    });
+    f.capabilities.zoom = false;
+    expect(await f.invoke({ action: "zoom", target: { kind: "dashboard" } })).toMatchObject({
+      errorCode: "unsupported_capability",
+    });
+    f.view.paneMap = {};
+    expect(
+      await f.invoke({ action: "focus", target: { kind: "service", name: "api" } }),
+    ).toMatchObject({ errorCode: "unsupported_capability" });
+  });
+
+  it.each(["taskPicker", "taskOutput"] as const)(
+    "supports popup-only %s after UI acknowledgement without service panes",
+    async (action) => {
+      const f = fixture();
+      Object.assign(f.capabilities, {
+        panes: false,
+        zoom: false,
+        taskPanes: false,
+        rawInput: false,
+        layout: false,
+      });
+      f.view.paneMap = {};
+      f.full.taskOutput.start("retained", "build", 1);
+      const params = action === "taskPicker" ? { action } : { action, runId: "retained" };
+      f.binding.acknowledged = false;
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "invalid_request" });
+      expect(f.terminal[action]).not.toHaveBeenCalled();
+      f.binding.acknowledged = true;
+      expect(await f.invoke(params)).toMatchObject({
+        result: action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
+      });
+      expect(f.terminal[action]).toHaveBeenCalledTimes(1);
+      expect(f.full.backend.getPresentation).not.toHaveBeenCalled();
+      if (action === "taskOutput") {
+        expect(await f.invoke({ action, runId: "unknown" })).toMatchObject({
+          errorCode: "invalid_request",
+        });
+        expect(f.terminal.taskOutput).toHaveBeenCalledTimes(1);
+      }
+      f.capabilities.popups = false;
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "unsupported_capability" });
+      expect(f.terminal[action]).toHaveBeenCalledTimes(1);
+      expect(f.full.manager.startService).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps pane controls unavailable with popup-only capabilities", async () => {
+    const f = fixture();
+    f.capabilities.panes = false;
+    for (const params of [
+      { action: "focus", target: { kind: "dashboard" } },
+      { action: "zoom", target: { kind: "dashboard" } },
+      { action: "editOutput", service: "api" },
+    ]) {
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "unsupported_capability" });
+    }
+    expect(f.terminal.focus).not.toHaveBeenCalled();
+    expect(f.terminal.zoom).not.toHaveBeenCalled();
+    expect(f.terminal.editOutput).not.toHaveBeenCalled();
+  });
+
+  it("preserves busy/unavailable and returns cancelled picker without running a task", async () => {
+    const f = fixture();
+    for (const code of ["terminal_busy", "backend_unavailable"] as const) {
+      f.terminal.taskPicker.mockRejectedValueOnce(new TerminalOperationError(code));
+      expect(await f.invoke({ action: "taskPicker" })).toMatchObject({ errorCode: code });
+    }
+    expect(await f.invoke({ action: "taskPicker" })).toMatchObject({
+      result: { action: "taskPicker", taskKey: null },
+    });
+    expect(f.full.manager.startService).not.toHaveBeenCalled();
+  });
+
+  it("keeps operation environment/cwd isolated from later service calls", async () => {
+    const f = fixture();
+    const context = {
+      cwd: "/caller",
+      env: { EDITOR: "editor --wait", PATH: "/caller/bin", TOKEN: "popup" },
+    };
+    expect(await f.invoke({ action: "editOutput", service: "api" }, context)).toMatchObject({
+      result: { action: "editOutput", done: true },
+    });
+    expect(f.terminal.editOutput).toHaveBeenCalledWith("api", {
+      id: "binding",
+      ...context,
+      signal: f.binding.controller.signal,
+    });
+    expect(f.full.env).toEqual({ TOKEN: "service" });
+  });
+
+  it("displays retained output without starting a new run", async () => {
+    const f = fixture();
+    f.full.taskOutput.start("run", "build", 1);
+    expect(await f.invoke({ action: "taskOutput", runId: "run" })).toMatchObject({
+      result: { action: "taskOutput", done: true },
+    });
+    expect(f.terminal.taskOutput).toHaveBeenCalledWith(
+      "run",
+      expect.objectContaining({ id: "binding" }),
+    );
+    expect(f.full.taskOutput.get("run")?.lines).toEqual([]);
+  });
+});
+
+describe("bound host detach", () => {
+  function fixture(managedTmux = true, shell = false) {
+    const socket = new Socket();
+    const session = createMockSession();
+    const binding: UiBinding = {
+      acknowledged: true,
+      socket,
+      sessionId: session.id,
+      socketId: "detach",
+      controller: new AbortController(),
+    };
+    const detachHost = vi.fn(async () => undefined);
+    const full = Object.assign(session, {
+      env: {},
+      getUiBinding: vi.fn<() => UiBinding | undefined>(() => binding),
+      removeSubscriber: vi.fn(),
+      backend: {
+        terminal: shell ? undefined : { detachHost },
+        getPresentation: () => (shell ? { kind: "shell" } : { kind: "tmux", managedTmux }),
+      },
+    });
+    const invoke = async (params: unknown = { detachHost: true }) =>
+      sessionHandlers["session.detach"](
+        { id: "detach", method: "session.detach", session: session.id, params },
+        createMockStore([full]),
+        socket,
+      );
+    return { full, socket, binding, detachHost, invoke };
+  }
+
+  it.each([undefined, { detachHost: false }])(
+    "keeps unsubscribe-only behavior %j",
+    async (params) => {
+      const f = fixture();
+      expect(await f.invoke(params ?? {})).toMatchObject({ result: { detached: true } });
+      expect(f.detachHost).not.toHaveBeenCalled();
+      expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+    },
+  );
+
+  it("awaits host detach before releasing the binding", async () => {
+    const f = fixture();
+    f.detachHost.mockImplementation(async () => {
+      expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+    });
+    expect(await f.invoke()).toMatchObject({ result: { detached: true } });
+    expect(f.detachHost).toHaveBeenCalledTimes(1);
+    expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+  });
+
+  it.each([
+    "unbound",
+    "unacknowledged",
+    "closing",
+    "closed",
+    "caller-target",
+    "failure",
+    "late-close",
+  ])("preserves subscription on %s", async (mode) => {
+    const f = fixture();
+    if (mode === "unbound") {
+      f.full.getUiBinding.mockReturnValue(undefined);
+    }
+    if (mode === "unacknowledged") {
+      f.binding.acknowledged = false;
+    }
+    if (mode === "closing") {
+      f.full.taskExecution.accepting = false;
+    }
+    if (mode === "closed") {
+      f.socket.destroy();
+    }
+    if (mode === "failure") {
+      f.detachHost.mockRejectedValue(new Error("ambiguous"));
+    }
+    if (mode === "late-close") {
+      f.detachHost.mockImplementation(async () => {
+        f.binding.controller.abort();
+      });
+    }
+    const response = await f.invoke(
+      mode === "caller-target" ? { detachHost: true, client: "other" } : { detachHost: true },
+    );
+    expect(response.error).toBeDefined();
+    expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+  });
+
+  it.each(["success", "moved", "close-failed"])(
+    "task popup detach %s preserves binding until success",
+    async (mode) => {
+      const f = fixture();
+      const client = {
+        name: "/dev/pts/42",
+        pid: 42,
+        sessionId: "$1",
+        sessionName: "owned",
+        windowId: "@2",
+      };
+      let finishPopup: () => void = vi.fn();
+      const popup = new Promise<void>((resolve) => {
+        finishPopup = resolve;
+      });
+      const tmux = {
+        getSocket: () => "detach-task",
+        listClients: vi.fn(async () => [{ ...client }]),
+        displayMessage: vi.fn(async () => "$1\towned\t@2"),
+        displayPopup: vi.fn(async () => popup),
+        closePopup: vi.fn(async () => {
+          if (mode === "close-failed") {
+            throw new Error("close failed");
+          }
+          if (mode === "moved") {
+            tmux.listClients.mockResolvedValue([{ ...client, windowId: "@other" }]);
+          }
+        }),
+        capturePaneHistory: vi.fn(async () => ""),
+        detachClient: vi.fn(async () => undefined),
+      } satisfies OperationTmux;
+      const operations = new TmuxTerminalOperations(
+        tmux,
+        "owned",
+        "%3",
+        new TmuxTerminalLeaseRegistry(),
+      );
+      const taskController = new AbortController();
+      const run = operations.run(
+        {
+          owner: { kind: "task", sessionId: f.full.id, runId: "hook" },
+          cwd: "/project",
+          env: {},
+          signal: taskController.signal,
+        },
+        async (context) => {
+          await context.popup({ command: "hook" });
+        },
+      );
+      const result = (async () => {
+        try {
+          return await run;
+        } catch (error) {
+          return error;
+        }
+      })();
+      await vi.waitFor(() => expect(tmux.displayPopup).toHaveBeenCalledTimes(1));
+      f.detachHost.mockImplementation(async () => {
+        await operations.detachHost(
+          { kind: "ui", sessionId: f.full.id, socketId: f.binding.socketId },
+          () => !f.binding.controller.signal.aborted,
+        );
+      });
+      const response = await f.invoke();
+      if (mode === "success") {
+        expect(response).toMatchObject({ result: { detached: true } });
+        expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
+        expect(tmux.detachClient).toHaveBeenCalledExactlyOnceWith(client.name);
+      } else {
+        expect(response).toMatchObject({ errorCode: "backend_unavailable" });
+        expect(f.full.removeSubscriber).not.toHaveBeenCalled();
+        expect(f.full.getUiBinding()).toBe(f.binding);
+        expect(f.binding.controller.signal.aborted).toBe(false);
+        expect(tmux.detachClient).not.toHaveBeenCalled();
+      }
+      expect(await result).toMatchObject({
+        code: mode === "close-failed" ? "terminal_busy" : "cancelled",
+      });
+      expect(taskController.signal.aborted).toBe(false);
+      expect(tmux.closePopup).toHaveBeenCalledExactlyOnceWith(client.name);
+      finishPopup();
+      await operations.dispose();
+      expect(tmux.displayPopup).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    [false, false],
+    [true, true],
+  ])("personal/no-terminal only unsubscribe %j", async (managed, shell) => {
+    const f = fixture(managed, shell);
+    expect(await f.invoke()).toMatchObject({ result: { detached: true } });
+    expect(f.detachHost).not.toHaveBeenCalled();
+    expect(f.full.removeSubscriber).toHaveBeenCalledWith(f.socket);
   });
 });

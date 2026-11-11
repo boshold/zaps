@@ -1,29 +1,28 @@
 import { execFile } from "node:child_process";
-import { EventEmitter } from "node:events";
+import os from "node:os";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LayoutNode, ResolvedConfig } from "#src/config/types.js";
-import type { SessionCreateParams } from "#src/daemon/session.js";
 import { Session } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
-import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import { ServiceManager } from "#src/lib/service/manager.js";
 import type { Rect } from "#src/lib/tmux-layout.js";
 import { computeRects } from "#src/lib/tmux-layout.js";
 import type { LayoutReflowDeps, PaneMap } from "#src/lib/tmux-reflow.js";
 import { LayoutReflow, TmuxFailedError } from "#src/lib/tmux-reflow.js";
 import {
-  capturePane,
   displayMessage,
   getWindowSize,
   newWindow,
   paneIndexOrder,
-  sendKeys,
   splitPane,
   tmuxFor,
 } from "#src/lib/tmux.js";
 
+import { createTmuxSession } from "../../_helpers/session-backend.js";
+import { tmuxDeps } from "../helpers/service-manager.js";
 import { hasTmux } from "../helpers/skip.js";
 import type { TestSession } from "../helpers/tmux.js";
 import { createTestSession, testTmuxSocket } from "../helpers/tmux.js";
@@ -135,67 +134,39 @@ function makeConfig(
   return {
     project: {
       name: "p03-t05-test",
-      services: Object.fromEntries(services.map((name) => [name, { start: "true" }])),
+      services: Object.fromEntries(
+        services.map((name) => [name, { start: "node -e 'setInterval(()=>{},60000)'", raw: true }]),
+      ),
       layout,
     },
     configPath,
-    projectDir: "/test",
+    projectDir: os.tmpdir(),
     groups: new Map(),
     unavailableServices: new Map(),
     lazyPaneByService: new Map(),
-  } as ResolvedConfig;
+  };
 }
 
-/** No-op ServiceManager stub. Session only uses the EventEmitter facet here. */
-function makeFakeManager(): ServiceManager {
-  const emitter = new EventEmitter();
-  return Object.assign(emitter, {
-    startAll: vi.fn().mockResolvedValue(undefined),
-    stopAll: vi.fn().mockResolvedValue(undefined),
-    abortStartAll: vi.fn(),
-    startService: vi.fn().mockResolvedValue(undefined),
-    stopService: vi.fn().mockResolvedValue(undefined),
-    restartService: vi.fn().mockResolvedValue(undefined),
-    getAllStatuses: vi.fn(() => []),
-    getStatus: vi.fn(),
-  }) as unknown as ServiceManager;
-}
-
-/**
- * Construct a real Session targeting the test tmux session. `capturePane` is the
- * REAL one (so the LogMonitor reads actual pane output); everything else the
- * Session ctor needs is a no-op stub — these tests don't exercise the manager.
- */
-function makeSession(
+async function makeSession(
   tmuxSession: string,
   initialPaneId: string,
   config: ResolvedConfig,
   paneMap: PaneMap,
   tmuxWindow = initialPaneId,
-): Session {
-  const params: SessionCreateParams = {
+): Promise<Session> {
+  const params = await createTmuxSession({
     configPath: config.configPath,
     projectDir: config.projectDir,
     config,
-    paneMap,
     tmuxSession,
     tmuxWindow,
     originPane: initialPaneId,
     tmuxSocket: testTmuxSocket(),
     managedTmux: false,
-    deps: {
-      capturePane,
-      sendKeys: vi.fn().mockResolvedValue(undefined),
-      sendCtrlC: vi.fn().mockResolvedValue(undefined),
-      panePid: vi.fn().mockResolvedValue(0),
-      detectPorts: vi.fn().mockResolvedValue([]),
-      getDescendantPids: vi.fn().mockResolvedValue([]),
-      renameWindow: vi.fn().mockResolvedValue(undefined),
-      getWindowName: vi.fn().mockResolvedValue("test"),
-      getWindowOption: vi.fn().mockResolvedValue(""),
-    } as unknown as ServiceManagerDeps,
-  };
-  return new Session(params, makeFakeManager());
+    deps: tmuxDeps,
+    skip: new Set(Object.keys(config.project.services)),
+  });
+  return new Session(params, new ServiceManager(config, params.deps));
 }
 
 describe.skipIf(!hasTmux())("LayoutReflow.insertPane — real tmux", () => {
@@ -478,7 +449,11 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
   });
 
   afterEach(async () => {
-    await session.cleanup();
+    try {
+      await zapsSession?.destroy();
+    } finally {
+      await session.cleanup();
+    }
   });
 
   it("inserts a lazy pane in the stored window after another window becomes current", async () => {
@@ -490,10 +465,16 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
     const tmuxWindow = await displayMessage(session.initialPaneId, "#{window_id}");
     const otherPane = await newWindow(session.name);
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap, tmuxWindow);
+    zapsSession = await makeSession(
+      session.name,
+      session.initialPaneId,
+      config,
+      paneMap,
+      tmuxWindow,
+    );
 
     await execFileAsync("tmux", [...tmuxSocketArgs(), "select-window", "-t", otherPane]);
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
     const originalWindowPanes = await listPaneGeoms(tmuxWindow);
     const otherWindowPanes = await listPaneGeoms(otherPane);
@@ -507,22 +488,20 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
+    const marker = "P03_T05_INSERT_MARKER";
     const config = makeConfig(["api"], layout);
+    config.project.services.api.start = `node -e 'console.log("${marker}");setInterval(()=>{},60000)'`;
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
-    // The pane is now live; allocatePaneLog wired the monitor on its id.
+    // The pane projection exists before runtime output starts.
     expect(zapsSession.paneMap.api).toBeDefined();
-    const apiPaneId = zapsSession.paneMap.api;
-    expect(zapsSession.paneBuffers.has(apiPaneId)).toBe(true);
+    expect(zapsSession.logBuffers.has("api")).toBe(true);
 
-    // Print a deterministic marker into the pane and wait for the monitor's
-    // 500ms tick to capture + diff it.
-    const marker = "P03_T05_INSERT_MARKER";
-    await sendKeys(apiPaneId, `echo ${marker}`);
+    await zapsSession.manager.startService("api");
 
     const snap = await waitFor(
       async () => zapsSession.logBuffers.get("api")?.snapshot() ?? [],
@@ -550,10 +529,10 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
     const broadcastSpy = vi.spyOn(zapsSession, "broadcast");
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
 
     const insertMaps = broadcastSpy.mock.calls
       .map(([event]) => event)
@@ -565,7 +544,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(insertMap.api).toBe(zapsSession.paneMap.api);
 
     broadcastSpy.mockClear();
-    await zapsSession.reflow.removePane("api");
+    await zapsSession.reflowRemove("api");
 
     const removeMaps = broadcastSpy.mock.calls
       .map(([event]) => event)
@@ -575,21 +554,21 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(removeMaps[removeMaps.length - 1].api).toBeUndefined();
   });
 
-  it("after remove the monitor key is gone; logBuffers[name] is RETAINED with history", async () => {
+  it("retains unit history after pane removal", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    await zapsSession.reflow.insertPane("api");
+    await zapsSession.reflowInsert("api");
     const apiPaneId = zapsSession.paneMap.api;
     // Plant a history line directly (no need to wait for the monitor here).
     zapsSession.logBuffers.get("api")?.appendLines(["history-from-insert"]);
 
-    await zapsSession.reflow.removePane("api");
+    await zapsSession.reflowRemove("api");
 
     // Pane is gone.
     await waitFor(
@@ -597,9 +576,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
       (panes) => panes.every((p) => p.id !== apiPaneId),
     );
 
-    // Pane-keyed maps SHRANK; service-keyed buffer + history RETAINED.
-    expect(zapsSession.paneBuffers.has(apiPaneId)).toBe(false);
-    expect(zapsSession.paneMembers.has(apiPaneId)).toBe(false);
+    // Unit history survives presentation changes.
     expect(zapsSession.logBuffers.has("api")).toBe(true);
     expect(zapsSession.logBuffers.get("api")?.snapshot()).toContain("history-from-insert");
     // AttachSnapshot still surfaces the stopped lazy service (Round-7 invariant).
@@ -608,27 +585,27 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     expect(snap.logSnapshots.api).toContain("history-from-insert");
   });
 
-  it("repeated insert/remove does NOT grow paneBuffers / paneMembers", async () => {
+  it("repeated insert/remove preserves the unit buffer", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    const baselinePaneBufs = zapsSession.paneBuffers.size;
-    const baselinePaneMembers = zapsSession.paneMembers.size;
+    const buffer = zapsSession.logBuffers.get("api");
+    const baselineBuffers = zapsSession.logBuffers.size;
 
     /* eslint-disable no-await-in-loop -- sequential lifecycle test */
     for (let i = 0; i < 5; i += 1) {
-      await zapsSession.reflow.insertPane("api");
-      await zapsSession.reflow.removePane("api");
+      await zapsSession.reflowInsert("api");
+      await zapsSession.reflowRemove("api");
     }
     /* eslint-enable no-await-in-loop */
 
-    expect(zapsSession.paneBuffers.size).toBe(baselinePaneBufs);
-    expect(zapsSession.paneMembers.size).toBe(baselinePaneMembers);
+    expect(zapsSession.logBuffers.size).toBe(baselineBuffers);
+    expect(zapsSession.logBuffers.get("api")).toBe(buffer);
     // The retained service buffer is still there.
     expect(zapsSession.logBuffers.has("api")).toBe(true);
   });
@@ -643,7 +620,7 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
     };
     const config = makeConfig(["web"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
     const snap = zapsSession.attachSnapshot();
     expect(snap.logSnapshots).toHaveProperty("web");
@@ -653,12 +630,16 @@ describe.skipIf(!hasTmux())("Session.reflow log lifecycle — real tmux", () => 
 
 describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection", () => {
   let session: TestSession;
+  let zapsSession: Session;
 
   beforeEach(async () => {
     session = await createTestSession();
   });
 
   afterEach(async () => {
+    if (zapsSession) {
+      await zapsSession.destroy();
+    }
     await session.cleanup();
   });
 
@@ -704,19 +685,17 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
     expect(calls).toBe(2);
   });
 
-  it("Session-level rollback: paneBuffers cleaned, logBuffers retained (orphan-regression)", async () => {
+  it("Session-level rollback preserves unit history", async () => {
     const layout: LayoutNode = {
       direction: "columns",
       children: [{ pane: "@tui" }, { pane: "api" }],
     };
     const config = makeConfig(["api"], layout);
     const paneMap: PaneMap = { "@tui": session.initialPaneId };
-    const zapsSession = makeSession(session.name, session.initialPaneId, config, paneMap);
+    zapsSession = await makeSession(session.name, session.initialPaneId, config, paneMap);
 
-    // The Session built its own reflow with real wrappers; here we build a
-    // FAULT-INJECTING reflow but reuse the SESSION's hooks so the
-    // OnPaneInsertFailed → freePaneLog cleanup actually runs. This is the
-    // End-to-end seal on the cross-pane-id buffer-leak fix.
+    const buffer = zapsSession.logBuffers.get("api");
+    buffer?.appendLines(["before rollback"]);
     const tmux = await import("#src/lib/tmux.js");
     const realSelect = tmux.selectLayout;
     let calls = 0;
@@ -733,28 +712,15 @@ describe.skipIf(!hasTmux())("LayoutReflow rollback — real tmux fault injection
         }
         await realSelect(target, layoutStr);
       },
-      onPaneInserted: (name, paneId) => {
+      onPaneInserted: (_name, paneId) => {
         observedPaneId = paneId;
-        zapsSession.allocatePaneLog(name, paneId);
-      },
-      onPaneInsertFailed: (name, paneId) => {
-        zapsSession.freePaneLog(name, paneId);
-      },
-      onPaneRemoved: (name, paneId) => {
-        zapsSession.freePaneLog(name, paneId);
       },
     });
 
     await expect(faultyReflow.insertPane("api")).rejects.toBeInstanceOf(TmuxFailedError);
-    // The new pane id was observed by allocatePaneLog (so the orphan cleanup
-    // Path was exercised, not a no-op).
     expect(observedPaneId).toBeDefined();
-    const failedPaneId = observedPaneId ?? "";
-    // Pane-keyed entries cleaned up — the cross-pane-id buffer-leak path.
-    expect(zapsSession.paneBuffers.has(failedPaneId)).toBe(false);
-    expect(zapsSession.paneMembers.has(failedPaneId)).toBe(false);
-    // Service-keyed buffer retained (Round-7).
-    expect(zapsSession.logBuffers.has("api")).toBe(true);
+    expect(zapsSession.logBuffers.get("api")).toBe(buffer);
+    expect(buffer?.snapshot()).toEqual(["before rollback"]);
     // PaneMap rolled back.
     expect(zapsSession.paneMap.api).toBeUndefined();
     // Restore selectLayout was called.

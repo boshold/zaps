@@ -17,7 +17,6 @@ import {
   currentSession,
   detachClient,
   displayPopup,
-  editPaneCapture,
   exactWindowTarget,
   getWindowName,
   getWindowOption,
@@ -44,6 +43,7 @@ import {
   splitPane,
   swapPanes,
   tmuxFor,
+  windowExists,
   windowLayout,
   zoomPane,
 } from "../../src/lib/tmux.js";
@@ -99,7 +99,7 @@ describe("hasSession", () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     expect(await hasSession("my-sess")).toBe(true);
     // `=` forces exact matching; a bare name would prefix-match a neighbour.
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["has-session", "-t", "=my-sess"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "has-session", "-t", "=my-sess"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -118,12 +118,12 @@ describe("sendKeys", () => {
     expect(mockSpawn).toHaveBeenNthCalledWith(
       1,
       "tmux",
-      ["send-keys", "-t", "%1", "-l", "ls -la"],
+      ["-u", "send-keys", "-t", "%1", "-l", "ls -la"],
       {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["send-keys", "-t", "%1", "Enter"], {
+    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["-u", "send-keys", "-t", "%1", "Enter"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -136,7 +136,7 @@ describe("newSession", () => {
     expect(paneId).toBe("%0");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["new-session", "-d", "-s", "my-project", "-P", "-F", "#{pane_id}"],
+      ["-u", "new-session", "-d", "-s", "my-project", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -149,7 +149,7 @@ describe("newWindow", () => {
     expect(paneId).toBe("%3");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["new-window", "-t", "=my-project", "-d", "-P", "-F", "#{pane_id}"],
+      ["-u", "new-window", "-t", "=my-project", "-d", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -159,7 +159,7 @@ describe("killSession", () => {
   it("kills session by name", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await killSession("my-project");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["kill-session", "-t", "=my-project"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "kill-session", "-t", "=my-project"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -172,7 +172,7 @@ describe("splitPane", () => {
     expect(paneId).toBe("%2");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-h", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      ["-u", "split-window", "-h", "-t", "%0", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -183,7 +183,7 @@ describe("splitPane", () => {
     expect(paneId).toBe("%5");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-v", "-t", "%1", "-l", "30%", "-P", "-F", "#{pane_id}"],
+      ["-u", "split-window", "-v", "-t", "%1", "-l", "30%", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -193,7 +193,7 @@ describe("splitPane", () => {
     await splitPane("%0", "h", { detached: true });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-h", "-d", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      ["-u", "split-window", "-h", "-d", "-t", "%0", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -203,7 +203,7 @@ describe("splitPane", () => {
     await splitPane("%0", "h", { before: true });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-h", "-b", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      ["-u", "split-window", "-h", "-b", "-t", "%0", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -213,7 +213,7 @@ describe("splitPane", () => {
     await splitPane("%0", "v", { before: true, detached: true, percent: 25 });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["split-window", "-v", "-b", "-d", "-t", "%0", "-l", "25%", "-P", "-F", "#{pane_id}"],
+      ["-u", "split-window", "-v", "-b", "-d", "-t", "%0", "-l", "25%", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -223,7 +223,7 @@ describe("swapPanes", () => {
   it("issues swap-pane with -s and -t", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await swapPanes("%2", "%4");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["swap-pane", "-s", "%2", "-t", "%4"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "swap-pane", "-s", "%2", "-t", "%4"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -235,7 +235,7 @@ describe("selectLayout", () => {
     const layout = "eb8f,100x30,0,0{50x30,0,0,1,49x30,51,0,2}";
     await selectLayout("@0", layout);
     // CRITICAL: layout is one element — the `{`/`[` never need shell escaping.
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["select-layout", "-t", "@0", layout], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "select-layout", "-t", "@0", layout], {
       stdio: ["ignore", "pipe", "pipe"],
     });
     // Pin "layout is ONE argv element" — guards against accidental .join(" ").
@@ -251,7 +251,7 @@ describe("windowLayout", () => {
     expect(await windowLayout("@0")).toBe(layout);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "@0", "#{window_layout}"],
+      ["-u", "display-message", "-p", "-t", "@0", "#{window_layout}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -269,7 +269,7 @@ describe("paneIndexOrder", () => {
     ]);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["list-panes", "-t", "@0", "-F", "#{pane_index} #{pane_id}"],
+      ["-u", "list-panes", "-t", "@0", "-F", "#{pane_index} #{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -284,7 +284,7 @@ describe("killPane", () => {
   it("kills pane by target", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await killPane("%2");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["kill-pane", "-t", "%2"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "kill-pane", "-t", "%2"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -297,7 +297,7 @@ describe("panePid", () => {
     expect(pid).toBe(12_345);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "%0", "#{pane_pid}"],
+      ["-u", "display-message", "-p", "-t", "%0", "#{pane_pid}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -310,7 +310,7 @@ describe("capturePane", () => {
     expect(output).toBe("line1\nline2\nline3");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["capture-pane", "-t", "%0", "-p", "-S", "-100"],
+      ["-u", "capture-pane", "-t", "%0", "-p", "-S", "-100"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -320,7 +320,7 @@ describe("capturePane", () => {
     await capturePane("%1", 50);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["capture-pane", "-t", "%1", "-p", "-S", "-50"],
+      ["-u", "capture-pane", "-t", "%1", "-p", "-S", "-50"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -330,7 +330,7 @@ describe("sendCtrlC", () => {
   it("sends C-c without Enter", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await sendCtrlC("%0");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["send-keys", "-t", "%0", "C-c"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "send-keys", "-t", "%0", "C-c"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -342,7 +342,7 @@ describe("setEnv", () => {
     await setEnv("my-project", "FOO", "bar");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["set-environment", "-t", "=my-project", "FOO", "bar"],
+      ["-u", "set-environment", "-t", "=my-project", "FOO", "bar"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -354,7 +354,7 @@ describe("removeEnv", () => {
     await removeEnv("my-project", "FOO");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["set-environment", "-u", "-t", "=my-project", "FOO"],
+      ["-u", "set-environment", "-u", "-t", "=my-project", "FOO"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -382,7 +382,7 @@ describe("currentPaneId", () => {
     expect(id).toBe("%5");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "%5", "#{pane_id}"],
+      ["-u", "display-message", "-p", "-t", "%5", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -391,7 +391,7 @@ describe("currentPaneId", () => {
     vi.stubEnv("TMUX_PANE", "");
     mockSpawn.mockReturnValue(createMockProc("%7"));
     expect(await currentPaneId()).toBe("%7");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "display-message", "-p", "#{pane_id}"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -402,9 +402,13 @@ describe("currentSession", () => {
     mockSpawn.mockReturnValue(createMockProc("my-session"));
     const name = await currentSession();
     expect(name).toBe("my-session");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{session_name}"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["-u", "display-message", "-p", "#{session_name}"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
   });
 
   it("resolves the session from a stable pane target", async () => {
@@ -412,7 +416,7 @@ describe("currentSession", () => {
     expect(await currentSession("%5")).toBe("my-session");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "%5", "#{session_name}"],
+      ["-u", "display-message", "-p", "-t", "%5", "#{session_name}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -423,10 +427,10 @@ describe("zoomPane", () => {
     mockSpawn.mockReturnValueOnce(createMockProc("")).mockReturnValueOnce(createMockProc(""));
     await zoomPane("%3");
     expect(mockSpawn).toHaveBeenCalledTimes(2);
-    expect(mockSpawn).toHaveBeenNthCalledWith(1, "tmux", ["select-pane", "-t", "%3"], {
+    expect(mockSpawn).toHaveBeenNthCalledWith(1, "tmux", ["-u", "select-pane", "-t", "%3"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["resize-pane", "-Z", "-t", "%3"], {
+    expect(mockSpawn).toHaveBeenNthCalledWith(2, "tmux", ["-u", "resize-pane", "-Z", "-t", "%3"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -439,7 +443,7 @@ describe("getWindowName", () => {
     expect(name).toBe("bash");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "%0", "#{window_name}"],
+      ["-u", "display-message", "-p", "-t", "%0", "#{window_name}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -449,36 +453,13 @@ describe("renameWindow", () => {
   it("renames window with correct args", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await renameWindow("%0", "new-title");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["rename-window", "-t", "%0", "new-title"], {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-  });
-});
-
-describe("editPaneCapture", () => {
-  it("calls displayPopup with capture command using vim by default", async () => {
-    mockSpawn.mockReturnValue(createSilentMockProc(0));
-    await editPaneCapture("%1", "Capture");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      expect.arrayContaining([
-        "display-popup",
-        "-EE",
-        "-w",
-        "90%",
-        "-h",
-        "90%",
-        "-T",
-        "Capture",
-        "--",
-        expect.stringContaining("tmux capture-pane -t %1"),
-      ]),
-      { stdio: "ignore" },
+      ["-u", "rename-window", "-t", "%0", "new-title"],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
-    // Should use vim or EDITOR
-    const args = mockSpawn.mock.calls[0][1] as string[];
-    const cmd = args[args.length - 1];
-    expect(cmd).toMatch(/vim|nano|EDITOR/);
   });
 });
 
@@ -486,7 +467,7 @@ describe("selectPane", () => {
   it("selects pane by target", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await selectPane("%2");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["select-pane", "-t", "%2"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "select-pane", "-t", "%2"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -504,6 +485,7 @@ describe("listPanes", () => {
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
       [
+        "-u",
         "list-panes",
         "-t",
         "=my-project",
@@ -534,6 +516,7 @@ describe("displayPopup", () => {
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
       [
+        "-u",
         "display-popup",
         "-EE",
         "-d",
@@ -560,7 +543,19 @@ describe("displayPopup", () => {
     });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-popup", "-EE", "-d", "/project", "-e", "FOO=bar", "-e", "BAZ=qux", "--", "run"],
+      [
+        "-u",
+        "display-popup",
+        "-EE",
+        "-d",
+        "/project",
+        "-e",
+        "FOO=bar",
+        "-e",
+        "BAZ=qux",
+        "--",
+        "run",
+      ],
       { stdio: "ignore" },
     );
   });
@@ -580,7 +575,7 @@ describe("getWindowOption", () => {
     expect(value).toBe("on");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["show-window-option", "-v", "-t", "%0", "automatic-rename"],
+      ["-u", "show-window-option", "-v", "-t", "%0", "automatic-rename"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -592,7 +587,7 @@ describe("setWindowOption", () => {
     await setWindowOption("%0", "automatic-rename", "on");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["set-window-option", "-t", "%0", "automatic-rename", "on"],
+      ["-u", "set-window-option", "-t", "%0", "automatic-rename", "on"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -605,7 +600,7 @@ describe("getWindowSize", () => {
     expect(size).toEqual({ width: 255, height: 63 });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["display-message", "-p", "-t", "%0", "#{window_width} #{window_height}"],
+      ["-u", "display-message", "-p", "-t", "%0", "#{window_width} #{window_height}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -617,7 +612,7 @@ describe("resizeWindow", () => {
     await resizeWindow("%0", 200, 50);
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["resize-window", "-t", "%0", "-x", "200", "-y", "50"],
+      ["-u", "resize-window", "-t", "%0", "-x", "200", "-y", "50"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -636,12 +631,12 @@ describe("resyncPaneSizes", () => {
 
     const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
     expect(calls).toEqual([
-      "display-message -p -t %7 #{window_width} #{window_height}",
-      "show-window-option -v -t %7 window-size",
-      "set-window-option -t %7 window-size manual",
-      "resize-window -t %7 -x 142 -y 16", // Width-10, height-2
-      "resize-window -t %7 -x 152 -y 18", // Restored
-      "set-window-option -t %7 window-size latest", // Prior option restored
+      "-u display-message -p -t %7 #{window_width} #{window_height}",
+      "-u show-window-option -v -t %7 window-size",
+      "-u set-window-option -t %7 window-size manual",
+      "-u resize-window -t %7 -x 142 -y 16", // Width-10, height-2
+      "-u resize-window -t %7 -x 152 -y 18", // Restored
+      "-u set-window-option -t %7 window-size latest", // Prior option restored
     ]);
   });
 
@@ -654,7 +649,7 @@ describe("resyncPaneSizes", () => {
     await resyncPaneSizes("%7", 0);
 
     const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
-    expect(calls).toContain("resize-window -t %7 -x 20 -y 5"); // Floored, not 2 / 2
+    expect(calls).toContain("-u resize-window -t %7 -x 20 -y 5"); // Floored, not 2 / 2
   });
 
   it("swallows errors so startup is never blocked", async () => {
@@ -664,12 +659,20 @@ describe("resyncPaneSizes", () => {
 });
 
 describe("detachClient", () => {
+  it("targets an explicitly validated outer client", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await detachClient("/dev/pts/42");
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "detach-client", "-t", "/dev/pts/42"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  });
+
   it("detaches the current client, resolved by tmux from $TMUX", async () => {
     mockSpawn.mockReturnValue(createMockProc(""));
     await detachClient();
     // Never `-t <pane>`: detach-client's target is a client tty, and a pane id
     // Fails outright (`can't find client: %N`), silently skipping the detach.
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["detach-client"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "detach-client"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -692,7 +695,7 @@ describe("tmuxFor", () => {
     await tmux.splitPane("%0", "v");
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["-L", "foo", "split-window", "-v", "-t", "%0", "-P", "-F", "#{pane_id}"],
+      ["-u", "-L", "foo", "split-window", "-v", "-t", "%0", "-P", "-F", "#{pane_id}"],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
   });
@@ -702,7 +705,7 @@ describe("tmuxFor", () => {
     vi.stubEnv("TMUX_PANE", "");
     mockSpawn.mockReturnValue(createMockProc("%0"));
     await tmuxFor(null).currentPaneId();
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["display-message", "-p", "#{pane_id}"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "display-message", "-p", "#{pane_id}"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -711,7 +714,7 @@ describe("tmuxFor", () => {
     process.env.ZAPS_TMUX_SOCKET = "env-socket";
     mockSpawn.mockReturnValue(createMockProc(""));
     await tmuxFor("bound").killPane("%1");
-    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-L", "bound", "kill-pane", "-t", "%1"], {
+    expect(mockSpawn).toHaveBeenCalledWith("tmux", ["-u", "-L", "bound", "kill-pane", "-t", "%1"], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   });
@@ -721,7 +724,7 @@ describe("tmuxFor", () => {
     await tmuxFor("zaps").displayPopup({ command: "echo hi" });
     expect(mockSpawn).toHaveBeenCalledWith(
       "tmux",
-      ["-L", "zaps", "display-popup", "-EE", "--", "echo hi"],
+      ["-u", "-L", "zaps", "display-popup", "-EE", "--", "echo hi"],
       { stdio: "ignore" },
     );
   });
@@ -737,9 +740,87 @@ describe("tmuxFor", () => {
 
     const calls = mockSpawn.mock.calls.map((c) => (c[1] as string[]).join(" "));
     expect(calls).toEqual([
-      "-L first kill-pane -t %1",
-      "-L second kill-pane -t %2",
-      "kill-pane -t %3",
+      "-u -L first kill-pane -t %1",
+      "-u -L second kill-pane -t %2",
+      "-u kill-pane -t %3",
     ]);
+  });
+});
+
+describe("owned popup primitives", () => {
+  it("targets both client and pane on the bound socket", async () => {
+    mockSpawn.mockReturnValue(createSilentMockProc());
+    await tmuxFor("owned").displayPopup({ client: "/dev/pts/4", pane: "%2", command: "picker" });
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-u",
+      "-L",
+      "owned",
+      "display-popup",
+      "-EE",
+      "-c",
+      "/dev/pts/4",
+      "-t",
+      "%2",
+      "--",
+      "picker",
+    ]);
+  });
+
+  it("closes only the explicitly targeted client popup", async () => {
+    mockSpawn.mockReturnValue(createMockProc(""));
+    await tmuxFor("owned").closePopup("/dev/pts/4");
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-u",
+      "-L",
+      "owned",
+      "display-popup",
+      "-C",
+      "-c",
+      "/dev/pts/4",
+    ]);
+  });
+
+  it("parses client identity and rejects malformed rows", async () => {
+    mockSpawn.mockReturnValueOnce(createMockProc("/dev/pts/4\t42\t$1\towned\t@2\n"));
+    expect(await tmuxFor("owned").listClients()).toEqual([
+      { name: "/dev/pts/4", pid: 42, sessionId: "$1", sessionName: "owned", windowId: "@2" },
+    ]);
+    mockSpawn.mockReturnValueOnce(createMockProc("malformed"));
+    await expect(tmuxFor("owned").listClients()).rejects.toThrow();
+  });
+
+  it("preserves raw history whitespace and requests all lines", async () => {
+    mockSpawn.mockReturnValue(createMockProc("  history  \n\n"));
+    expect(await tmuxFor("owned").capturePaneHistory("%2")).toBe("  history  \n\n");
+    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
+      "-u",
+      "-L",
+      "owned",
+      "capture-pane",
+      "-t",
+      "%2",
+      "-p",
+      "-N",
+      "-S",
+      "-",
+    ]);
+  });
+});
+
+describe("windowExists", () => {
+  it("checks exact membership on the bound server", async () => {
+    mockSpawn.mockImplementation(() => createMockProc("@1\n@10\n"));
+    expect(await tmuxFor("owned").windowExists("@1")).toBe(true);
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "tmux",
+      ["-u", "-L", "owned", "list-windows", "-a", "-F", "#{window_id}"],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    );
+    expect(await windowExists("@0")).toBe(false);
+  });
+
+  it("does not confuse an unavailable probe with an absent window", async () => {
+    mockSpawn.mockReturnValue(createMockProc("", 1, "server unavailable"));
+    await expect(windowExists("@1")).rejects.toThrow("server unavailable");
   });
 });

@@ -1,33 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock child_process and tmux
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn(),
-  spawn: vi.fn(),
+const { mockExecFile } = vi.hoisted(() => ({
+  mockExecFile:
+    vi.fn<(command: string, args: string[]) => Promise<{ stdout: string; stderr: string }>>(),
 }));
 
-vi.mock("node:util", () => ({
-  promisify: (fn: any) => fn,
-}));
+vi.mock("node:child_process", () => ({ execFile: mockExecFile }));
+vi.mock("node:util", () => ({ promisify: () => mockExecFile }));
 
 vi.mock("../../src/lib/tmux.js", () => ({
   panePid: vi.fn(),
 }));
 
-import { execFile } from "node:child_process";
-
 import { detectPorts, getDescendantPids, getListeningPorts } from "../../src/lib/port.js";
 import { panePid } from "../../src/lib/tmux.js";
 
-const mockExecFile = vi.mocked(execFile);
 const mockPanePid = vi.mocked(panePid);
 
 function mockExecFileOutput(output: string): void {
-  (mockExecFile as any).mockResolvedValue({ stdout: output, stderr: "" });
+  mockExecFile.mockResolvedValue({ stdout: output, stderr: "" });
 }
 
 function mockExecFileError(): void {
-  (mockExecFile as any).mockRejectedValue(new Error("command not found"));
+  mockExecFile.mockRejectedValue(new Error("command not found"));
 }
 
 beforeEach(() => {
@@ -90,6 +85,7 @@ describe("getDescendantPids", () => {
   });
 
   describe("ps session-id keyword is platform-specific", () => {
+    const C_LOCALE = { env: expect.objectContaining({ LC_ALL: "C" }) };
     const originalPlatform = process.platform;
     afterEach(() => {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
@@ -99,14 +95,14 @@ describe("getDescendantPids", () => {
       Object.defineProperty(process, "platform", { value: "linux", configurable: true });
       mockExecFileOutput("  PID  PPID   SID\n 1000     1  1000");
       await getDescendantPids(1000);
-      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"]);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"], C_LOCALE);
     });
 
-    it("uses the `sess` keyword on macOS (BSD ps rejects `sid`)", async () => {
+    it("uses the process group on macOS (BSD ps reports sess 0)", async () => {
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-      mockExecFileOutput("  PID  PPID  SESS\n 1000     1  1000");
+      mockExecFileOutput("  PID  PPID  PGID\n 1000     1  1000");
       await getDescendantPids(1000);
-      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sess"]);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,pgid"], C_LOCALE);
     });
   });
 });
@@ -268,13 +264,33 @@ describe("detectPorts", () => {
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   });
 
+  it("detects ports for macOS descendants and reparented session members", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    mockPanePid.mockResolvedValue(1000);
+    mockExecFile
+      .mockResolvedValueOnce({
+        stdout: "PID PPID SESS\n1000 1 a3f\n2000 1000 a3f\n3000 1 a3f\n4000 1 a40",
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        stdout: [
+          "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME",
+          "node 2000 user 1u IPv4 123 0t0 TCP *:3000 (LISTEN)",
+          "node 3000 user 2u IPv6 124 0t0 TCP [::1]:8080 (LISTEN)",
+          "node 4000 user 3u IPv4 125 0t0 TCP *:9000 (LISTEN)",
+        ].join("\n"),
+        stderr: "",
+      });
+    expect(await detectPorts("%0", { panePid: mockPanePid })).toEqual([3000, 8080]);
+  });
+
   it("deduplicates and sorts ports", async () => {
     mockPanePid.mockResolvedValue(1000);
 
     // First call: ps for getDescendantPids
     // Second call: ss for getListeningPorts
     let callCount = 0;
-    (mockExecFile as any).mockImplementation(async () => {
+    mockExecFile.mockImplementation(async () => {
       callCount += 1;
       if (callCount === 1) {
         // Ps output

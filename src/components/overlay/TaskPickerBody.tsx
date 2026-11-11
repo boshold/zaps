@@ -8,6 +8,8 @@ import { useIcons } from "#src/components/theme/IconTheme.js";
 import type { UiTaskMode } from "#src/config/types.js";
 import type { TaskInfo } from "#src/daemon/session.js";
 import { useTaskPicker } from "#src/hooks/useTaskPicker.js";
+import { canLaunchTask, effectiveTaskMode } from "#src/lib/backend/capabilities.js";
+import type { BackendCapabilities } from "#src/lib/backend/types.js";
 import type { FuzzyMatch } from "#src/lib/fuzzy.js";
 
 import { CommandRow } from "./CommandRow.js";
@@ -27,10 +29,9 @@ function renderRow(match: FuzzyMatch<TaskInfo>, _index: number, selected: boolea
 }
 
 interface TaskPickerBodyProps {
-  /** Tasks to choose from, frozen at open time. */
   tasks: TaskInfo[];
-  /** Task keys with an in-flight run — the per-key duplicate-launch guard (Q12). */
-  runningKeys: Set<string>;
+  isRunning: (key: string) => boolean;
+  capabilities: BackendCapabilities;
   /** Default launch mode for `Enter` (`ui.task.defaultMode`). */
   defaultMode: UiTaskMode;
   /** Whether this picker owns input (gated on `isTop` by the wrapper). */
@@ -50,7 +51,8 @@ interface TaskPickerBodyProps {
  */
 function TaskPickerBody({
   tasks,
-  runningKeys,
+  isRunning,
+  capabilities,
   defaultMode,
   isActive,
   onClose,
@@ -66,11 +68,11 @@ function TaskPickerBody({
   }
 
   function launch(mode: UiTaskMode) {
-    if (!selected) {
+    if (!selected || !canLaunchTask(mode, capabilities)) {
       return;
     }
     // Q12 duplicate guard: surface "already running" rather than double-starting.
-    if (runningKeys.has(selected.key)) {
+    if (isRunning(selected.key)) {
       setNotice(`${selected.name} is already running`);
       return;
     }
@@ -119,7 +121,7 @@ function TaskPickerBody({
         <TextInput
           value={query}
           onChange={changeQuery}
-          onSubmit={() => launch(defaultMode)}
+          onSubmit={() => launch(effectiveTaskMode(defaultMode, capabilities))}
           placeholder="Type to filter tasks…"
           isActive={isActive}
         />
@@ -133,7 +135,11 @@ function TaskPickerBody({
         </Box>
       ) : null}
       <Box marginTop={1}>
-        <Text dimColor>up/down: move · enter: run · tab: run in pane · esc: close</Text>
+        <Text dimColor>
+          {canLaunchTask("pane", capabilities)
+            ? "up/down: move · enter: run · tab: run in pane · esc: close"
+            : "up/down: move · enter: run · esc: close"}
+        </Text>
       </Box>
     </Box>
   );

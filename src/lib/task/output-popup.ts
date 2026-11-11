@@ -1,46 +1,23 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import type { TerminalOperationContext } from "#src/lib/backend/tmux/operations.js";
 import { shellEscape } from "#src/lib/service/env.js";
-import { defaultTmux } from "#src/lib/tmux-default.js";
-import type { TmuxHandle } from "#src/lib/tmux.js";
 
-/** The tmux commands an output popup issues. */
-type PopupTmux = Pick<TmuxHandle, "displayPopup" | "tmuxSupportsPopup">;
-
-/** True when tmux supports `display-popup` (>= 3.2) — the escalation target (Q3). */
-export async function outputPopupAvailable(tmux: PopupTmux = defaultTmux): Promise<boolean> {
-  return tmux.tmuxSupportsPopup();
-}
-
-/**
- * Show captured task output in a larger `tmux display-popup` (the failed-output
- * overlay's escalation, Q3). Lines are written to a temp file (the
- * `editPaneCapture`/popup-picker pattern) and viewed with `less -R`, falling
- * back to `cat` + a wait-for-enter so the popup stays open on hosts without
- * `less`. Everything runs under `sh -c` (fish-safe). The temp dir is always
- * cleaned up. Callers should gate on {@link outputPopupAvailable} first.
- */
 export async function showOutputPopup(
   title: string,
   lines: string[],
-  tmux: PopupTmux = defaultTmux,
+  operation: TerminalOperationContext,
 ): Promise<void> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-task-output-"));
-  const file = path.join(dir, "output");
-  try {
-    await writeFile(file, `${lines.join("\n")}\n`, "utf8");
-    const esc = shellEscape(file);
-    // `less` for scrollback; if absent, print + pause so -EE doesn't close instantly.
-    const viewer = `less -R ${esc} 2>/dev/null || { cat ${esc}; printf '\\n[press enter to close]'; read _; }`;
-    await tmux.displayPopup({
-      command: `sh -c ${shellEscape(viewer)}`,
-      title,
-      width: "80%",
-      height: "80%",
-    });
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  operation.signal.throwIfAborted();
+  const file = path.join(operation.directory, "output");
+  await writeFile(file, `${lines.join("\n")}\n`, "utf8");
+  const escaped = shellEscape(file);
+  const viewer = `less -R ${escaped} 2>/dev/null || { cat ${escaped}; printf '\\n[press enter to close]'; read _; }`;
+  await operation.popup({
+    command: `sh -c ${shellEscape(viewer)}`,
+    title,
+    width: "80%",
+    height: "80%",
+  });
 }

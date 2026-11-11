@@ -1,11 +1,11 @@
 import type { ServiceState, ServiceStatus } from "./types.js";
 
 const VALID_TRANSITIONS: Record<ServiceState, ServiceState[]> = {
-  stopped: ["starting"],
+  stopped: ["starting", "stopping"],
   starting: ["ready", "error", "stopping"],
   ready: ["stopping", "restarting", "error"],
-  stopping: ["stopped"],
-  error: ["starting"],
+  stopping: ["stopped", "error"],
+  error: ["starting", "stopping"],
   restarting: ["starting", "stopping", "error"],
   unavailable: [],
 };

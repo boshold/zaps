@@ -4,10 +4,10 @@ import path from "node:path";
 import type { JitiOptions } from "jiti";
 import { createJiti } from "jiti";
 
+import { validateLayoutSizes } from "#src/config/layout-validation.js";
 import { sanitizeSegment, sentraTemplateFor } from "#src/lib/sentra/config.js";
 import { detectCycles } from "#src/lib/service/graph.js";
 import { RESERVED_TASK_SHORTCUT_KEYS } from "#src/lib/taskShortcuts.js";
-import { validateLayoutSizes } from "#src/lib/tmux-layout.js";
 
 import { createZapsLib } from "./builder.js";
 import { ConfigError } from "./errors.js";

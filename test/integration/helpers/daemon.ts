@@ -110,12 +110,14 @@ export async function waitForServiceState(
   timeoutMs = 15_000,
 ): Promise<void> {
   const start = Date.now();
+  let lastStatus: unknown;
   /* eslint-disable no-await-in-loop -- Polling loop */
   while (Date.now() - start < timeoutMs) {
     const res = await ipcRequest(socketPath, "services.list", undefined, 5000, session);
     if (!res.error) {
       const statuses = res.result as { name: string; state: string }[];
       const svc = statuses.find((s) => s.name === service);
+      lastStatus = svc;
       if (svc?.state === targetState) {
         return;
       }
@@ -123,7 +125,9 @@ export async function waitForServiceState(
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   /* eslint-enable no-await-in-loop */
-  throw new Error(`Service '${service}' did not reach '${targetState}' within ${timeoutMs}ms`);
+  throw new Error(
+    `Service '${service}' did not reach '${targetState}' within ${timeoutMs}ms: ${JSON.stringify(lastStatus)}`,
+  );
 }
 
 /**

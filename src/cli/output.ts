@@ -1,6 +1,7 @@
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
 
+import type { BackendId } from "#src/lib/backend/types.js";
 import { statusResultSchema } from "#src/lib/sentra/schemas.js";
 
 type OutputFormat = "text" | "json" | "toon";
@@ -126,6 +127,7 @@ function resolveFormat(opts: { json?: boolean; toon?: boolean }): OutputFormat {
 
 /** What `zaps ls` needs from a session to render one row. */
 interface SessionRowData {
+  backend: BackendId;
   id: string;
   name: string;
   projectDir: string;
@@ -139,18 +141,14 @@ interface SessionRowData {
  * Empty when an older daemon didn't report one.
  */
 function sessionLocation(session: SessionRowData): string {
-  if (!session.tmuxSession) {
+  if (session.backend === "shell" || !session.tmuxSession) {
     return "";
   }
   return session.managed ? `${session.tmuxSession} (managed)` : session.tmuxSession;
 }
 
-/**
- * Rows for the `zaps ls` table: id, name, project dir, location. Column-aligned
- * and header-less, exactly as before — only the LOCATION cell is new.
- */
 function sessionRows(sessions: SessionRowData[]): string[][] {
-  return sessions.map((s) => [s.id, s.name, s.projectDir, sessionLocation(s)]);
+  return sessions.map((s) => [s.id, s.name, s.projectDir, s.backend, sessionLocation(s)]);
 }
 
 function writeData(data: unknown, format: OutputFormat): void {

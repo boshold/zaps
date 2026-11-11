@@ -1,30 +1,39 @@
 import type { Key } from "ink";
 import { useInput } from "ink";
 
+import type { ProjectedServiceStatus } from "#src/daemon/session.js";
+import { canZoomDashboard, serviceAvailability } from "#src/lib/backend/capabilities.js";
+import type { BackendCapabilities } from "#src/lib/backend/types.js";
 import { openInBrowser } from "#src/lib/open.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
-import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
+
+import type { BusyServices } from "./busyServices.js";
 
 /** Everything the dashboard key handler needs, owned by the Router and passed down. */
 interface DashboardInputContext {
-  statuses: ServiceStatus[];
+  statuses: ProjectedServiceStatus[];
+  capabilities: BackendCapabilities;
   index: number;
-  busyServices: React.RefObject<Set<string>>;
+  busyServices: Pick<BusyServices, "getSnapshot">;
   moveUp: () => void;
   moveDown: () => void;
-  restart: (name: string) => Promise<void>;
-  toggle: (name: string) => Promise<void>;
-  restartAll: () => Promise<void>;
-  reloadConfig: () => Promise<void>;
+  restart: (name: string) => void;
+  toggle: (name: string) => void;
+  restartAll: () => void;
+  reloadConfig: () => void;
   goToLogs: (name: string) => void;
   openTaskPicker: () => void;
   goToDockerRebuild: (name: string) => void;
   destroySession: () => void;
-  paneMap: Record<string, string>;
+  zoomService: (name: string) => void;
+  zoomDashboard: () => void;
+  editCaptureService: (name: string) => void;
 }
 
 // eslint-disable-next-line complexity -- Flat key-dispatch handler, inherently branchy
 function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContext) {
+  if (key.ctrl || key.meta) {
+    return;
+  }
   if (key.upArrow || input === "k") {
     ctx.moveUp();
   }
@@ -33,66 +42,36 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
   }
   const selected = ctx.statuses[ctx.index];
   const selectedName = selected?.name;
-  const isBusy = selectedName ? ctx.busyServices.current.has(selectedName) : true;
-  const isUnavailable = selected?.state === "unavailable";
+  const availability = serviceAvailability(
+    ctx.capabilities,
+    selected,
+    selectedName !== undefined && ctx.busyServices.getSnapshot().has(selectedName),
+  );
 
-  if (input === "r" && selected && !isBusy && !isUnavailable) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .restart(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
+  if (input === "r" && selected && availability.control) {
+    ctx.restart(selectedName);
   }
-  if (input === "s" && selected && !isBusy && !isUnavailable) {
-    ctx.busyServices.current.add(selectedName);
-    void ctx
-      .toggle(selectedName)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.delete(selectedName);
-      });
+  if (input === "s" && selected && availability.control) {
+    ctx.toggle(selectedName);
   }
-  if (input === "l" && selected && !isUnavailable) {
+  if (input === "l" && selected && availability.logs) {
     ctx.goToLogs(selectedName);
   }
   const selectedUrl = selected?.url;
   if (input === "o" && selectedUrl) {
     void openInBrowser(selectedUrl).catch(() => undefined);
   }
-  if (input === "R" && selected?.isDocker && !isUnavailable) {
+  if (input === "R" && selected && availability.rebuild) {
     ctx.goToDockerRebuild(selectedName);
   }
-  // Detached services have no pane, so zoom/edit-capture are disabled (E4).
-  if (input === "z" && selected && !isUnavailable && !selected.isDetached) {
-    const paneId = ctx.paneMap[selectedName];
-    if (paneId) {
-      void zoomPane(paneId);
-    }
+  if (input === "z" && selected && availability.zoom) {
+    ctx.zoomService(selectedName);
   }
-  if (input === "Z") {
-    const tuiPaneId = ctx.paneMap["@tui"];
-    if (tuiPaneId) {
-      void zoomPane(tuiPaneId);
-    }
+  if (input === "Z" && canZoomDashboard(ctx.capabilities)) {
+    ctx.zoomDashboard();
   }
-  if (input === "E" && selected && !isBusy && !isUnavailable && !selected.isDetached) {
-    const paneId = ctx.paneMap[selectedName];
-    if (paneId) {
-      ctx.busyServices.current.add(selectedName);
-      void editPaneCapture(paneId, selectedName)
-        .catch(() => {
-          /* IPC error — ignore */
-        })
-        .finally(() => {
-          ctx.busyServices.current.delete(selectedName);
-        });
-    }
+  if (input === "E" && selected && availability.editOutput) {
+    ctx.editCaptureService(selectedName);
   }
   if (input === "d") {
     ctx.destroySession();
@@ -101,31 +80,11 @@ function handleDashboardInput(input: string, key: Key, ctx: DashboardInputContex
   if (input === "t") {
     ctx.openTaskPicker();
   }
-  if (input === "a" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .restartAll()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
+  if (input === "a") {
+    ctx.restartAll();
   }
-  if (input === "c" && ctx.busyServices.current.size === 0) {
-    for (const s of ctx.statuses) {
-      ctx.busyServices.current.add(s.name);
-    }
-    void ctx
-      .reloadConfig()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        ctx.busyServices.current.clear();
-      });
+  if (input === "c") {
+    ctx.reloadConfig();
   }
 }
 

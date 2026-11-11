@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const reapDetachedOrphans = vi.hoisted(() => vi.fn(async (): Promise<void> => undefined));
+
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(() => ({
     unref: vi.fn(),
@@ -75,8 +77,16 @@ vi.mock("../../src/daemon/server.js", () => {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
         list: vi.fn(() => []),
+        closeAdmission: vi.fn(),
+        settleCreates: vi.fn().mockResolvedValue(undefined),
+        ownedSessionIds: vi.fn(() => []),
+        flushShutdownResponses: vi.fn().mockResolvedValue(undefined),
+        get hasOwnedWork() {
+          return this.sessionCount > 0;
+        },
+        onOwnershipChange: undefined,
         destroy: vi.fn().mockResolvedValue(undefined),
-        reapDetachedOrphans: vi.fn(),
+        reapDetachedOrphans,
         sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
@@ -90,6 +100,14 @@ const { createShutdownAll, ensureDaemon, runDaemon } = await import("../../src/d
 const { DaemonServer } = await import("../../src/daemon/server.js");
 const { SentraHost } = await import("../../src/lib/sentra/host.js");
 const { runShutdownHook } = await import("../../src/daemon/shutdown.js");
+
+function deferredVoid() {
+  let finish: () => void = vi.fn();
+  const promise = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  return { promise, resolve: () => finish() };
+}
 
 describe("ensureDaemon", () => {
   const originalKill = process.kill;
@@ -264,6 +282,7 @@ describe("runDaemon", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
+    reapDetachedOrphans.mockResolvedValue(undefined);
     process.exit = vi.fn() as unknown as typeof process.exit;
     processOnSpy = vi.spyOn(process, "on").mockImplementation(() => process);
     // Never move the test worker's cwd; runDaemon chdirs to a stable dir.
@@ -279,8 +298,16 @@ describe("runDaemon", () => {
         start: vi.fn().mockResolvedValue(undefined),
         stop: vi.fn(),
         list: vi.fn(() => []),
+        closeAdmission: vi.fn(),
+        settleCreates: vi.fn().mockResolvedValue(undefined),
+        ownedSessionIds: vi.fn(() => []),
+        flushShutdownResponses: vi.fn().mockResolvedValue(undefined),
+        get hasOwnedWork() {
+          return this.sessionCount > 0;
+        },
+        onOwnershipChange: undefined,
         destroy: vi.fn().mockResolvedValue(undefined),
-        reapDetachedOrphans: vi.fn(),
+        reapDetachedOrphans,
         sentra: { close: vi.fn().mockResolvedValue(undefined) },
         sessionCount: 0,
         onSessionChange: undefined,
@@ -309,11 +336,31 @@ describe("runDaemon", () => {
       list: ReturnType<typeof vi.fn>;
       destroy: ReturnType<typeof vi.fn>;
       sessionCount: number;
+      hasOwnedWork: boolean;
+      onOwnershipChange?: () => void;
+      closeAdmission: ReturnType<typeof vi.fn>;
+      settleCreates: ReturnType<typeof vi.fn>;
+      ownedSessionIds: ReturnType<typeof vi.fn>;
+      flushShutdownResponses: ReturnType<typeof vi.fn>;
       onSessionChange?: (count: number) => void;
       requestShutdown?: () => void;
       sentra: { close: ReturnType<typeof vi.fn> };
     };
   }
+
+  it("awaits orphan cleanup before opening the admission socket", async () => {
+    let finishCleanup: () => void = () => undefined;
+    const cleanup = new Promise<void>((resolve) => {
+      finishCleanup = resolve;
+    });
+    reapDetachedOrphans.mockReturnValueOnce(cleanup);
+    const startup = runDaemon();
+    expect(reapDetachedOrphans).toHaveBeenCalled();
+    expect(serverInstance().start).not.toHaveBeenCalled();
+    finishCleanup();
+    await startup;
+    expect(serverInstance().start).toHaveBeenCalledOnce();
+  });
 
   it("writes PID and starts server on socket path", async () => {
     await runDaemon();
@@ -348,6 +395,7 @@ describe("runDaemon", () => {
 
     server.onSessionChange!(0); // Starts idle timer
     await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(server.stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -358,8 +406,10 @@ describe("runDaemon", () => {
     const server = serverInstance();
 
     server.onSessionChange!(0); // Starts idle timer
+    server.hasOwnedWork = true;
     server.sessionCount = 1; // Sessions active before timeout fires
     await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(server.stop).not.toHaveBeenCalled();
     expect(process.exit).not.toHaveBeenCalledWith(0);
@@ -370,8 +420,10 @@ describe("runDaemon", () => {
     const server = serverInstance();
 
     server.onSessionChange!(0); // Starts idle timer
+    server.hasOwnedWork = true;
     server.onSessionChange!(1); // Cancel idle
     await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(server.stop).not.toHaveBeenCalled();
   });
@@ -383,6 +435,7 @@ describe("runDaemon", () => {
     // No onSessionChange(0) call — the idle timer must already be armed by the
     // Startup `idle.reset()`, so a daemon that never gets a session still exits.
     await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(1);
 
     expect(server.stop).toHaveBeenCalled();
     expect(process.exit).toHaveBeenCalledWith(0);
@@ -413,6 +466,62 @@ describe("runDaemon", () => {
     expect(server.stop).toHaveBeenCalledTimes(1);
     expect(server.sentra.close).toHaveBeenCalledTimes(1);
     expect(process.exit).toHaveBeenCalledTimes(1);
+  });
+
+  it("joins RPC and both signals while cleanup and response drain are pending", async () => {
+    await runDaemon();
+    const server = serverInstance();
+    const cleanup = deferredVoid();
+    const drain = deferredVoid();
+    server.ownedSessionIds.mockReturnValue(["shell", "preparation"]);
+    server.destroy.mockReturnValueOnce(cleanup.promise);
+    server.flushShutdownResponses.mockReturnValue(drain.promise);
+    const rpc = runShutdownHook();
+    signalHandler("SIGTERM")();
+    signalHandler("SIGINT")();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.closeAdmission).toHaveBeenCalledTimes(1);
+    expect(process.exit).not.toHaveBeenCalled();
+    cleanup.resolve();
+    await rpc;
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.destroy.mock.calls).toEqual([["shell"], ["preparation"]]);
+    expect(process.exit).not.toHaveBeenCalled();
+    // Every scheduled exit joins the same real response drain.
+    server.flushShutdownResponses.mockResolvedValue(undefined);
+    drain.resolve();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(process.exit).toHaveBeenCalledTimes(1);
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("retained preparation or accepted creation keeps idle alive and clearing rearms it", async () => {
+    await runDaemon();
+    const server = serverInstance();
+    server.hasOwnedWork = true;
+    // Recheck also protects a missed notification at the exit boundary.
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(process.exit).not.toHaveBeenCalled();
+    server.onOwnershipChange!();
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(process.exit).not.toHaveBeenCalled();
+    server.hasOwnedWork = false;
+    server.onOwnershipChange!();
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(process.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("returns shutdown failure and exits nonzero after the error response drain", async () => {
+    await runDaemon();
+    const server = serverInstance();
+    server.ownedSessionIds.mockReturnValue(["failed", "healthy"]);
+    server.destroy.mockRejectedValueOnce(new Error("owned process remains"));
+    const rpc = runShutdownHook();
+    await expect(rpc).rejects.toThrow("Daemon cleanup incomplete");
+    signalHandler("SIGTERM")();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(server.destroy.mock.calls).toEqual([["failed"], ["healthy"]]);
+    expect(process.exit).toHaveBeenCalledWith(1);
   });
 
   it("passes a SentraHost into the DaemonServer", async () => {
@@ -532,11 +641,38 @@ describe("runDaemon", () => {
 });
 
 describe("createShutdownAll", () => {
+  it("shares the actual pending promise and seals admission before settling creates", async () => {
+    let release: () => void = vi.fn();
+    const server = {
+      closeAdmission: vi.fn(),
+      settleCreates: vi.fn(
+        async () =>
+          new Promise<void>((resolve) => {
+            release = resolve;
+          }),
+      ),
+      ownedSessionIds: vi.fn(() => ["live", "retained"]),
+      destroy: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn(),
+      sentra: { close: vi.fn().mockResolvedValue(undefined) },
+    };
+    const shutdown = createShutdownAll(server, vi.fn(), vi.fn());
+    const first = shutdown();
+    expect(server.closeAdmission).toHaveBeenCalledTimes(1);
+    expect(shutdown()).toBe(first);
+    expect(server.ownedSessionIds).not.toHaveBeenCalled();
+    release();
+    await first;
+    expect(server.destroy.mock.calls).toEqual([["live"], ["retained"]]);
+  });
+
   it("destroys every session, then stops the server and finalizes", async () => {
     const destroyed: string[] = [];
     const order: string[] = [];
     const server = {
-      list: () => [{ id: "a" }, { id: "b" }, { id: "c" }],
+      closeAdmission: vi.fn(),
+      settleCreates: vi.fn().mockResolvedValue(undefined),
+      ownedSessionIds: () => ["a", "b", "c"],
       destroy: async (id: string) => {
         destroyed.push(id);
       },
@@ -563,7 +699,9 @@ describe("createShutdownAll", () => {
     let stopped = false;
     let finalized = false;
     const server = {
-      list: () => [{ id: "a" }, { id: "bad" }, { id: "c" }],
+      closeAdmission: vi.fn(),
+      settleCreates: vi.fn().mockResolvedValue(undefined),
+      ownedSessionIds: () => ["a", "bad", "c"],
       destroy: async (id: string) => {
         if (id === "bad") {
           throw new Error("destroy boom");
@@ -583,7 +721,7 @@ describe("createShutdownAll", () => {
       },
     );
 
-    await shutdownAll();
+    await expect(shutdownAll()).rejects.toThrow("Daemon cleanup incomplete");
 
     expect(destroyed).toEqual(["a", "c"]);
     expect(
@@ -599,7 +737,9 @@ describe("createShutdownAll", () => {
     let finalizeCalls = 0;
     let sentraCloseCalls = 0;
     const server = {
-      list: () => [{ id: "a" }],
+      closeAdmission: vi.fn(),
+      settleCreates: vi.fn().mockResolvedValue(undefined),
+      ownedSessionIds: () => ["a"],
       destroy: async () => {
         destroyCalls += 1;
       },
@@ -630,7 +770,9 @@ describe("createShutdownAll", () => {
     let stopped = false;
     let finalized = false;
     const server = {
-      list: () => [],
+      closeAdmission: vi.fn(),
+      settleCreates: vi.fn().mockResolvedValue(undefined),
+      ownedSessionIds: () => [],
       destroy: vi.fn().mockResolvedValue(undefined),
       stop: () => {
         stopped = true;
@@ -649,7 +791,7 @@ describe("createShutdownAll", () => {
       },
     );
 
-    await shutdownAll();
+    await expect(shutdownAll()).rejects.toThrow("Daemon cleanup incomplete");
 
     expect(logs.some((m) => m.includes("error closing sentra") && m.includes("sqlite busy"))).toBe(
       true,

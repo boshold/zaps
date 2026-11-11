@@ -30,9 +30,11 @@ interface DashboardProps {
   /** Pre-sorted in Router (single source of truth shared with the input handler, F8). */
   statuses: ServiceStatus[];
   selectedIndex: number;
+  selectedBusy?: boolean;
   taskHistory: TaskRunRecord[];
   /** Optional sticky top slot — e.g. the disconnect banner when offline. */
   banner?: ReactNode;
+  hideHints?: boolean;
   /** Key-handler context; when present and `inputActive`, the dashboard owns input. */
   input?: DashboardInputContext;
   /** Whether the Router has routed input to the dashboard (false → inert). */
@@ -42,12 +44,14 @@ interface DashboardProps {
 export function Dashboard({
   statuses,
   selectedIndex,
+  selectedBusy,
   taskHistory,
   banner,
+  hideHints,
   input,
   inputActive = false,
 }: DashboardProps) {
-  const { projectName, configStale, ui } = useZaps();
+  const { projectName, backend, configStale, ui, capabilities } = useZaps();
   const { cols, compact } = useDimensions();
   const { icon } = useIcons();
   const selected = statuses[selectedIndex];
@@ -73,6 +77,7 @@ export function Dashboard({
       {banner}
       <Header
         projectName={projectName}
+        backend={backend}
         statuses={statuses}
         width={headerWidth}
         compact={compact}
@@ -107,7 +112,14 @@ export function Dashboard({
         <TaskHistorySection title="Recent Tasks" history={taskHistory} limit={3} />
       )}
       {!compact && !split && rule}
-      <FooterHints compact={compact} status={selected} width={headerWidth} />
+      <FooterHints
+        compact={compact}
+        status={selected}
+        capabilities={capabilities}
+        busy={selectedBusy}
+        width={headerWidth}
+        hidden={hideHints}
+      />
     </Box>
   );
 

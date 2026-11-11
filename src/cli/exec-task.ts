@@ -2,13 +2,8 @@ import { spawn } from "node:child_process";
 import net from "node:net";
 
 import { socketPath } from "#src/daemon/lifecycle.js";
+import { execInfoSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
-
-interface TaskExecResult {
-  command: string;
-  cwd: string;
-  env: Record<string, string>;
-}
 
 /** Split a stream into complete lines, buffering any trailing partial line. */
 function makeLineEmitter(emit: (line: string) => void): {
@@ -65,8 +60,7 @@ async function execTask(runId: string, sessionId: string): Promise<void> {
     process.stderr.write(`Error: ${res.error}\n`);
     process.exit(1);
   }
-  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-  const info = res.result as TaskExecResult;
+  const info = execInfoSchema.parse(res.result);
 
   const stream = await connectStream(socket).catch(() => null);
   if (!stream) {
@@ -107,12 +101,22 @@ async function execTask(runId: string, sessionId: string): Promise<void> {
     errEmitter.feed(d.toString());
   });
 
+  let cancelled = false;
+  const cancel = (signal: NodeJS.Signals): void => {
+    cancelled = true;
+    child.kill(signal);
+  };
+  process.on("SIGINT", () => cancel("SIGINT"));
+  process.on("SIGTERM", () => cancel("SIGTERM"));
+  process.on("SIGHUP", () => cancel("SIGTERM"));
+  let drainTimer: ReturnType<typeof setTimeout> | undefined = undefined;
   let finished = false;
   const finish = (code: number): void => {
     if (finished) {
       return;
     }
     finished = true;
+    clearTimeout(drainTimer);
     outEmitter.flush();
     errEmitter.flush();
     send("exec-task.exited", { runId, code });
@@ -129,8 +133,14 @@ async function execTask(runId: string, sessionId: string): Promise<void> {
   // All stdio streams closed — every stdout/stderr 'data' chunk delivered. 'exit'
   // Can precede the final 'data' (separate libuv events), so finishing on it would
   // Drop the tail line from both the pane tee and the daemon capture.
+  child.on("exit", () => {
+    drainTimer = setTimeout(() => {
+      emitLine("Task output drain timed out");
+      finish(1);
+    }, 1000);
+  });
   child.on("close", (code) => {
-    finish(code ?? 1);
+    finish(cancelled ? 1 : (code ?? 1));
   });
 }
 

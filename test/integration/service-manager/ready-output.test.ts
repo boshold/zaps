@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { outputOnlyCmd } from "../helpers/fixtures.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
@@ -33,9 +34,23 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
 
+    expect(mgr.getStatus("svc").state).toBe("ready");
+  });
+
+  it("observes readiness when a partial line is rewritten without a newline", async () => {
+    session = await createTestSession();
+    const paneMap = await buildTestPaneMap(session.initialPaneId, ["svc"]);
+    const config = makeConfig({
+      svc: {
+        start: `node -e "process.stdout.write('loading');setTimeout(()=>process.stdout.write('\\rREADY\\x1b[K'),800);setInterval(()=>{},60000)"`,
+        ready: { output: /^READY$/ },
+      },
+    });
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
+    await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
   });
 
@@ -50,7 +65,7 @@ describe.skipIf(!hasTmux())("ready-output integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
 
     expect(mgr.getStatus("svc").state).toBe("ready");

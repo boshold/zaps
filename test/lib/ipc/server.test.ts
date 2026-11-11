@@ -99,6 +99,7 @@ describe("IpcServer", () => {
       expect.anything(),
       expect.anything(),
       socket,
+      undefined,
     );
 
     const { write } = socket as unknown as Record<string, ReturnType<typeof vi.fn>>;

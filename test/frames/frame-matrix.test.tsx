@@ -30,6 +30,7 @@ const { Dashboard } = await import("../../src/components/Dashboard.js");
 const { LogView } = await import("../../src/components/LogView.js");
 const { DisconnectBanner } = await import("../../src/components/DisconnectBanner.js");
 const { CommandPaletteBody } = await import("../../src/components/overlay/CommandPaletteBody.js");
+const { unavailableCapabilities } = await import("../../src/lib/backend/wire.js");
 const { TaskPickerBody } = await import("../../src/components/overlay/TaskPickerBody.js");
 const { FailedOutputBody } = await import("../../src/components/overlay/FailedOutputBody.js");
 const { ToastList } = await import("../../src/components/toast/ToastList.js");
@@ -171,7 +172,7 @@ describe.each(SIZES)("dashboard frames @ $rows×$cols", ({ rows, cols }) => {
         statuses={POPULATED}
         selectedIndex={0}
         taskHistory={HISTORY}
-        banner={<DisconnectBanner />}
+        banner={<DisconnectBanner canQuitOffline />}
       />,
     );
     const frame = lastFrame() ?? "";
@@ -307,7 +308,8 @@ describe("overlay body frames", () => {
     const { lastFrame } = render(
       <TaskPickerBody
         tasks={TASKS}
-        runningKeys={new Set(["seed"])}
+        isRunning={(key) => key === "seed"}
+        capabilities={unavailableCapabilities}
         defaultMode="background"
         isActive
         onClose={() => undefined}

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { composeDown, writeComposeFile } from "../helpers/docker.js";
 import { tmuxDeps } from "../helpers/service-manager.js";
@@ -49,7 +50,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker-ready integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("redis");
 
     expect(mgr.getStatus("redis").state).toBe("ready");

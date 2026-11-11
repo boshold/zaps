@@ -1,39 +1,35 @@
-import { EventEmitter } from "node:events";
-
+import { Text } from "ink";
 import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// Mock tmux functions to prevent real tmux commands
-vi.mock("../src/lib/tmux.js", () => ({
-  zoomPane: vi.fn().mockResolvedValue(undefined),
-  editPaneCapture: vi.fn().mockResolvedValue(undefined),
-  displayPopup: vi.fn().mockResolvedValue(undefined),
-  capturePane: vi.fn().mockResolvedValue(""),
-  selectPane: vi.fn().mockResolvedValue(undefined),
-  sendKeys: vi.fn().mockResolvedValue(undefined),
-  sendCtrlC: vi.fn().mockResolvedValue(undefined),
-  panePid: vi.fn().mockResolvedValue(0),
-  killPane: vi.fn().mockResolvedValue(undefined),
-  renameWindow: vi.fn().mockResolvedValue(undefined),
-  getWindowName: vi.fn().mockResolvedValue(""),
-  getWindowOption: vi.fn().mockResolvedValue(""),
-  setWindowOption: vi.fn().mockResolvedValue(undefined),
-  currentSession: vi.fn().mockResolvedValue(""),
-  showEnv: vi.fn().mockResolvedValue(""),
-  // Quitting detaches the tmux client in managed mode; without this export the
-  // Detach throws inside its own catch and the tests below pass vacuously.
-  detachClient: vi.fn().mockResolvedValue(undefined),
-}));
+import { Header } from "../src/components/Header.js";
 
 vi.mock("../src/lib/open.js", () => ({
   openInBrowser: vi.fn().mockResolvedValue(undefined),
 }));
 
-import type { DaemonClient } from "../src/client/daemon-client.js";
+import { DaemonClient } from "../src/client/daemon-client.js";
 import { App } from "../src/components/App.js";
-import type { ServiceMeta, TaskInfo } from "../src/daemon/session.js";
+import { resolveUiConfig } from "../src/config/index.js";
+import type {
+  ProjectedServiceStatus,
+  ServiceMeta,
+  SessionSnapshot,
+  TaskInfo,
+} from "../src/daemon/session.js";
+import { AppProvider, useZaps } from "../src/hooks/useZaps.js";
+import type { BackendCapabilities } from "../src/lib/backend/types.js";
+import {
+  parseServiceStatus,
+  unavailableActions,
+  unavailableCapabilities,
+} from "../src/lib/backend/wire.js";
 import type { ServiceStatus } from "../src/lib/service/types.js";
+
+import { deferred } from "./_helpers/deferred.js";
+import { makeSessionSnapshot } from "./_helpers/session-snapshot.js";
+import { fullCapabilities, liveActions, mixedCapabilities } from "./_helpers/ui-capabilities.js";
 
 // ANSI escape sequences for special keys
 const ARROW_UP = "\x1B[A";
@@ -49,12 +45,14 @@ async function pressEscape(stdin: { write: (data: string) => void }) {
 }
 
 function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
-  const emitter = new EventEmitter();
-  const client = Object.assign(emitter, {
-    connect: vi.fn(),
+  const client = new DaemonClient("/unused", "test");
+  vi.spyOn(client, "connected", "get").mockReturnValue(true);
+  vi.spyOn(client, "uiBound", "get").mockReturnValue(true);
+  return Object.assign(client, {
+    connectUi: vi.fn(),
     disconnect: vi.fn(),
-    connected: true,
-    session: "test",
+    detach: vi.fn<DaemonClient["detach"]>().mockResolvedValue(undefined),
+    deliverUpgradeNotice: vi.fn(),
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
       projectDir: "/fake",
@@ -71,17 +69,20 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
+    terminalAction: vi.fn<DaemonClient["terminalAction"]>(async ({ action }) =>
+      action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
+    ),
     runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
-  return client as unknown as DaemonClient;
 }
 
 function renderApp(opts: {
-  statuses?: ServiceStatus[];
+  statuses?: (ServiceStatus & { actions?: ProjectedServiceStatus["actions"] })[];
   projectName?: string;
   tasks?: TaskInfo[];
   servicesMeta?: ServiceMeta[];
   paneMap?: Record<string, string>;
+  capabilities?: BackendCapabilities;
   client?: DaemonClient;
 }) {
   const statuses = opts.statuses ?? [];
@@ -91,11 +92,12 @@ function renderApp(opts: {
     ...render(
       <App
         client={client}
+        capabilities={opts.capabilities}
         paneMap={opts.paneMap ?? {}}
         projectName={opts.projectName ?? "test-project"}
         tasks={opts.tasks ?? []}
         servicesMeta={opts.servicesMeta ?? []}
-        initialStatuses={statuses}
+        initialStatuses={statuses.map((status) => parseServiceStatus(status))}
         initialTaskHistory={[]}
         // Keep these single-column assertions in the narrow layout (the detail
         // Pane has its own dedicated tests).
@@ -129,6 +131,118 @@ describe("App", () => {
     expect(lastFrame()).toContain("[q]uit/detach");
   });
 
+  it("refreshes context metadata, actions and UI on reload and manual retry", async () => {
+    const client = createMockClient();
+    const initial = makeSessionSnapshot({
+      capabilities: { ...unavailableCapabilities, panes: true },
+      statuses: [
+        {
+          name: "api",
+          state: "ready",
+          ports: [],
+          retryCount: 0,
+          actions: { ...unavailableActions, focus: true },
+        },
+      ],
+      ui: { icons: "ascii" },
+    });
+    const reload = makeSessionSnapshot({
+      ...initial,
+      capabilities: { ...initial.capabilities, popups: true },
+      ui: { icons: "unicode" },
+    });
+    const { tmuxSession: _session, managed: _managed, originPane: _origin, ...common } = reload;
+    const reattach: SessionSnapshot = {
+      ...common,
+      backend: "shell",
+      paneMap: {},
+      capabilities: unavailableCapabilities,
+      statuses: [
+        { name: "fresh", state: "stopped", ports: [], retryCount: 0, actions: unavailableActions },
+      ],
+      tasks: [{ key: "new-task", name: "New task", description: null }],
+      configStale: true,
+      ui: { icons: "nerd" },
+    };
+    const pending = deferred<void>();
+    vi.mocked(client.connectUi).mockImplementation(async () => {
+      await pending.promise;
+      client.emit("session.snapshot", reattach);
+      return reattach;
+    });
+    let retry: (() => void) | undefined;
+    function Probe() {
+      const ctx = useZaps();
+      ({ retry } = ctx);
+      return (
+        <>
+          <Header
+            projectName={ctx.projectName}
+            backend={ctx.backend}
+            statuses={ctx.statuses}
+            width={100}
+          />
+          <Text>
+            {[
+              ctx.backend,
+              ctx.ui.icons,
+              ctx.capabilities.popups,
+              ctx.statuses[0]?.name,
+              ctx.statuses[0]?.actions.focus,
+              ctx.tasks[0]?.key,
+              ctx.configStale,
+              ctx.connected,
+            ]
+              .map(String)
+              .join(":")}
+          </Text>
+        </>
+      );
+    }
+    const { lastFrame } = render(
+      <AppProvider
+        client={client}
+        paneMap={initial.paneMap}
+        projectName={initial.name}
+        tasks={initial.tasks}
+        servicesMeta={initial.servicesMeta}
+        backend={initial.backend}
+        capabilities={initial.capabilities}
+        statuses={initial.statuses}
+        ui={resolveUiConfig(initial.ui)}
+      >
+        <Probe />
+      </AppProvider>,
+    );
+    expect(lastFrame()).toContain("[tmux]");
+    expect(lastFrame()).toContain("tmux:ascii:false:api:true:undefined:false:true");
+    act(() => {
+      client.emit("session.configReloaded", reload);
+    });
+    expect(lastFrame()).toContain("[tmux]");
+    expect(lastFrame()).toContain("tmux:unicode:true:api:true:undefined:false:true");
+    act(() => {
+      client.emit("disconnect");
+      retry?.();
+    });
+    expect(lastFrame()).toContain("tmux:unicode:true:api:true:undefined:false:false");
+    await act(async () => {
+      pending.resolve();
+    });
+    expect(lastFrame()).toContain("[shell]");
+    expect(lastFrame()).not.toContain("[tmux]");
+    expect(lastFrame()).toContain("shell:nerd:false:fresh:false:new-task:true:true");
+  });
+
+  it("surfaces the pending legacy upgrade hint when the dashboard mounts", () => {
+    const client = createMockClient();
+    vi.mocked(client.deliverUpgradeNotice).mockImplementationOnce(() => {
+      client.emit("config.notice", "warn", "Restart the daemon to upgrade");
+    });
+    const { lastFrame } = renderApp({ client });
+    expect(lastFrame()).toContain("Restart the daemon to upgrade");
+  });
+
   it("shows the reload hint on session.configStale and clears it on reload", () => {
     const statuses: ServiceStatus[] = [
       { name: "db", state: "ready", ports: [5432], retryCount: 0 },
@@ -143,12 +257,7 @@ describe("App", () => {
     expect(lastFrame()).toContain("config changed — press c to reload");
 
     act(() => {
-      client.emit("session.configReloaded", {
-        paneMap: {},
-        name: "test-project",
-        tasks: [],
-        servicesMeta: [],
-      } as never);
+      client.emit("session.configReloaded", makeSessionSnapshot());
     });
     expect(lastFrame()).not.toContain("config changed");
   });
@@ -245,49 +354,7 @@ describe("Keyboard routing — Dashboard", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
-  });
-
-  it("q hands the terminal back by detaching the managed tmux client", async () => {
-    const { detachClient } = await import("../src/lib/tmux.js");
-    vi.mocked(detachClient).mockClear();
-    vi.stubEnv("ZAPS_MANAGED_TMUX", "1");
-    vi.stubEnv("TMUX", "/tmp/tmux-1000/zaps,42,0");
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-
-    const { stdin, client } = renderApp({ statuses });
-
-    act(() => {
-      stdin.write("q");
-    });
-    await act(async () => {
-      /* Flush */
-    });
-
-    expect(vi.mocked(detachClient)).toHaveBeenCalled();
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
-  });
-
-  it("q in a personal tmux leaves the client attached", async () => {
-    const { detachClient } = await import("../src/lib/tmux.js");
-    vi.mocked(detachClient).mockClear();
-    const statuses: ServiceStatus[] = [
-      { name: "db", state: "ready", ports: [5432], retryCount: 0 },
-    ];
-
-    const { stdin, client } = renderApp({ statuses });
-
-    act(() => {
-      stdin.write("q");
-    });
-    await act(async () => {
-      /* Flush */
-    });
-
-    expect(vi.mocked(detachClient)).not.toHaveBeenCalled();
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 
   it("d destroys session (shut down) once confirmed", async () => {
@@ -504,7 +571,7 @@ describe("Keyboard routing — ctrl keys", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 
   it("ctrl+d destroys session from dashboard once confirmed", async () => {
@@ -551,7 +618,7 @@ describe("Keyboard routing — ctrl keys", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.disconnect)).toHaveBeenCalled();
+    expect(client.detach).toHaveBeenCalledExactlyOnceWith({ detachHost: true });
   });
 });
 
@@ -583,7 +650,7 @@ describe("Keyboard routing — Tasks view", () => {
     ];
     const tasks: TaskInfo[] = [{ key: "build", name: "Build", description: null }];
 
-    const { stdin, client } = renderApp({ statuses, tasks });
+    const { stdin, client } = renderApp({ statuses, tasks, capabilities: mixedCapabilities });
 
     act(() => {
       stdin.write("t");
@@ -832,32 +899,55 @@ describe("Keyboard routing — Dashboard special keys", () => {
     expect(vi.mocked(openInBrowser)).toHaveBeenCalledWith("http://localhost:3000");
   });
 
-  it("z zooms pane when paneMap has entry", async () => {
-    const { zoomPane } = await import("../src/lib/tmux.js");
-    const statuses: ServiceStatus[] = [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+  it("z zooms pane with a live pane action", async () => {
+    const statuses: ProjectedServiceStatus[] = [
+      {
+        name: "api",
+        state: "ready",
+        ports: [3000],
+        retryCount: 0,
+        paneId: "%1",
+        actions: liveActions,
+      },
     ];
 
-    const { stdin } = renderApp({ statuses, paneMap: { api: "%1" } });
+    const { stdin, client } = renderApp({
+      statuses,
+      paneMap: { api: "%1" },
+      capabilities: fullCapabilities,
+    });
 
     act(() => {
       stdin.write("z");
     });
-    expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
+    expect(client.terminalAction).toHaveBeenCalledWith({
+      action: "zoom",
+      target: { kind: "service", name: "api" },
+    });
   });
 
-  it("E edits pane capture when paneMap has entry", async () => {
-    const { editPaneCapture } = await import("../src/lib/tmux.js");
-    const statuses: ServiceStatus[] = [
-      { name: "api", state: "ready", ports: [3000], retryCount: 0 },
+  it("E edits pane capture with a live pane action", async () => {
+    const statuses: ProjectedServiceStatus[] = [
+      {
+        name: "api",
+        state: "ready",
+        ports: [3000],
+        retryCount: 0,
+        paneId: "%1",
+        actions: liveActions,
+      },
     ];
 
-    const { stdin, lastFrame } = renderApp({ statuses, paneMap: { api: "%1" } });
+    const { stdin, lastFrame, client } = renderApp({
+      statuses,
+      paneMap: { api: "%1" },
+      capabilities: fullCapabilities,
+    });
 
     act(() => {
       stdin.write("E");
     });
-    expect(vi.mocked(editPaneCapture)).toHaveBeenCalledWith("%1", "api");
+    expect(client.terminalAction).toHaveBeenCalledWith({ action: "editOutput", service: "api" });
     expect(lastFrame()).toBeDefined();
   });
 });
@@ -875,13 +965,13 @@ describe("Router — task event handling", () => {
     });
 
     // Simulate daemon task.start event
-    (client as unknown as EventEmitter).emit("task.start", "build", "Build");
+    client.emit("task.start", "build", "Build");
     await act(async () => {
       /* Flush */
     });
 
     // Simulate daemon task.complete event
-    (client as unknown as EventEmitter).emit("task.complete", "build", "Build", "success");
+    client.emit("task.complete", "build", "Build", "success");
     await act(async () => {
       /* Flush */
     });

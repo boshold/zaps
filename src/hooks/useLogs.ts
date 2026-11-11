@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { DaemonClient } from "#src/client/daemon-client.js";
+import type { SessionSnapshot } from "#src/daemon/session.js";
 
 // Mirror the daemon's per-service ring buffer so a long-lived TUI can't grow without bound even if the daemon cap changes (F1).
 const MAX_CLIENT_LOG_LINES = 10_000;
@@ -36,6 +37,19 @@ export function useLogs(client: DaemonClient, serviceName: string | null) {
       }
       setLines((prev) => [...prev, ...newLines].slice(-MAX_CLIENT_LOG_LINES));
     }
+    function onSnapshot(snapshot: SessionSnapshot) {
+      cancelled = true;
+      snapshotApplied = true;
+      buffered = [];
+      setLines((snapshot.logSnapshots[serviceName ?? ""] ?? []).slice(-MAX_CLIENT_LOG_LINES));
+    }
+    function onLost() {
+      cancelled = true;
+    }
+    client.on("disconnect", onLost);
+    client.on("session.destroyed", onLost);
+    client.on("session.snapshot", onSnapshot);
+    client.on("session.configReloaded", onSnapshot);
     client.on("log.lines", onLogLines);
 
     void (async () => {
@@ -57,6 +71,10 @@ export function useLogs(client: DaemonClient, serviceName: string | null) {
 
     return () => {
       cancelled = true;
+      client.off("disconnect", onLost);
+      client.off("session.destroyed", onLost);
+      client.off("session.snapshot", onSnapshot);
+      client.off("session.configReloaded", onSnapshot);
       client.off("log.lines", onLogLines);
     };
   }, [client, serviceName]);

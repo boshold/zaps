@@ -1,10 +1,20 @@
 import { z } from "zod";
 
 import type { ConfigNotice } from "#src/config/types.js";
+import { backendErrorCodeSchema } from "#src/lib/backend/schemas.js";
+import type { BackendErrorCode } from "#src/lib/backend/schemas.js";
 import type { RequestContext } from "#src/lib/request-context.js";
 
 /** Payload of the `log.lines` daemon event. */
 export const logLinesDataSchema = z.object({ service: z.string(), lines: z.array(z.string()) });
+
+export const startAllParamsSchema = z
+  .union([
+    z.strictObject({}),
+    z.strictObject({ names: z.array(z.string()) }),
+    z.strictObject({ startup: z.literal(true) }),
+  ])
+  .optional();
 
 export interface IpcRequest {
   id: string;
@@ -21,6 +31,7 @@ export interface IpcResponse {
   id: string;
   result?: unknown;
   error?: string;
+  errorCode?: BackendErrorCode;
 }
 
 export interface IpcEvent {
@@ -56,6 +67,14 @@ export function ipcOk(id: string, result: unknown): IpcResponse {
   return { id, result };
 }
 
-export function ipcErr(id: string, error: string): IpcResponse {
-  return { id, error };
+export function ipcErr(id: string, error: unknown, code?: BackendErrorCode): IpcResponse {
+  const parsed = backendErrorCodeSchema.safeParse(
+    code ??
+      (typeof error === "object" && error !== null && "code" in error ? error.code : undefined),
+  );
+  return {
+    id,
+    error: error instanceof Error ? error.message : String(error),
+    ...(parsed.success ? { errorCode: parsed.data } : {}),
+  };
 }

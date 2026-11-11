@@ -1,32 +1,43 @@
-import { useApp as useInkApp, useInput } from "ink";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Text, useApp as useInkApp, useInput } from "ink";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
+import { TerminalActionError } from "#src/client/daemon-client.js";
 import type { DockerConfig, NoticeLevel, UiTaskMode } from "#src/config/types.js";
-import { useConnection } from "#src/hooks/useConnection.js";
+import type { SessionSnapshot } from "#src/daemon/session.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
 import { useLogs } from "#src/hooks/useLogs.js";
 import { useOverlay } from "#src/hooks/useOverlay.js";
 import { useRouter } from "#src/hooks/useRouter.js";
 import { useSelection } from "#src/hooks/useSelection.js";
 import { useServiceActions } from "#src/hooks/useServiceActions.js";
-import { useServices } from "#src/hooks/useServices.js";
 import { useToasts } from "#src/hooks/useToasts.js";
 import { useZaps } from "#src/hooks/useZaps.js";
+import {
+  canLaunchTask,
+  canRebuildDocker,
+  canZoomDashboard,
+  serviceAvailability,
+} from "#src/lib/backend/capabilities.js";
+import type { TerminalActionParams, TerminalActionResult } from "#src/lib/backend/schemas.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
-import { detachManagedClient } from "#src/lib/managed-detach.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
-import type { ServiceStatus } from "#src/lib/service/types.js";
-import { outputPopupAvailable, showOutputPopup } from "#src/lib/task/output-popup.js";
-import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
-import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
+import type { BusyServices } from "./dashboard/busyServices.js";
+import { createBusyServices } from "./dashboard/busyServices.js";
 import type { DashboardInputContext } from "./dashboard/useDashboardInput.js";
 import { DisconnectBanner } from "./DisconnectBanner.js";
 import { LogView } from "./LogView.js";
 import { COMMAND_PALETTE_ID, CommandPalette } from "./overlay/CommandPalette.js";
-import type { DockerFlags } from "./overlay/DockerRebuildOverlay.js";
 import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuildOverlay.js";
 import { FAILED_OUTPUT_ID, FailedOutputOverlay } from "./overlay/FailedOutputOverlay.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
@@ -37,22 +48,16 @@ import type { TaskRunRecord } from "./TaskRunRecord.js";
 const MAX_HISTORY = 50;
 
 export function Router({
-  initialStatuses,
   initialTaskHistory,
   autoStart,
 }: {
-  initialStatuses: ServiceStatus[];
   initialTaskHistory: TaskRunRecord[];
   autoStart?: boolean;
 }) {
   const { view, logTarget, goToLogs, goToDashboard } = useRouter();
-  const { client, paneMap, tasks, servicesMeta, ui } = useZaps();
+  const { client, tasks, servicesMeta, ui, statuses, capabilities, connected, retry } = useZaps();
   // In-app notification surface: success → transient toast, failure → sticky.
   const { notify, ackAll, toasts, dismiss } = useToasts();
-  // First consumer of the daemon disconnect/connected surface. While offline the
-  // Poll is gated (deliberate freeze of last-known state, not a silent catch).
-  const { connected, retry } = useConnection(client);
-  const statuses = useServices(client, initialStatuses, connected);
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
 
   // Sort once here (unavailable services to the bottom) and feed the SAME array to
@@ -68,10 +73,16 @@ export function Router({
 
   // Dashboard selection — clamped against the (sorted) service list.
   const dashboardSel = useSelection(sortedStatuses.length);
+  const selected = sortedStatuses[dashboardSel.index];
 
   const { exit } = useInkApp();
-  const busyServices = useRef(new Set<string>());
+  const busyServicesRef = useRef<BusyServices | null>(null);
+  busyServicesRef.current ??= createBusyServices();
+  const busyServices = busyServicesRef.current;
+  const busySnapshot = useSyncExternalStore(busyServices.subscribe, busyServices.getSnapshot);
+  const selectedBusy = selected !== undefined && busySnapshot.has(selected.name);
   const globalBusyRef = useRef(false);
+  const [lifecycleError, setLifecycleError] = useState<string>();
 
   // Logs state — now uses daemon client event stream
   const {
@@ -88,7 +99,9 @@ export function Router({
   // Running-task state for the palette's background-run guard. Set optimistically
   // On dispatch + by the task.start event; cleared by task.complete (F4). The
   // Picker's per-key duplicate guard derives in-flight keys from taskHistory.
-  const [runningTask, setRunningTask] = useState<string | null>(null);
+  const [runningTask, setRunningTask] = useState<string | null>(
+    () => initialTaskHistory.find((record) => record.result === "running")?.taskKey ?? null,
+  );
 
   function onTaskComplete(record: TaskRunRecord) {
     setTaskHistory((prev) => {
@@ -149,9 +162,19 @@ export function Router({
         notifyFailure(taskName, ui.notifications);
       }
     }
+    function handleSnapshot(snapshot: SessionSnapshot) {
+      setTaskHistory(snapshot.taskHistory);
+      setRunningTask(
+        snapshot.taskHistory.find((record) => record.result === "running")?.taskKey ?? null,
+      );
+    }
+    client.on("session.snapshot", handleSnapshot);
+    client.on("session.configReloaded", handleSnapshot);
     client.on("task.start", handleTaskStart);
     client.on("task.complete", handleTaskComplete);
     return () => {
+      client.off("session.snapshot", handleSnapshot);
+      client.off("session.configReloaded", handleSnapshot);
       client.off("task.start", handleTaskStart);
       client.off("task.complete", handleTaskComplete);
     };
@@ -169,6 +192,7 @@ export function Router({
       });
     }
     client.on("config.notice", handleConfigNotice);
+    client.deliverUpgradeNotice();
     return () => {
       client.off("config.notice", handleConfigNotice);
     };
@@ -185,13 +209,49 @@ export function Router({
     return () => clearTimeout(timer);
   }, [autoStart]);
 
-  // Build service metadata lookup
-  const svcMetaMap = new Map(servicesMeta.map((m) => [m.name, m]));
+  // Overlay callbacks can outlive the render that opened them.
+  const current = {
+    capabilities,
+    connected,
+    statuses,
+    servicesMeta,
+    tasks,
+    taskHistory,
+    runningTask,
+    ui,
+    toasts,
+  };
+  const latest = useRef(current);
+  useLayoutEffect(() => {
+    latest.current = current;
+  });
+
+  function availabilityFor(name: string) {
+    const state = latest.current;
+    const status = state.connected
+      ? state.statuses.find((entry) => entry.name === name)
+      : undefined;
+    return serviceAvailability(state.capabilities, status, busyServices.getSnapshot().has(name));
+  }
 
   // Per-consumer input gating. Exactly one base view is active at a time; the top
   // Overlay owns input instead. Each view/overlay owns its own useInput.
   const overlay = useOverlay();
   const flags = useInputRouter(view, { ready, connected });
+
+  const popupAttempt = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    function invalidatePopup() {
+      popupAttempt.current = null;
+    }
+    client.on("disconnect", invalidatePopup);
+    client.on("session.destroyed", invalidatePopup);
+    return () => {
+      invalidatePopup();
+      client.off("disconnect", invalidatePopup);
+      client.off("session.destroyed", invalidatePopup);
+    };
+  }, [client, connected, overlay.top]);
 
   // A lost daemon connection force-closes every overlay. The global keys
   // (q/Ctrl-C/r) yield to overlays, so a palette left open at the moment of
@@ -203,21 +263,23 @@ export function Router({
     }
   }, [connected, overlay]);
 
-  // Tear down the session once, shared by Ctrl-D (global), `d` (dashboard), palette.
-  function destroySession() {
+  async function destroySession() {
     if (globalBusyRef.current) {
       return;
     }
     globalBusyRef.current = true;
-    client
-      .destroySession()
-      .catch(() => {
-        /* Graceful shutdown */
-      })
-      .finally(() => {
-        client.disconnect();
-        exit();
-      });
+    setLifecycleError(undefined);
+    try {
+      await client.destroySession();
+    } catch (error) {
+      setLifecycleError(
+        `Shutdown failed. ${error instanceof Error ? error.message : String(error)}`,
+      );
+      globalBusyRef.current = false;
+      return;
+    }
+    client.disconnect();
+    exit();
   }
 
   // Every shutdown entry point (Ctrl-D, dashboard `d`, palette) goes through
@@ -231,57 +293,79 @@ export function Router({
     }
     overlay.push({
       id: SHUTDOWN_CONFIRM_ID,
-      render: () => <ShutdownConfirmOverlay onConfirm={destroySession} />,
+      render: () => <ShutdownConfirmOverlay onConfirm={() => void destroySession()} />,
     });
   }
 
-  // Detach (services keep running) — shared by `q`/Ctrl-C and the palette.
-  // In a zaps-managed tmux the client is detached first, so quitting drops the
-  // User back into their plain shell; in a personal tmux this is a no-op.
-  function detachSession() {
+  async function detachSession() {
     if (globalBusyRef.current) {
       return;
     }
-    globalBusyRef.current = true;
-    void detachManagedClient().finally(() => {
-      client.disconnect();
-      exit();
-    });
-  }
-
-  // Run services.rebuild with the same per-service busy guard the quick keys use.
-  // Shared by the docker overlay's Enter confirm.
-  function confirmDockerRebuild(name: string, overrides: Partial<DockerConfig>) {
-    if (busyServices.current.has(name)) {
+    if (!client.uiBound) {
+      if (client.canQuitOffline) {
+        globalBusyRef.current = true;
+        client.disconnect();
+        exit();
+      }
       return;
     }
-    busyServices.current.add(name);
-    void rebuildDocker(name, overrides)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.delete(name);
-      });
+    globalBusyRef.current = true;
+    setLifecycleError(undefined);
+    try {
+      await client.detach({ detachHost: true });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const hint = client.canQuitOffline ? "" : " Detach tmux manually.";
+      setLifecycleError(`Quit failed. ${detail}${hint}`);
+      globalBusyRef.current = false;
+      return;
+    }
+    exit();
+  }
+
+  async function runBusyAction(names: string[], action: () => Promise<void>) {
+    busyServices.setBusy(names, true);
+    try {
+      await action();
+    } catch {
+      /* IPC error — ignore */
+    } finally {
+      busyServices.setBusy(names, false);
+    }
+  }
+
+  function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
+    if (availabilityFor(name).control) {
+      void runBusyAction([name], async () => action(name));
+    }
+  }
+
+  function rebuildMetadata(name: string) {
+    const meta = latest.current.servicesMeta.find((entry) => entry.name === name);
+    if (meta && canRebuildDocker(meta.hasDocker, meta.group) && availabilityFor(name).rebuild) {
+      return meta;
+    }
+  }
+
+  function confirmDockerRebuild(name: string, overrides: Partial<DockerConfig>) {
+    if (rebuildMetadata(name)) {
+      runGuardedServiceAction(name, async () => rebuildDocker(name, overrides));
+    }
   }
 
   // Open the docker-rebuild overlay with this service's defaults preloaded —
   // Shared by the dashboard `R` key and the palette's rebuild command.
   function openDockerRebuild(name: string) {
-    const meta = svcMetaMap.get(name);
-    const defaults: DockerFlags = {
-      build: meta?.dockerDefaults.build ?? false,
-      forceRecreate: meta?.dockerDefaults.forceRecreate ?? false,
-      renewVolumes: meta?.dockerDefaults.renewVolumes ?? false,
-      pull: meta?.dockerDefaults.pull ?? false,
-      removeOrphans: meta?.dockerDefaults.removeOrphans ?? false,
-    };
+    const meta = rebuildMetadata(name);
+    if (!meta) {
+      return;
+    }
     overlay.push({
       id: DOCKER_REBUILD_ID,
       render: () => (
         <DockerRebuildOverlay
           serviceName={name}
-          defaults={defaults}
+          defaults={meta.dockerDefaults}
           onConfirm={confirmDockerRebuild}
         />
       ),
@@ -290,13 +374,17 @@ export function Router({
 
   // Open the help overlay (keymap + version) — shared by `?` and the palette.
   function openHelp() {
-    overlay.push({ id: HELP_OVERLAY_ID, render: () => <HelpOverlay /> });
+    const selectedName = selected?.name;
+    overlay.push({
+      id: HELP_OVERLAY_ID,
+      render: () => <HelpOverlay selectedName={selectedName} busyServices={busyServices} />,
+    });
   }
 
   // Acknowledge a single failure by clearing its sticky toast(s) (the overlay
   // Calls this on close). dismiss-by-id is safe even against a stale list.
   function dismissFailureToast(runId: string) {
-    for (const toast of toasts) {
+    for (const toast of latest.current.toasts) {
       if (toast.runId === runId && toast.sticky) {
         dismiss(toast.id);
       }
@@ -308,13 +396,55 @@ export function Router({
   // Otherwise re-fetch and snap the user's scroll back to the tail.
   const fetchTaskOutput = useCallback(async (id: string) => client.getTaskOutput(id), [client]);
 
-  // Open the failed-output overlay for a run (entry point from the `f` key on a
-  // Sticky failure). Resolves popup availability first so the overlay only offers
-  // Escalation when tmux supports it. With `ui.failOutput: popup` the overlay
-  // Escalates straight to the popup on open (Q3). Closing acks the sticky toast.
+  async function presentPopup(
+    params: Extract<TerminalActionParams, { action: "taskPicker" | "taskOutput" }>,
+    onDone?: (result: TerminalActionResult) => void,
+    onUnavailable?: () => void,
+  ) {
+    if (popupAttempt.current || !latest.current.connected || !client.uiBound) {
+      return;
+    }
+    const attempt = Symbol();
+    popupAttempt.current = attempt;
+    const isCurrent = () =>
+      popupAttempt.current === attempt && latest.current.connected && client.uiBound;
+    try {
+      const result = await client.terminalAction(params);
+      if (isCurrent()) {
+        onDone?.(result);
+      }
+    } catch (error) {
+      if (!isCurrent()) {
+        return;
+      }
+      if (error instanceof TerminalActionError) {
+        if (error.code === "backend_unavailable") {
+          onUnavailable?.();
+          return;
+        }
+        if (error.code === "terminal_busy") {
+          return;
+        }
+      }
+      notify({
+        level: "info",
+        message: error instanceof Error ? error.message : "Terminal action failed",
+        runId: null,
+        sticky: false,
+      });
+    } finally {
+      if (popupAttempt.current === attempt) {
+        popupAttempt.current = null;
+      }
+    }
+  }
+
   function openFailedOutput(runId: string, taskName: string) {
-    void (async () => {
-      const canPopup = await outputPopupAvailable();
+    const state = latest.current;
+    if (!state.connected || !client.uiBound || popupAttempt.current) {
+      return;
+    }
+    const showInApp = () => {
       overlay.push({
         id: FAILED_OUTPUT_ID,
         render: () => (
@@ -322,75 +452,62 @@ export function Router({
             runId={runId}
             taskName={taskName}
             fetchOutput={fetchTaskOutput}
-            showPopup={canPopup ? showOutputPopup : undefined}
-            startInPopup={ui.failOutput === "popup"}
+            showPopup={(id) => {
+              if (latest.current.capabilities.popups) {
+                void presentPopup({ action: "taskOutput", runId: id });
+              }
+            }}
             onClose={() => dismissFailureToast(runId)}
           />
         ),
       });
-    })();
-  }
-
-  // --- Palette action wiring: each command reuses the same IPC the quick keys
-  // Drive, including the per-service busy guard, so it is never a second path. ---
-  function runGuardedServiceAction(name: string, action: (n: string) => Promise<void>) {
-    if (busyServices.current.has(name)) {
-      return;
+    };
+    if (state.capabilities.popups && state.ui.failOutput === "popup") {
+      void presentPopup(
+        { action: "taskOutput", runId },
+        () => dismissFailureToast(runId),
+        showInApp,
+      );
+    } else {
+      showInApp();
     }
-    busyServices.current.add(name);
-    void action(name)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.delete(name);
-      });
   }
 
   function runAllServicesAction(action: () => Promise<void>) {
-    if (busyServices.current.size > 0) {
-      return;
+    if (busyServices.getSnapshot().size === 0) {
+      const names = latest.current.statuses.map(({ name }) => name);
+      void runBusyAction(names, action);
     }
-    for (const s of sortedStatuses) {
-      busyServices.current.add(s.name);
-    }
-    void action()
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.clear();
-      });
   }
 
   function zoomService(name: string) {
-    const paneId = paneMap[name];
-    if (paneId) {
-      void zoomPane(paneId);
+    if (availabilityFor(name).zoom) {
+      void client
+        .terminalAction({ action: "zoom", target: { kind: "service", name } })
+        .catch(() => undefined);
+    }
+  }
+
+  function zoomDashboard() {
+    const state = latest.current;
+    if (state.connected && canZoomDashboard(state.capabilities)) {
+      void client
+        .terminalAction({ action: "zoom", target: { kind: "dashboard" } })
+        .catch(() => undefined);
     }
   }
 
   function editCaptureService(name: string) {
-    const paneId = paneMap[name];
-    if (!paneId || busyServices.current.has(name)) {
-      return;
-    }
-    busyServices.current.add(name);
-    void editPaneCapture(paneId, name)
-      .catch(() => {
-        /* IPC error — ignore */
-      })
-      .finally(() => {
-        busyServices.current.delete(name);
+    if (availabilityFor(name).editOutput) {
+      runGuardedServiceAction(name, async () => {
+        await client.terminalAction({ action: "editOutput", service: name });
       });
+    }
   }
 
   function runTaskByKey(key: string) {
-    if (runningTask) {
-      return;
-    }
-    const task = tasks.find((t) => t.key === key);
-    if (!task) {
+    const state = latest.current;
+    if (!state.connected || state.runningTask || !state.tasks.some((task) => task.key === key)) {
       return;
     }
     // Optimistic running guard; task.start/complete events update history.
@@ -400,10 +517,22 @@ export function Router({
     });
   }
 
-  // Picker launch path: dispatch the IPC directly (the picker owns the per-key
-  // Duplicate guard + the "already running" message). Background runs surface via
-  // The task.start/complete events, which populate the running history entry.
+  function taskIsRunning(key: string) {
+    return latest.current.taskHistory.some(
+      (run) => run.taskKey === key && run.result === "running",
+    );
+  }
+
   function launchTask(key: string, mode: UiTaskMode) {
+    const state = latest.current;
+    if (
+      !state.connected ||
+      !canLaunchTask(mode, state.capabilities) ||
+      !state.tasks.some((task) => task.key === key) ||
+      taskIsRunning(key)
+    ) {
+      return;
+    }
     if (mode === "pane") {
       void client.runTaskInPane(key).catch(() => {
         /* Tmux/IPC error handled by daemon */
@@ -416,53 +545,45 @@ export function Router({
   }
 
   function openInAppTaskPicker() {
-    // Freeze the in-flight key set at open time (the render thunk is a closure).
-    // The data model keys runs by runId; the guard is checked per task key (Q12).
-    const runningKeys = new Set(
-      taskHistory.filter((r) => r.result === "running").map((r) => r.taskKey),
-    );
-    overlay.push({
-      id: TASK_PICKER_ID,
-      render: () => (
-        <TaskPicker
-          tasks={tasks}
-          runningKeys={runningKeys}
-          defaultMode={ui.task.defaultMode}
-          onRun={launchTask}
-        />
-      ),
-    });
+    if (latest.current.connected) {
+      overlay.push({
+        id: TASK_PICKER_ID,
+        render: () => <TaskPicker isRunning={taskIsRunning} onRun={launchTask} />,
+      });
+    }
   }
 
-  // `t` opens the task picker. With `ui.task.popupPicker` enabled AND a capable
-  // Host (tmux >= 3.2 + fzf), launch fzf in a tmux popup and run the pick in the
-  // Background. Otherwise — and on any popup failure or a missing dependency —
-  // Fall back to the in-app TaskPicker, which stays the primary path (P04-T04).
   function openTaskPicker() {
-    if (!ui.task.popupPicker) {
+    const state = latest.current;
+    if (!state.connected || !client.uiBound || popupAttempt.current) {
+      return;
+    }
+    if (!state.ui.task.popupPicker || !state.capabilities.popups) {
       openInAppTaskPicker();
       return;
     }
-    void (async () => {
-      try {
-        if (await popupPickerAvailable()) {
-          const key = await runPopupPicker(tasks.map((t) => ({ key: t.key, name: t.name })));
-          if (key) {
-            launchTask(key, "background");
-          }
-          return;
+    void presentPopup(
+      { action: "taskPicker" },
+      (result) => {
+        const { capabilities: liveCapabilities, ui: liveUi } = latest.current;
+        if (
+          result.action === "taskPicker" &&
+          result.taskKey !== null &&
+          liveCapabilities.popups &&
+          liveUi.task.popupPicker
+        ) {
+          launchTask(result.taskKey, "background");
         }
-      } catch {
-        /* Popup failed — fall through to the in-app picker */
-      }
-      openInAppTaskPicker();
-    })();
+      },
+      openInAppTaskPicker,
+    );
   }
 
   function openPalette() {
-    const selected = sortedStatuses[dashboardSel.index];
     const commands = buildCommandRegistry({
       selected,
+      selectedBusy: selected !== undefined && busyServices.getSnapshot().has(selected.name),
+      capabilities,
       tasks,
       actions: {
         restart: (n) => runGuardedServiceAction(n, restart),
@@ -480,7 +601,7 @@ export function Router({
         zoom: zoomService,
         editCapture: editCaptureService,
         runTask: runTaskByKey,
-        detach: detachSession,
+        detach: () => void detachSession(),
         shutdown: confirmShutdown,
         help: openHelp,
       },
@@ -494,9 +615,9 @@ export function Router({
   // Global keys — work from any base view, survive a disconnect, yield to overlays.
   useInput(
     (input, key) => {
-      // Q / ctrl+c: detach from any view (services keep running). Works offline.
+      // Q / ctrl+c: detach from any base view (services keep running).
       if (input === "q" || (key.ctrl && input === "c")) {
-        detachSession();
+        void detachSession();
         return;
       }
       // X: acknowledge — clear sticky failure toasts. Works offline (toasts are
@@ -506,11 +627,12 @@ export function Router({
         return;
       }
       // While disconnected the UI is inert except `r` (manual re-attach). No
-      // Auto-reconnect — `r` re-invokes client.connect(). The overlay-opening keys
+      // Auto-reconnect — `r` repeats the UI handshake. The overlay-opening keys
       // Below are gated behind this so a disconnect can't push an overlay that the
       // Force-pop effect would then immediately clear (one-frame flash).
       if (!connected) {
-        if (input === "r") {
+        if (input === "r" && !globalBusyRef.current) {
+          setLifecycleError(undefined);
           retry();
         }
         return;
@@ -545,24 +667,29 @@ export function Router({
   // Dashboard input context — owned here, consumed by the Dashboard's own useInput.
   const dashboardInput: DashboardInputContext = {
     statuses: sortedStatuses,
+    capabilities,
     index: dashboardSel.index,
     busyServices,
     moveUp: dashboardSel.moveUp,
     moveDown: dashboardSel.moveDown,
-    restart,
-    toggle,
-    restartAll,
-    reloadConfig: async () => client.reloadConfig(),
+    restart: (name) => runGuardedServiceAction(name, restart),
+    toggle: (name) => runGuardedServiceAction(name, toggle),
+    restartAll: () => runAllServicesAction(restartAll),
+    reloadConfig: () => runAllServicesAction(async () => client.reloadConfig()),
     goToLogs,
     openTaskPicker,
     destroySession: confirmShutdown,
-    paneMap,
+    zoomService,
+    zoomDashboard,
+    editCaptureService,
     goToDockerRebuild: openDockerRebuild,
   };
 
   if (!ready) {
     return null;
   }
+
+  const lifecycleBanner = lifecycleError && <Text color="red">{lifecycleError}</Text>;
 
   // Disconnected: show the last-known dashboard with a sticky banner regardless
   // Of which view was active, so the lost connection is never a silent blank.
@@ -571,8 +698,15 @@ export function Router({
       <Dashboard
         statuses={sortedStatuses}
         selectedIndex={dashboardSel.index}
+        selectedBusy={selectedBusy}
         taskHistory={taskHistory}
-        banner={<DisconnectBanner />}
+        banner={
+          <>
+            <DisconnectBanner canQuitOffline={client.canQuitOffline} />
+            {lifecycleBanner}
+          </>
+        }
+        hideHints
         input={dashboardInput}
         inputActive={flags.dashboard}
       />
@@ -591,6 +725,7 @@ export function Router({
         scrollUp={scrollUp}
         scrollDown={scrollDown}
         inputActive={flags.logs}
+        banner={lifecycleBanner}
       />
     );
   }
@@ -600,7 +735,9 @@ export function Router({
     <Dashboard
       statuses={sortedStatuses}
       selectedIndex={dashboardSel.index}
+      selectedBusy={selectedBusy}
       taskHistory={taskHistory}
+      banner={lifecycleBanner}
       input={dashboardInput}
       inputActive={flags.dashboard}
     />

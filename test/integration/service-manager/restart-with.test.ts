@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { ServiceManager } from "#src/lib/service/manager.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -39,7 +40,7 @@ describe.skipIf(!hasTmux())("restartWith cascade integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startAll();
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("api").state).toBe("ready");
@@ -75,7 +76,7 @@ describe.skipIf(!hasTmux())("restartWith cascade integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startAll();
     expect(mgr.getStatus("db").state).toBe("ready");
     expect(mgr.getStatus("api").state).toBe("ready");
@@ -108,7 +109,7 @@ describe.skipIf(!hasTmux())("restartWith cascade integration", () => {
       },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startAll();
     await mgr.stopService("api");
     expect(mgr.getStatus("api").state).toBe("stopped");

@@ -1,8 +1,13 @@
 import { EventEmitter } from "node:events";
+import type { Socket } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { ConfigError } from "../../src/config/errors.js";
+import type { ResolvedConfig } from "../../src/config/types.js";
+import { ProcessRunner } from "../../src/lib/backend/runtime/process-runner.js";
+import type { ServiceManager } from "../../src/lib/service/manager.js";
 
 // eslint-disable-next-line no-unsafe-type-assertion -- Test boundary
 vi.mock("node:net", () => {
@@ -64,7 +69,11 @@ vi.mock("#src/lib/tmux.js", () => {
   // Server + Session bind handles via `tmuxFor(tmuxSocket)`; the factory returns
   // The SAME stub surface for both the module exports and the handle, so
   // Assertions on the named exports still observe every call.
+  let socket: string | null = null;
   const api = {
+    getSocket: () => socket,
+    hasSession: vi.fn().mockResolvedValue(true),
+    killSession: vi.fn().mockResolvedValue(undefined),
     capturePane: vi.fn(),
     selectPane: vi.fn(),
     sendKeys: vi.fn(),
@@ -87,7 +96,13 @@ vi.mock("#src/lib/tmux.js", () => {
     swapPanes: vi.fn().mockResolvedValue(undefined),
     windowLayout: vi.fn().mockResolvedValue("prior-layout-string"),
   };
-  return { ...api, tmuxFor: vi.fn(() => api) };
+  return {
+    ...api,
+    tmuxFor: vi.fn((value: string | null) => {
+      socket = value;
+      return api;
+    }),
+  };
 });
 
 vi.mock("#src/lib/port.js", () => ({
@@ -104,9 +119,13 @@ vi.mock("#src/lib/service/manager.js", () => {
   // eslint-disable-next-line no-require-imports, global-require, no-var-requires, unicorn/prefer-module -- vi.mock factory requires synchronous require
   const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
   class MockServiceManager extends EE {
+    public disposeObservers = vi.fn();
+    public resumeRuntimeObserver = vi.fn();
     public startAll = vi.fn().mockResolvedValue(undefined);
     public stopAll = vi.fn().mockResolvedValue(undefined);
     public abortStartAll = vi.fn();
+    public closeAdmission = vi.fn();
+    public bindTaskExecution = vi.fn<ServiceManager["bindTaskExecution"]>();
     public startService = vi.fn().mockResolvedValue(undefined);
     public stopService = vi.fn().mockResolvedValue(undefined);
     public restartService = vi.fn().mockResolvedValue(undefined);
@@ -116,9 +135,48 @@ vi.mock("#src/lib/service/manager.js", () => {
   return { ServiceManager: MockServiceManager };
 });
 
+const { TmuxSessionBackend } = await import("#src/lib/backend/tmux/session.js");
+const { TmuxTerminalOperations } = await import("#src/lib/backend/tmux/operations.js");
+const { TmuxTerminalDriver } = await import("#src/lib/backend/tmux/driver.js");
+const { TmuxRuntime } = await import("#src/lib/backend/tmux/runtime.js");
 const { DaemonServer } = await import("../../src/daemon/server.js");
+const { sessionId } = await import("../../src/daemon/session.js");
 const { SentraHost } = await import("../../src/lib/sentra/host.js");
 const { sentraEnvFor } = await import("../../src/lib/sentra/config.js");
+
+function deferred<T>() {
+  let accept: (value: T) => void = () => {
+    throw new Error("Not initialized");
+  };
+  let fail: (reason: Error) => void = () => {
+    throw new Error("Not initialized");
+  };
+  const promise = new Promise<T>((resolve, reject) => {
+    accept = resolve;
+    fail = reject;
+  });
+  return { promise, resolve: accept, reject: fail };
+}
+
+function containsFailure(error: unknown, expected: Error): boolean {
+  return (
+    error === expected ||
+    (error instanceof AggregateError &&
+      error.errors.some((nested: unknown) => containsFailure(nested, expected))) ||
+    (error instanceof Error && containsFailure(error.cause, expected))
+  );
+}
+
+function configAt(projectDir = "/test"): ResolvedConfig {
+  return {
+    configPath: "/test/.zaps.mts",
+    projectDir,
+    project: { name: "test", services: {} },
+    groups: new Map(),
+    unavailableServices: new Map(),
+    lazyPaneByService: new Map(),
+  };
+}
 
 describe("DaemonServer", () => {
   let server: InstanceType<typeof DaemonServer>;
@@ -145,13 +203,393 @@ describe("DaemonServer", () => {
     tmux.getWindowName.mockResolvedValue("bash");
     tmux.getWindowOption.mockResolvedValue("on");
     tmux.setWindowOption.mockResolvedValue(undefined);
-    tmux.displayMessage.mockResolvedValue("@1");
+    tmux.displayMessage.mockImplementation(async (_target, format) =>
+      format === "#{pane_dead}" ? "0" : "@1",
+    );
     server = new DaemonServer();
   });
 
   afterEach(() => {
     server.stop();
     vi.restoreAllMocks();
+  });
+
+  describe("backend-aware creation reservations", () => {
+    const tmuxParams = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+      shellEnv: {},
+    };
+    const shellParams = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      backend: "shell",
+      shellEnv: {},
+    } satisfies Parameters<InstanceType<typeof DaemonServer>["create"]>[0];
+
+    it("captures mutable input and shares one context/build/start while loading", async () => {
+      const loading = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(loading.promise);
+      const first = { ...tmuxParams, shellEnv: { CAPTURED: "original" } };
+      const pending = server.create(first);
+      const joined = server.create({ ...first, tmuxSession: "other", originPane: "%9" });
+      first.originPane = "%mutated";
+      first.shellEnv.CAPTURED = "mutated";
+      await vi.waitFor(() => expect(mockLoadConfig).toHaveBeenCalledTimes(1));
+      await expect(
+        server.create({ ...shellParams, shellEnv: { CAPTURED: "original" } }),
+      ).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(
+        server.create({
+          ...tmuxParams,
+          shellEnv: { CAPTURED: "original" },
+          tmuxSocket: "zaps",
+          managedTmux: true,
+        }),
+      ).rejects.toMatchObject({ code: "backend_conflict" });
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      loading.resolve(configAt());
+      const session = await pending;
+      expect(await joined).toBe(session);
+      expect(session.shellEnv.CAPTURED).toBe("original");
+      expect(session.compatibilityProjection().originPane).toBe("%0");
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects incompatible and invalid requests during backend preparation", async () => {
+      const layout = deferred<Awaited<ReturnType<typeof layoutModule.createLayout>>>();
+      mockCreateLayout.mockReturnValueOnce(layout.promise);
+      const pending = server.create(tmuxParams);
+      await vi.waitFor(() => expect(mockCreateLayout).toHaveBeenCalledTimes(1));
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.create({ ...tmuxParams, tmuxSocket: "other" })).rejects.toMatchObject({
+        code: "backend_conflict",
+      });
+      const invalid = [
+        { ...tmuxParams, backend: "unknown" },
+        { ...tmuxParams, backend: undefined },
+        { ...tmuxParams, tmuxSocket: " " },
+        { ...tmuxParams, managedTmux: true },
+        { ...shellParams, managedTmux: false },
+        { ...shellParams, tmuxSocket: null },
+        { ...tmuxParams, backend: "shell" },
+      ];
+      for (const request of invalid) {
+        await expect(server.create(request)).rejects.toThrow();
+      }
+      expect(mockLoadConfig).toHaveBeenCalledTimes(1);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      layout.resolve({ paneMap: { "@tui": "%0" }, focusPane: "%0" });
+      await pending;
+    });
+
+    it("clears synchronous conflicts and checks them before lost-host recovery", async () => {
+      const session = await server.create(tmuxParams);
+      const health = vi.spyOn(session.backend, "health").mockResolvedValue("lost");
+      const destroy = vi.spyOn(session, "destroy");
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.create({ ...tmuxParams, tmuxSocket: "other" })).rejects.toMatchObject({
+        code: "backend_conflict",
+      });
+      expect(health).not.toHaveBeenCalled();
+      expect(destroy).not.toHaveBeenCalled();
+      health.mockResolvedValue("alive");
+      expect(await server.create({ ...tmuxParams, tmuxSocket: null, managedTmux: false })).toBe(
+        session,
+      );
+    });
+
+    it("reuses idle and stopped shell sessions without tmux or new startup", async () => {
+      mockLoadConfig.mockResolvedValue(configAt());
+      const session = await server.create(shellParams);
+      await session.startPromise;
+      expect(session.backend.id).toBe("shell");
+      expect(session.paneMap).toEqual({});
+      expect(session.subscribers.size).toBe(0);
+      expect(await session.backend.health()).toBe("alive");
+      await session.manager.stopAll();
+      expect(await server.create(shellParams)).toBe(session);
+      server.list();
+      session.attachSnapshot();
+      expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      expect(tmux.displayMessage).not.toHaveBeenCalled();
+      await server.destroy(session.id);
+      const replacement = await server.create(tmuxParams);
+      expect(replacement.id).toBe(session.id);
+      expect(replacement.backend.id).toBe("tmux");
+    });
+
+    it("registers the effective ID and converges different invocations", async () => {
+      mockLoadConfig.mockResolvedValue(configAt("/effective"));
+      const [first, second] = await Promise.all([
+        server.create(tmuxParams),
+        server.create({ ...tmuxParams, projectDir: "/other" }),
+      ]);
+      expect(first).toBe(second);
+      expect(server.get(first.id)).toBe(first);
+      expect(server.getByProjectDir("/effective")).toBe(first);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      await server.destroy(first.id);
+      expect(server.sessionCount).toBe(0);
+    });
+
+    it("preserves distinct effective projects from one config", async () => {
+      mockLoadConfig.mockImplementation(async (_config, invokeDir) =>
+        configAt(`${invokeDir}/project`),
+      );
+      const [first, second] = await Promise.all([
+        server.create(shellParams),
+        server.create({ ...shellParams, projectDir: "/other" }),
+      ]);
+      expect(first.id).not.toBe(second.id);
+      expect(server.get(first.id)).toBe(first);
+      expect(server.get(second.id)).toBe(second);
+      expect(server.sessionCount).toBe(2);
+    });
+
+    it("rejects incorrect hints before host allocation and accepts corrected retry", async () => {
+      mockLoadConfig.mockResolvedValue(configAt("/effective"));
+      await expect(server.create({ ...tmuxParams, resolvedProjectDir: "/wrong" })).rejects.toThrow(
+        "Resolved project directory",
+      );
+      expect(tmux.tmuxFor).not.toHaveBeenCalled();
+      const session = await server.create({
+        ...tmuxParams,
+        resolvedProjectDir: "/effective/../effective",
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
+    it("cleans failed preparations and coalesces the corrected retry", async () => {
+      const loading = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(loading.promise);
+      const first = server.create(tmuxParams);
+      const joined = server.create(tmuxParams);
+      const failures = Promise.allSettled([first, joined]);
+      loading.reject(new Error("context rejected"));
+      const results = await failures;
+      expect(results.every((result) => result.status === "rejected")).toBe(true);
+      const retryLoad = deferred<ResolvedConfig>();
+      mockLoadConfig.mockReturnValueOnce(retryLoad.promise);
+      const retry = server.create(tmuxParams);
+      const retryJoined = server.create(tmuxParams);
+      await vi.waitFor(() => expect(mockLoadConfig).toHaveBeenCalledTimes(2));
+      retryLoad.resolve(configAt());
+      expect(await retryJoined).toBe(await retry);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+    });
+
+    it("rolls back registered sessions and owned observers when count notification fails", async () => {
+      const other = await server.create(shellParams);
+      let failedSession: ReturnType<InstanceType<typeof DaemonServer>["get"]>;
+      server.onSessionChange = () => {
+        failedSession = server.list().find((session) => session !== other);
+        throw new Error("notification failed");
+      };
+      mockLoadConfig.mockResolvedValue(configAt("/other"));
+      await expect(server.create({ ...tmuxParams, projectDir: "/other" })).rejects.toThrow(
+        "notification failed",
+      );
+      expect(failedSession?.destroyed).toBe(true);
+      expect(failedSession?.manager.disposeObservers).toHaveBeenCalledTimes(1);
+      expect(failedSession?.manager.startAll).not.toHaveBeenCalled();
+      expect(server.list()).toEqual([other]);
+      expect(other.destroyed).toBe(false);
+      server.onSessionChange = undefined;
+      const retry = await server.create({ ...tmuxParams, projectDir: "/other" });
+      expect(server.get(retry.id)).toBe(retry);
+    });
+
+    it.each(["title", "resync", "partial layout"])(
+      "retains %s preparation ownership until cleanup is confirmed",
+      async (stage) => {
+        mockLoadConfig.mockResolvedValueOnce(configAt("/unrelated"));
+        const unrelated = await server.create({ ...shellParams, projectDir: "/unrelated" });
+        const preparation = new Error(`${stage} preparation failed`);
+        const cleanup = new Error("service pane survived");
+        const backendCreate = vi.spyOn(TmuxSessionBackend, "create");
+        if (stage === "title") {
+          tmux.getWindowName.mockRejectedValueOnce(preparation);
+        } else if (stage === "resync") {
+          tmux.resyncPaneSizes.mockRejectedValueOnce(preparation);
+        } else {
+          const actual =
+            await vi.importActual<typeof import("#src/lib/tmux-layout.js")>(
+              "#src/lib/tmux-layout.js",
+            );
+          mockCreateLayout.mockImplementationOnce(actual.createLayout);
+          tmux.splitPane.mockResolvedValueOnce("%1").mockRejectedValueOnce(preparation);
+          const config = configAt();
+          config.project.services = { first: { start: "true" }, second: { start: "true" } };
+          mockLoadConfig.mockResolvedValueOnce(config);
+        }
+        tmux.killPane.mockRejectedValue(cleanup);
+        tmux.paneExists.mockResolvedValue(true);
+        const failure = await server.create(tmuxParams).catch((error: unknown) => error);
+        expect(containsFailure(failure, preparation)).toBe(true);
+        expect(containsFailure(failure, cleanup)).toBe(true);
+        expect(server.list()).toEqual([unrelated]);
+        expect(tmux.killPane).toHaveBeenCalledWith("%1");
+        const allocations = mockCreateLayout.mock.calls.length;
+        const cleanupCalls = tmux.killPane.mock.calls.length;
+        await expect(server.create(shellParams)).rejects.toMatchObject({
+          code: "backend_conflict",
+        });
+        await expect(server.create({ ...tmuxParams, tmuxSocket: "other" })).rejects.toMatchObject({
+          code: "backend_conflict",
+        });
+        expect(tmux.killPane).toHaveBeenCalledTimes(cleanupCalls);
+        await expect(server.create(tmuxParams)).rejects.toThrow(
+          "Session construction cleanup failed",
+        );
+        expect(mockCreateLayout).toHaveBeenCalledTimes(allocations);
+        expect(backendCreate).toHaveBeenCalledTimes(1);
+        const verifiedCleanup = deferred<void>();
+        tmux.killPane.mockImplementationOnce(async () => verifiedCleanup.promise);
+        const retry = server.create(tmuxParams);
+        const joined = server.create(tmuxParams);
+        await vi.waitFor(() => expect(tmux.killPane).toHaveBeenCalledTimes(cleanupCalls + 2));
+        expect(mockCreateLayout).toHaveBeenCalledTimes(allocations);
+        tmux.killPane.mockResolvedValue(undefined);
+        verifiedCleanup.resolve();
+        const session = await retry;
+        expect(await joined).toBe(session);
+        expect(mockCreateLayout).toHaveBeenCalledTimes(allocations + 1);
+        expect(backendCreate).toHaveBeenCalledTimes(2);
+        expect(server.get(session.id)).toBe(session);
+        expect(server.get(unrelated.id)).toBe(unrelated);
+        expect(unrelated.destroyed).toBe(false);
+        expect(tmux.killPane).not.toHaveBeenCalledWith("%0");
+        expect(tmux.killSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it("permits backend switching only after explicit preparation cleanup succeeds", async () => {
+      const cleanup = new Error("service pane survived");
+      tmux.getWindowName.mockRejectedValueOnce(new Error("title failed"));
+      tmux.killPane.mockRejectedValue(cleanup);
+      tmux.paneExists.mockResolvedValue(true);
+      await expect(server.create(tmuxParams)).rejects.toThrow(
+        "Session construction cleanup failed",
+      );
+      const id = sessionId(tmuxParams.configPath, tmuxParams.projectDir);
+      await expect(server.destroy(id)).rejects.toThrow("Session construction cleanup failed");
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      tmux.killPane.mockResolvedValue(undefined);
+      await expect(server.destroy(id)).resolves.toBeUndefined();
+      const shell = await server.create(shellParams);
+      expect(shell.backend.id).toBe("shell");
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains failed construction cleanup ownership and blocks replacement", async () => {
+      mockLoadConfig.mockResolvedValueOnce(configAt("/unrelated"));
+      const unrelated = await server.create({ ...shellParams, projectDir: "/unrelated" });
+      const notification = new Error("notification failed");
+      const cleanup = new Error("service pane survived");
+      server.onSessionChange = () => {
+        throw notification;
+      };
+      tmux.killPane.mockImplementation(async (pane) => {
+        if (pane === "%1") {
+          throw cleanup;
+        }
+      });
+      tmux.paneExists.mockResolvedValue(true);
+      await expect(server.create(tmuxParams)).rejects.toMatchObject({
+        cause: notification,
+        errors: [
+          notification,
+          expect.objectContaining({
+            errors: [expect.objectContaining({ errors: [cleanup] })],
+          }),
+        ],
+      });
+      const closing = server.list().find((session) => session !== unrelated);
+      if (!closing) {
+        throw new Error("Missing cleanup owner");
+      }
+      expect(server.get(closing.id)).toBe(closing);
+      expect(closing.destroyed).toBe(true);
+      expect(closing.manager.disposeObservers).toHaveBeenCalledTimes(1);
+      expect(closing.manager.startAll).not.toHaveBeenCalled();
+      expect(tmux.killPane).toHaveBeenCalledWith("%1");
+      expect(tmux.paneExists).toHaveBeenCalledWith("%1");
+      server.onSessionChange = undefined;
+      const health = vi.spyOn(closing.backend, "health").mockResolvedValue("alive");
+      await expect(server.create(tmuxParams)).rejects.toThrow("Session cleanup incomplete");
+      await expect(server.create(shellParams)).rejects.toMatchObject({ code: "backend_conflict" });
+      await expect(server.destroy(closing.id)).rejects.toThrow("Session cleanup incomplete");
+      expect(health).not.toHaveBeenCalled();
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+      expect(server.get(closing.id)).toBe(closing);
+      expect(server.get(unrelated.id)).toBe(unrelated);
+      expect(unrelated.destroyed).toBe(false);
+      expect(server.sessionCount).toBe(2);
+    });
+
+    it("retains an existing session when lost-host cleanup fails", async () => {
+      const session = await server.create(tmuxParams);
+      vi.spyOn(session.backend, "health").mockResolvedValue("lost");
+      const cleanup = new Error("host cleanup failed");
+      vi.spyOn(session.backend, "dispose").mockRejectedValue(cleanup);
+      await expect(server.create(tmuxParams)).rejects.toMatchObject({ errors: [cleanup] });
+      expect(server.get(session.id)).toBe(session);
+      await expect(server.create(tmuxParams)).rejects.toThrow("Session cleanup incomplete");
+      expect(server.get(session.id)).toBe(session);
+      expect(mockCreateLayout).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes acquired process/terminal resources when backend creation rejects", async () => {
+      mockCreateLayout.mockRejectedValueOnce(new Error("layout rejected"));
+      const processes = vi.spyOn(ProcessRunner.prototype, "dispose");
+      const terminal = vi.spyOn(TmuxTerminalDriver.prototype, "dispose");
+      const operations = vi.spyOn(TmuxTerminalOperations.prototype, "dispose");
+      await expect(server.create(tmuxParams)).rejects.toThrow("layout rejected");
+      expect(processes).toHaveBeenCalled();
+      expect(terminal).toHaveBeenCalledTimes(1);
+      expect(operations).toHaveBeenCalledTimes(1);
+      expect(server.sessionCount).toBe(0);
+      expect(await server.create(tmuxParams)).toBeDefined();
+    });
+  });
+
+  it("tracks autostart once and never restarts on reuse, list or snapshots", async () => {
+    const params = {
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    };
+    const session = await server.create(params);
+    await session.startPromise;
+    expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+    await session.manager.stopAll();
+    expect(await server.create(params)).toBe(session);
+    server.list();
+    session.config.unavailableServices = new Map();
+    session.attachSnapshot();
+    expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans presentation after a post-layout construction failure", async () => {
+    tmux.getWindowName.mockRejectedValueOnce(new Error("snapshot failed"));
+    await expect(
+      server.create({
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        tmuxSession: "main",
+        originPane: "%0",
+      }),
+    ).rejects.toThrow("snapshot failed");
+    expect(tmux.killPane).toHaveBeenCalledWith("%1");
+    expect(tmux.killPane).not.toHaveBeenCalledWith("%0");
+    expect(server.sessionCount).toBe(0);
   });
 
   it("starts and listens on socket path", async () => {
@@ -348,7 +786,7 @@ describe("DaemonServer", () => {
       originPane: "%0",
     });
     expect(session.id).toBeDefined();
-    expect(session.tmuxWindow).toBe("@1");
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxWindow: "@1" });
     expect(tmux.displayMessage).toHaveBeenCalledWith("%0", "#{window_id}");
     expect(server.sessionCount).toBe(1);
     expect(server.get(session.id)).toBe(session);
@@ -368,8 +806,8 @@ describe("DaemonServer", () => {
     });
 
     expect(tmuxFor).toHaveBeenCalledWith("zaps");
-    expect(session.tmuxSocket).toBe("zaps");
-    expect(session.managedTmux).toBe(true);
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket: "zaps" });
+    expect(session.backend.getPresentation()).toMatchObject({ managedTmux: true });
     const layoutCall = mockCreateLayout.mock.calls.at(-1);
     expect(layoutCall?.[4]).toMatchObject({ tmux: expect.any(Object) });
   });
@@ -386,8 +824,8 @@ describe("DaemonServer", () => {
     });
 
     expect(tmuxFor).toHaveBeenCalledWith(null);
-    expect(session.tmuxSocket).toBeNull();
-    expect(session.managedTmux).toBe(false);
+    expect(session.backend.getPresentation()).toMatchObject({ tmuxSocket: null });
+    expect(session.backend.getPresentation()).toMatchObject({ managedTmux: false });
   });
 
   it("returns existing session on duplicate create", async () => {
@@ -502,9 +940,9 @@ describe("DaemonServer", () => {
     const s1 = await server.create(params);
     tmux.paneExists.mockResolvedValue(true);
     await expect(server.create({ ...params, originPane: "%9" })).resolves.toBe(s1);
-    expect(s1.originPane).toBe("%0");
-    expect(s1.tmuxWindow).toBe("@1");
-    expect(tmux.displayMessage).toHaveBeenCalledTimes(1);
+    expect(s1.compatibilityProjection().originPane).toBe("%0");
+    expect(s1.backend.getPresentation()).toMatchObject({ tmuxWindow: "@1" });
+    expect(tmux.displayMessage).toHaveBeenCalledTimes(2);
   });
 
   it("destroys and rebuilds when the cached @tui pane is dead (A4)", async () => {
@@ -524,8 +962,8 @@ describe("DaemonServer", () => {
 
     expect(s2).not.toBe(s1);
     expect(s1.destroyed).toBe(true);
-    expect(s2.originPane).toBe("%9");
-    expect(s2.tmuxWindow).toBe("@9");
+    expect(s2.compatibilityProjection().originPane).toBe("%9");
+    expect(s2.backend.getPresentation()).toMatchObject({ tmuxWindow: "@9" });
     expect(server.sessionCount).toBe(1);
     expect(mockCreateLayout).toHaveBeenCalledTimes(2);
   });
@@ -541,7 +979,7 @@ describe("DaemonServer", () => {
       tmuxSession: "main",
       originPane: "%0",
     });
-    expect(session.focusPane).toBe("%1");
+    expect(session.compatibilityProjection().focusPane).toBe("%1");
   });
 
   it("fires onSessionChange callback", async () => {
@@ -568,11 +1006,203 @@ describe("DaemonServer", () => {
     expect(server.get(session.id)).toBeUndefined();
   });
 
+  it("attempts every backend disposer and preserves synchronous and asynchronous failures", async () => {
+    const session = await server.create({
+      configPath: "/test/.zaps.mts",
+      projectDir: "/test",
+      tmuxSession: "main",
+      originPane: "%0",
+    });
+    const operationsFailure = new Error("operations cleanup failed");
+    const terminalFailure = new Error("terminal cleanup failed");
+    const runtimeFailure = new Error("runtime cleanup failed");
+    const operations = vi
+      .spyOn(TmuxTerminalOperations.prototype, "dispose")
+      .mockImplementationOnce(() => {
+        throw operationsFailure;
+      });
+    const terminal = vi
+      .spyOn(TmuxTerminalDriver.prototype, "dispose")
+      .mockRejectedValueOnce(terminalFailure);
+    const runtime = vi.spyOn(TmuxRuntime.prototype, "dispose").mockImplementationOnce(() => {
+      throw runtimeFailure;
+    });
+    await expect(session.backend.dispose()).rejects.toMatchObject({
+      errors: [
+        expect.objectContaining({ errors: [operationsFailure, terminalFailure, runtimeFailure] }),
+      ],
+    });
+    expect(operations).toHaveBeenCalledTimes(1);
+    expect(terminal).toHaveBeenCalledTimes(1);
+    expect(runtime).toHaveBeenCalledTimes(1);
+  });
+
   it("destroy is no-op for unknown session", async () => {
     await expect(server.destroy("unknown")).resolves.toBeUndefined();
   });
 
   describe("request routing", () => {
+    it.each(["close", "error"])(
+      "ACKs subscriptions before binding and revokes on %s",
+      async (event) => {
+        await server.start("/tmp/test.sock");
+        const session = await server.create({
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          tmuxSession: "main",
+          originPane: "%0",
+        });
+        session.config.unavailableServices = new Map();
+        const { default: net } = await import("node:net");
+        const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+        const listener = z
+          .custom<(socket: Socket) => void>((value) => typeof value === "function")
+          .parse(mockServer._connectionHandler);
+        const socket = net.createConnection("/tmp/test.sock");
+        const callbacks: (() => void)[] = [];
+        const responses: string[] = [];
+        // eslint-disable-next-line prefer-await-to-callbacks -- test controls socket flush
+        const write = vi.fn((line: string, flushed?: (failure?: Error | null) => void) => {
+          responses.push(line);
+          if (flushed) {
+            callbacks.push(() => flushed());
+          }
+          return true;
+        });
+        Object.assign(socket, { writable: true, destroyed: false, write });
+        listener(socket);
+        const send = (id: string, method: string, params?: unknown) =>
+          socket.emit(
+            "data",
+            Buffer.from(`${JSON.stringify({ id, method, session: session.id, params })}\n`),
+          );
+        send("subscribe", "subscribe", { events: [] });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+        send("early", "session.attach", { ui: true });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+        expect(responses[1]).toContain("invalid_request");
+        callbacks[0]();
+        socket.emit(
+          "data",
+          Buffer.from(
+            [
+              JSON.stringify({
+                id: "attach",
+                method: "session.attach",
+                session: session.id,
+                params: { ui: true },
+              }),
+              JSON.stringify({
+                id: "before-attach-ack",
+                method: "terminal.action",
+                session: session.id,
+                params: { action: "taskPicker" },
+              }),
+              "",
+            ].join("\n"),
+          ),
+        );
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(4));
+        expect(session.getUiBinding(socket)).toMatchObject({
+          socket,
+          sessionId: session.id,
+          acknowledged: false,
+        });
+
+        expect(responses[3]).toContain("invalid_request");
+        const oldAttachAcknowledgement = callbacks.at(2);
+        session.bindUi(socket);
+        oldAttachAcknowledgement?.();
+        expect(session.getUiBinding(socket)?.acknowledged).toBe(false);
+        send("stale-attach-ack", "terminal.action", { action: "taskPicker" });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(5));
+        expect(responses[4]).toContain("invalid_request");
+        send("fresh-attach", "session.attach", { ui: true });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(6));
+        callbacks[5]();
+        const { terminal } = session.backend;
+        if (!terminal) {
+          throw new Error("Expected terminal driver");
+        }
+        vi.spyOn(terminal, "taskPicker").mockResolvedValueOnce(null);
+        send("after-attach-ack", "terminal.action", { action: "taskPicker" });
+        await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(7));
+        expect(responses[6]).toContain('"taskKey":null');
+        expect(socket.listenerCount("close")).toBe(1);
+        socket.emit(event, new Error("connection lost"));
+        expect(session.getUiBinding(socket)).toBeUndefined();
+        expect(session.subscribers.has(socket)).toBe(false);
+        callbacks[0]();
+        expect(() => session.bindUi(socket)).toThrow("invalid_request");
+        server.stop();
+      },
+    );
+
+    it.each(["detach", "close", "error", "resubscribe"])(
+      "never lets an old subscribe ACK authorize a replacement after %s",
+      async (removal) => {
+        await server.start("/tmp/test.sock");
+        const session = await server.create({
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          tmuxSession: "main",
+          originPane: "%0",
+        });
+        session.config.unavailableServices = new Map();
+        session.config.unavailableServices = new Map();
+        const { default: net } = await import("node:net");
+        const mockServer = vi.mocked(net.createServer).mock.results[0].value;
+        const listener = z
+          .custom<(socket: Socket) => void>((value) => typeof value === "function")
+          .parse(mockServer._connectionHandler);
+        const socket = net.createConnection("/tmp/test.sock");
+        const callbacks: (() => void)[] = [];
+        const responses: string[] = [];
+        // eslint-disable-next-line prefer-await-to-callbacks -- test controls socket flush
+        const write = vi.fn((line: string, flushed?: (failure?: Error | null) => void) => {
+          responses.push(line);
+          if (flushed) {
+            callbacks.push(() => flushed());
+          }
+          return true;
+        });
+        Object.assign(socket, { writable: true, destroyed: false, write });
+        listener(socket);
+        const request = async (method: string, params?: unknown) => {
+          const count = responses.length + 1;
+          socket.emit(
+            "data",
+            Buffer.from(
+              `${JSON.stringify({ id: String(count), method, session: session.id, params })}\n`,
+            ),
+          );
+          await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(count));
+          return responses[count - 1];
+        };
+        await request("subscribe", { events: [] });
+        const [acknowledgeOld] = callbacks;
+        if (removal === "detach") {
+          await request("session.detach");
+        } else if (removal !== "resubscribe") {
+          socket.emit(removal, new Error("connection lost"));
+        }
+        await request("subscribe", { events: [] });
+        const acknowledgeReplacement = callbacks.at(-1);
+        const early = await request("session.attach", { ui: true });
+        expect(early).toContain("invalid_request");
+        acknowledgeOld();
+        const stale = await request("session.attach", { ui: true });
+        expect(stale).toContain("invalid_request");
+        expect(session.getUiBinding(socket)).toBeUndefined();
+        acknowledgeReplacement?.();
+        const accepted = await request("session.attach", { ui: true });
+        expect(accepted).not.toContain("error");
+        expect(session.getUiBinding(socket)).toMatchObject({ socket, sessionId: session.id });
+        session.removeSubscriber(socket);
+        server.stop();
+      },
+    );
+
     it("handles daemon.ping", async () => {
       await server.start("/tmp/test.sock");
       const netModule = await import("node:net");
@@ -580,7 +1210,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -603,7 +1233,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -623,7 +1253,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -643,7 +1273,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -663,7 +1293,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -690,7 +1320,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -710,7 +1340,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -735,7 +1365,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -789,7 +1419,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -821,7 +1451,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -846,7 +1476,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 
@@ -859,8 +1489,9 @@ describe("DaemonServer", () => {
       expect(response.error).toBe("daemon string error");
     });
 
-    it("destroy completes when killPane rejects", async () => {
+    it("destroy completes when an already-gone pane rejects killing", async () => {
       tmux.killPane.mockRejectedValue(new Error("pane already dead"));
+      tmux.paneExists.mockResolvedValue(false);
 
       const session = await server.create({
         configPath: "/test/.zaps.mts",
@@ -880,7 +1511,7 @@ describe("DaemonServer", () => {
       const mockServer = vi.mocked(net.createServer).mock.results[0].value;
       const handler = mockServer._connectionHandler as (socket: EventEmitter) => void;
 
-      const socket = new EventEmitter();
+      const socket = Object.assign(new EventEmitter(), { writable: true });
       (socket as unknown as Record<string, unknown>).write = vi.fn();
       handler(socket);
 

@@ -1,24 +1,39 @@
-import type { SentraConfig, TaskConfig } from "#src/config/types.js";
-import { execCommand, execCommandWithResult } from "#src/lib/exec.js";
+import type { ExecResult, SentraConfig, TaskConfig } from "#src/config/types.js";
+import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
+import type { ConfiguredTaskOutcome } from "#src/lib/backend/types.js";
 import { sentraEnvFor } from "#src/lib/sentra/config.js";
 import type { SentraDeps } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
-import { defaultTmux } from "#src/lib/tmux-default.js";
-import type { TmuxHandle } from "#src/lib/tmux.js";
 
-/** The tmux command a popup task issues. */
-type RunnerTmux = Pick<TmuxHandle, "displayPopup">;
+type TaskRunMode = "background" | "configured";
+
+interface TaskPopupRequest {
+  key: string;
+  title: string;
+  commands: string[];
+  cwd: string;
+  env: Record<string, string>;
+  width: string;
+  height: string;
+}
+
+interface TaskPresentation {
+  popup(request: TaskPopupRequest): Promise<ConfiguredTaskOutcome>;
+}
 
 interface TaskRunnerDeps {
   tasks: Record<string, TaskConfig>;
+  assertAdmission?: () => void;
+  commandExecutor: CommandExecutor;
+  env?: Record<string, string>;
+  mode: TaskRunMode;
   statuses: Map<string, ServiceStatus>;
   projectDir: string;
   services?: Record<string, { cwd?: string }>;
   onProgress?: (key: string, result: "success" | "error") => void;
   onLine?: (key: string, line: string) => void;
-  /** Tmux surface for popup tasks; defaults to the env-based handle. */
-  tmux?: RunnerTmux;
+  presentation?: TaskPresentation;
   /** Sentra env injection for opted-in tasks. */
   sentra?: SentraDeps;
   sentraConfig?: SentraConfig;
@@ -26,24 +41,50 @@ interface TaskRunnerDeps {
 
 interface ExecuteContext {
   taskCwd: string;
+  commandExecutor: CommandExecutor;
+  mode: TaskRunMode;
   resolvedEnv: Record<string, string>;
-  envSpread: { env?: Record<string, string> };
   emitLine: (line: string) => void;
   serviceCtx: ReturnType<typeof buildServiceContext>;
   projectDir: string;
-  tmux: RunnerTmux;
+  key: string;
+  presentation?: TaskPresentation;
 }
 
 async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
+  const execute = async (commands: string[], cwd = ctx.taskCwd, env = ctx.resolvedEnv) => {
+    if (t.popup && ctx.mode === "configured" && ctx.presentation) {
+      const popupCfg = typeof t.popup === "object" ? t.popup : {};
+      const outcome = await ctx.presentation.popup({
+        key: ctx.key,
+        cwd,
+        commands,
+        title: t.name,
+        width: popupCfg.width ?? "80%",
+        height: popupCfg.height ?? "80%",
+        env,
+      });
+      if (outcome.kind === "completed") {
+        return { success: outcome.exitCode === 0, exitCode: outcome.exitCode, output: [] };
+      }
+    }
+    let result: ExecResult = { success: true, exitCode: 0, output: [] };
+    for (const command of commands) {
+      result = await ctx.commandExecutor.execute(command, { cwd, env, onLine: ctx.emitLine });
+      if (!result.success) {
+        break;
+      }
+    }
+    return result;
+  };
   if (t.run) {
     await t.run({
-      async exec(cmd, opts) {
-        return execCommandWithResult(cmd, {
-          cwd: opts?.cwd ?? ctx.taskCwd,
-          env: opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
-          onLine: ctx.emitLine,
-        });
-      },
+      exec: async (cmd, opts) =>
+        execute(
+          [cmd],
+          opts?.cwd ?? ctx.taskCwd,
+          opts?.env ? { ...ctx.resolvedEnv, ...opts.env } : ctx.resolvedEnv,
+        ),
       stdout: {
         write(text) {
           const lines = text.endsWith("\n") ? text.slice(0, -1) : text;
@@ -58,35 +99,14 @@ async function executeTask(t: TaskConfig, ctx: ExecuteContext): Promise<void> {
     });
   } else if (t.commands) {
     const commands = Array.isArray(t.commands) ? t.commands : [t.commands];
-    const resolvedCommands = commands.map((cmd) =>
-      typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd,
+    const result = await execute(
+      commands.map((cmd) => (typeof cmd === "function" ? cmd(ctx.serviceCtx) : cmd)),
     );
-
-    if (t.popup) {
-      const popupCfg = typeof t.popup === "object" ? t.popup : {};
-      const joined = resolvedCommands.join(" && ");
-      const wrapped = `${joined}; echo; echo 'Press Enter to close...'; read`;
-      await ctx.tmux.displayPopup({
-        cwd: ctx.taskCwd,
-        command: wrapped,
-        title: t.name,
-        width: popupCfg.width ?? "80%",
-        height: popupCfg.height ?? "80%",
-        ...(Object.keys(ctx.resolvedEnv).length > 0 ? { env: ctx.resolvedEnv } : {}),
-      });
-    } else {
-      for (const resolved of resolvedCommands) {
-        await execCommand(resolved, {
-          cwd: ctx.taskCwd,
-          ...ctx.envSpread,
-          onLine: ctx.emitLine,
-        });
-      }
+    if (!result.success) {
+      throw new Error(`Command failed with code ${result.exitCode}`);
     }
   }
 }
-
-export type { TaskRunnerDeps };
 
 export async function runTaskWithDeps(
   key: string,
@@ -120,20 +140,22 @@ export async function runTaskWithDeps(
   // Resolve env
   const serviceCtx = buildServiceContext(deps.statuses, deps.projectDir, deps.services);
   const sentraEnv = await sentraEnvFor(deps.sentra, deps.sentraConfig, t.sentra, key);
-  const resolvedEnv = { ...sentraEnv, ...resolveEnv(t.env, serviceCtx) };
+  const resolvedEnv = { ...deps.env, ...sentraEnv, ...resolveEnv(t.env, serviceCtx) };
   const taskCwd = t.cwd ?? deps.projectDir;
-  const envSpread = Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {};
   const emitLine = (line: string) => deps.onLine?.(key, line);
 
   try {
+    deps.assertAdmission?.();
     await executeTask(t, {
       taskCwd,
+      commandExecutor: deps.commandExecutor,
+      mode: deps.mode,
       resolvedEnv,
-      envSpread,
       emitLine,
       serviceCtx,
       projectDir: deps.projectDir,
-      tmux: deps.tmux ?? defaultTmux,
+      key,
+      presentation: deps.presentation,
     });
   } catch {
     results.set(key, "error");
@@ -145,3 +167,5 @@ export async function runTaskWithDeps(
   deps.onProgress?.(key, "success");
   return true;
 }
+
+export type { TaskRunnerDeps, TaskRunMode, TaskPopupRequest, TaskPresentation };

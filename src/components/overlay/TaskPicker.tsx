@@ -1,9 +1,9 @@
 import { Box } from "ink";
 
 import type { UiTaskMode } from "#src/config/types.js";
-import type { TaskInfo } from "#src/daemon/session.js";
 import { useDimensions } from "#src/hooks/useDimensions.js";
 import { useOverlay } from "#src/hooks/useOverlay.js";
+import { useZaps } from "#src/hooks/useZaps.js";
 
 import { PICKER_ROWS, TaskPickerBody } from "./TaskPickerBody.js";
 
@@ -12,12 +12,7 @@ const TASK_PICKER_ID = "task-picker";
 const PICKER_WIDTH = 60;
 
 interface TaskPickerProps {
-  /** Tasks to choose from, frozen at open time. */
-  tasks: TaskInfo[];
-  /** Task keys with an in-flight run — the per-key duplicate-launch guard (Q12). */
-  runningKeys: Set<string>;
-  /** Default launch mode for `Enter` (`ui.task.defaultMode`). */
-  defaultMode: UiTaskMode;
+  isRunning: (key: string) => boolean;
   /** Launch a task; `mode` is `background` or `pane`. */
   onRun: (key: string, mode: UiTaskMode) => void;
 }
@@ -28,7 +23,8 @@ interface TaskPickerProps {
  * render-testable). Input ownership is gated on `isTop`, so a stacked overlay
  * above it takes over.
  */
-function TaskPicker({ tasks, runningKeys, defaultMode, onRun }: TaskPickerProps) {
+function TaskPicker({ isRunning, onRun }: TaskPickerProps) {
+  const { capabilities, tasks, ui } = useZaps();
   const { cols, rows } = useDimensions();
   const { isTop, pop } = useOverlay();
 
@@ -50,8 +46,9 @@ function TaskPicker({ tasks, runningKeys, defaultMode, onRun }: TaskPickerProps)
     >
       <TaskPickerBody
         tasks={tasks}
-        runningKeys={runningKeys}
-        defaultMode={defaultMode}
+        isRunning={isRunning}
+        capabilities={capabilities}
+        defaultMode={ui.task.defaultMode}
         isActive={isTop(TASK_PICKER_ID)}
         onClose={pop}
         onRun={onRun}

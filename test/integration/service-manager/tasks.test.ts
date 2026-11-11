@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import type { TaskConfig } from "#src/config/types.js";
+import { execCommandWithResult } from "#src/lib/exec.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { runTaskWithDeps } from "#src/lib/task/runner.js";
 
@@ -25,6 +27,14 @@ describe("tasks integration", () => {
       "build",
       {
         tasks,
+        mode: "background",
+        commandExecutor: {
+          execute: async (command, options) =>
+            execCommandWithResult(command, {
+              ...options,
+              env: z.record(z.string(), z.string()).parse(options.env),
+            }),
+        },
         statuses: makeStatuses(),
         projectDir: "/tmp",
         onProgress: (key, result) => {
@@ -55,6 +65,14 @@ describe("tasks integration", () => {
       "fail",
       {
         tasks,
+        mode: "background",
+        commandExecutor: {
+          execute: async (command, options) =>
+            execCommandWithResult(command, {
+              ...options,
+              env: z.record(z.string(), z.string()).parse(options.env),
+            }),
+        },
         statuses: makeStatuses(),
         projectDir: "/tmp",
         onProgress: (key, result) => {
@@ -90,6 +108,14 @@ describe("tasks integration", () => {
       "seed",
       {
         tasks,
+        mode: "background",
+        commandExecutor: {
+          execute: async (command, options) =>
+            execCommandWithResult(command, {
+              ...options,
+              env: z.record(z.string(), z.string()).parse(options.env),
+            }),
+        },
         statuses: makeStatuses(),
         projectDir: "/tmp",
         onProgress: (key) => {
@@ -125,6 +151,14 @@ describe("tasks integration", () => {
       "seed",
       {
         tasks,
+        mode: "background",
+        commandExecutor: {
+          execute: async (command, options) =>
+            execCommandWithResult(command, {
+              ...options,
+              env: z.record(z.string(), z.string()).parse(options.env),
+            }),
+        },
         statuses: makeStatuses(),
         projectDir: "/tmp",
         onProgress: (key, result) => {

@@ -1,4 +1,24 @@
-export type * from "./types.js";
+export type {
+  DockerReadinessContext,
+  EnvConfig,
+  ExecInfo,
+  ReadyConfig,
+  ReadyDeps,
+  ReadyDocker,
+  ReadyFn,
+  ReadyHttp,
+  ReadyOutput,
+  ReadyPort,
+  ServiceActionResult,
+  ServiceContext,
+  ServiceState,
+  ServiceStatus,
+  UrlOptions,
+  isReadyDocker,
+  isReadyHttp,
+  isReadyOutput,
+  isReadyPort,
+} from "./types.js";
 export { canTransition, transition, createServiceStatus } from "./state.js";
 export { topoSort, detectCycles, reverseTopoSort } from "./graph.js";
 export { waitForReady } from "./ready.js";

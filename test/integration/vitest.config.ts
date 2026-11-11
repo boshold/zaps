@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     include: ["test/integration/**/*.test.ts"],
+    exclude: ["test/integration/shell/**", "**/node_modules/**"],
     testTimeout: 60_000,
     hookTimeout: 30_000,
     pool: "forks",
@@ -14,6 +15,7 @@ export default defineConfig({
     globalSetup: "./test/integration/global-setup.ts",
     coverage: {
       provider: "v8",
+      reportsDirectory: "coverage/integration-tmux",
       reporter: ["text", "json-summary", "json"],
       include: ["src/**"],
       exclude: ["src/config/native-babel.ts"],

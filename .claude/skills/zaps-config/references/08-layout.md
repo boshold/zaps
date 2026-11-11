@@ -1,4 +1,9 @@
-# Layout — LayoutNode Tree
+# Layout and backend presentation
+
+Layout describes tmux panes. Shell ignores valid layout and lazy-pane preferences
+while retaining normal config validation and `flags.start` autostart behavior.
+It allocates no dashboard/service panes and exposes no focus, zoom, popup or raw
+input operation. Read logs and control services through the UI or CLI instead.
 
 ## LayoutNode Type
 

@@ -1,202 +1,293 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+
+import { z } from "zod";
+
+import {
+  createProcessInspection,
+  sameProcess,
+} from "#src/lib/backend/runtime/process-inspection.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 
 import { daemonDir } from "./lifecycle.js";
 
-/** A process identity used to detect PID reuse before reaping (R10). */
-interface ProcInfo {
-  /** Start-time (stable for a process's lifetime): Linux `/proc` field 22, or
-   * macOS `ps -o lstart`. Compared as an opaque string, never interpreted. */
-  startTime: string;
-  /** Full command line (Linux `/proc/<pid>/cmdline`, macOS `ps -o command`). */
-  cmdline: string;
-}
-
-interface DetachedEntry {
-  pid: number;
-  startTime: string;
-  cmdline: string;
-}
-
-/**
- * Parse `/proc/<pid>/stat` + `/proc/<pid>/cmdline` for the reuse-safe identity
- * (Linux). Returns null when `/proc` is absent or the pid is gone.
- */
-function readProcInfoFromProc(pid: number): ProcInfo | null {
-  try {
-    const stat = fs.readFileSync(`/proc/${String(pid)}/stat`, "utf8");
-    // `comm` (field 2) may contain spaces and parens — parse after the final ')'.
-    const close = stat.lastIndexOf(") ");
-    if (close === -1) {
-      return null;
-    }
-    // After comm: index 0 = state (field 3); starttime is field 22 → index 19.
-    const fields = stat.slice(close + 2).split(" ");
-    const startTime = fields[19] ?? "";
-    if (!startTime) {
-      return null;
-    }
-    const cmdlineRaw = fs.readFileSync(`/proc/${String(pid)}/cmdline`, "utf8");
-    // `/proc/<pid>/cmdline` separates args with NUL; join them for a stable key.
-    const cmdline = cmdlineRaw.split(String.fromCharCode(0)).join(" ").trim();
-    return { startTime, cmdline };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Derive the same reuse-safe identity from `ps` on macOS, which has no `/proc`.
- * `lstart` is a fixed wall-clock start time (stable for the process's lifetime)
- * and `command` is the full argv — together they detect PID reuse just like the
- * Linux path. Queried separately so the space-containing `lstart` never has to
- * be split out of a shared line. Returns null when the pid is gone.
- */
-function psField(pid: number, field: string): string {
-  return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-}
-
-function readProcInfoFromPs(pid: number): ProcInfo | null {
-  try {
-    const startTime = psField(pid, "lstart");
-    if (!startTime) {
-      return null;
-    }
-    const cmdline = psField(pid, "command");
-    return { startTime, cmdline };
-  } catch {
-    // Process gone (ps exits non-zero) or ps unavailable — degrade to "don't reap".
-    return null;
-  }
-}
-
-/**
- * Read a live PID's reuse-safe identity, or null when unavailable — so the
- * registry degrades to "don't reap" rather than risk killing an unrelated pid.
- */
-function defaultReadProcInfo(pid: number): ProcInfo | null {
-  return process.platform === "darwin" ? readProcInfoFromPs(pid) : readProcInfoFromProc(pid);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isDetachedEntry(value: unknown): value is DetachedEntry {
-  return (
-    isRecord(value) &&
-    typeof value.pid === "number" &&
-    typeof value.startTime === "string" &&
-    typeof value.cmdline === "string"
-  );
-}
-
-function defaultKill(pid: number, signal: NodeJS.Signals): void {
-  process.kill(pid, signal);
-}
+const positivePid = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+const identitySchema = z.object({
+  pid: positivePid,
+  startTime: z.string().min(1),
+  pgid: positivePid,
+  sid: z.union([positivePid, z.string().regex(/^[\da-f]+$/i)]),
+  cmdline: z.string().optional(),
+});
+const entrySchema = z.object({
+  pid: positivePid,
+  startTime: z.string(),
+  cmdline: z.string().optional(),
+  identity: identitySchema.optional(),
+  ownedMembers: z.array(identitySchema).default([]),
+});
+type DetachedEntry = z.infer<typeof entrySchema>;
 
 export interface DetachedRegistryDeps {
-  /** Bookkeeping file path (defaults to `<runtimeDir>/detached.json`). */
   filePath: string;
-  /** Read a live PID's start-time + cmdline, or null when unavailable. */
-  readProcInfo: (pid: number) => { startTime: string; cmdline: string } | null;
-  /** Signal a process (group) — defaults to `process.kill`. */
+  readProcessIdentity: (pid: number) => Promise<ProcessIdentity | null>;
+  getProcessMembers: (identity: ProcessIdentity) => Promise<ProcessIdentity[]>;
   kill: (pid: number, signal: NodeJS.Signals) => void;
+  diagnostic: (message: string) => void;
+  termGraceMs: number;
+  killWaitMs: number;
+  probeWaitMs: number;
+  pollMs: number;
 }
 
-/**
- * Tracks PIDs of detached children in `detached.json` so a daemon crash/SIGKILL
- * never leaves orphaned, port-holding children (R10). Detached children run in
- * their own process group precisely so they survive parent signals, which is
- * exactly why they must be reaped explicitly on the next daemon startup.
- */
 export class DetachedRegistry {
   private readonly overrides: Partial<DetachedRegistryDeps>;
-  /** Lazily resolved so construction never touches the filesystem (`daemonDir`). */
   private resolved: DetachedRegistryDeps | null = null;
+  private pending: Promise<void> = Promise.resolve();
 
-  public constructor(deps?: Partial<DetachedRegistryDeps>) {
-    this.overrides = deps ?? {};
+  public constructor(deps: Partial<DetachedRegistryDeps> = {}) {
+    this.overrides = deps;
   }
 
   private get deps(): DetachedRegistryDeps {
     this.resolved ??= {
+      ...createProcessInspection(),
       filePath: this.overrides.filePath ?? path.join(daemonDir(), "detached.json"),
-      readProcInfo: this.overrides.readProcInfo ?? defaultReadProcInfo,
-      kill: this.overrides.kill ?? defaultKill,
+      kill: (pid, signal) => {
+        process.kill(pid, signal);
+      },
+      diagnostic: (message) => {
+        process.stderr.write(`${message}\n`);
+      },
+      termGraceMs: 5000,
+      killWaitMs: 1000,
+      probeWaitMs: 1000,
+      pollMs: 25,
+      ...this.overrides,
     };
     return this.resolved;
   }
 
-  /** Record a freshly spawned child, capturing its start-time/cmdline identity. */
-  public record(pid: number): void {
-    const data = this.load();
-    const info = this.deps.readProcInfo(pid);
-    data[String(pid)] = {
-      pid,
-      startTime: info?.startTime ?? "",
-      cmdline: info?.cmdline ?? "",
-    };
-    this.save(data);
-  }
-
-  /** Drop a child from the file on clean stop/exit. */
-  public remove(pid: number): void {
-    const key = String(pid);
-    const data = this.load();
-    if (!(key in data)) {
-      return;
-    }
-    const next: Record<string, DetachedEntry> = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (k !== key) {
-        next[k] = v;
+  private async enqueue(operation: () => Promise<void>): Promise<void> {
+    const previous = this.pending;
+    this.pending = (async () => {
+      await previous;
+      try {
+        await operation();
+      } catch (error) {
+        this.deps.diagnostic(`Detached cleanup incomplete: ${String(error)}`);
       }
-    }
-    this.save(next);
+    })();
+    return this.pending;
   }
 
-  /**
-   * On daemon startup: SIGTERM the process group of every leftover entry whose
-   * live start-time AND cmdline still match the record (PID-reuse-safe), then
-   * clear the file. Mismatched/dead entries are dropped without signalling.
-   */
-  public reapOrphans(): void {
-    const data = this.load();
-    for (const entry of Object.values(data)) {
-      const info = this.deps.readProcInfo(entry.pid);
-      if (info && info.startTime === entry.startTime && info.cmdline === entry.cmdline) {
-        try {
-          // Negative pid → whole process group, matching the spawn-time group.
-          this.deps.kill(-entry.pid, "SIGTERM");
-        } catch {
-          // Already gone — best-effort.
+  private async probe<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined = undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("process inspection timed out"));
+          }, this.deps.probeWaitMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  public async record(pid: number): Promise<void> {
+    return this.enqueue(async () => {
+      positivePid.parse(pid);
+      const data = this.load();
+      const entry: DetachedEntry = { pid, startTime: "", ownedMembers: [] };
+      data[String(pid)] = entry;
+      try {
+        const identity = await this.probe(this.deps.readProcessIdentity(pid));
+        if (identity && identity.pid === pid && identity.pgid === pid) {
+          entry.identity = identity;
+          entry.startTime = identity.startTime;
+          entry.cmdline = identity.cmdline;
+          entry.ownedMembers = [identity];
+          await this.refresh(entry);
+        } else {
+          this.deps.diagnostic(
+            `Detached cleanup incomplete for ${pid}: missing ownership identity`,
+          );
+        }
+      } finally {
+        this.save(data);
+      }
+    });
+  }
+
+  public async remove(pid: number): Promise<void> {
+    return this.enqueue(async () => {
+      const data = this.load();
+      const entry = data[String(pid)];
+      if (!entry) {
+        return;
+      }
+      try {
+        const members = await this.refresh(entry);
+        if (members.length === 0) {
+          Reflect.deleteProperty(data, String(pid));
+        } else {
+          this.deps.diagnostic(`Detached cleanup incomplete for ${pid}: owned members remain`);
+        }
+      } finally {
+        this.save(data);
+      }
+    });
+  }
+
+  private async refresh(entry: DetachedEntry): Promise<ProcessIdentity[]> {
+    if (!entry.identity) {
+      const leader = await this.probe(this.deps.readProcessIdentity(entry.pid));
+      if (
+        !leader ||
+        !entry.startTime ||
+        leader.startTime !== entry.startTime ||
+        leader.pgid !== entry.pid ||
+        (typeof leader.sid === "number" && leader.sid !== entry.pid)
+      ) {
+        throw new Error(`missing ownership identity for ${entry.pid}`);
+      }
+      entry.identity = leader;
+      entry.ownedMembers = [leader];
+    }
+    const expected = entry.identity;
+    const live: ProcessIdentity[] = [];
+    await Promise.all(
+      entry.ownedMembers.map(async (member) => {
+        const actual = await this.probe(this.deps.readProcessIdentity(member.pid));
+        if (actual && sameProcess(member, actual)) {
+          live.push(actual);
+        }
+      }),
+    );
+    const candidates = await this.probe(this.deps.getProcessMembers(expected));
+    if (live.length > 0) {
+      // An unchanged recorded member anchors discovery; recheck it after the query.
+      const [anchor] = live;
+      const current = await this.probe(this.deps.readProcessIdentity(anchor.pid));
+      if (!current || !sameProcess(anchor, current)) {
+        throw new Error(`lost ownership anchor for ${entry.pid}`);
+      }
+      for (const member of candidates) {
+        if (
+          member.pgid === expected.pgid &&
+          member.sid === expected.sid &&
+          !live.some((item) => item.pid === member.pid)
+        ) {
+          live.push(member);
         }
       }
+      entry.ownedMembers = live;
+    } else if (candidates.length > 0) {
+      throw new Error(`unverified leftover group for ${entry.pid}`);
     }
-    this.save({});
+    return live;
+  }
+
+  private async signal(entry: DetachedEntry, signal: NodeJS.Signals): Promise<void> {
+    const members = await this.refresh(entry);
+    const results = await Promise.allSettled(
+      members.map(async (member) => {
+        const actual = await this.probe(this.deps.readProcessIdentity(member.pid));
+        if (actual && sameProcess(member, actual)) {
+          try {
+            this.deps.kill(member.pid, signal);
+          } catch (error) {
+            if (
+              typeof error !== "object" ||
+              error === null ||
+              !("code" in error) ||
+              error.code !== "ESRCH"
+            ) {
+              throw error;
+            }
+          }
+        }
+      }),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") {
+        throw result.reason;
+      }
+    }
+  }
+
+  private async waitForExit(entry: DetachedEntry, duration: number): Promise<boolean> {
+    const deadline = Date.now() + duration;
+    while (true) {
+      const members = await this.refresh(entry);
+      if (members.length === 0) {
+        return true;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        return false;
+      }
+      await delay(Math.min(this.deps.pollMs, remaining));
+    }
+  }
+
+  public async reapOrphans(): Promise<void> {
+    return this.enqueue(async () => {
+      const data = this.load();
+      await Promise.all(
+        Object.entries(data).map(async ([key, entry]) => {
+          try {
+            await this.signal(entry, "SIGTERM");
+            if (!(await this.waitForExit(entry, this.deps.termGraceMs))) {
+              await this.signal(entry, "SIGKILL");
+              if (!(await this.waitForExit(entry, this.deps.killWaitMs))) {
+                throw new Error("owned members survived SIGKILL");
+              }
+            }
+            Reflect.deleteProperty(data, key);
+          } catch (error) {
+            this.deps.diagnostic(`Detached cleanup incomplete for ${entry.pid}: ${String(error)}`);
+          }
+        }),
+      );
+      this.save(data);
+    });
   }
 
   private load(): Record<string, DetachedEntry> {
     const result: Record<string, DetachedEntry> = {};
-    let parsed: unknown = undefined;
     try {
-      parsed = JSON.parse(fs.readFileSync(this.deps.filePath, "utf8"));
-    } catch {
-      // Missing or corrupt file — start from empty (best-effort, R10).
-      return result;
-    }
-    if (!isRecord(parsed)) {
-      return result;
-    }
-    for (const [key, value] of Object.entries(parsed)) {
-      if (isDetachedEntry(value)) {
-        result[key] = value;
+      const parsed = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(fs.readFileSync(this.deps.filePath, "utf8")));
+      for (const [key, value] of Object.entries(parsed)) {
+        const entry = entrySchema.safeParse(value);
+        if (!entry.success || key !== String(entry.data.pid)) {
+          continue;
+        }
+        const { identity, ownedMembers } = entry.data;
+        if (
+          identity &&
+          (identity.pid !== entry.data.pid ||
+            identity.pgid !== entry.data.pid ||
+            identity.startTime !== entry.data.startTime ||
+            ownedMembers.some(
+              (member) => member.pgid !== identity.pgid || member.sid !== identity.sid,
+            ))
+        ) {
+          continue;
+        }
+        if (!identity && ownedMembers.length > 0) {
+          continue;
+        }
+        result[key] = entry.data;
       }
+    } catch {
+      /* Missing or invalid journal. */
     }
     return result;
   }
@@ -204,10 +295,8 @@ export class DetachedRegistry {
   private save(data: Record<string, DetachedEntry>): void {
     try {
       fs.writeFileSync(this.deps.filePath, JSON.stringify(data), "utf8");
-    } catch {
-      // Best-effort — orphan protection must never block start/stop.
+    } catch (error) {
+      this.deps.diagnostic(`Detached journal write failed: ${String(error)}`);
     }
   }
 }
-
-export { defaultReadProcInfo };

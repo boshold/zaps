@@ -51,6 +51,7 @@ function createMockClient(): DaemonClient {
 function renderDashboard(opts: {
   statuses: ServiceStatus[];
   projectName?: string;
+  backend?: "tmux" | "shell";
   selectedIndex?: number;
   taskHistory?: TaskRunRecord[];
 }) {
@@ -58,6 +59,7 @@ function renderDashboard(opts: {
   return render(
     <AppProvider
       client={client}
+      backend={opts.backend}
       paneMap={{}}
       projectName={opts.projectName ?? "test-project"}
       tasks={[]}
@@ -74,6 +76,19 @@ function renderDashboard(opts: {
 }
 
 describe("Dashboard", () => {
+  it.each(["tmux", "shell"] as const)("renders stored %s with empty services", (backend) => {
+    const { lastFrame } = renderDashboard({ statuses: [], backend });
+    expect(lastFrame()).toContain(`[${backend}]`);
+  });
+  it("renders shell with unavailable services", () => {
+    const { lastFrame } = renderDashboard({
+      statuses: [makeStatus("optional", "unavailable")],
+      backend: "shell",
+    });
+    expect(lastFrame()).toContain("[shell]");
+    expect(lastFrame()).toContain("optional");
+  });
+
   it("renders all services", () => {
     const statuses = [
       makeStatus("db", "ready", [5432]),

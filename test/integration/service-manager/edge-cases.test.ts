@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd, slowStartCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -35,7 +36,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startService("svc");
     expect(mgr.getStatus("svc").state).toBe("ready");
 
@@ -55,7 +56,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     await expect(mgr.startService("api")).rejects.toThrow(/not ready/);
   });
@@ -69,7 +70,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
     await mgr.startAll();
 
     await mgr.stopAll();
@@ -92,7 +93,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     const stopOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -118,7 +119,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: slowStartCmd(port, 5000), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     // Start in background (will take 5s to become ready)
     const startPromise = mgr.startService("svc");
@@ -145,7 +146,7 @@ describe.skipIf(!hasTmux())("edge-cases integration", () => {
       svc: { start: httpServerCmd(port), ready: { port } },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     // Cycle 1
     await mgr.startService("svc");

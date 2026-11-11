@@ -1,3 +1,4 @@
+import type { DockerConfig } from "#src/config/types.js";
 import type { DockerContainerInfo } from "#src/lib/docker.js";
 
 // Re-export shared types from config
@@ -63,10 +64,16 @@ export interface ServiceActionResult {
   noop: boolean;
 }
 
+export interface DockerReadinessContext {
+  memberEpoch: number;
+  operation: "up" | "start" | "restart";
+  effectiveLaunch: Pick<DockerConfig, "build" | "forceRecreate" | "renewVolumes">;
+}
+
 // === Dependency injection interfaces ===
 export interface ReadyDeps {
-  detectPorts: (paneTarget: string) => Promise<number[]>;
-  capturePane: (target: string, lines: number) => Promise<string>;
+  detectPorts: () => Promise<number[]>;
+  readOutput: (tail: number) => Promise<string>;
   cwd?: string;
   composeFile?: string;
   dockerStatus?: (
@@ -74,10 +81,5 @@ export interface ReadyDeps {
     cwd?: string,
     composeFile?: string,
   ) => Promise<DockerContainerInfo | null>;
-  /**
-   * True for recreate-style docker starts (`build`/`forceRecreate`/
-   * `renewVolumes`): a leftover container must be replaced before ready is
-   * accepted, so the ready loop waits for the container id set to change (B4).
-   */
-  dockerRequireRecreate?: boolean;
+  dockerReadiness?: DockerReadinessContext;
 }

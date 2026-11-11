@@ -69,12 +69,14 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test --coverage
+      - run: pnpm test:coverage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
         if: always()
         with:
           name: unit-coverage-${{ matrix.node }}
-          path: coverage/
+          path: coverage/unit/
           retention-days: 1
 
   build:
@@ -97,7 +99,7 @@ jobs:
       - run: pnpm build:native
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: dist
+          name: dist-linux
           path: dist/
           retention-days: 1
 
@@ -123,9 +125,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dist
+          name: dist-linux
           path: dist/
-      - run: chmod +x dist/zaps
+      - run: chmod +x dist/zaps dist/cli.mjs
       - name: Install tmux ${{ matrix.tmux }}
         run: |
           sudo apt-get update
@@ -141,37 +143,122 @@ jobs:
         env:
           TERM: xterm-256color
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
         if: always()
         with:
-          name: integration-coverage-${{ matrix.tmux }}
-          path: coverage/
+          name: tmux-integration-coverage-${{ matrix.tmux }}
+          path: coverage/integration-tmux/
+          retention-days: 1
+
+  shell-integration-tests:
+    name: Shell Integration (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+        with:
+          install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: ".bun-version"
+      - run: pnpm install --frozen-lockfile
+      - name: Install Linux process and PTY tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y util-linux procps iproute2
+      - name: Verify required shell tools
+        shell: bash
+        run: |
+          command -v script
+          command -v ps
+          command -v sh
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            command -v ss
+          else
+            command -v lsof
+          fi
+      - name: Verify Linux Docker prerequisite
+        if: runner.os == 'Linux'
+        run: |
+          docker info
+          docker compose version
+          docker pull alpine:3.21
+      # Native output is built on each executing host; never download Linux output on macOS.
+      - run: pnpm build
+      - run: pnpm build:native
+      - run: pnpm test:integration:shell --coverage
+        env:
+          TERM: xterm-256color
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
+        if: always()
+        with:
+          name: shell-coverage-${{ matrix.os }}
+          path: coverage/integration-shell/
           retention-days: 1
 
   coverage-report:
     name: Coverage Report
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    needs: [unit-tests, integration-tests]
+    needs: [unit-tests, integration-tests, shell-integration-tests]
     permissions:
       contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: unit-coverage-26
           path: coverage/unit/
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
-          name: integration-coverage-3.8
+          name: tmux-integration-coverage-3.8
           path: coverage/integration/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: shell-coverage-ubuntu-latest
+          path: coverage/shell-linux/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          name: shell-coverage-macos-latest
+          path: coverage/shell-macos/
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Unit Tests
           json-summary-path: coverage/unit/coverage-summary.json
           json-final-path: coverage/unit/coverage-final.json
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Integration Tests
           json-summary-path: coverage/integration/coverage-summary.json
           json-final-path: coverage/integration/coverage-final.json
+      - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
+        with:
+          name: Shell Integration (Linux)
+          json-summary-path: coverage/shell-linux/coverage-summary.json
+          json-final-path: coverage/shell-linux/coverage-final.json
+      - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
+        with:
+          name: Shell Integration (macOS)
+          json-summary-path: coverage/shell-macos/coverage-summary.json
+          json-final-path: coverage/shell-macos/coverage-final.json

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ServiceManager } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 
+import { managerDependencies } from "../../_helpers/service-runtime.js";
 import { makeConfig } from "../helpers/config.js";
 import { httpServerCmd } from "../helpers/fixtures.js";
 import { getFreePort } from "../helpers/port.js";
@@ -35,7 +36,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -64,7 +65,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -93,7 +94,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       a: { start: httpServerCmd(portA), ready: { port: portA }, dependsOn: ["b", "c"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     const readyOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -125,7 +126,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       fe: { start: httpServerCmd(fePort), ready: { port: fePort }, dependsOn: ["api"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     const stopOrder: string[] = [];
     mgr.on("stateChange", (name: string, status: ServiceStatus) => {
@@ -156,7 +157,7 @@ describe.skipIf(!hasTmux())("dependencies integration", () => {
       api: { start: httpServerCmd(apiPort), ready: { port: apiPort }, dependsOn: ["db"] },
     });
 
-    mgr = new ServiceManager(config, paneMap, tmuxDeps, session.name);
+    mgr = new ServiceManager(config, managerDependencies(paneMap, tmuxDeps));
 
     // StartAll catches the error for db, then skips api (dep not ready)
     await mgr.startAll();

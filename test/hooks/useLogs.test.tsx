@@ -7,6 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { DaemonClient } from "../../src/client/daemon-client.js";
 import { useLogs } from "../../src/hooks/useLogs.js";
+import { deferred } from "../_helpers/deferred.js";
+import { makeSessionSnapshot } from "../_helpers/session-snapshot.js";
 
 function createMockClient(): DaemonClient {
   const emitter = new EventEmitter();
@@ -32,6 +34,32 @@ function createMockClient(): DaemonClient {
 }
 
 describe("useLogs", () => {
+  it("replaces mounted logs on reattach and ignores the older pending fetch", async () => {
+    const client = createMockClient();
+    const oldFetch = deferred<string[]>();
+    vi.mocked(client.getLogSnapshot).mockReturnValueOnce(oldFetch.promise);
+    function Wrapper() {
+      const { lines } = useLogs(client, "api");
+      return <Text>{lines.join(",")}</Text>;
+    }
+    const { lastFrame } = render(<Wrapper />);
+    act(() => {
+      client.emit("log.lines", "api", ["old buffered"]);
+      client.emit("disconnect");
+      client.emit(
+        "session.snapshot",
+        makeSessionSnapshot({ logSnapshots: { api: ["caught up"] } }),
+      );
+      client.emit("log.lines", "api", ["new live"]);
+    });
+    expect(lastFrame()).toContain("caught up,new live");
+    await act(async () => {
+      oldFetch.resolve(["old fetched"]);
+    });
+    expect(lastFrame()).toContain("caught up,new live");
+    expect(lastFrame()).not.toContain("old");
+  });
+
   it("returns empty lines when serviceName is null", () => {
     const client = createMockClient();
     function Wrapper() {

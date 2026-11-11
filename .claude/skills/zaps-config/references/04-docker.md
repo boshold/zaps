@@ -1,6 +1,6 @@
 # Docker Integration
 
-ZAPS integrates with `docker compose` via the `docker` property on services.
+ZAPS integrates with `docker compose` via the `docker` property on services in both backends. A combined group owns one attached execution and one log producer; tmux gives it a shared pane, while shell runs it under the daemon.
 
 ## DockerConfig Options
 
@@ -52,12 +52,12 @@ services: {
   },
   infra: {
     docker: { service: ["postgres", "redis"] },
-    // Generates: docker compose up postgres redis (single pane)
+    // Generates: docker compose up postgres redis (shared execution)
   },
 }
 ```
 
-When `service` is an array, all services run in one `docker compose up` command in a single pane.
+When `service` is an array, all members share one `docker compose up` execution, presented in a single pane only with tmux.
 
 If `start` or `run` is provided, that takes precedence and the docker command is not generated.
 
@@ -88,7 +88,11 @@ A container is **ready** when both conditions are met:
 
 Handles both JSON array and JSONL output formats from different Docker Compose versions.
 
-For recreate-style starts (`build` / `forceRecreate` / `renewVolumes`), readiness additionally waits for the container id to change, so a leftover container left running from a previous session can't briefly report "ready" before `up` tears it down and recreates it. A container that stays `exited`/`dead` fails fast — the error carries the container state and the last pane output, instead of waiting out the full 60s timeout.
+Readiness follows the actual operation. Plain member `start`/`restart` accepts a
+healthy unchanged container ID even with initial build/recreate preferences.
+Initial recreate-style `up` still uses the existing new-ID expectation; an initial
+build that reuses an unchanged image may therefore time out. This initial-launch
+limitation is unchanged. An exited/dead container fails with state/output details.
 
 **`ready: { port }` and path-style `ready: { http: "/path" }` are not allowed on docker services** — they fail at config load. Published ports are held by `dockerd`, not the pane, so detection never matches. Use the default docker readiness or a full-URL `ready: { http: "http://127.0.0.1:<port>/path" }`.
 
@@ -168,7 +172,7 @@ services: {
 
 ### Expanded Docker Services
 
-Use `expand: true` to create individually addressable services sharing one pane. It works with an array `service` (one child per name) or a single-string `service` (one child):
+Use `expand: true` to create individually addressable members of one shared execution. It works with an array `service` (one child per name) or a single-string `service` (one child):
 
 ```ts
 services: {
@@ -187,13 +191,23 @@ services: {
 
 Creates 3 individual services (`postgres`, `redis`, `mailpit`) that:
 
-- Share a single pane (one `docker compose up` command)
+- Share one `docker compose up` execution and one log producer
 - Have independent status, ready detection, lifecycle
 - Can be started/stopped/restarted individually
 - Can be referenced individually in `dependsOn`
 - Appear grouped under "infra" in the TUI
 
-Layout references use the group name: `{ pane: "infra" }`.
+Layout references use the group name: `{ pane: "infra" }` in tmux; shell ignores
+valid layout preferences. Plain member start/stop/restart, including the launch
+owner, preserves the shared execution while siblings remain active. The last
+active member stops it. Shared output continues from attached siblings, but
+Compose may stop following a restarted member's output.
+
+Explicit rebuild of any combined member returns `unsupported_config` before
+changing configuration, status, containers, shared execution or logs, even with
+empty overrides. UI rebuild actions are unavailable for these members. Standalone
+rebuild remains supported. Full group recreation is deferred, and the initial
+group launch keeps its configured membership without per-member autostart redesign.
 
 Use `expand: { ... }` for per-child overrides:
 

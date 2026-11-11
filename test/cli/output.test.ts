@@ -303,6 +303,7 @@ describe("sessionLocation", () => {
     expect(
       sessionLocation({
         id: "a",
+        backend: "tmux",
         name: "app",
         projectDir: "/app",
         tmuxSession: "zaps-app-abc123abc123",
@@ -312,26 +313,46 @@ describe("sessionLocation", () => {
   });
 
   it("names a personal tmux session without the marker", () => {
-    expect(sessionLocation({ id: "a", name: "app", projectDir: "/app", tmuxSession: "work" })).toBe(
-      "work",
-    );
+    expect(
+      sessionLocation({
+        id: "a",
+        backend: "tmux",
+        name: "app",
+        projectDir: "/app",
+        tmuxSession: "work",
+      }),
+    ).toBe("work");
   });
 
   it("stays blank when an older daemon reports no tmux session", () => {
-    expect(sessionLocation({ id: "a", name: "app", projectDir: "/app" })).toBe("");
+    expect(sessionLocation({ id: "a", backend: "tmux", name: "app", projectDir: "/app" })).toBe("");
   });
 });
 
 describe("sessionRows", () => {
+  it("renders shell backend with a blank location and empty lists", () => {
+    expect(sessionRows([{ id: "s", name: "shell", projectDir: "/s", backend: "shell" }])).toEqual([
+      ["s", "shell", "/s", "shell", ""],
+    ]);
+    expect(sessionRows([])).toEqual([]);
+  });
+
   it("puts the location last, after id/name/dir", () => {
     expect(
       sessionRows([
-        { id: "a1", name: "app", projectDir: "/app", tmuxSession: "zaps-app-a1", managed: true },
-        { id: "b2", name: "api", projectDir: "/api", tmuxSession: "work" },
+        {
+          id: "a1",
+          backend: "tmux",
+          name: "app",
+          projectDir: "/app",
+          tmuxSession: "zaps-app-a1",
+          managed: true,
+        },
+        { id: "b2", backend: "tmux", name: "api", projectDir: "/api", tmuxSession: "work" },
       ]),
     ).toEqual([
-      ["a1", "app", "/app", "zaps-app-a1 (managed)"],
-      ["b2", "api", "/api", "work"],
+      ["a1", "app", "/app", "tmux", "zaps-app-a1 (managed)"],
+      ["b2", "api", "/api", "tmux", "work"],
     ]);
   });
 });
