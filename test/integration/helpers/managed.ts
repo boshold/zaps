@@ -7,8 +7,29 @@ import { promisify } from "node:util";
 
 import { sessionId } from "#src/daemon/session.js";
 import { MANAGED_SOCKET, managedSessionName } from "#src/lib/managed-tmux.js";
+import { shellEscape } from "#src/lib/service/env.js";
+
+import { scriptPtyArgs } from "./pty.js";
 
 const execFileAsync = promisify(execFile);
+
+async function readRunResult(
+  invocation: Promise<{ stdout: string; stderr: string }>,
+): Promise<RunResult> {
+  try {
+    const { stdout, stderr } = await invocation;
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    if (typeof error !== "object" || error === null) {
+      throw error;
+    }
+    return {
+      code: "code" in error && typeof error.code === "number" ? error.code : 1,
+      stdout: "stdout" in error && typeof error.stdout === "string" ? error.stdout : "",
+      stderr: "stderr" in error && typeof error.stderr === "string" ? error.stderr : "",
+    };
+  }
+}
 
 /** The native binary — the only build that behaves exactly like a user's zaps. */
 export const binaryPath = path.resolve("dist/zaps");
@@ -54,41 +75,6 @@ export async function panes(
     const [id, dead, pid, command] = line.split("|");
     return { id, dead: dead === "1", pid: Number.parseInt(pid, 10), command };
   });
-}
-
-/**
- * Run zaps the way a user would from a plain terminal: no `$TMUX`, no inherited
- * tmux socket, and a private `XDG_RUNTIME_DIR` so the test drives its own daemon
- * instead of the developer's. Never throws — the exit code is the assertion.
- */
-export async function runZaps(
-  args: string[],
-  cwd: string,
-  runtimeDir: string,
-  extraEnv: NodeJS.ProcessEnv = {},
-): Promise<RunResult> {
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    XDG_RUNTIME_DIR: runtimeDir,
-    ZAPS_COMMAND: binaryPath,
-  };
-  // Plain terminal by default: strip the tmux context first, so a test that
-  // Wants to simulate one can put it back via `extraEnv`.
-  delete env.TMUX;
-  delete env.TMUX_PANE;
-  delete env.ZAPS_TMUX_SOCKET;
-  // `zaps ls` picks toon when it thinks an agent is driving it; tests assert the
-  // Human table unless they ask for a machine format explicitly.
-  delete env.CLAUDECODE;
-  delete env.CURSOR_TRACE_DIR;
-  Object.assign(env, extraEnv);
-  try {
-    const { stdout, stderr } = await execFileAsync(binaryPath, args, { cwd, env });
-    return { code: 0, stdout, stderr };
-  } catch (error) {
-    const failure = error as { code?: number; stdout?: string; stderr?: string };
-    return { code: failure.code ?? 1, stdout: failure.stdout ?? "", stderr: failure.stderr ?? "" };
-  }
 }
 
 export async function pollUntil(
@@ -156,6 +142,70 @@ export async function clients(session: string): Promise<string[]> {
     // No server / session gone → nobody is attached.
     return [];
   }
+}
+
+/**
+ * Run zaps the way a user would from a plain terminal: no `$TMUX`, no inherited
+ * tmux socket, and a private `XDG_RUNTIME_DIR` so the test drives its own daemon
+ * instead of the developer's. Never throws — the exit code is the assertion.
+ */
+export async function runZaps(
+  args: string[],
+  cwd: string,
+  runtimeDir: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+  pty?: { detachFrom?: string; ready?: () => Promise<boolean> },
+): Promise<RunResult> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    XDG_RUNTIME_DIR: runtimeDir,
+    ZAPS_COMMAND: binaryPath,
+  };
+  // Plain terminal by default: strip the tmux context first, so a test that
+  // Wants to simulate one can put it back via `extraEnv`.
+  delete env.TMUX;
+  delete env.TMUX_PANE;
+  delete env.ZAPS_TMUX_SOCKET;
+  // `zaps ls` picks toon when it thinks an agent is driving it; tests assert the
+  // Human table unless they ask for a machine format explicitly.
+  delete env.CLAUDECODE;
+  delete env.CURSOR_TRACE_DIR;
+  Object.assign(env, extraEnv);
+  const command = [binaryPath, ...args].map(shellEscape).join(" ");
+  if (pty) {
+    Object.assign(env, { SHELL: "/bin/sh", TERM: "xterm-256color" });
+  }
+  const invocation = pty
+    ? execFileAsync("script", scriptPtyArgs(`stty rows 50 cols 200; exec ${command}`), {
+        cwd,
+        env,
+        timeout: 40_000,
+      })
+    : execFileAsync(binaryPath, args, { cwd, env });
+  const result = readRunResult(invocation);
+  if (pty?.detachFrom) {
+    const name = pty.detachFrom;
+    try {
+      const attached = await pollUntil(async () => {
+        const activeClients = await clients(name);
+        return (
+          invocation.child.exitCode !== null ||
+          (activeClients.length > 0 && (pty.ready ? await pty.ready() : true))
+        );
+      });
+      if (attached && invocation.child.exitCode === null) {
+        const [client] = await clients(name);
+        if (client) {
+          await managed(["detach-client", "-t", client]);
+        }
+      }
+    } catch (error) {
+      invocation.child.kill();
+      await result;
+      throw error;
+    }
+  }
+  return result;
 }
 
 /**

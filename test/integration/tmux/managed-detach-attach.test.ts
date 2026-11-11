@@ -20,15 +20,6 @@ import { reservePort } from "../helpers/port.js";
 import { ptyEnvironment } from "../helpers/pty.js";
 import { hasBinary, hasScriptPty, hasTmux } from "../helpers/skip.js";
 
-/**
- * CI has no TTY, so `attach-session` itself cannot succeed here — the exit code
- * is therefore never the assertion. What IS observable (and is what the feature
- * actually promises) is the tmux state the re-attach path leaves behind: the TUI
- * pane alive again at its original position, with the services untouched.
- *
- * `zaps up -d` leaves exactly the post-detach state: the bootstrap pane is the
- * `@tui` pane, and it is dead-but-held once the inner run exits.
- */
 describe.skipIf(!hasTmux() || !hasBinary())(
   "managed detach + re-attach",
   { timeout: 180_000 },
@@ -67,7 +58,13 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         throw new Error("no project");
       }
 
-      const attach = await runZaps(["attach"], project.dir, project.runtimeDir);
+      const attach = await runZaps(
+        ["attach"],
+        project.dir,
+        project.runtimeDir,
+        {},
+        { detachFrom: project.sessionName },
+      );
 
       const after = await panes(project.sessionName);
       const tui = after.find((p) => p.id === tuiPane);
@@ -77,7 +74,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       // The service pane is untouched by the revival.
       expect(after.filter((p) => p.id !== tuiPane).every((p) => !p.dead)).toBe(true);
       expect(await serviceAnswers(port)).toBe(true);
-      // F2 line, printed because the session outlived the (failed) client.
+      expect(attach.code).toBe(0);
       expect(attach.stdout).toContain("detached — services still running");
     });
 
@@ -89,7 +86,13 @@ describe.skipIf(!hasTmux() || !hasBinary())(
 
       for (let cycle = 0; cycle < 3; cycle += 1) {
         // eslint-disable-next-line no-await-in-loop -- cycles are sequential by nature
-        await runZaps(["attach"], project.dir, project.runtimeDir);
+        await runZaps(
+          ["attach"],
+          project.dir,
+          project.runtimeDir,
+          {},
+          { detachFrom: project.sessionName },
+        );
         // eslint-disable-next-line no-await-in-loop
         const livePanes = await panes(project.sessionName);
         const revived = livePanes.find((p) => p.id === tuiPane);
@@ -125,8 +128,14 @@ describe.skipIf(!hasTmux() || !hasBinary())(
       // The user killed the pane by hand — nothing left to revive.
       await managed(["kill-pane", "-t", tuiPane]);
 
-      const attach = await runZaps(["attach"], project.dir, project.runtimeDir);
-      expect(attach.stderr).toContain("opening a new window instead");
+      const attach = await runZaps(
+        ["attach"],
+        project.dir,
+        project.runtimeDir,
+        {},
+        { detachFrom: project.sessionName },
+      );
+      expect(attach.stdout + attach.stderr).toContain("opening a new window instead");
 
       const windows = await managed([
         "list-windows",
@@ -155,7 +164,13 @@ describe.skipIf(!hasTmux() || !hasBinary())(
 
         // Revive the TUI and let it fully mount: a live TUI with NO client
         // Attached is exactly the state the stray byte lands in.
-        await runZaps(["attach"], project.dir, project.runtimeDir);
+        await runZaps(
+          ["attach"],
+          project.dir,
+          project.runtimeDir,
+          {},
+          { detachFrom: project.sessionName },
+        );
         const painted = await pollUntil(async () => {
           const frame = await managed(["capture-pane", "-t", tuiPane, "-p"]);
           return frame.includes("web");
@@ -212,7 +227,13 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         const session = project.sessionName;
 
         // Revive the TUI so there is a live process to press `q` in.
-        await runZaps(["attach"], project.dir, project.runtimeDir);
+        await runZaps(
+          ["attach"],
+          project.dir,
+          project.runtimeDir,
+          {},
+          { detachFrom: project.sessionName },
+        );
         expect(
           await pollUntil(async () => {
             const live = await panes(session);
@@ -273,7 +294,7 @@ describe.skipIf(!hasTmux() || !hasBinary())(
         throw new Error("no project");
       }
 
-      await runZaps(["up"], project.dir, project.runtimeDir);
+      await runZaps([], project.dir, project.runtimeDir, {}, { detachFrom: project.sessionName });
 
       const after = await panes(project.sessionName);
       expect(after.find((p) => p.id === tuiPane)?.dead).toBe(false);

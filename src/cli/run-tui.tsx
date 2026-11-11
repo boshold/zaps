@@ -60,7 +60,7 @@ export async function runTui(opts: {
 
     // Skip splash on reattach (services already running)
     const allStopped = snapshot.statuses.every((s) => s.state === "stopped");
-    const showSplash = Boolean(opts.autoStart) && allStopped;
+    const showSplash = snapshot.backend === "tmux" && Boolean(opts.autoStart) && allStopped;
 
     process.stdout.write("\x1b[?1049h");
     alternateScreen = true;

@@ -241,7 +241,14 @@ describe("ensureTmuxContext — attached create (F1)", () => {
 
     const create = callFor(h, "new-session");
     expect(create).toBeDefined();
-    expect(create?.slice(-3)).toEqual(["--", "/usr/bin/zaps", "up"]);
+    expect(create?.slice(-6)).toEqual([
+      "--",
+      "/usr/bin/zaps",
+      "--managed-bootstrap",
+      "up",
+      "-B",
+      "tmux",
+    ]);
     expect(create).toContain("ZAPS_MANAGED_TMUX=1");
     expect(create).toContain("ZAPS_TMUX_SOCKET=zaps");
     // Foreground: the child owns the terminal.
@@ -311,7 +318,10 @@ describe("ensureTmuxContext — detached create (F4)", () => {
       "%3",
       "--",
       "/usr/bin/zaps",
+      "--managed-bootstrap",
       "up",
+      "-B",
+      "tmux",
       "-d",
     ]);
     expect(h.out.join("")).toContain("started (detached, managed tmux)");
@@ -323,16 +333,19 @@ describe("ensureTmuxContext — detached create (F4)", () => {
     vi.stubEnv("ZAPS_SOCKET_PATH", "/tmp/custom.sock");
     const h = harness();
     let forwarded: Record<string, string> = {};
+    let snapshot: string | undefined;
     h.deps.runTmux = vi.fn(async (args: string[]) => {
       h.tmuxCalls.push(args);
       if (args[2] === "new-session") {
         const entry = args.find((arg) => arg.startsWith("ZAPS_ENVIRONMENT_SNAPSHOT="));
-        const filePath = entry?.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length);
-        if (filePath) {
+        snapshot = entry?.slice("ZAPS_ENVIRONMENT_SNAPSHOT=".length);
+        if (snapshot) {
           forwarded = z
             .record(z.string(), z.string())
-            .parse(JSON.parse(fs.readFileSync(filePath, "utf8")));
+            .parse(JSON.parse(fs.readFileSync(snapshot, "utf8")));
         }
+        expect(args).toContain(`XDG_RUNTIME_DIR=${runtimeDir}`);
+        expect(args).toContain("ZAPS_SOCKET_PATH=/tmp/custom.sock");
       }
       return 0;
     });
@@ -342,6 +355,7 @@ describe("ensureTmuxContext — detached create (F4)", () => {
         XDG_RUNTIME_DIR: runtimeDir,
         ZAPS_SOCKET_PATH: "/tmp/custom.sock",
       });
+      expect(snapshot && fs.existsSync(snapshot)).toBe(false);
     } finally {
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }

@@ -259,16 +259,20 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
     // Is exactly the situation where pane ops would hit the wrong tmux.
     const foreignSocket = getEnv("ZAPS_TMUX_SOCKET") ?? "zaps-test";
     const inside = { TMUX: `/tmp/tmux-1000/${foreignSocket},1,0` };
-    const result = await runZaps(["up"], project.dir, project.runtimeDir, inside);
+    const result = await runZaps(["up"], project.dir, project.runtimeDir, inside, {});
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("is running in a zaps-managed tmux");
+    expect(result.stdout + result.stderr).toContain("is running in a zaps-managed tmux");
     // The copy-pasteable escape hatch (Q5).
-    expect(result.stderr).toContain(`tmux -L zaps attach -t =${project.sessionName}`);
+    expect(result.stdout + result.stderr).toContain(
+      `tmux -L zaps attach -t =${project.sessionName}`,
+    );
 
-    const attach = await runZaps(["attach"], project.dir, project.runtimeDir, inside);
+    const attach = await runZaps(["attach"], project.dir, project.runtimeDir, inside, {});
     expect(attach.code).toBe(1);
-    expect(attach.stderr).toContain(`tmux -L zaps attach -t =${project.sessionName}`);
+    expect(attach.stdout + attach.stderr).toContain(
+      `tmux -L zaps attach -t =${project.sessionName}`,
+    );
   });
 
   it("refuses a session hosted in the user's own tmux from a plain terminal (F6)", async () => {
@@ -311,9 +315,9 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed teardown", { timeout: 180_0
       }, 90_000);
       expect(registered).toBe(true);
 
-      const result = await runZaps(["up"], project.dir, project.runtimeDir);
+      const result = await runZaps(["up"], project.dir, project.runtimeDir, {}, {});
       expect(result.code).toBe(1);
-      expect(result.stderr).toContain(
+      expect(result.stdout + result.stderr).toContain(
         `is running inside tmux session '${personalSession}'. Attach from within tmux, or run zaps down first.`,
       );
       // Nothing was spawned on the managed socket for it.

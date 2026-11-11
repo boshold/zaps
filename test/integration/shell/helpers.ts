@@ -13,6 +13,14 @@ import {
 import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
+import { shellEscape } from "#src/lib/service/env.js";
+
+import { scriptPtyArgs } from "../helpers/pty.js";
+
+interface TerminalStreams {
+  stdin: boolean;
+  stdout: boolean;
+}
 
 export interface ShellCommand {
   file: string;
@@ -41,7 +49,13 @@ export async function waitForCondition(
   /* eslint-enable no-await-in-loop */
 }
 
-export function createShellTestEnvironment({ command }: { command: ShellCommand }) {
+export function createShellTestEnvironment({
+  command,
+  configName = ".zaps.mjs",
+}: {
+  command: ShellCommand;
+  configName?: string;
+}) {
   if (!path.isAbsolute(command.file)) {
     throw new Error("Explicit absolute command file required");
   }
@@ -95,7 +109,7 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
     TMPDIR: runtimeDir,
     ZAPS_SOCKET_PATH: socketPath,
   });
-  const configPath = path.join(projectDir, ".zaps.mjs");
+  const configPath = path.join(projectDir, configName);
   const serviceCommand = `node -e "console.log('ready'); setInterval(() => {}, 1000)"`;
   fs.writeFileSync(
     configPath,
@@ -111,7 +125,11 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
   let cleanupPromise: Promise<void> | undefined;
   let sentinelCalls = "";
 
-  function spawnCommand(args: readonly string[] = [], extraEnv: Record<string, string> = {}) {
+  function spawnCommand(
+    args: readonly string[] = [],
+    extraEnv: Record<string, string> = {},
+    terminal?: TerminalStreams,
+  ) {
     if (cleanupPromise) {
       throw new Error("Shell fixture already cleaned up");
     }
@@ -128,9 +146,22 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
         throw new Error(`Cannot override owned fixture environment: ${key}`);
       }
     }
-    const child = spawn(explicitCommand.file, [...explicitCommand.args, ...args], {
+    const argv = [...explicitCommand.args, ...args];
+    const executable = terminal ? "script" : explicitCommand.file;
+    const ptyCommand = [explicitCommand.file, ...argv].map(shellEscape).join(" ");
+    const redirectedStdout = path.join(rootDir, `stdout-${children.size}.log`);
+    const terminalCommand = [
+      `stty rows 32 cols 100; exec ${ptyCommand}`,
+      terminal?.stdin ? "" : "</dev/null",
+      terminal?.stdout ? "" : `>${shellEscape(redirectedStdout)}`,
+    ].join(" ");
+    const child = spawn(executable, terminal ? scriptPtyArgs(terminalCommand) : argv, {
       cwd: projectDir,
-      env: { ...env, ...extraEnv },
+      env: {
+        ...env,
+        ...(terminal ? { SHELL: "/bin/sh", TERM: "xterm-256color" } : {}),
+        ...extraEnv,
+      },
       stdio: "pipe",
       detached: true,
     });
@@ -237,6 +268,9 @@ export function createShellTestEnvironment({ command }: { command: ShellCommand 
       },
       get stderr() {
         return stderr;
+      },
+      get redirectedStdout() {
+        return fs.existsSync(redirectedStdout) ? fs.readFileSync(redirectedStdout, "utf8") : "";
       },
     };
     children.add(handle);

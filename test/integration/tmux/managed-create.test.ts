@@ -65,6 +65,13 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
       "remain-on-exit on",
     );
 
+    const background = await runZaps(["-b"], project.dir, project.runtimeDir);
+    expect(background.code).toBe(0);
+    expect(background.stdout).toContain("already running (tmux)");
+    const conflict = await runZaps(["-b", "-B", "shell"], project.dir, project.runtimeDir);
+    expect(conflict.code).toBe(1);
+    expect(conflict.stderr).toContain("backend_conflict");
+
     // Services really run inside the managed session.
     expect(await pollUntil(async () => serviceAnswers(port))).toBe(true);
 
@@ -76,6 +83,32 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     }[];
     expect(sessions).toHaveLength(1);
     expect(sessions[0]).toMatchObject({ managed: true, tmuxSession: project.sessionName });
+  });
+
+  it("opens new default startup in managed tmux and preserves the caller environment", async () => {
+    const { port, release } = await reservePort();
+    const config = serviceConfig(port).replace(
+      "services: {",
+      `hooks: { onBeforeStart: () => {
+        if (process.env.ZAPS_TEST_BOOTSTRAP_VALUE !== "caller") {
+          throw new Error("Managed bootstrap lost caller environment");
+        }
+      } }, services: {`,
+    );
+    project = await createProject(config);
+    await release();
+
+    const result = await runZaps(
+      [],
+      project.dir,
+      project.runtimeDir,
+      { ZAPS_TEST_BOOTSTRAP_VALUE: "caller" },
+      { detachFrom: project.sessionName, ready: async () => serviceAnswers(port) },
+    );
+    expect(result.code, result.stdout + result.stderr).toBe(0);
+    expect(result.stdout).toContain("detached");
+    expect(await serviceAnswers(port)).toBe(true);
+    await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
   });
 
   it("propagates an inner failure and leaves no session behind (F4)", async () => {
@@ -100,7 +133,7 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     await managed(["new-session", "-d", "-s", project.sessionName, "--", "sleep", "600"]);
     await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
 
-    const result = await runZaps(["up", "-d"], project.dir, project.runtimeDir);
+    const result = await runZaps(["-B", "tmux", "-b"], project.dir, project.runtimeDir);
     expect(result.code).toBe(0);
 
     // Same name, but a fresh session: the markers only exist on the new one.
@@ -114,12 +147,18 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     project = await createProject(serviceConfig(port));
     await release();
 
-    const result = await runZaps(["up"], project.dir, project.runtimeDir, {
-      ZAPS_AUTO_TMUX: "0",
-    });
+    const result = await runZaps(
+      ["up"],
+      project.dir,
+      project.runtimeDir,
+      {
+        ZAPS_AUTO_TMUX: "0",
+      },
+      {},
+    );
 
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("zaps must be run from inside a tmux session.");
+    expect(result.stdout + result.stderr).toContain("zaps must be run from inside a tmux session.");
     await expect(managedSessionExists(project.sessionName)).resolves.toBe(false);
   });
 });

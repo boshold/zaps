@@ -4,7 +4,6 @@ import path from "node:path";
 import { daemonDir, isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
 import { getEnv } from "#src/lib/env.js";
-import { ipcRequest } from "#src/lib/ipc/client.js";
 import {
   MANAGED_SOCKET,
   buildAttachArgs,
@@ -22,6 +21,7 @@ import {
 import {
   ENVIRONMENT_SNAPSHOT_VARIABLE,
   captureEnvironment,
+  consumeEnvironmentSnapshot,
   removeEnvironmentSnapshot,
   writeEnvironmentSnapshot,
 } from "#src/lib/request-context.js";
@@ -29,18 +29,26 @@ import { defaultTmux } from "#src/lib/tmux-default.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 import type { TmuxHandle } from "#src/lib/tmux.js";
 
-import type { SessionInfo } from "./helpers.js";
 import { resolveCommandArgv } from "./helpers.js";
+import { findStartupSession, listStartupSessions } from "./startup-session.js";
 import { decideTmuxContext } from "./tmux-context.js";
 import type { DaemonSessionView } from "./tmux-context.js";
 
-function clearManagedEnvironmentSnapshot(): void {
+const MANAGED_BOOTSTRAP_FLAG = "--managed-bootstrap";
+
+function consumeManagedEnvironmentSnapshot(): void {
   const {
     ZAPS_ENVIRONMENT_SNAPSHOT: snapshot,
     ZAPS_TMUX_SOCKET: socket,
     TMUX_PANE: pane,
   } = process.env;
-  if (snapshot && process.env.ZAPS_MANAGED_TMUX === "1" && socket === MANAGED_SOCKET && pane) {
+  if (
+    snapshot &&
+    process.env.TMUX &&
+    process.env.ZAPS_MANAGED_TMUX === "1" &&
+    socket === MANAGED_SOCKET &&
+    pane
+  ) {
     try {
       execFileSync(
         "tmux",
@@ -50,6 +58,7 @@ function clearManagedEnvironmentSnapshot(): void {
     } catch {
       /* Process-local snapshot consumption still proceeds. */
     }
+    consumeEnvironmentSnapshot();
   }
 }
 
@@ -105,6 +114,7 @@ interface EnsureTmuxContextOptions {
   configPath: string;
   projectDir: string;
   detach: boolean;
+  knownSession?: { current: DaemonSessionView | undefined };
   deps?: Partial<BootstrapDeps>;
 }
 
@@ -125,16 +135,9 @@ async function daemonSessionFor(
   if (!isDaemonRunning()) {
     return undefined;
   }
-  const res = await ipcRequest(socketPath(), "session.list").catch(() => null);
-  if (!res || res.error) {
-    return undefined;
-  }
-  // eslint-disable-next-line no-unsafe-type-assertion -- IPC boundary
-  const sessions = res.result as SessionInfo[];
-  const id = sessionId(configPath, projectDir);
-  const legacyId = sessionId(configPath);
-  const match = sessions.find((s) => s.id === id || s.id === legacyId);
-  if (!match) {
+  const sessions = await listStartupSessions(socketPath());
+  const match = findStartupSession(sessions, configPath, projectDir);
+  if (match?.backend !== "tmux") {
     return undefined;
   }
   // Defaults, not assumptions: an older daemon omits the newer fields, and
@@ -279,7 +282,7 @@ async function spawnAttached(deps: BootstrapDeps, name: string): Promise<Bootstr
   const environment = managedEnvironment();
   const args = buildCreateArgs({
     name,
-    zapsArgv: [...deps.zapsArgv(), "up"],
+    zapsArgv: [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux"],
     env: environment.env,
   });
   try {
@@ -309,6 +312,7 @@ async function spawnDetached(
   deps: BootstrapDeps,
   name: string,
   configPath: string,
+  projectDir: string,
 ): Promise<BootstrapResult> {
   const environment = managedEnvironment();
   const args = buildCreateArgs({ name, detach: true, env: environment.env, ...deps.size() });
@@ -327,7 +331,7 @@ async function spawnDetached(
     return { proceed: false, exitCode: 1 };
   }
 
-  const zapsArgv = [...deps.zapsArgv(), "up", "-d"];
+  const zapsArgv = [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux", "-d"];
   if ((await deps.runTmux(buildRespawnArgs(paneId, zapsArgv, { kill: true }), false)) !== 0) {
     removeEnvironmentSnapshot(environment.snapshotPath);
     deps.io.stderr(`Failed to start zaps in managed tmux session ${name}.\n`);
@@ -352,7 +356,7 @@ async function spawnDetached(
   // Inner run got that far, and every pre-session failure (bad config, version
   // Refusal, conflict) exits without one.
   if (!settlement.settled && settlement.reason === "unknown-status") {
-    const view = await deps.daemonSession(configPath).catch(() => undefined);
+    const view = await deps.daemonSession(configPath, projectDir).catch(() => undefined);
     if (view) {
       deps.io.stdout(`Session ${name} started (detached, managed tmux). zaps attach to view.\n`);
       return { proceed: false, exitCode: 0 };
@@ -454,7 +458,9 @@ async function reattachManaged(options: {
 async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<BootstrapResult> {
   const deps: BootstrapDeps = { ...defaultDeps(), ...options.deps };
   const tmuxEnv = getEnv("TMUX");
-  const daemonSession = await deps.daemonSession(options.configPath, options.projectDir);
+  const daemonSession = options.knownSession
+    ? options.knownSession.current
+    : await deps.daemonSession(options.configPath, options.projectDir);
   // Only needed to tell "inside the project's own managed session" apart from
   // "inside some other tmux" — so only asked for when both can be true.
   const currentTmuxSession =
@@ -507,14 +513,14 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
     case "kill-stale-then-spawn": {
       await killStaleSession(decision.name, deps.tmux);
       return decision.detach
-        ? spawnDetached(deps, decision.name, options.configPath)
+        ? spawnDetached(deps, decision.name, options.configPath, options.projectDir)
         : spawnAttached(deps, decision.name);
     }
     case "spawn": {
       return spawnAttached(deps, decision.name);
     }
     case "spawn-detached": {
-      return spawnDetached(deps, decision.name, options.configPath);
+      return spawnDetached(deps, decision.name, options.configPath, options.projectDir);
     }
     case "reattach": {
       return reattachManaged({ name: decision.name, tuiPane: decision.tuiPane, deps });
@@ -526,5 +532,11 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
   }
 }
 
-export { DETACHED_HINT, clearManagedEnvironmentSnapshot, ensureTmuxContext, reattachManaged };
+export {
+  DETACHED_HINT,
+  MANAGED_BOOTSTRAP_FLAG,
+  consumeManagedEnvironmentSnapshot,
+  ensureTmuxContext,
+  reattachManaged,
+};
 export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux };

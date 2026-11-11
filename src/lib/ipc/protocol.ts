@@ -8,6 +8,14 @@ import type { RequestContext } from "#src/lib/request-context.js";
 /** Payload of the `log.lines` daemon event. */
 export const logLinesDataSchema = z.object({ service: z.string(), lines: z.array(z.string()) });
 
+export const startAllParamsSchema = z
+  .union([
+    z.strictObject({}),
+    z.strictObject({ names: z.array(z.string()) }),
+    z.strictObject({ startup: z.literal(true) }),
+  ])
+  .optional();
+
 export interface IpcRequest {
   id: string;
   method: string;

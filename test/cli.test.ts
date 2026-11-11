@@ -808,13 +808,75 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
         const bare = runCli([], {}, emptyDir);
         const explicit = runCli(["up"], {}, emptyDir);
         expect(bare.status).toBe(1);
-        expect(bare.stderr).toBe("No config found. Run `zaps init` to create one.\n");
+        expect(bare.stderr).toContain("invalid_request: The UI requires interactive terminal");
+        expect(bare.stderr).toContain("zaps -b");
         expect(explicit.status).toBe(bare.status);
         expect(explicit.stderr).toBe(bare.stderr);
         expect(explicit.stdout).toBe(bare.stdout);
       } finally {
         fs.rmSync(emptyDir, { recursive: true, force: true });
       }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([["--help"], ["up", "--help"], ["-b", "--help"], ["help", "up"]])(
+    "documents startup options in %j",
+    (...argv) => {
+      const result = runCli(argv);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("-b, --background");
+      expect(result.stdout).toContain("-B, --backend");
+      expect(result.stdout.includes("-d, --detach")).toBe(argv.includes("up"));
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([
+    ["-b"],
+    ["--background"],
+    ["up", "-b"],
+    ["-s", "project", "-b", "up"],
+    ["--backend=tmux", "up", "-b"],
+    ["-b", "up", "-B", "shell", "--backend=shell"],
+    ["up", "--detach", "-B", "shell"],
+    ["up", "-ds", "project"],
+  ])(
+    "accepts headless startup %j",
+    (...argv) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-headless-"));
+      try {
+        const result = runCli(argv, {}, directory);
+        expect(result.status).toBe(1);
+        expect(result.stderr).toBe("No config found. Run `zaps init` to create one.\n");
+      } finally {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it.each([
+    { argv: ["-d"], error: "Unknown flag: --d" },
+    { argv: ["-d", "up"], error: "invalid_request" },
+    { argv: ["-b", "-d"], error: "invalid_request" },
+    { argv: ["up", "-b", "extra"], error: "too many arguments" },
+    { argv: ["up", "--", "-b"], error: "too many arguments" },
+    { argv: ["-B"], error: "requires a value" },
+    { argv: ["--backend", "other"], error: "invalid_backend" },
+    { argv: ["-B", "tmux", "up", "-B", "shell"], error: "Conflicting backend options" },
+    { argv: ["-b", "ps"], error: "invalid_request" },
+    { argv: ["attach", "-B", "shell"], error: "invalid_request" },
+    { argv: ["daemon", "status", "-b"], error: "invalid_request" },
+  ])(
+    "rejects startup arguments $argv before effects",
+    ({ argv, error }) => {
+      const before = fs.readdirSync(runtimeDir, { recursive: true });
+      const result = runCli(argv);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(error);
+      expect(result.stdout + result.stderr).not.toContain("\x1b");
+      expect(fs.readdirSync(runtimeDir, { recursive: true })).toEqual(before);
     },
     CLI_TIMEOUT,
   );

@@ -26,7 +26,7 @@ import {
   serviceWrappers,
 } from "#src/lib/backend/tmux/runtime.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
-import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
+import { ipcErr, ipcOk, startAllParamsSchema } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { checkPortPreflight } from "#src/lib/port-preflight.js";
 import { detectPorts, detectPortsForPid, getDescendantPids } from "#src/lib/port.js";
@@ -732,12 +732,9 @@ class DaemonServer implements SessionStore {
 
       // Start services in background — TUI connects and sees them starting.
       // Tracked so reload/destroy can cooperatively abort and await it (A5).
-      session.startPromise = session.runWithContext(async () => {
-        try {
-          await session.startAll();
-        } catch {
-          /* Errors surfaced via stateChange */
-        }
+      session.startPromise = session.startAll();
+      void session.startPromise.catch(() => {
+        /* The detached reporter can await the original rejection. */
       });
 
       return session;
@@ -894,7 +891,15 @@ class DaemonServer implements SessionStore {
         return ipcErr(req.id, "Unknown session");
       }
       try {
-        if (CONTEXT_MUTATING_METHODS.has(req.method)) {
+        let mutatesContext = CONTEXT_MUTATING_METHODS.has(req.method);
+        if (req.method === "services.startAll") {
+          const params = startAllParamsSchema.safeParse(req.params);
+          if (!params.success) {
+            return ipcErr(req.id, "Invalid services.startAll parameters", "invalid_request");
+          }
+          mutatesContext = !params.data || !("startup" in params.data);
+        }
+        if (mutatesContext) {
           if (!req.context) {
             return ipcErr(req.id, "request context required; restart zaps with the current CLI");
           }

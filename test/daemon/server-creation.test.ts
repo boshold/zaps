@@ -82,6 +82,40 @@ describe("session creation with real shell orchestration", () => {
     } satisfies Parameters<DaemonServer["create"]>[0];
   }
 
+  it("joins settled startup without repeating hooks or replacing request context", async () => {
+    const socket = path.join(root, "startup.sock");
+    const hook = vi.fn();
+    config.project.hooks = { onBeforeStart: hook };
+    await server.start(socket);
+    const session = await server.create(request());
+    await session.startPromise;
+    const update = vi.spyOn(session, "updateContext");
+
+    const mixed = await ipcRequest(
+      socket,
+      "services.startAll",
+      { startup: true, names: [] },
+      5000,
+      session.id,
+    );
+    expect(mixed.errorCode).toBe("invalid_request");
+    const joined = await ipcRequest(
+      socket,
+      "services.startAll",
+      { startup: true },
+      5000,
+      session.id,
+    );
+    expect(joined.result).toEqual({ started: "all" });
+    expect(update).not.toHaveBeenCalled();
+    expect(hook).toHaveBeenCalledTimes(1);
+
+    const manual = await ipcRequest(socket, "services.startAll", undefined, 5000, session.id);
+    expect(manual.result).toEqual({ started: "all" });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(hook).toHaveBeenCalledTimes(2);
+  });
+
   it("blocks established-socket allocation paths while preserving cleanup and daemon queries", async () => {
     const socket = path.join(root, "closing.sock");
     await server.start(socket);
@@ -318,7 +352,12 @@ describe("session creation with real shell orchestration", () => {
     const socket = new net.Socket();
     try {
       const reporting = sessionHandlers["services.startAll"](
-        { id: "report", method: "services.startAll", session: session.id },
+        {
+          id: "report",
+          method: "services.startAll",
+          session: session.id,
+          params: { startup: true },
+        },
         server,
         socket,
       );

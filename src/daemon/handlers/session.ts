@@ -17,7 +17,7 @@ import {
 } from "#src/lib/backend/tmux/runtime.js";
 import { wrapperStartedSchema } from "#src/lib/backend/tmux/wrapper-schema.js";
 import { projectedStatusSchema, sessionSnapshotSchema } from "#src/lib/backend/wire.js";
-import { ipcErr, ipcOk } from "#src/lib/ipc/protocol.js";
+import { ipcErr, ipcOk, startAllParamsSchema } from "#src/lib/ipc/protocol.js";
 import type { IpcRequest, IpcResponse } from "#src/lib/ipc/protocol.js";
 import { parseRequestContext } from "#src/lib/request-context.js";
 import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
@@ -427,16 +427,20 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const params = req.params as { names?: string[] } | undefined;
+    const params = startAllParamsSchema.safeParse(req.params);
+    if (!params.success) {
+      return ipcErr(req.id, "Invalid services.startAll parameters", "invalid_request");
+    }
     try {
-      if (params?.names) {
+      const options = params.data;
+      if (options && "names" in options) {
         // eslint-disable-next-line no-await-in-loop -- Sequential start respects deps
-        for (const name of params.names) {
+        for (const name of options.names) {
           await session.manager.startService(name);
         }
-        return ipcOk(req.id, { started: params.names });
+        return ipcOk(req.id, { started: options.names });
       }
-      await session.manager.startAll();
+      await (options && "startup" in options ? session.startPromise : session.manager.startAll());
       return ipcOk(req.id, { started: "all" });
     } catch (error) {
       return ipcErr(req.id, error);
