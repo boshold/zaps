@@ -13,7 +13,12 @@ import {
 } from "#src/lib/backend/tmux/operations.js";
 import type { OperationTmux } from "#src/lib/backend/tmux/operations.js";
 import { serviceWrappers } from "#src/lib/backend/tmux/runtime.js";
-import type { TerminalDriver } from "#src/lib/backend/types.js";
+import type {
+  BackendCapabilities,
+  PresentationSnapshot,
+  SessionBackend,
+  TerminalDriver,
+} from "#src/lib/backend/types.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
 
@@ -1632,19 +1637,41 @@ describe("terminal.action", () => {
       controller: new AbortController(),
     };
     const terminal = {
-      focus: vi.fn(),
-      zoom: vi.fn(),
-      editOutput: vi.fn(),
-      taskPicker: vi.fn().mockResolvedValue(null),
-      taskOutput: vi.fn(),
+      ...session.backend.terminal,
+      focus: vi.fn<TerminalDriver["focus"]>().mockResolvedValue(undefined),
+      zoom: vi.fn<TerminalDriver["zoom"]>().mockResolvedValue(undefined),
+      editOutput: vi.fn<TerminalDriver["editOutput"]>().mockResolvedValue(undefined),
+      taskPicker: vi.fn<TerminalDriver["taskPicker"]>().mockResolvedValue(null),
+      taskOutput: vi.fn<TerminalDriver["taskOutput"]>().mockResolvedValue(undefined),
+    } satisfies TerminalDriver;
+    const capabilities: Record<keyof BackendCapabilities, boolean> = {
+      panes: true,
+      zoom: true,
+      popups: true,
+      taskPanes: true,
+      rawInput: true,
+      layout: true,
     };
-    const capabilities = { panes: true, zoom: true, popups: true };
-    const view = { kind: "tmux", paneMap: session.paneMap };
+    const view = {
+      kind: "tmux",
+      tmuxSession: session.tmuxSession,
+      tmuxWindow: "window",
+      originPane: session.originPane,
+      tmuxSocket: session.tmuxSocket,
+      managedTmux: session.managedTmux,
+      paneMap: session.paneMap,
+    } satisfies PresentationSnapshot;
+    const backend = {
+      id: "tmux",
+      terminal,
+      capabilities,
+      getPresentation: vi.fn<SessionBackend["getPresentation"]>(() => view),
+    } satisfies Pick<SessionBackend, "id" | "terminal" | "capabilities" | "getPresentation">;
     const full = Object.assign(session, {
       env: { TOKEN: "service" },
       taskExecution: { accepting: true },
       getUiBinding: vi.fn<() => UiBinding | undefined>(() => binding),
-      backend: { terminal, capabilities, getPresentation: () => view },
+      backend,
     });
     const store = createMockStore([full]);
     const invoke = async (params: unknown, context?: IpcRequest["context"]) =>
@@ -1712,6 +1739,57 @@ describe("terminal.action", () => {
     expect(
       await f.invoke({ action: "focus", target: { kind: "service", name: "api" } }),
     ).toMatchObject({ errorCode: "unsupported_capability" });
+  });
+
+  it.each(["taskPicker", "taskOutput"] as const)(
+    "supports popup-only %s after UI acknowledgement without service panes",
+    async (action) => {
+      const f = fixture();
+      Object.assign(f.capabilities, {
+        panes: false,
+        zoom: false,
+        taskPanes: false,
+        rawInput: false,
+        layout: false,
+      });
+      f.view.paneMap = {};
+      f.full.taskOutput.start("retained", "build", 1);
+      const params = action === "taskPicker" ? { action } : { action, runId: "retained" };
+      f.binding.acknowledged = false;
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "invalid_request" });
+      expect(f.terminal[action]).not.toHaveBeenCalled();
+      f.binding.acknowledged = true;
+      expect(await f.invoke(params)).toMatchObject({
+        result: action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
+      });
+      expect(f.terminal[action]).toHaveBeenCalledTimes(1);
+      expect(f.full.backend.getPresentation).not.toHaveBeenCalled();
+      if (action === "taskOutput") {
+        expect(await f.invoke({ action, runId: "unknown" })).toMatchObject({
+          errorCode: "invalid_request",
+        });
+        expect(f.terminal.taskOutput).toHaveBeenCalledTimes(1);
+      }
+      f.capabilities.popups = false;
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "unsupported_capability" });
+      expect(f.terminal[action]).toHaveBeenCalledTimes(1);
+      expect(f.full.manager.startService).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps pane controls unavailable with popup-only capabilities", async () => {
+    const f = fixture();
+    f.capabilities.panes = false;
+    for (const params of [
+      { action: "focus", target: { kind: "dashboard" } },
+      { action: "zoom", target: { kind: "dashboard" } },
+      { action: "editOutput", service: "api" },
+    ]) {
+      expect(await f.invoke(params)).toMatchObject({ errorCode: "unsupported_capability" });
+    }
+    expect(f.terminal.focus).not.toHaveBeenCalled();
+    expect(f.terminal.zoom).not.toHaveBeenCalled();
+    expect(f.terminal.editOutput).not.toHaveBeenCalled();
   });
 
   it("preserves busy/unavailable and returns cancelled picker without running a task", async () => {

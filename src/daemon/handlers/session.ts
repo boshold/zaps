@@ -70,15 +70,34 @@ function withErrorCount(
   return { ...status, sentra: status.sentra ?? false, errorCount };
 }
 
+function popupCapabilityError(
+  session: Session,
+  params: Extract<TerminalActionParams, { action: "taskPicker" | "taskOutput" }>,
+): "unsupported_capability" | "invalid_request" | undefined {
+  if (!session.backend.capabilities.popups) {
+    return "unsupported_capability";
+  }
+  return params.action === "taskOutput" && !session.taskOutput.get(params.runId)
+    ? "invalid_request"
+    : undefined;
+}
+
 function terminalCapabilityError(
   session: Session,
   params: TerminalActionParams,
 ): "unsupported_capability" | "invalid_request" | undefined {
   const { terminal, capabilities } = session.backend;
-  if (!terminal || !capabilities.panes || (params.action === "zoom" && !capabilities.zoom)) {
+  if (!terminal) {
     return "unsupported_capability";
   }
-  if (["editOutput", "taskPicker", "taskOutput"].includes(params.action) && !capabilities.popups) {
+  if (params.action === "taskPicker" || params.action === "taskOutput") {
+    return popupCapabilityError(session, params);
+  }
+  if (
+    !capabilities.panes ||
+    (params.action === "zoom" && !capabilities.zoom) ||
+    (params.action === "editOutput" && !capabilities.popups)
+  ) {
     return "unsupported_capability";
   }
   const view = session.backend.getPresentation();
@@ -99,9 +118,6 @@ function terminalCapabilityError(
     if (session.config.project.services[service]?.detached || !view.paneMap[service]) {
       return "unsupported_capability";
     }
-  }
-  if (params.action === "taskOutput" && !session.taskOutput.get(params.runId)) {
-    return "invalid_request";
   }
   return undefined;
 }
