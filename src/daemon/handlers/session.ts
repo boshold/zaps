@@ -25,7 +25,7 @@ import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
 import { planTaskServices, summarizePlan } from "#src/lib/task/ensure-services.js";
-import type { TaskPreflight } from "#src/lib/task/ensure-services.js";
+import type { TaskPreflight, TaskServiceEvent } from "#src/lib/task/ensure-services.js";
 import { buildTaskListEntries } from "#src/lib/task/list-entry.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
@@ -48,6 +48,32 @@ function normalizeCommands(commands: Command | Command[] | undefined): Command[]
     return [];
   }
   return Array.isArray(commands) ? commands : [commands];
+}
+
+/** Run `Session.prepareTask`, aborting it when the request socket closes. */
+async function prepareForRequest(
+  session: Session,
+  socket: Socket,
+  key: string,
+  start: boolean | undefined,
+  onEvent?: (event: TaskServiceEvent) => void,
+): Promise<string[]> {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  socket.once("close", onClose);
+  if (socket.destroyed) {
+    controller.abort();
+  }
+  try {
+    const { startedServices } = await session.prepareTask(key, {
+      start,
+      signal: controller.signal,
+      onEvent,
+    });
+    return startedServices;
+  } finally {
+    socket.off("close", onClose);
+  }
 }
 
 /** Record + broadcast the terminal state of a run-in-pane run. */
@@ -526,7 +552,11 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-    const { key } = z.strictObject({ key: z.string() }).parse(req.params);
+    const parsed = z.strictObject({ key: z.string() }).safeParse(req.params);
+    if (!parsed.success) {
+      return ipcErr(req.id, "invalid_request", "invalid_request");
+    }
+    const { key } = parsed.data;
     const tasks = session.config.project.tasks ?? {};
     if (!Object.hasOwn(tasks, key)) {
       return ipcErr(req.id, `Unknown task: ${key}`);
@@ -547,13 +577,27 @@ export const sessionHandlers: Record<
       return ipcErr(req.id, "Unknown session");
     }
 
-    const { key } = z.object({ key: z.string() }).parse(req.params);
+    const { key, start } = z
+      .object({ key: z.string(), start: z.boolean().optional() })
+      .parse(req.params);
     const tasks = session.config.project.tasks ?? {};
-    if (!tasks[key]) {
+    if (!Object.hasOwn(tasks, key)) {
       return ipcErr(req.id, `Unknown task: ${key}`);
     }
 
+    let startedServices: string[] = [];
+    try {
+      startedServices = await prepareForRequest(session, socket, key, start, (event) => {
+        if (!socket.destroyed && socket.writable) {
+          send(socket, { id: req.id, event: "service", data: event });
+        }
+      });
+    } catch (error) {
+      return ipcErr(req.id, error);
+    }
+
     const outcome = await session.taskExecution.run(key, {
+      startedServices,
       config: session.config,
       cwd: session.config.projectDir,
       env: session.env,
@@ -569,10 +613,10 @@ export const sessionHandlers: Record<
         }
       },
     });
-    return ipcOk(req.id, outcome);
+    return ipcOk(req.id, { ...outcome, startedServices });
   },
 
-  async "tasks.runInPane"(req, store) {
+  async "tasks.runInPane"(req, store, socket) {
     const session = getSession(req, store);
     if (!session) {
       return ipcErr(req.id, "Unknown session");
@@ -582,12 +626,13 @@ export const sessionHandlers: Record<
       .strictObject({
         key: z.string().min(1),
         target: z.enum(["pane", "window"]).default("window"),
+        start: z.boolean().optional(),
       })
       .safeParse(req.params);
     if (!parsed.success) {
       return { ...ipcErr(req.id, "invalid_request"), errorCode: "invalid_request" };
     }
-    const { key, target } = parsed.data;
+    const { key, target, start } = parsed.data;
     if (!session.taskExecution.accepting) {
       return {
         ...ipcErr(req.id, "session_closing", "session_closing"),
@@ -599,9 +644,16 @@ export const sessionHandlers: Record<
       return { ...ipcErr(req.id, "unsupported_capability"), errorCode: "unsupported_capability" };
     }
     const tasks = session.config.project.tasks ?? {};
-    const task = tasks[key];
-    if (!task) {
+    if (!Object.hasOwn(tasks, key)) {
       return ipcErr(req.id, "unknown_task");
+    }
+    const task = tasks[key];
+
+    let startedServices: string[] = [];
+    try {
+      startedServices = await prepareForRequest(session, socket, key, start);
+    } catch (error) {
+      return ipcErr(req.id, error);
     }
 
     // Resolve the task's shell commands (functions get the live service context).
@@ -654,6 +706,7 @@ export const sessionHandlers: Record<
       result: "running",
       timestamp: Date.now(),
       mode: "pane",
+      ...(startedServices.length > 0 ? { startedServices } : {}),
     });
     session.broadcast({
       session: session.id,

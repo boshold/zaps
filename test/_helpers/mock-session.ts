@@ -79,6 +79,7 @@ export interface MockSession {
   destroy: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   pushTaskRecord: ReturnType<typeof vi.fn>;
+  prepareTask: ReturnType<typeof vi.fn<Session["prepareTask"]>>;
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
   focusPane: string;
@@ -213,6 +214,7 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     startAll: vi.fn().mockResolvedValue(undefined),
     reload: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
+    prepareTask: vi.fn<Session["prepareTask"]>().mockResolvedValue({ startedServices: [] }),
     broadcast: vi.fn(),
     pushTaskRecord: vi.fn(),
     ...overrides,

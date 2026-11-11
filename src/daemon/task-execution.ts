@@ -46,6 +46,7 @@ interface TaskRunOptions {
   mode: TaskRunMode;
   onLine?: (line: string) => void;
   onProgress?: (key: string, result: "success" | "error") => void;
+  startedServices?: string[];
 }
 
 interface CapturedTaskContext extends Omit<TaskRunOptions, "config"> {
@@ -218,7 +219,8 @@ class TaskExecutionService {
         entry.result === "running",
     );
     if (record.result !== "running" && index !== -1) {
-      this.history[index] = record;
+      const { startedServices } = this.history[index];
+      this.history[index] = startedServices ? { startedServices, ...record } : record;
     } else {
       this.history.unshift(record);
       this.history.length = Math.min(this.history.length, MAX_TASK_HISTORY);
@@ -298,6 +300,7 @@ class TaskExecutionService {
       result: "running",
       timestamp: Date.now(),
       mode: "background",
+      ...(options.startedServices?.length ? { startedServices: options.startedServices } : {}),
     });
     this.session.broadcast({
       session: this.session.id,

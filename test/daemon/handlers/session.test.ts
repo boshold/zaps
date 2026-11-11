@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
 import type { UiBinding } from "#src/daemon/session.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
 import {
@@ -23,6 +24,11 @@ import type {
 import { taskListEntrySchema, taskPreflightSchema } from "#src/lib/backend/wire.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
+import {
+  ServiceStartFailedError,
+  ServiceUnavailableError,
+  ServicesNotRunningError,
+} from "#src/lib/task/ensure-services.js";
 
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
@@ -118,6 +124,7 @@ function taskSession(tasks: Record<string, TaskConfig>) {
     owner,
     execute,
     displayPopup,
+    broadcast,
   };
 }
 
@@ -1076,6 +1083,195 @@ describe("session handlers", () => {
       expect(owner.output.get(owner.history[0]?.runId ?? "missing")?.lines).toEqual([
         "command output",
       ]);
+    });
+  });
+
+  describe("task service preparation", () => {
+    function runReq(session: { id: string }, params: unknown): IpcRequest {
+      return { id: "run", method: "tasks.run", session: session.id, params };
+    }
+
+    it("tasks.run prepares first, forwards service events and returns startedServices", async () => {
+      const { session, execute, owner } = taskSession({
+        seed: { name: "Seed", commands: "seed", services: ["db"] },
+      });
+      const order: string[] = [];
+      session.prepareTask.mockImplementation(async (_key, opts) => {
+        order.push("prepare");
+        opts?.onEvent?.({ name: "db", phase: "starting" });
+        return { startedServices: ["db"] };
+      });
+      execute.mockImplementation(async () => {
+        order.push("execute");
+        return { success: true, exitCode: 0, output: [] };
+      });
+      const socket = Object.assign(createMockSocket(), { writable: true });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed", start: true }),
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(order).toEqual(["prepare", "execute"]);
+      expect(session.prepareTask).toHaveBeenCalledWith("seed", {
+        start: true,
+        signal: expect.any(AbortSignal),
+        onEvent: expect.any(Function),
+      });
+      expect(res.result).toEqual({
+        success: true,
+        runId: expect.any(String),
+        startedServices: ["db"],
+      });
+      expect(socket.write).toHaveBeenCalledWith(
+        `${JSON.stringify({ id: "run", event: "service", data: { name: "db", phase: "starting" } })}\n`,
+      );
+      expect(owner.history[0]).toMatchObject({ taskKey: "seed", startedServices: ["db"] });
+      expect(socket.listenerCount("close")).toBe(0);
+    });
+
+    it("tasks.run without services keeps the record shape", async () => {
+      const { session, owner } = taskSession({ lint: { name: "Lint", commands: "lint" } });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "lint" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toMatchObject({ success: true, startedServices: [] });
+      expect(owner.history[0]).not.toHaveProperty("startedServices");
+    });
+
+    it.each([
+      [
+        new ServicesNotRunningError([{ name: "db", state: "stopped" }], "seed"),
+        "services_not_running",
+      ],
+      [new ServiceStartFailedError("db", "boom"), "service_start_failed"],
+      [new ServiceUnavailableError([{ name: "db", reason: "missing" }]), "service_unavailable"],
+      [new SessionClosingError(), "session_closing"],
+    ])("tasks.run maps %s to %s without executing anything", async (failure, code) => {
+      const { session, execute, owner, broadcast } = taskSession({
+        dep: { name: "Dep", commands: "dep" },
+        seed: { name: "Seed", commands: "seed", services: ["db"], dependsOn: ["dep"] },
+      });
+      session.prepareTask.mockRejectedValue(failure);
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: failure.message, errorCode: code });
+      expect(execute).not.toHaveBeenCalled();
+      expect(owner.history).toEqual([]);
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it("tasks.run aborts preparation when the socket closes", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s", services: ["db"] } });
+      let seen: AbortSignal | undefined;
+      session.prepareTask.mockImplementation(
+        async (_key, opts) =>
+          new Promise((_resolve, reject) => {
+            seen = opts?.signal;
+            opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      );
+      const socket = createMockSocket();
+      const pending = sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        socket as never,
+      );
+      await vi.waitFor(() => {
+        expect(seen).toBeDefined();
+      });
+      socket.destroyed = true;
+      socket.emit("close");
+      await expect(pending).resolves.toMatchObject({ error: "aborted" });
+      expect(seen?.aborted).toBe(true);
+    });
+
+    it("tasks.run aborts immediately when the socket is already closed", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s", services: ["db"] } });
+      const socket = createMockSocket();
+      socket.destroyed = true;
+      await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(session.prepareTask.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    });
+
+    it("tasks.runInPane prepares before the status snapshot and records startedServices", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "echo seed", services: ["api"] },
+      };
+      const order: string[] = [];
+      session.prepareTask.mockImplementation(async () => {
+        order.push("prepare");
+        return { startedServices: ["api"] };
+      });
+      session.manager.getAllStatuses.mockImplementation(() => {
+        order.push("snapshot");
+        return [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }];
+      });
+      const res = await sessionHandlers["tasks.runInPane"](
+        {
+          id: "pane",
+          method: "tasks.runInPane",
+          session: session.id,
+          params: { key: "seed", start: false },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toMatchObject({ runId: expect.any(String) });
+      expect(order[0]).toBe("prepare");
+      expect(session.prepareTask).toHaveBeenCalledWith("seed", {
+        start: false,
+        signal: expect.any(AbortSignal),
+        onEvent: undefined,
+      });
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "pane", startedServices: ["api"] }),
+      );
+    });
+
+    it("tasks.runInPane returns service errors before creating anything", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "echo seed", services: ["api"] },
+      };
+      session.prepareTask.mockRejectedValue(
+        new ServicesNotRunningError([{ name: "api", state: "stopped" }], "seed"),
+      );
+      const res = await sessionHandlers["tasks.runInPane"](
+        { id: "pane", method: "tasks.runInPane", session: session.id, params: { key: "seed" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.errorCode).toBe("services_not_running");
+      expect(session.pushTaskRecord).not.toHaveBeenCalled();
+      expect(session.broadcast).not.toHaveBeenCalled();
+      expect(session.backend.terminal.runTaskInPane).not.toHaveBeenCalled();
+      expect(session.paneRunInfo.size).toBe(0);
+    });
+
+    it("tasks.preflight rejects unexpected params with invalid_request", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = { seed: { name: "Seed", commands: "s" } };
+      const res = await sessionHandlers["tasks.preflight"](
+        {
+          id: "p",
+          method: "tasks.preflight",
+          session: session.id,
+          params: { key: "seed", start: true },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "p", error: "invalid_request", errorCode: "invalid_request" });
     });
   });
 

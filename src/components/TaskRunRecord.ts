@@ -11,6 +11,8 @@ export interface TaskRunRecord {
   timestamp: number;
   /** How the run was launched. Defaults to `background`; `pane` is set by `tasks.runInPane` (P04-T02). */
   mode?: "background" | "pane";
+  /** Services started by the pre-run service check of this run. */
+  startedServices?: string[];
   /** Failure dismissed by the user (clears the sticky badge). */
   acknowledged?: boolean;
 }

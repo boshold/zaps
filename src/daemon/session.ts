@@ -25,6 +25,12 @@ import {
 import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
+import {
+  ensureTaskServices,
+  isStartPermitted,
+  planTaskServices,
+} from "#src/lib/task/ensure-services.js";
+import type { TaskServiceEvent } from "#src/lib/task/ensure-services.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
 import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
@@ -83,6 +89,12 @@ function compatibilityProjection(view: PresentationSnapshot): CompatibilityProje
     originPane: view.originPane,
     ...(view.focusPane === undefined ? {} : { focusPane: view.focusPane }),
   };
+}
+
+interface PrepareTaskOptions {
+  start?: boolean;
+  signal?: AbortSignal;
+  onEvent?: (event: TaskServiceEvent) => void;
 }
 
 export interface TaskInfo {
@@ -186,6 +198,8 @@ export class Session {
   private destroyFailure?: AggregateError;
   private reloading = false;
   private readonly closing = new AbortController();
+  /** Aborted when the manager is about to close (reload/destroy); cuts off pending task preparation. */
+  private preparation = new AbortController();
   /** Subscriber-gated config-staleness poll; null when no subscribers (A4). */
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   /** One-shot guard so `session.configStale` fires once per false→true edge. */
@@ -284,6 +298,60 @@ export class Session {
     });
   }
 
+  /**
+   * Ensure the services required by the task chain before it runs. Must finish
+   * before any status snapshot so the task sees fresh ports/URLs.
+   */
+  public async prepareTask(
+    key: string,
+    options: PrepareTaskOptions = {},
+  ): Promise<{ startedServices: string[] }> {
+    if (!this.taskExecution.accepting || this.closing.signal.aborted) {
+      throw new SessionClosingError();
+    }
+    const requirements = resolveTaskServiceRequirements(this.config.project.tasks ?? {}, key);
+    if (requirements.services.length === 0) {
+      return { startedServices: [] };
+    }
+    const { manager } = this;
+    const sessionSignal = this.preparation.signal;
+    const plan = planTaskServices(
+      requirements,
+      manager.getAllStatuses(),
+      this.config.project.services,
+      this.config.unavailableServices,
+    );
+    const pending = plan.filter((e) => e.action === "start" || e.action === "wait");
+    if (
+      pending.length > 0 &&
+      !plan.some((e) => e.action === "blocked") &&
+      isStartPermitted(plan, options.start)
+    ) {
+      this.broadcast({
+        session: this.id,
+        event: "task.preparing",
+        data: { key, services: pending.map((e) => e.name) },
+      });
+    }
+    try {
+      const { started } = await this.runWithContext(async () =>
+        ensureTaskServices(plan, {
+          start: options.start,
+          manager,
+          signal: options.signal ? AbortSignal.any([options.signal, sessionSignal]) : sessionSignal,
+          onEvent: options.onEvent,
+          taskKey: key,
+        }),
+      );
+      return { startedServices: started };
+    } catch (error) {
+      if (sessionSignal.aborted) {
+        throw new SessionClosingError();
+      }
+      throw error;
+    }
+  }
+
   public pushTaskRecord(record: TaskRunRecord): void {
     this.taskExecution.pushRecord(record);
   }
@@ -375,6 +443,9 @@ export class Session {
       });
     } finally {
       this.reloading = false;
+      if (this.preparation.signal.aborted && !this.closing.signal.aborted) {
+        this.preparation = new AbortController();
+      }
     }
   }
 
@@ -401,6 +472,7 @@ export class Session {
     const newConfigLoadedAt = Date.now();
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
+    this.preparation.abort();
     this.manager.closeAdmission();
     this.manager.abortStartAll();
     this.taskExecution.cancelPresentations();
@@ -468,6 +540,7 @@ export class Session {
 
   public closeAdmission(): void {
     this.closing.abort();
+    this.preparation.abort();
     this.taskExecution.close();
     this.manager.closeAdmission();
     this.backend.runtime.closeAdmission();

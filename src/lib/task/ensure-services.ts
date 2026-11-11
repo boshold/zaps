@@ -1,3 +1,4 @@
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { abortable } from "#src/lib/backend/runtime/abortable.js";
 import { topoSort } from "#src/lib/service/graph.js";
 import type { ServiceActionResult, ServiceState, ServiceStatus } from "#src/lib/service/types.js";
@@ -181,6 +182,18 @@ function summarizePlan(plan: readonly TaskServicePlanEntry[]): TaskPlanSummary {
   };
 }
 
+/** True when no entry needs starting, or starting is allowed by `start` / config. */
+function isStartPermitted(
+  plan: readonly TaskServicePlanEntry[],
+  start: boolean | undefined,
+): boolean {
+  const starts = plan.filter((e) => e.action === "start");
+  if (starts.length === 0 || start === true) {
+    return true;
+  }
+  return start === undefined && starts.every((e) => e.startable);
+}
+
 function abortError(): Error {
   return new Error("Task service preparation aborted");
 }
@@ -246,8 +259,7 @@ async function ensureTaskServices(
     );
   }
   const starts = plan.filter((e) => e.action === "start");
-  const permitted = start === true || (start === undefined && starts.every((e) => e.startable));
-  if (starts.length > 0 && !permitted) {
+  if (!isStartPermitted(plan, start)) {
     throw new ServicesNotRunningError(
       starts.map((e) => ({ name: e.name, state: e.state })),
       taskKey,
@@ -281,7 +293,7 @@ async function ensureTaskServices(
         try {
           ({ noop } = await abortable(manager.startService(entry.name), signal, abortError()));
         } catch (error) {
-          if (signal.aborted) {
+          if (signal.aborted || error instanceof SessionClosingError) {
             throw error;
           }
           throw new ServiceStartFailedError(
@@ -319,5 +331,6 @@ export {
   ServiceStartFailedError,
   planTaskServices,
   summarizePlan,
+  isStartPermitted,
   ensureTaskServices,
 };
