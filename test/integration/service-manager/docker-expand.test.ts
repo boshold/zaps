@@ -168,116 +168,189 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
     expect(mgr.getStatus("redis").state).toBe("ready");
   });
 
-  it("preserves one shared command across owner and non-owner controls", async () => {
-    session = await createSession();
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-expand-"));
+  it.each(["redis", "memcached"])(
+    "preserves one shared command after %s restarts",
+    async (firstMember) => {
+      session = await createSession();
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "zaps-expand-"));
 
-    const composeFile = await writeComposeFile(tmpDir, {
-      redis: { image: "redis:7-alpine", ports: ["0:6379"] },
-      memcached: { image: "memcached:1-alpine", ports: ["0:11211"] },
-    });
+      const composeFile = await writeComposeFile(tmpDir, {
+        redis: { image: "redis:7-alpine", ports: ["0:6379"] },
+        memcached: { image: "memcached:1-alpine", ports: ["0:11211"] },
+      });
 
-    const sharedPaneId = await splitPane(session.initialPaneId, "v");
-    const paneMap: Record<string, string> = {
-      "@tui": session.initialPaneId,
-      redis: sharedPaneId,
-      memcached: sharedPaneId,
-    };
+      const sharedPaneId = await splitPane(session.initialPaneId, "v");
+      const paneMap: Record<string, string> = {
+        "@tui": session.initialPaneId,
+        redis: sharedPaneId,
+        memcached: sharedPaneId,
+      };
 
-    const config = makeConfig({
-      redis: {
-        docker: { service: "redis", file: composeFile },
-        cwd: tmpDir,
-        _combined: { group: "cache", allServices: ["redis", "memcached"], isOwner: true },
-      },
-      memcached: {
-        docker: { service: "memcached", file: composeFile },
-        cwd: tmpDir,
-        dependsOn: ["redis"],
-        _combined: { group: "cache", allServices: ["redis", "memcached"], isOwner: false },
-      },
-    });
-
-    let launches = 0;
-    let disposals = 0;
-    const logs = vi.fn();
-    config.project.services.memcached.onOutput = logs;
-    mgr = new ServiceManager(
-      config,
-      paneMap,
-      {
-        ...deps,
-        runtime: (targets) => {
-          const runtime = deps.runtime(targets);
-          const start = runtime.start.bind(runtime);
-          const stop = runtime.stop.bind(runtime);
-          vi.spyOn(runtime, "start").mockImplementation(async (spec) => {
-            launches += 1;
-            return start(spec);
-          });
-          vi.spyOn(runtime, "stop").mockImplementation(async (handle) => {
-            disposals += 1;
-            return stop(handle);
-          });
-          return runtime;
+      const config = makeConfig({
+        redis: {
+          docker: {
+            service: "redis",
+            file: composeFile,
+            build: true,
+            forceRecreate: true,
+            renewVolumes: true,
+          },
+          cwd: tmpDir,
+          _combined: { group: "cache", allServices: ["redis", "memcached"], isOwner: true },
         },
-      },
-      session.name,
-    );
-    await startGroup(mgr);
-    const ids = async () => {
-      const { stdout } = await execFileAsync(
-        "docker",
-        ["compose", "-f", composeFile, "ps", "-q", "memcached"],
-        { cwd: tmpDir },
+        memcached: {
+          docker: {
+            service: "memcached",
+            file: composeFile,
+            build: true,
+            forceRecreate: true,
+            renewVolumes: true,
+          },
+          cwd: tmpDir,
+          dependsOn: ["redis"],
+          _combined: { group: "cache", allServices: ["redis", "memcached"], isOwner: false },
+        },
+      });
+
+      let launches = 0;
+      let disposals = 0;
+      const logs = vi.fn();
+      const ownerLogs = vi.fn();
+      config.project.services.redis.onOutput = ownerLogs;
+      config.project.services.memcached.onOutput = logs;
+      mgr = new ServiceManager(
+        config,
+        paneMap,
+        {
+          ...deps,
+          runtime: (targets) => {
+            const runtime = deps.runtime(targets);
+            const start = runtime.start.bind(runtime);
+            const stop = runtime.stop.bind(runtime);
+            vi.spyOn(runtime, "start").mockImplementation(async (spec) => {
+              launches += 1;
+              return start(spec);
+            });
+            vi.spyOn(runtime, "stop").mockImplementation(async (handle) => {
+              disposals += 1;
+              return stop(handle);
+            });
+            return runtime;
+          },
+        },
+        session.name,
       );
-      return stdout.trim();
-    };
-    const siblingId = await ids();
-    expect(siblingId).not.toBe("");
-    await mgr.restartService("redis");
-    await mgr.stopService("redis");
-    expect(mgr.getStatus("memcached").state).toBe("ready");
-    expect(await ids()).toBe(siblingId);
-    const logMarker = `owner-stopped-${Date.now()}`;
-    await execFileAsync(
-      "docker",
-      [
-        "compose",
-        "-f",
-        composeFile,
-        "exec",
-        "-T",
-        "memcached",
-        "sh",
-        "-c",
-        `echo ${logMarker} > /proc/1/fd/1`,
-      ],
-      { cwd: tmpDir },
-    );
-    await vi.waitFor(() => expect(logs).toHaveBeenCalledWith(expect.stringContaining(logMarker)), {
-      timeout: 10_000,
-    });
-    config.project.services.redis.ready = async () => {
-      throw new Error("member readiness failed");
-    };
-    await mgr.startService("redis");
-    expect(mgr.getStatus("redis")).toMatchObject({
-      state: "error",
-      lastError: "member readiness failed",
-    });
-    expect(mgr.getStatus("memcached").state).toBe("ready");
-    expect(await ids()).toBe(siblingId);
-    delete config.project.services.redis.ready;
-    await mgr.startService("redis");
-    await mgr.restartService("memcached");
-    await mgr.stopService("memcached");
-    await mgr.startService("memcached");
-    expect(launches).toBe(1);
-    expect(disposals).toBe(0);
-    await mgr.stopAll();
-    expect(disposals).toBe(1);
-    expect(mgr.getStatus("redis").state).toBe("stopped");
-    expect(mgr.getStatus("memcached").state).toBe("stopped");
-  });
+      await startGroup(mgr);
+      const ids = async (name = "memcached") => {
+        const { stdout } = await execFileAsync(
+          "docker",
+          ["compose", "-f", composeFile, "ps", "-q", name],
+          { cwd: tmpDir },
+        );
+        return stdout.trim();
+      };
+      const ownerId = await ids("redis");
+      const siblingId = await ids();
+      expect(siblingId).not.toBe("");
+      for (const name of ["redis", "memcached"]) {
+        const docker = structuredClone(config.project.services[name].docker);
+        const statuses = structuredClone(mgr.getAllStatuses());
+        for (const overrides of [{}, { build: true, forceRecreate: true }]) {
+          // eslint-disable-next-line no-await-in-loop -- pre-effect guard must hold for each member/override
+          await expect(mgr.restartWithDockerOverrides(name, overrides)).rejects.toMatchObject({
+            code: "unsupported_config",
+          });
+          expect(config.project.services[name].docker).toEqual(docker);
+          expect(mgr.getAllStatuses()).toEqual(statuses);
+          // eslint-disable-next-line no-await-in-loop -- compare exact containers before any operation
+          expect(await ids("redis")).toBe(ownerId);
+          // eslint-disable-next-line no-await-in-loop -- compare exact containers before any operation
+          expect(await ids()).toBe(siblingId);
+          expect(launches).toBe(1);
+          expect(disposals).toBe(0);
+        }
+      }
+      await mgr.restartService(firstMember);
+      expect(mgr.getStatus(firstMember).state).toBe("ready");
+      expect(await ids("redis")).toBe(ownerId);
+      if (firstMember === "memcached") {
+        const marker = `member-restarted-${Date.now()}`;
+        await execFileAsync(
+          "docker",
+          [
+            "compose",
+            "-f",
+            composeFile,
+            "exec",
+            "-T",
+            "redis",
+            "sh",
+            "-c",
+            `redis-cli CONFIG SET loglevel verbose; printf 'CLIENT SETNAME ${marker}\n' | redis-cli`,
+          ],
+          { cwd: tmpDir },
+        );
+        await vi.waitFor(
+          () => expect(ownerLogs).toHaveBeenCalledWith(expect.stringContaining(marker)),
+          { timeout: 10_000 },
+        );
+      }
+      await mgr.stopService("redis");
+      expect(mgr.getStatus("memcached").state).toBe("ready");
+      expect(await ids()).toBe(siblingId);
+      if (firstMember === "redis") {
+        const logMarker = `owner-stopped-${Date.now()}`;
+        await execFileAsync(
+          "docker",
+          [
+            "compose",
+            "-f",
+            composeFile,
+            "exec",
+            "-T",
+            "memcached",
+            "sh",
+            "-c",
+            `echo ${logMarker} > /proc/1/fd/1`,
+          ],
+          { cwd: tmpDir },
+        );
+        await vi.waitFor(
+          () => expect(logs).toHaveBeenCalledWith(expect.stringContaining(logMarker)),
+          {
+            timeout: 10_000,
+          },
+        );
+      }
+      config.project.services.redis.ready = async () => {
+        throw new Error("member readiness failed");
+      };
+      await mgr.startService("redis");
+      expect(mgr.getStatus("redis")).toMatchObject({
+        state: "error",
+        lastError: "member readiness failed",
+      });
+      expect(mgr.getStatus("memcached").state).toBe("ready");
+      expect(await ids()).toBe(siblingId);
+      delete config.project.services.redis.ready;
+      await mgr.startService("redis");
+      await mgr.restartService("memcached");
+      await mgr.stopService("memcached");
+      await mgr.startService("memcached");
+      expect(mgr.getStatus("redis").state).toBe("ready");
+      expect(mgr.getStatus("memcached").state).toBe("ready");
+      expect(await ids("redis")).toBe(ownerId);
+      expect(await ids()).toBe(siblingId);
+      expect(launches).toBe(1);
+      expect(disposals).toBe(0);
+      await mgr.stopService("redis");
+      expect(disposals).toBe(0);
+      await mgr.stopService("memcached");
+      expect(disposals).toBe(1);
+      await mgr.stopAll();
+      expect(disposals).toBe(1);
+      expect(mgr.getStatus("redis").state).toBe("stopped");
+      expect(mgr.getStatus("memcached").state).toBe("stopped");
+    },
+  );
 });
