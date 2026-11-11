@@ -1,11 +1,15 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { afterAll, expect } from "vitest";
 
-import { initializeTestTmuxServer, testTmuxSocketPath } from "./helpers/tmux-server.js";
+import {
+  cleanupTestTmuxServers,
+  initializeTestTmuxServer,
+  testTmuxSocketPath,
+} from "./helpers/tmux-server.js";
 
 function socketName(): string {
   const { testPath } = expect.getState();
@@ -35,20 +39,10 @@ process.env.ZAPS_TEST_TMUX_ROOT = root;
 process.env.ZAPS_TMUX_SOCKET = socket;
 const ownedSockets = [testTmuxSocketPath(socket, root), testTmuxSocketPath("zaps", root)];
 
-afterAll(() => {
+afterAll(async () => {
   try {
-    for (const socketPath of ownedSockets) {
-      try {
-        execFileSync("tmux", ["-S", socketPath, "kill-server"], {
-          stdio: "ignore",
-          timeout: 5000,
-        });
-      } catch {
-        /* The private server may already be gone. */
-      }
-    }
+    await cleanupTestTmuxServers(ownedSockets, root);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
     for (const [key, value] of Object.entries(previousEnvironment)) {
       if (value === undefined) {
         Reflect.deleteProperty(process.env, key);
