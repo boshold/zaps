@@ -87,6 +87,9 @@ describe("resolveTaskServiceRequirements", () => {
 
   it("throws on unknown task key", () => {
     expect(() => resolveTaskServiceRequirements({}, "nope")).toThrow("Unknown task: nope");
+    expect(() => resolveTaskServiceRequirements({}, "constructor")).toThrow(
+      "Unknown task: constructor",
+    );
   });
 
   it("throws on unknown dependency", () => {

@@ -18,10 +18,10 @@ export function resolveTaskServiceRequirements(
       return;
     }
     visited.add(taskKey);
-    const task = tasks[taskKey];
-    if (!task) {
+    if (!Object.hasOwn(tasks, taskKey)) {
       throw new Error(`Unknown task: ${taskKey}`);
     }
+    const task = tasks[taskKey];
     for (const dep of task.dependsOn ?? []) {
       visit(dep);
     }
