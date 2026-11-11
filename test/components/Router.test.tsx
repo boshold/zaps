@@ -395,9 +395,13 @@ describe("Router", () => {
 
   it("updates service hints immediately while edit capture is pending", async () => {
     const edit = deferred<TerminalActionResult>();
+    const status = { ...makeStatus({ paneId: "%1", isDocker: true }), actions: liveActions };
+    const mockClient = createMockClient();
+    vi.mocked(mockClient.listServices).mockResolvedValue([parseServiceStatus(status)]);
     const { client, stdin, lastFrame } = renderRouter({
+      client: mockClient,
       capabilities: { ...fullCapabilities, zoom: false },
-      statuses: [{ ...makeStatus({ paneId: "%1", isDocker: true }), actions: liveActions }],
+      statuses: [status],
     });
     vi.mocked(client.terminalAction).mockReturnValueOnce(edit.promise);
     const busyHints = ["[E]dit", "[r]estart", "[R]ebuild"];
