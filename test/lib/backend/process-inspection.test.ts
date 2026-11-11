@@ -61,6 +61,10 @@ describe("process identity", () => {
       .mockResolvedValueOnce("node")
       .mockResolvedValueOnce(stat(100, 100, 0));
     expect(await inspection.readProcessIdentity(100)).toBeNull();
+    readProc.mockResolvedValue(
+      "29925 (sh) X 0 -1 -1 0 -1 4227084 598 3415 0 0 0 0 1 1 20 0 0 0 37896 0 0",
+    );
+    expect(await inspection.readProcessIdentity(29_925)).toBeNull();
   });
 
   it("rejects malformed stat and denied proc reads conservatively", async () => {
@@ -76,31 +80,31 @@ describe("process identity", () => {
     });
   });
 
-  it("preserves opaque macOS birth strings and uses BSD session keyword", async () => {
+  it("preserves opaque macOS birth strings and uses the process group as session token", async () => {
     const birth = "Tue Nov 10 09:08:07 2026";
-    const exec = vi.fn(async () => `  100 a3f ${birth} node renamed worker\n`);
+    const exec = vi.fn(async () => `  100 ${birth} node renamed worker\n`);
     const inspection = createProcessInspection({ platform: "darwin", exec });
     expect(await inspection.readProcessIdentity(100)).toEqual({
       pid: 100,
       pgid: 100,
-      sid: "a3f",
+      sid: "100",
       startTime: birth,
       cmdline: "node renamed worker",
     });
     expect(exec).toHaveBeenCalledOnce();
-    expect(exec).toHaveBeenCalledWith("ps", ["-o", "pgid=,sess=,lstart=,command=", "-p", "100"]);
+    expect(exec).toHaveBeenCalledWith("ps", ["-o", "pgid=,lstart=,command=", "-p", "100"]);
   });
 
   it("keeps padded macOS birth days intact and tolerates an empty command", async () => {
     const birth = "Mon Nov  9 09:08:07 2026";
     const inspection = createProcessInspection({
       platform: "darwin",
-      exec: async () => `100 a3f ${birth}\n`,
+      exec: async () => `100 ${birth}\n`,
     });
     expect(await inspection.readProcessIdentity(100)).toEqual({
       pid: 100,
       pgid: 100,
-      sid: "a3f",
+      sid: "100",
       startTime: birth,
       cmdline: "",
     });
@@ -134,7 +138,7 @@ describe("process membership", () => {
       expect(await inspection.getDescendantPids(100)).toEqual([100, 200, 400, 300]);
       expect(exec).toHaveBeenCalledWith("ps", [
         "-eo",
-        `pid,ppid,${platform === "darwin" ? "sess" : "sid"}`,
+        `pid,ppid,${platform === "darwin" ? "pgid" : "sid"}`,
       ]);
     },
   );
@@ -154,18 +158,18 @@ describe("process membership", () => {
       platform: "darwin",
       exec: async (_command, args) => {
         if (args[0] === "-eo") {
-          return "PID PPID SESS\n200 1 a3f\n300 1 a3f\n400 1 a40";
+          return "PID PPID PGID\n200 1 100\n300 1 100\n400 1 400";
         }
-        return `${args[3] === "200" ? "100" : "300"} a3f Tue Nov 10 09:08:07 2026 renamed`;
+        return `${args[3] === "200" ? "100" : "300"} Tue Nov 10 09:08:07 2026 renamed`;
       },
     });
-    const identity = { pid: 100, pgid: 100, sid: "a3f", startTime: "earlier" };
+    const identity = { pid: 100, pgid: 100, sid: "100", startTime: "earlier" };
     const members = await inspection.getProcessMembers(identity);
     expect(members).toEqual([
       {
         pid: 200,
         pgid: 100,
-        sid: "a3f",
+        sid: "100",
         startTime: "Tue Nov 10 09:08:07 2026",
         cmdline: "renamed",
       },
@@ -175,7 +179,7 @@ describe("process membership", () => {
       throw new Error("missing member");
     }
     expect(sameProcess(member, { ...member, cmdline: "changed" })).toBe(true);
-    expect(sameProcess(member, { ...member, sid: "a40" })).toBe(false);
+    expect(sameProcess(member, { ...member, sid: "400" })).toBe(false);
   });
 
   it("rejects malformed macOS session tokens in identities and process tables", async () => {

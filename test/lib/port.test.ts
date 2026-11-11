@@ -98,11 +98,11 @@ describe("getDescendantPids", () => {
       expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"], C_LOCALE);
     });
 
-    it("uses the `sess` keyword on macOS (BSD ps rejects `sid`)", async () => {
+    it("uses the process group on macOS (BSD ps reports sess 0)", async () => {
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-      mockExecFileOutput("  PID  PPID  SESS\n 1000     1  1000");
+      mockExecFileOutput("  PID  PPID  PGID\n 1000     1  1000");
       await getDescendantPids(1000);
-      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sess"], C_LOCALE);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,pgid"], C_LOCALE);
     });
   });
 });

@@ -8,7 +8,7 @@ interface ProcessIdentity {
   readonly pid: number;
   readonly startTime: string;
   readonly pgid: number;
-  // Linux SID or opaque macOS hexadecimal session token.
+  // Linux SID, or the macOS process group as a string token (BSD ps reports sess 0).
   readonly sid: ProcessSessionId;
   readonly cmdline?: string;
 }
@@ -45,10 +45,14 @@ function positiveInteger(value: string | undefined): number | null {
 }
 
 const DARWIN_IDENTITY =
-  /^(?<pgid>\d+)\s+(?<sid>[\da-f]+)\s+(?<startTime>\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})(?:\s+(?<cmdline>.*))?$/is;
+  /^(?<pgid>\d+)\s+(?<startTime>\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})(?:\s+(?<cmdline>.*))?$/is;
 
 function parseDarwinSession(value: string | undefined): string | null {
   return value && /^[\da-f]+$/i.test(value) ? value : null;
+}
+
+function reapedGroup(field: string | undefined): boolean {
+  return /^(?:0|-\d+)$/.test(field ?? "");
 }
 
 function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity | null {
@@ -57,8 +61,8 @@ function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity | null {
     .slice(close + 2)
     .trim()
     .split(/\s+/);
-  // Mid-reap tasks report pgid/sid 0 once detached; owned processes never have 0.
-  if (close !== -1 && (fields[2] === "0" || fields[3] === "0")) {
+  // Dead (X) or mid-reap tasks report pgid/sid as 0 or -1 depending on the kernel.
+  if (close !== -1 && (fields[0] === "X" || reapedGroup(fields[2]) || reapedGroup(fields[3]))) {
     return null;
   }
   const pgid = positiveInteger(fields[2]);
@@ -266,18 +270,14 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
 
   async function readDarwinIdentity(pid: number): Promise<ProcessIdentity | null> {
     // One ps snapshot: each extra spawn costs tens of milliseconds on macOS.
-    const raw = await command(
-      "ps",
-      ["-o", "pgid=,sess=,lstart=,command=", "-p", String(pid)],
-      true,
-    );
+    const raw = await command("ps", ["-o", "pgid=,lstart=,command=", "-p", String(pid)], true);
     const output = raw.trim();
     if (!output) {
       return null;
     }
     const groups = DARWIN_IDENTITY.exec(output)?.groups;
     const pgid = positiveInteger(groups?.pgid);
-    const sid = parseDarwinSession(groups?.sid);
+    const sid = parseDarwinSession(groups?.pgid);
     const startTime = groups?.startTime;
     if (pgid === null || sid === null || !startTime) {
       throw new ProcessInspectionError("ps", "invalid_output");
@@ -295,7 +295,8 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
 
   async function processTable(): Promise<{ pid: number; ppid: number; sid: ProcessSessionId }[]> {
     supported();
-    const keyword = deps.platform === "darwin" ? "sess" : "sid";
+    // The macOS ps prints sess 0 for every process, so the process group stands in.
+    const keyword = deps.platform === "darwin" ? "pgid" : "sid";
     const output = await command("ps", ["-eo", `pid,ppid,${keyword}`]);
     const rows: { pid: number; ppid: number; sid: ProcessSessionId }[] = [];
     for (const line of output.trim().split("\n").slice(1)) {
