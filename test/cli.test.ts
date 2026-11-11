@@ -769,6 +769,19 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
   );
 
   it(
+    "run rejects --start with --no-start before contacting the daemon",
+    () => {
+      const res = runCli(["run", "seed", "--start", "--no-start"]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toBe("Error: --start and --no-start cannot be used together.\n");
+      const single = runCli(["run", "seed", "--no-start", "-s", "parser-test"]);
+      expect(single.stderr).not.toContain("Unknown flag");
+      expect(single.stderr).not.toContain("cannot be used together");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
     "config prints task services and autoStart (json + text)",
     () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-config-"));

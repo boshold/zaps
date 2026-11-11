@@ -28,6 +28,7 @@ import {
   withDaemon,
 } from "./cli/helpers.js";
 import {
+  formatTaskList,
   isCodingAgent,
   parseServiceList,
   primeAgentPrompt,
@@ -37,6 +38,7 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { resolveStartFlag, runTask } from "./cli/run-task.js";
 import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { listStartupSessions } from "./cli/startup-session.js";
@@ -523,7 +525,18 @@ const runCommand = command(
   {
     name: "run",
     parameters: ["<task>"],
-    flags: { ...sessionFlag, ...formatFlags },
+    flags: {
+      ...sessionFlag,
+      ...formatFlags,
+      start: {
+        type: Boolean,
+        description: "Start required services that are not running (overrides autoStart)",
+      },
+      noStart: {
+        type: Boolean,
+        description: "Never start required services (overrides autoStart)",
+      },
+    },
     help: { description: "Run a task" },
   },
   async (parsed) => {
@@ -532,27 +545,15 @@ const runCommand = command(
     const key = parsed._.task;
     const opts = parsed.flags;
     try {
+      const start = resolveStartFlag(opts);
       const format = resolveFormat(opts);
-      await withDaemon(async (ipc) => {
-        const res = await ipc.stream("tasks.run", { key }, (event, data) => {
-          if (format === "text" && event === "line") {
-            process.stdout.write(`${data as string}\n`);
-          }
-        });
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
-          process.exit(1);
-        }
-        if (format !== "text") {
-          writeData(res.result, format);
-          return;
-        }
-        const result = res.result as { success: boolean };
-        if (!result.success) {
-          process.stderr.write("Task failed.\n");
-          process.exit(1);
-        }
-      }, globalSession());
+      const exitCode = await withDaemon(
+        async (ipc) => runTask(ipc, { key, start, format }),
+        globalSession(),
+      );
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     } catch (error) {
       if (error instanceof CliError) {
         renderCliError(error);
@@ -902,16 +903,7 @@ const tasksCommand = command(
           writeData(res.result, format);
           return;
         }
-        const tasks = res.result as { key: string; name: string; description: string | null }[];
-        if (tasks.length === 0) {
-          process.stdout.write("No tasks configured.\n");
-          return;
-        }
-        const rows = [["KEY", "NAME", "DESCRIPTION"]];
-        for (const t of tasks) {
-          rows.push([t.key, t.name, t.description ?? "-"]);
-        }
-        process.stdout.write(`${formatTable(rows)}\n`);
+        process.stdout.write(`${formatTaskList(res.result)}\n`);
       }, globalSession());
     } catch (error) {
       if (error instanceof CliError) {

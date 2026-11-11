@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { BackendId } from "#src/lib/backend/types.js";
 import { statusResultSchema } from "#src/lib/sentra/schemas.js";
 
+import { formatTable } from "./helpers.js";
+
 type OutputFormat = "text" | "json" | "toon";
 
 const primeAgentProjectSchema = z.object({
@@ -59,8 +61,40 @@ const primeAgentTasksSchema = z.array(
     key: z.string(),
     name: z.string(),
     description: z.string().nullable(),
+    requiredServices: z.array(z.string()).optional(),
   }),
 );
+
+/** Lenient: entries from older daemons lack the requirement fields. */
+const taskListSchema = z.array(
+  z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+    requiredServices: z.array(z.string()).default([]),
+    autoStart: z.boolean().default(false),
+  }),
+);
+
+/** `zaps tasks` text table: key, name, description, `[services: … · autostart]`. */
+function formatTaskList(input: unknown): string {
+  const entries = taskListSchema.parse(input);
+  if (entries.length === 0) {
+    return "No tasks configured.";
+  }
+  const rows = [["KEY", "NAME", "DESCRIPTION", ""]];
+  for (const entry of entries) {
+    const requires =
+      entry.requiredServices.length > 0
+        ? `[services: ${entry.requiredServices.join(", ")}${entry.autoStart ? " · autostart" : ""}]`
+        : "";
+    rows.push([entry.key, entry.name, entry.description ?? "-", requires]);
+  }
+  return formatTable(rows)
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
 
 const AGENT_COMMANDS = [
   "zaps ps",
@@ -187,6 +221,7 @@ function primeAgentPrompt(
     tasks: tasks.map((task) => ({
       key: task.key,
       description: task.description ?? task.name,
+      needs: (task.requiredServices ?? []).join(","),
     })),
     sentra,
     commands: sentraEnabled ? [...AGENT_COMMANDS, ...SENTRA_AGENT_COMMANDS] : AGENT_COMMANDS,
@@ -198,6 +233,7 @@ function primeAgentPrompt(
 }
 
 export {
+  formatTaskList,
   isCodingAgent,
   parseServiceList,
   primeAgentPrompt,
