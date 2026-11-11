@@ -57,8 +57,8 @@ function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity | null {
     .slice(close + 2)
     .trim()
     .split(/\s+/);
-  // Mid-reap tasks report pgid and sid 0 once their signal handlers are released.
-  if (close !== -1 && fields[2] === "0" && fields[3] === "0") {
+  // Mid-reap tasks report pgid/sid 0 once detached; owned processes never have 0.
+  if (close !== -1 && (fields[2] === "0" || fields[3] === "0")) {
     return null;
   }
   const pgid = positiveInteger(fields[2]);
@@ -73,7 +73,7 @@ function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity | null {
     !startTime ||
     !/^\d+$/.test(startTime)
   ) {
-    throw new ProcessInspectionError("/proc/stat", "invalid_output");
+    throw new ProcessInspectionError("/proc/stat", "invalid_output", stat.slice(0, 300));
   }
   return { pid, pgid, sid, startTime };
 }

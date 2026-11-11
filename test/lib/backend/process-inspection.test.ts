@@ -59,7 +59,7 @@ describe("process identity", () => {
     readProc
       .mockResolvedValueOnce(stat())
       .mockResolvedValueOnce("node")
-      .mockResolvedValueOnce(stat(100, 0, 0));
+      .mockResolvedValueOnce(stat(100, 100, 0));
     expect(await inspection.readProcessIdentity(100)).toBeNull();
   });
 

@@ -183,6 +183,19 @@ jobs:
           else
             command -v lsof
           fi
+      - name: TEMP macOS process diagnostics
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          sleep 30 & bg=$!
+          ( exec python3 -c 'import os,time; os.setsid(); time.sleep(30)' ) & sb=$!
+          LC_ALL=C ps -o pid,ppid,pgid,sess,lstart,command -p "$$,$PPID,1,$bg,$sb"
+          echo "distinct sess values:"; ps -eo sess= | sort | uniq -c | sort -rn | head -5
+          echo "process count: $(ps -eo pid= | wc -l)"
+          time (for i in 1 2 3 4 5; do ps -o pgid=,sess=,lstart=,command= -p $$ >/dev/null; done)
+          time ps -eo pid,ppid,sess >/dev/null
+          python3 -c 'import os; print("getsid", os.getsid(0), os.getpgid(0))'
+          kill $bg $sb || true
       - name: Verify Linux Docker prerequisite
         if: runner.os == 'Linux'
         run: |
