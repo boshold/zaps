@@ -17,6 +17,35 @@ function overlapLength(prev: string[], current: string[]): number | null {
   return null;
 }
 
+function insertedIntoPadding(prev: string[], current: string[]): string[] | null {
+  if (prev.length !== current.length) {
+    return null;
+  }
+  let prefix = 0;
+  while (prefix < prev.length && prev[prefix] === current[prefix]) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < prev.length - prefix &&
+    prev[prev.length - suffix - 1] === current[current.length - suffix - 1]
+  ) {
+    suffix += 1;
+  }
+  if (prefix === 0 || suffix === 0) {
+    return null;
+  }
+  const removed = prev.slice(prefix, prev.length - suffix);
+  const inserted = current.slice(prefix, current.length - suffix);
+  const retainedFooter = prev.slice(prev.length - suffix);
+  return removed.length > 0 &&
+    removed.every((line) => line.trim() === "") &&
+    inserted.some((line) => line.trim() !== "") &&
+    retainedFooter.some((line) => line.trim() !== "")
+    ? inserted
+    : null;
+}
+
 /**
  * Find new lines between two pane captures using line-overlap diffing.
  *
@@ -25,7 +54,8 @@ function overlapLength(prev: string[], current: string[]): number | null {
  *    rewriting it in place (progress bars, status lines), which would otherwise
  *    desync the search and re-emit the whole window (C6). Only the stable lines
  *    are returned; the volatile final line is held until a newer line appears.
- * 3. With no alignment, equal-size windows are the same buffer rewritten —
+ * 3. An unchanged prefix/footer can delimit logs consuming blank viewport padding.
+ * 4. With no alignment, equal-size windows are the same buffer rewritten —
  *    prefer reporting nothing over re-emitting everything (C6).
  */
 function diffOutput(prev: string[], current: string[]): string[] {
@@ -46,7 +76,7 @@ function diffOutput(prev: string[], current: string[]): string[] {
     return currStable.slice(stable);
   }
 
-  return prev.length === current.length ? [] : current;
+  return insertedIntoPadding(prev, current) ?? (prev.length === current.length ? [] : current);
 }
 
 export { diffOutput };

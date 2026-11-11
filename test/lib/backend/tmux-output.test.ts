@@ -67,6 +67,46 @@ describe("tmux output producer", () => {
     producer.stop();
   });
 
+  it("publishes appended logs above fixed footer padding once", async () => {
+    const header = "docker compose up";
+    const ready = "redis-1 | Ready to accept connections tcp";
+    const footer = "w Enable Watch   d Detach";
+    const restarted = "memcached-1 exited with code 0 (restarting)";
+    const saved = "redis-1 | DB saved on disk";
+    const capture = vi.fn(async () => [header, ready, "", "", "", footer].join("\n"));
+    const producer = new TmuxOutputProducer(capture, "%1", 100);
+    const listener = vi.fn<(lines: string[]) => void>();
+    producer.subscribe(listener);
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      listener.mockClear();
+      capture.mockResolvedValue([header, ready, restarted, saved, "", footer].join("\n"));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(listener).toHaveBeenCalledExactlyOnceWith([restarted, saved]);
+      expect(producer.read(10)).toEqual([header, ready, restarted, saved, "", footer]);
+    } finally {
+      producer.stop();
+    }
+  });
+
+  it("does not replay progress or footer rewrites in a padded viewport", async () => {
+    const capture = vi.fn(async () => "header\n50%\n\nfooter");
+    const producer = new TmuxOutputProducer(capture, "%1", 100);
+    const listener = vi.fn<(lines: string[]) => void>();
+    producer.subscribe(listener);
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      listener.mockClear();
+      capture.mockResolvedValue("header\n60%\n\nfooter");
+      await vi.advanceTimersByTimeAsync(100);
+      capture.mockResolvedValue("header\n60%\n\nupdated footer");
+      await vi.advanceTimersByTimeAsync(100);
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      producer.stop();
+    }
+  });
+
   it("discards an old in-flight generation and clears the readiness cache", async () => {
     let finishCapture!: (value: string) => void;
     const capture = vi
