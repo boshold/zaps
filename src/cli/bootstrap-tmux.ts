@@ -404,13 +404,25 @@ async function releaseUnregistered(
   }
 }
 
-async function reapUnmarkedHost(deps: BootstrapDeps, name: string): Promise<boolean> {
+async function reapUnmarkedHost(
+  deps: BootstrapDeps,
+  name: string,
+  configPath: string,
+  projectDir: string,
+): Promise<boolean> {
   const state = await deps.tmux
     .displayMessage(`=${name}:`, `#{session_id}|#{pane_id}|#{pid}|#{${pendingOption}}`)
     .catch(() => "");
   const fields = state.trim().split("|");
   const host = provisionedSessionSchema.safeParse(fields.slice(0, 3));
   if (!host.success || fields.length !== 4 || fields[3] !== "") {
+    return false;
+  }
+  try {
+    if (await deps.daemonSession(configPath, projectDir)) {
+      return false;
+    }
+  } catch {
     return false;
   }
   const [session, , serverPid] = host.data;
@@ -648,7 +660,7 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
       return { proceed: false, exitCode: 0 };
     }
     case "kill-stale-then-spawn": {
-      if (!(await reapUnmarkedHost(deps, decision.name))) {
+      if (!(await reapUnmarkedHost(deps, decision.name, options.configPath, options.projectDir))) {
         deps.io.stderr(
           `Could not verify that managed tmux session ${decision.name} is stale. Check 'zaps ls' and retry after startup settles.\n`,
         );

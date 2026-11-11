@@ -520,6 +520,52 @@ describe("ensureTmuxContext — stale session (F9)", () => {
     expect(h.tmuxCalls[1][2]).toBe("new-session");
   });
 
+  it("preserves an unmarked host registered after the initial daemon lookup", async () => {
+    let observedHost = false;
+    const owner: DaemonSessionView = {
+      name: "app",
+      tmuxSession: "zaps-zaps-bootstrap-test-registered",
+      managed: true,
+      tuiPane: "%5",
+    };
+    const lookup = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockImplementationOnce(async () => {
+        expect(observedHost).toBe(true);
+        return owner;
+      });
+    const h = harness({ daemonSession: lookup });
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn(async (target: string) => {
+      observedHost = true;
+      owner.tmuxSession = target.slice(1, -1);
+      return "$5|%5|42|";
+    });
+
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(lookup).toHaveBeenNthCalledWith(2, CONFIG_PATH, PROJECT_DIR);
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
+    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unmarked host when the fresh ownership lookup fails", async () => {
+    const lookup = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("daemon disconnected"));
+    const h = harness({ daemonSession: lookup });
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("$5|%5|42|");
+
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(lookup).toHaveBeenNthCalledWith(2, CONFIG_PATH, PROJECT_DIR);
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
+    expect(h.deps.tmux.killSession).not.toHaveBeenCalled();
+  });
+
   it("preserves a pending host on retry even when the daemon list is empty", async () => {
     const h = harness();
     h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
