@@ -117,14 +117,17 @@ describe("CLI session list metadata", () => {
     expect(result.stderr).not.toBe("");
   });
 
-  it.each(["json", "toon"])("keeps empty and absent-daemon %s output valid", async (format) => {
+  it.each([
+    { format: "json", socketName: "d.sock" },
+    { format: "json", socketName: "missing.sock" },
+    { format: "toon", socketName: "d.sock" },
+    { format: "toon", socketName: "missing.sock" },
+  ])("keeps $format output valid for $socketName", async ({ format, socketName }) => {
     response = [];
-    for (const socket of [path.join(directory, "d.sock"), path.join(directory, "missing.sock")]) {
-      const result = await run([`--${format}`], socket);
-      expect(result.code).toBe(0);
-      expect(result.stderr).toBe("");
-      const data: unknown = format === "json" ? JSON.parse(result.stdout) : decode(result.stdout);
-      expect(data).toEqual([]);
-    }
+    const result = await run([`--${format}`], path.join(directory, socketName));
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    const data: unknown = format === "json" ? JSON.parse(result.stdout) : decode(result.stdout);
+    expect(data).toEqual([]);
   });
 });
