@@ -195,6 +195,26 @@ describe("Session", () => {
     vi.restoreAllMocks();
   });
 
+  describe("startup lifecycle flags", () => {
+    it("defaults to false", () => {
+      expect(session.startupPending).toBe(false);
+      expect(session.ephemeral).toBe(false);
+    });
+
+    it("clears both flags when the initial startup begins", async () => {
+      const pending = new Session(
+        { ...(await createSessionParams()), startupPending: true, ephemeral: true },
+        createMockManager(),
+      );
+      expect(pending.startupPending).toBe(true);
+      expect(pending.ephemeral).toBe(true);
+      pending.beginInitialStartup();
+      expect(pending.startupPending).toBe(false);
+      expect(pending.ephemeral).toBe(false);
+      await pending.waitForInitialStartup();
+    });
+  });
+
   describe("UI socket binding", () => {
     it("requires acknowledged subscription on the same socket and session", async () => {
       const socket = new Socket();

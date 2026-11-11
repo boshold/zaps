@@ -100,10 +100,41 @@ describe("backend wire decoding", () => {
     expect(() => parseSessionListEntry({ ...entry, backend: "shell" })).toThrow();
   });
 
+  it("parses lifecycle flags on list entries only as true", () => {
+    const base = {
+      id: "s",
+      name: "project",
+      configPath: "/project/.zaps.mts",
+      projectDir: "/project",
+      createdAt: 1,
+      backend: "shell",
+      capabilities: {
+        panes: false,
+        zoom: false,
+        popups: false,
+        taskPanes: false,
+        rawInput: false,
+        layout: false,
+      },
+    };
+    expect(parseSessionListEntry({ ...base, startupPending: true, ephemeral: true })).toMatchObject(
+      { startupPending: true, ephemeral: true },
+    );
+    expect(parseSessionListEntry(base)).not.toHaveProperty("startupPending");
+    expect(() => parseSessionListEntry({ ...base, startupPending: false })).toThrow();
+  });
+
   it("treats missing advertisement as tmux-only and rejects explicit malformed support", () => {
     expect(parseDaemonStatus({ pid: 42, sessions: [] })).toMatchObject({
       advertised: false,
       supportedBackends: ["tmux"],
+      implicitSessions: false,
+    });
+    expect(
+      parseDaemonStatus({ pid: 42, sessions: [], capabilities: { implicitSessions: true } }),
+    ).toMatchObject({ implicitSessions: true });
+    expect(parseDaemonStatus({ pid: 42, sessions: [], capabilities: {} })).toMatchObject({
+      implicitSessions: false,
     });
     expect(() =>
       parseDaemonStatus({ pid: 42, sessions: [], supportedBackends: ["future"] }),

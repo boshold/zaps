@@ -71,6 +71,8 @@ export interface MockSession {
   };
   subscribers: Set<unknown>;
   createdAt: number;
+  ephemeral: boolean;
+  startupPending: boolean;
   taskHistory: unknown[];
   deps: { zapsCommand: string; sessionId: string; sentra?: SentraDeps };
   attachSnapshot: ReturnType<typeof vi.fn>;
@@ -105,6 +107,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     },
     id: "abc123",
     name: "test-project",
+    ephemeral: false,
+    startupPending: false,
     configPath: "/fake/.zaps.mts",
     projectDir: "/fake",
     config: {

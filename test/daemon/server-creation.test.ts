@@ -10,6 +10,7 @@ import type { ResolvedConfig } from "#src/config/types.js";
 import { sessionHandlers } from "#src/daemon/handlers/session.js";
 import { createShutdownAll } from "#src/daemon/index.js";
 import { DaemonServer } from "#src/daemon/server.js";
+import { Session } from "#src/daemon/session.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { ShellRuntime } from "#src/lib/backend/shell/runtime.js";
@@ -416,6 +417,55 @@ describe("session creation with real shell orchestration", () => {
       readiness.resolve(true);
       socket.destroy();
     }
+  });
+
+  it("creates an idle session without initial startup when startServices is false", async () => {
+    const command = `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+    const hook = vi.fn();
+    config.project = {
+      name: "creation",
+      hooks: { onBeforeStart: hook },
+      services: { api: { start: command, sentra: false } },
+    };
+    const begin = vi.spyOn(Session.prototype, "beginInitialStartup");
+    const start = vi.spyOn(ShellRuntime.prototype, "start");
+    const session = await server.create({ ...request(), startServices: false, ephemeral: true });
+    expect(begin).not.toHaveBeenCalled();
+    expect(session.startPromise).toBeNull();
+    expect(session.startupPending).toBe(true);
+    expect(session.ephemeral).toBe(true);
+    expect(session.manager.getStatus("api")?.state).toBe("stopped");
+    expect(hook).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+
+    const again = await server.create(request());
+    expect(again).toBe(session);
+    expect(begin).not.toHaveBeenCalled();
+    expect(session.startupPending).toBe(true);
+    expect(session.ephemeral).toBe(true);
+  });
+
+  it("keeps startup flags off for normal creates and ignores new params on existing sessions", async () => {
+    const begin = vi.spyOn(Session.prototype, "beginInitialStartup");
+    const session = await server.create(request());
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(session.startupPending).toBe(false);
+    expect(session.ephemeral).toBe(false);
+    await session.startPromise;
+
+    const again = await server.create({ ...request(), startServices: false, ephemeral: true });
+    expect(again).toBe(session);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(session.startupPending).toBe(false);
+    expect(session.ephemeral).toBe(false);
+  });
+
+  it("rejects ephemeral creates that would start services", async () => {
+    await expect(server.create({ ...request(), ephemeral: true })).rejects.toThrow(/startServices/);
+    await expect(
+      server.create({ ...request(), ephemeral: true, startServices: true }),
+    ).rejects.toThrow(/startServices/);
+    expect(server.list()).toEqual([]);
   });
 
   it("disposes backend resources when manager construction throws", async () => {

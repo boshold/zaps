@@ -199,6 +199,7 @@ function parseSessionList(input: unknown) {
 const daemonStatusSchema = z.object({
   pid: z.number().int(),
   supportedBackends: z.array(backendIdSchema).optional(),
+  capabilities: z.object({ implicitSessions: z.boolean().optional() }).optional(),
   sessions: z.array(
     z.object({
       id: z.string(),
@@ -246,6 +247,7 @@ function parseDaemonStatus(input: unknown) {
     ...status,
     advertised: status.supportedBackends !== undefined,
     supportedBackends: status.supportedBackends ?? [backendIdSchema.parse("tmux")],
+    implicitSessions: status.capabilities?.implicitSessions === true,
   };
 }
 

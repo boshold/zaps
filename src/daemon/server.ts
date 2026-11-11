@@ -667,6 +667,9 @@ class DaemonServer implements SessionStore {
         deps,
         shellEnv: params.shellEnv,
         env: loaded.env,
+        ...(params.backend === "shell" && params.startServices === false
+          ? { startupPending: true, ephemeral: params.ephemeral === true }
+          : {}),
       };
 
       this.assertAccepting();
@@ -681,7 +684,9 @@ class DaemonServer implements SessionStore {
 
       // Start services in background — TUI connects and sees them starting.
       // Tracked so reload/destroy can cooperatively abort and await it (A5).
-      session.beginInitialStartup();
+      if (!session.startupPending) {
+        session.beginInitialStartup();
+      }
 
       return session;
     } catch (error) {

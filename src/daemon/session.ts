@@ -132,6 +132,8 @@ export interface SessionCreateParams {
   shellEnv?: Record<string, string>;
   /** Project .env merged with shellEnv. */
   env?: Record<string, string>;
+  startupPending?: boolean;
+  ephemeral?: boolean;
 }
 
 export function sessionId(configPath: string, projectDir?: string): string {
@@ -162,6 +164,8 @@ export class Session {
   private readonly subscriptionRegistrations = new Map<net.Socket, symbol>();
   private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
+  public ephemeral: boolean;
+  public startupPending: boolean;
   public readonly taskExecution: TaskExecutionService;
 
   public get taskHistory(): TaskRunRecord[] {
@@ -222,6 +226,8 @@ export class Session {
     this.deps = params.deps;
     this.manager = manager;
     this.configLoadedAt = Date.now();
+    this.startupPending = params.startupPending === true;
+    this.ephemeral = params.ephemeral === true;
 
     this.memberUnits = resolveExecutionUnits(this.config);
     this.logBuffers = allocateLogBuffers(this.memberUnits);
@@ -369,6 +375,8 @@ export class Session {
     if (this.initialStartup) {
       return;
     }
+    this.startupPending = false;
+    this.ephemeral = false;
     const { manager, name } = this;
     const pending = this.startAll();
     this.startPromise = pending;
