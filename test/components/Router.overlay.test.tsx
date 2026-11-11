@@ -266,25 +266,41 @@ describe("Router shutdown confirmation", () => {
 
   it("asks before palette shutdown and keeps the UI usable after cleanup failure", async () => {
     const client = createMockClient();
-    vi.mocked(client.destroySession).mockRejectedValueOnce(new Error("Session cleanup incomplete"));
-    const { stdin, lastFrame } = renderWithOverlay(client, [STATUS]);
+    const ack = deferred<void>();
+    const failure = new Error("Session cleanup incomplete");
+    vi.mocked(client.destroySession).mockReturnValueOnce(ack.promise);
+    const { stdin, lastFrame, unmount } = renderWithOverlay(client, [STATUS]);
 
-    stdin.write(":");
-    await flush();
-    stdin.write("shut down");
-    await flush();
-    stdin.write("\r");
-    await flush();
-    expect(overlay?.top?.id).toBe("shutdown-confirm");
-    expect(client.destroySession).not.toHaveBeenCalled();
-    stdin.write("y");
-    await flush();
-    expect(client.destroySession).toHaveBeenCalledOnce();
-    expect(client.detach).not.toHaveBeenCalled();
-    expect(client.disconnect).not.toHaveBeenCalled();
-    expect(lastFrame()).toContain("Shutdown failed. Session cleanup incomplete");
-    stdin.write("d");
-    await flush();
-    expect(overlay?.top?.id).toBe("shutdown-confirm");
+    try {
+      await act(async () => stdin.write(":"));
+      await vi.waitFor(() => expect(overlay?.top?.id).toBe("command-palette"));
+      await act(async () => stdin.write("shut down"));
+      await act(async () => stdin.write("\r"));
+      await vi.waitFor(() => expect(overlay?.top?.id).toBe("shutdown-confirm"));
+      expect(client.destroySession).not.toHaveBeenCalled();
+      await act(async () => stdin.write("y"));
+      await vi.waitFor(() => expect(client.destroySession).toHaveBeenCalledOnce());
+      expect(overlay?.isOpen).toBe(false);
+      expect(client.detach).not.toHaveBeenCalled();
+      expect(client.disconnect).not.toHaveBeenCalled();
+      expect(lastFrame()).not.toContain("Shutdown failed.");
+      await act(async () => stdin.write("d"));
+      expect(overlay?.isOpen).toBe(false);
+
+      await act(async () => ack.reject(failure));
+      await vi.waitFor(() =>
+        expect(lastFrame()).toContain("Shutdown failed. Session cleanup incomplete"),
+      );
+      expect(client.destroySession).toHaveBeenCalledOnce();
+      expect(client.detach).not.toHaveBeenCalled();
+      expect(client.disconnect).not.toHaveBeenCalled();
+      await act(async () => stdin.write("d"));
+      await vi.waitFor(() => expect(overlay?.top?.id).toBe("shutdown-confirm"));
+    } finally {
+      if (vi.mocked(client.destroySession).mock.calls.length > 0) {
+        await act(async () => ack.reject(failure));
+      }
+      unmount();
+    }
   });
 });
