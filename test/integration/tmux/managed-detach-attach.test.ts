@@ -265,12 +265,19 @@ describe.skipIf(!hasTmux() || !hasBinary())(
             await dumpManagedState(session, project.runtimeDir, tuiPane);
           }
           expect(qPainted).toBe(true);
-          await managed(["send-keys", "-t", tuiPane, "q"]);
-
           // The MUST-HAVE of F2: the real client is gone, not just the process.
+          // A painted frame can precede Ink's key listener, so repeat `q` until it lands.
+          let lastQuit = 0;
           const detached = await pollUntil(async () => {
             const live = await clients(session);
-            return live.length === 0;
+            if (live.length === 0) {
+              return true;
+            }
+            if (Date.now() - lastQuit >= 1000) {
+              lastQuit = Date.now();
+              await managed(["send-keys", "-t", tuiPane, "q"]).catch(() => "");
+            }
+            return false;
           }, 20_000);
           expect(detached).toBe(true);
           expect(

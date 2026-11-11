@@ -525,8 +525,13 @@ class PaneCleanup {
         }
         await this.recordOwned(ownership, graceDeadline);
       } catch (error) {
-        if (Date.now() < graceDeadline || ownership.members.size === 0) {
+        if (Date.now() < graceDeadline) {
           throw error;
+        }
+        if (ownership.members.size === 0) {
+          throw new Error("termination deadline exceeded: no verified owned members", {
+            cause: error,
+          });
         }
         break;
       }

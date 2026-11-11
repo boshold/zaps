@@ -121,17 +121,20 @@ export function createShellTestEnvironment({
       fs.accessSync(argument, fs.constants.R_OK);
     }
   }
-  const temporaryDirectory = os.tmpdir();
+  const temporaryDirectory = fs.realpathSync(os.tmpdir());
   const socketTemplate = path.join(
     temporaryDirectory,
     "zaps-shell-XXXXXX",
     "runtime",
     "daemon.sock",
   );
-  const rootDir = fs.mkdtempSync(
-    path.join(
-      Buffer.byteLength(socketTemplate) >= 100 ? "/tmp" : temporaryDirectory,
-      "zaps-shell-",
+  // Canonical path: macOS /var is a symlink and session IDs hash real paths.
+  const rootDir = fs.realpathSync(
+    fs.mkdtempSync(
+      path.join(
+        Buffer.byteLength(socketTemplate) >= 100 ? "/tmp" : temporaryDirectory,
+        "zaps-shell-",
+      ),
     ),
   );
   const projectDir = path.join(rootDir, "project");
