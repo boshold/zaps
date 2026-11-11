@@ -1,22 +1,34 @@
 import { spawnSync } from "node:child_process";
 
-export function scriptPtyArgs(
+interface PtyLauncher {
+  readonly file: string;
+  readonly args: string[];
+}
+
+// Apple script(1) requires a TTY on stdin, so macOS uses Python's pty.spawn instead.
+const DARWIN_PTY = [
+  "import os, pty, sys",
+  "code = os.waitstatus_to_exitcode(pty.spawn(sys.argv[1:]))",
+  "sys.exit(code if code >= 0 else 128 - code)",
+].join("\n");
+
+export function shellPty(
   command: string,
   platform: NodeJS.Platform = process.platform,
-): string[] {
+): PtyLauncher {
   if (platform === "linux") {
-    return ["-qec", command, "/dev/null"];
+    return { file: "script", args: ["-qec", command, "/dev/null"] };
   }
-  // Apple script(1): transcript first, then command argv; child status is propagated.
   if (platform === "darwin") {
-    return ["-q", "/dev/null", "/bin/sh", "-c", command];
+    return { file: "python3", args: ["-c", DARWIN_PTY, "/bin/sh", "-c", command] };
   }
   throw new Error(`Required shell PTY unsupported on ${platform}`);
 }
 
 export function requireShellPty(): void {
   const command = String.raw`test -t 0 && test -t 1 || exit 8; IFS= read -r key; test "$key" = q || exit 9; printf "SHELL_PTY_KEY_OK\n"; exit 7`;
-  const probe = spawnSync("script", scriptPtyArgs(command), {
+  const pty = shellPty(command);
+  const probe = spawnSync(pty.file, pty.args, {
     env: { ...process.env, SHELL: "/bin/sh", TERM: "xterm-256color" },
     input: "q\n",
     encoding: "utf8",

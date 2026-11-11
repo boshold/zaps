@@ -125,7 +125,7 @@ jobs:
         with:
           name: dist-linux
           path: dist/
-      - run: chmod +x dist/zaps
+      - run: chmod +x dist/zaps dist/cli.mjs
       - name: Install tmux ${{ matrix.tmux }}
         run: |
           sudo apt-get update

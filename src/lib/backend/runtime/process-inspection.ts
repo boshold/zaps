@@ -44,16 +44,23 @@ function positiveInteger(value: string | undefined): number | null {
   return Number.isSafeInteger(number) && number > 0 ? number : null;
 }
 
+const DARWIN_IDENTITY =
+  /^(?<pgid>\d+)\s+(?<sid>[\da-f]+)\s+(?<startTime>\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})(?:\s+(?<cmdline>.*))?$/is;
+
 function parseDarwinSession(value: string | undefined): string | null {
   return value && /^[\da-f]+$/i.test(value) ? value : null;
 }
 
-function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity {
+function parseLinuxIdentity(pid: number, stat: string): ProcessIdentity | null {
   const close = stat.lastIndexOf(") ");
   const fields = stat
     .slice(close + 2)
     .trim()
     .split(/\s+/);
+  // Mid-reap tasks report pgid and sid 0 once their signal handlers are released.
+  if (close !== -1 && fields[2] === "0" && fields[3] === "0") {
+    return null;
+  }
   const pgid = positiveInteger(fields[2]);
   const sid = positiveInteger(fields[3]);
   const { 19: startTime } = fields;
@@ -199,7 +206,10 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     exec:
       overrides.exec ??
       (async (probe, args) => {
-        const { stdout } = await execFileAsync(probe, args);
+        // C locale keeps BSD `lstart` at a fixed five-field shape.
+        const { stdout } = await execFileAsync(probe, args, {
+          env: { ...process.env, LC_ALL: "C" },
+        });
         return stdout;
       }),
     readProc: overrides.readProc ?? (async (path) => readFile(path, "utf8")),
@@ -232,52 +242,55 @@ function createProcessInspection(overrides: Partial<ProcessInspectionDeps> = {})
     }
   }
 
+  async function readLinuxIdentity(pid: number): Promise<ProcessIdentity | null> {
+    try {
+      const stat = await deps.readProc(`/proc/${String(pid)}/stat`);
+      const identity = parseLinuxIdentity(pid, stat);
+      if (!identity) {
+        return null;
+      }
+      const rawCmdline = await deps.readProc(`/proc/${String(pid)}/cmdline`);
+      const cmdline = rawCmdline.replaceAll("\0", " ").trim();
+      const current = parseLinuxIdentity(pid, await deps.readProc(`/proc/${String(pid)}/stat`));
+      return current && sameProcess(identity, current) ? { ...identity, cmdline } : null;
+    } catch (error) {
+      if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") {
+        return null;
+      }
+      if (error instanceof ProcessInspectionError) {
+        throw error;
+      }
+      throw new ProcessInspectionError("/proc", "failed", error);
+    }
+  }
+
+  async function readDarwinIdentity(pid: number): Promise<ProcessIdentity | null> {
+    // One ps snapshot: each extra spawn costs tens of milliseconds on macOS.
+    const raw = await command(
+      "ps",
+      ["-o", "pgid=,sess=,lstart=,command=", "-p", String(pid)],
+      true,
+    );
+    const output = raw.trim();
+    if (!output) {
+      return null;
+    }
+    const groups = DARWIN_IDENTITY.exec(output)?.groups;
+    const pgid = positiveInteger(groups?.pgid);
+    const sid = parseDarwinSession(groups?.sid);
+    const startTime = groups?.startTime;
+    if (pgid === null || sid === null || !startTime) {
+      throw new ProcessInspectionError("ps", "invalid_output");
+    }
+    return { pid, pgid, sid, startTime, cmdline: groups?.cmdline?.trim() ?? "" };
+  }
+
   async function readProcessIdentity(pid: number): Promise<ProcessIdentity | null> {
     supported();
     if (!Number.isSafeInteger(pid) || pid <= 0) {
       throw new ProcessInspectionError("pid", "invalid_output");
     }
-    if (deps.platform === "linux") {
-      try {
-        const stat = await deps.readProc(`/proc/${String(pid)}/stat`);
-        const identity = parseLinuxIdentity(pid, stat);
-        const rawCmdline = await deps.readProc(`/proc/${String(pid)}/cmdline`);
-        const cmdline = rawCmdline.replaceAll("\0", " ").trim();
-        const current = parseLinuxIdentity(pid, await deps.readProc(`/proc/${String(pid)}/stat`));
-        return sameProcess(identity, current) ? { ...identity, cmdline } : null;
-      } catch (error) {
-        if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") {
-          return null;
-        }
-        if (error instanceof ProcessInspectionError) {
-          throw error;
-        }
-        throw new ProcessInspectionError("/proc", "failed", error);
-      }
-    }
-    const field = async (name: string): Promise<string> => {
-      const output = await command("ps", ["-o", name, "-p", String(pid)], true);
-      return output.trim();
-    };
-    const startTime = await field("lstart=");
-    if (!startTime) {
-      return null;
-    }
-    const groupOutput = await field("pgid=,sess=");
-    if (!groupOutput) {
-      return null;
-    }
-    const groups = groupOutput.split(/\s+/);
-    const pgid = positiveInteger(groups[0]);
-    const sid = parseDarwinSession(groups[1]);
-    if (pgid === null || sid === null) {
-      throw new ProcessInspectionError("ps", "invalid_output");
-    }
-    const cmdline = await field("command=");
-    if ((await field("lstart=")) !== startTime) {
-      return null;
-    }
-    return { pid, pgid, sid, startTime, cmdline };
+    return deps.platform === "linux" ? readLinuxIdentity(pid) : readDarwinIdentity(pid);
   }
 
   async function processTable(): Promise<{ pid: number; ppid: number; sid: ProcessSessionId }[]> {

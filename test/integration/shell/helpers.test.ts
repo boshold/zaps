@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -238,7 +237,8 @@ describe("shell integration harness", () => {
   );
 
   it("records sentinel calls under an apostrophe-containing TMPDIR", async () => {
-    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-shell-quoted-'"));
+    // The macOS TMPDIR is long enough to trigger the harness's short /tmp socket fallback.
+    const parent = fs.mkdtempSync(path.join("/tmp", "zaps-shell-quoted-'"));
     const previousTmpdir = process.env.TMPDIR;
     process.env.TMPDIR = parent;
     const fixture = createShellTestEnvironment({ command });

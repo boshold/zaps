@@ -140,7 +140,13 @@ describe("terminal operation leases", () => {
       QUOTED: "quote'\" $HOME `id`; $(id)\nnext line",
       "non-shell-key": "preserved",
     };
-    const captured = { ...env };
+    // Dash drops non-identifier names when it execs; bash keeps them.
+    const shellKeepsNonIdentifiers = execFileSync(
+      "/usr/bin/env",
+      ["non-shell-key=preserved", "/bin/sh", "-c", "/usr/bin/env"],
+      { encoding: "utf8" },
+    ).includes("non-shell-key=preserved");
+    const captured = shellKeepsNonIdentifiers ? { ...env } : { ...env, "non-shell-key": undefined };
     let directory = "";
     f.tmux.displayPopup.mockImplementation(async (options) => {
       expect(options.env).toBeUndefined();

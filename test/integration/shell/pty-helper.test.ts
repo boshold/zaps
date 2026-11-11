@@ -3,29 +3,25 @@ import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { createShellTestEnvironment, waitForCondition } from "./helpers.js";
-import { requireShellPty, scriptPtyArgs } from "./pty-helper.js";
+import { requireShellPty, shellPty } from "./pty-helper.js";
 
 describe("required shell PTY", () => {
   it("uses GNU command and exit-status flags on Linux", () => {
-    expect(scriptPtyArgs("printf 'literal command'", "linux")).toEqual([
-      "-qec",
-      "printf 'literal command'",
-      "/dev/null",
-    ]);
+    expect(shellPty("printf 'literal command'", "linux")).toEqual({
+      file: "script",
+      args: ["-qec", "printf 'literal command'", "/dev/null"],
+    });
   });
 
-  it("passes the command argv after the transcript on macOS", () => {
-    expect(scriptPtyArgs("printf 'literal command'", "darwin")).toEqual([
-      "-q",
-      "/dev/null",
-      "/bin/sh",
-      "-c",
-      "printf 'literal command'",
-    ]);
+  it("runs the command argv through a Python PTY on macOS", () => {
+    const { file, args } = shellPty("printf 'literal command'", "darwin");
+    expect(file).toBe("python3");
+    expect(args.slice(0, 1)).toEqual(["-c"]);
+    expect(args.slice(2)).toEqual(["/bin/sh", "-c", "printf 'literal command'"]);
   });
 
   it("rejects unsupported hosts rather than guessing GNU flags", () => {
-    expect(() => scriptPtyArgs("true", "win32")).toThrow("unsupported");
+    expect(() => shellPty("true", "win32")).toThrow("unsupported");
   });
 
   it("requires actual TTY input/output, delivered keys and propagated child status", () => {

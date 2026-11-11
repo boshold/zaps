@@ -52,6 +52,17 @@ describe("process identity", () => {
     expect(await inspection.readProcessIdentity(100)).toBeNull();
   });
 
+  it("returns null for Linux tasks mid-reap whose groups read as zero", async () => {
+    const readProc = vi.fn<(path: string) => Promise<string>>().mockResolvedValue(stat(100, 0, 0));
+    const inspection = createProcessInspection({ platform: "linux", readProc });
+    expect(await inspection.readProcessIdentity(100)).toBeNull();
+    readProc
+      .mockResolvedValueOnce(stat())
+      .mockResolvedValueOnce("node")
+      .mockResolvedValueOnce(stat(100, 0, 0));
+    expect(await inspection.readProcessIdentity(100)).toBeNull();
+  });
+
   it("rejects malformed stat and denied proc reads conservatively", async () => {
     const readProc = vi.fn<(path: string) => Promise<string>>().mockResolvedValue("broken");
     const inspection = createProcessInspection({ platform: "linux", readProc });
@@ -67,12 +78,7 @@ describe("process identity", () => {
 
   it("preserves opaque macOS birth strings and uses BSD session keyword", async () => {
     const birth = "Tue Nov 10 09:08:07 2026";
-    const exec = vi.fn(async (_command: string, args: string[]) => {
-      if (args[1] === "lstart=") {
-        return `  ${birth}\n`;
-      }
-      return args[1] === "pgid=,sess=" ? "100 a3f\n" : "node renamed worker\n";
-    });
+    const exec = vi.fn(async () => `  100 a3f ${birth} node renamed worker\n`);
     const inspection = createProcessInspection({ platform: "darwin", exec });
     expect(await inspection.readProcessIdentity(100)).toEqual({
       pid: 100,
@@ -81,7 +87,23 @@ describe("process identity", () => {
       startTime: birth,
       cmdline: "node renamed worker",
     });
-    expect(exec).toHaveBeenCalledWith("ps", ["-o", "pgid=,sess=", "-p", "100"]);
+    expect(exec).toHaveBeenCalledOnce();
+    expect(exec).toHaveBeenCalledWith("ps", ["-o", "pgid=,sess=,lstart=,command=", "-p", "100"]);
+  });
+
+  it("keeps padded macOS birth days intact and tolerates an empty command", async () => {
+    const birth = "Mon Nov  9 09:08:07 2026";
+    const inspection = createProcessInspection({
+      platform: "darwin",
+      exec: async () => `100 a3f ${birth}\n`,
+    });
+    expect(await inspection.readProcessIdentity(100)).toEqual({
+      pid: 100,
+      pgid: 100,
+      sid: "a3f",
+      startTime: birth,
+      cmdline: "",
+    });
   });
 
   it("distinguishes absent macOS PIDs from missing or failing ps", async () => {
@@ -134,13 +156,7 @@ describe("process membership", () => {
         if (args[0] === "-eo") {
           return "PID PPID SESS\n200 1 a3f\n300 1 a3f\n400 1 a40";
         }
-        if (args[1] === "lstart=") {
-          return "Tue Nov 10 09:08:07 2026";
-        }
-        if (args[1] === "pgid=,sess=") {
-          return args[3] === "200" ? "100 a3f" : "300 a3f";
-        }
-        return "renamed";
+        return `${args[3] === "200" ? "100" : "300"} a3f Tue Nov 10 09:08:07 2026 renamed`;
       },
     });
     const identity = { pid: 100, pgid: 100, sid: "a3f", startTime: "earlier" };
@@ -169,7 +185,7 @@ describe("process membership", () => {
         if (args[0] === "-eo") {
           return "PID PPID SESS\n100 1 invalid";
         }
-        return args[1] === "lstart=" ? "Tue Nov 10 09:08:07 2026" : "100 invalid";
+        return "100 invalid Tue Nov 10 09:08:07 2026 node";
       },
     });
     await expect(inspection.readProcessIdentity(100)).rejects.toMatchObject({

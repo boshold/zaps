@@ -85,6 +85,7 @@ describe("getDescendantPids", () => {
   });
 
   describe("ps session-id keyword is platform-specific", () => {
+    const C_LOCALE = { env: expect.objectContaining({ LC_ALL: "C" }) };
     const originalPlatform = process.platform;
     afterEach(() => {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
@@ -94,14 +95,14 @@ describe("getDescendantPids", () => {
       Object.defineProperty(process, "platform", { value: "linux", configurable: true });
       mockExecFileOutput("  PID  PPID   SID\n 1000     1  1000");
       await getDescendantPids(1000);
-      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"]);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sid"], C_LOCALE);
     });
 
     it("uses the `sess` keyword on macOS (BSD ps rejects `sid`)", async () => {
       Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
       mockExecFileOutput("  PID  PPID  SESS\n 1000     1  1000");
       await getDescendantPids(1000);
-      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sess"]);
+      expect(mockExecFile).toHaveBeenCalledWith("ps", ["-eo", "pid,ppid,sess"], C_LOCALE);
     });
   });
 });

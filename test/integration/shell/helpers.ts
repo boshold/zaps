@@ -15,7 +15,7 @@ import { ipcRequest } from "#src/lib/ipc/client.js";
 import { runWithEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 
-import { scriptPtyArgs } from "./pty-helper.js";
+import { shellPty } from "./pty-helper.js";
 
 interface TerminalStreams {
   stdin: boolean;
@@ -212,7 +212,6 @@ export function createShellTestEnvironment({
       }
     }
     const argv = [...explicitCommand.args, ...args];
-    const executable = terminal ? "script" : explicitCommand.file;
     const ptyCommand = [explicitCommand.file, ...argv].map(shellEscape).join(" ");
     const redirectedStdout = path.join(rootDir, `stdout-${children.size}.log`);
     const terminalCommand = [
@@ -220,7 +219,10 @@ export function createShellTestEnvironment({
       terminal?.stdin ? "" : "</dev/null",
       terminal?.stdout ? "" : `>${shellEscape(redirectedStdout)}`,
     ].join(" ");
-    const child = spawn(executable, terminal ? scriptPtyArgs(terminalCommand) : argv, {
+    const launcher = terminal
+      ? shellPty(terminalCommand)
+      : { file: explicitCommand.file, args: argv };
+    const child = spawn(launcher.file, launcher.args, {
       cwd: projectDir,
       env: {
         ...env,
@@ -531,11 +533,17 @@ export function createShellTestEnvironment({
         throw new Error("Shell fixture already cleaned up");
       }
       const identity = await inspection.readProcessIdentity(pid);
-      if (!identity || identity.pgid !== pid) {
-        throw new Error(`Expected live private process group leader: ${pid}`);
+      // Shells without exec-last-command (Debian dash) keep `sh -c` as group leader.
+      const leader =
+        identity && identity.pgid !== pid
+          ? await inspection.readProcessIdentity(identity.pgid)
+          : identity;
+      if (!identity || !leader || leader.pgid !== leader.pid || leader.sid !== identity.sid) {
+        throw new Error(`Expected live private process group member: ${pid}`);
       }
       ownedProcesses.set(pid, identity);
-      for (const member of await inspection.getProcessMembers(identity)) {
+      ownedProcesses.set(leader.pid, leader);
+      for (const member of await inspection.getProcessMembers(leader)) {
         ownedProcesses.set(member.pid, member);
       }
       return identity;
