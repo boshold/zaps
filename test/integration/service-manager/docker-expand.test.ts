@@ -216,7 +216,7 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       let launches = 0;
       let disposals = 0;
       const logs = vi.fn();
-      const ownerLogs = vi.fn();
+      const ownerLogs = vi.fn<(line: string) => void>();
       config.project.services.redis.onOutput = ownerLogs;
       config.project.services.memcached.onOutput = logs;
       mgr = new ServiceManager(
@@ -273,26 +273,41 @@ describe.skipIf(!hasTmux() || !hasDocker())("docker expand integration", () => {
       expect(mgr.getStatus(firstMember).state).toBe("ready");
       expect(await ids("redis")).toBe(ownerId);
       if (firstMember === "memcached") {
-        const marker = `member-restarted-${Date.now()}`;
-        await execFileAsync(
+        const observedBeforeSave = ownerLogs.mock.calls.length;
+        const savedMessage = "DB saved on disk";
+        const save = await execFileAsync(
           "docker",
-          [
-            "compose",
-            "-f",
-            composeFile,
-            "exec",
-            "-T",
-            "redis",
-            "sh",
-            "-c",
-            `redis-cli CONFIG SET loglevel verbose; printf 'CLIENT SETNAME ${marker}\n' | redis-cli`,
-          ],
+          ["compose", "-f", composeFile, "exec", "-T", "redis", "redis-cli", "--raw", "SAVE"],
           { cwd: tmpDir },
         );
-        await vi.waitFor(
-          () => expect(ownerLogs).toHaveBeenCalledWith(expect.stringContaining(marker)),
-          { timeout: 10_000 },
+        expect(save.stdout.trim()).toBe("OK");
+        const containerLogs = await execFileAsync(
+          "docker",
+          ["compose", "-f", composeFile, "logs", "--no-color", "redis"],
+          { cwd: tmpDir },
         );
+        expect(containerLogs.stdout).toContain(savedMessage);
+        try {
+          await vi.waitFor(
+            () =>
+              expect(
+                ownerLogs.mock.calls
+                  .slice(observedBeforeSave)
+                  .some(([line]) => line.includes(savedMessage)),
+              ).toBe(true),
+            { timeout: 10_000 },
+          );
+        } catch (error) {
+          const paneOutput = await execFileAsync("tmux", [
+            "-L",
+            testTmuxSocket() ?? "zaps-test",
+            "capture-pane",
+            "-p",
+            "-t",
+            sharedPaneId,
+          ]);
+          throw new Error(JSON.stringify({ save, containerLogs, paneOutput }), { cause: error });
+        }
       }
       await mgr.stopService("redis");
       expect(mgr.getStatus("memcached").state).toBe("ready");
