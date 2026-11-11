@@ -237,6 +237,9 @@ export class DaemonClient extends EventEmitter {
       throw new TerminalActionError("invalid_request", "invalid_request");
     }
     const response = await subscription.request("terminal.action", parsed, 0);
+    if (this.boundSubscription !== subscription || !this.uiBound) {
+      throw new Error("daemon connection closed");
+    }
     if (response.error !== undefined) {
       throw new TerminalActionError(response.error, response.errorCode);
     }

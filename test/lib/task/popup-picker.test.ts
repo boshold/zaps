@@ -1,23 +1,18 @@
 import { execFileSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TerminalOperationContext } from "../../../src/lib/backend/tmux/operations.js";
 import { shellEscape } from "../../../src/lib/service/env.js";
-
-// `displayPopup` is the tmux boundary. Replace it with a runner that executes the
-// Popup's shell command directly (no tmux), so the temp-file passback — write
-// `key\tname` in, run the picker script, read the selection out — is exercised
-// Hermetically. `tmuxSupportsPopup` is stubbed for the availability test.
-vi.mock("../../../src/lib/tmux.js", () => ({
-  displayPopup: vi.fn((opts: { command: string }): void => {
-    execFileSync("sh", ["-c", opts.command], { stdio: "ignore" });
-  }),
-  tmuxSupportsPopup: vi.fn(),
-}));
-
-const { buildFzfScript, parseSelection, popupPickerAvailable, runPopupPicker } =
-  await import("../../../src/lib/task/popup-picker.js");
-const { displayPopup, tmuxSupportsPopup } = await import("../../../src/lib/tmux.js");
+import {
+  buildFzfScript,
+  parseSelection,
+  popupPickerAvailable,
+  runPopupPicker,
+} from "../../../src/lib/task/popup-picker.js";
 
 const TASKS = [
   { key: "migrate", name: "Migrate DB" },
@@ -25,12 +20,14 @@ const TASKS = [
   { key: "build", name: "Build app" },
 ];
 
-beforeEach(() => {
-  vi.clearAllMocks();
+let directory: string;
+
+beforeEach(async () => {
+  directory = await mkdtemp(path.join(os.tmpdir(), "zaps-popup-test-"));
 });
 
-afterEach(() => {
-  vi.restoreAllMocks();
+afterEach(async () => {
+  await rm(directory, { recursive: true, force: true });
 });
 
 describe("buildFzfScript", () => {
@@ -61,24 +58,45 @@ describe("parseSelection", () => {
 
 describe("popupPickerAvailable", () => {
   it("is false when tmux lacks popup support (even if fzf is present)", async () => {
-    vi.mocked(tmuxSupportsPopup).mockResolvedValue(false);
-    expect(await popupPickerAvailable()).toBe(false);
+    const tmux = { tmuxSupportsPopup: async () => false };
+    expect(await popupPickerAvailable(tmux, { PATH: process.env.PATH ?? "" })).toBe(false);
   });
 });
 
 describe("runPopupPicker", () => {
+  const popup = vi.fn<TerminalOperationContext["popup"]>(async ({ command }) => {
+    execFileSync("sh", ["-c", command], { stdio: "ignore" });
+  });
+
+  function makeOperation(): TerminalOperationContext {
+    popup.mockClear();
+    return {
+      directory,
+      cwd: directory,
+      env: {},
+      signal: new AbortController().signal,
+      popup,
+      capture: async () => "",
+    };
+  }
+
   it("writes the task list, runs the picker, and returns the selected key", async () => {
-    // Stub picker: select the 2nd task (mirrors what fzf would emit).
     const pickSecond = (inFile: string, outFile: string) =>
       `sed -n 2p ${shellEscape(inFile)} > ${shellEscape(outFile)}`;
-    const key = await runPopupPicker(TASKS, { buildScript: pickSecond });
+    const key = await runPopupPicker(TASKS, {
+      operation: makeOperation(),
+      buildScript: pickSecond,
+    });
     expect(key).toBe("seed");
-    expect(vi.mocked(displayPopup)).toHaveBeenCalledTimes(1);
+    expect(popup).toHaveBeenCalledOnce();
   });
 
   it("returns null when the picker writes no selection (cancel)", async () => {
     const pickNothing = (_inFile: string, outFile: string) => `: > ${shellEscape(outFile)}`;
-    const key = await runPopupPicker(TASKS, { buildScript: pickNothing });
+    const key = await runPopupPicker(TASKS, {
+      operation: makeOperation(),
+      buildScript: pickNothing,
+    });
     expect(key).toBeNull();
   });
 });

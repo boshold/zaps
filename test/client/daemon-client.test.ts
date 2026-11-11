@@ -4,6 +4,7 @@ import { unavailableActions, unavailableCapabilities } from "../../src/lib/backe
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
 import type { IpcResponse } from "../../src/lib/ipc/protocol.js";
 import { acceptMockResponse } from "../_helpers/accept-mock-response.js";
+import { deferred } from "../_helpers/deferred.js";
 import { makeSessionSnapshot as wireSnapshot } from "../_helpers/session-snapshot.js";
 
 const mockIpcRequest = vi.fn<(...args: unknown[]) => Promise<unknown>>();
@@ -378,6 +379,28 @@ describe("DaemonClient", () => {
         vi.useRealTimers();
       }
     });
+
+    it.each([
+      { id: "selection", result: { action: "taskPicker", taskKey: "build" } },
+      { id: "unavailable", error: "missing fzf", errorCode: "backend_unavailable" },
+    ] satisfies IpcResponse[])(
+      "discards a terminal response from a replaced binding ($id)",
+      async (response) => {
+        mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
+        client.connect();
+        await client.bindUi();
+        const pending = deferred<IpcResponse>();
+        mockSub.request.mockReturnValueOnce(pending.promise);
+        const action = client.terminalAction({ action: "taskPicker" });
+        const rejected = expect(action).rejects.toThrow("daemon connection closed");
+        client.connect();
+        mockSub.request.mockResolvedValueOnce({ id: "reattach", result: wireSnapshot() });
+        await client.bindUi();
+        expect(client.uiBound).toBe(true);
+        pending.resolve(response);
+        await rejected;
+      },
+    );
 
     it("preserves busy errors without fallback and rejects socket loss", async () => {
       mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });

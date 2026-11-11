@@ -7,8 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock tmux functions to prevent real tmux commands
 vi.mock("../src/lib/tmux.js", () => ({
-  zoomPane: vi.fn().mockResolvedValue(undefined),
-  editPaneCapture: vi.fn().mockResolvedValue(undefined),
   displayPopup: vi.fn().mockResolvedValue(undefined),
   capturePane: vi.fn().mockResolvedValue(""),
   selectPane: vi.fn().mockResolvedValue(undefined),
@@ -91,6 +89,9 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
     restartAll: vi.fn().mockResolvedValue(undefined),
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
+    terminalAction: vi.fn<DaemonClient["terminalAction"]>(async ({ action }) =>
+      action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
+    ),
     runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
   });
   return client as unknown as DaemonClient;
@@ -950,7 +951,6 @@ describe("Keyboard routing — Dashboard special keys", () => {
   });
 
   it("z zooms pane with a live pane action", async () => {
-    const { zoomPane } = await import("../src/lib/tmux.js");
     const statuses: ProjectedServiceStatus[] = [
       {
         name: "api",
@@ -962,7 +962,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
       },
     ];
 
-    const { stdin } = renderApp({
+    const { stdin, client } = renderApp({
       statuses,
       paneMap: { api: "%1" },
       capabilities: fullCapabilities,
@@ -971,11 +971,13 @@ describe("Keyboard routing — Dashboard special keys", () => {
     act(() => {
       stdin.write("z");
     });
-    expect(vi.mocked(zoomPane)).toHaveBeenCalledWith("%1");
+    expect(client.terminalAction).toHaveBeenCalledWith({
+      action: "zoom",
+      target: { kind: "service", name: "api" },
+    });
   });
 
   it("E edits pane capture with a live pane action", async () => {
-    const { editPaneCapture } = await import("../src/lib/tmux.js");
     const statuses: ProjectedServiceStatus[] = [
       {
         name: "api",
@@ -987,7 +989,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
       },
     ];
 
-    const { stdin, lastFrame } = renderApp({
+    const { stdin, lastFrame, client } = renderApp({
       statuses,
       paneMap: { api: "%1" },
       capabilities: fullCapabilities,
@@ -996,7 +998,7 @@ describe("Keyboard routing — Dashboard special keys", () => {
     act(() => {
       stdin.write("E");
     });
-    expect(vi.mocked(editPaneCapture)).toHaveBeenCalledWith("%1", "api");
+    expect(client.terminalAction).toHaveBeenCalledWith({ action: "editOutput", service: "api" });
     expect(lastFrame()).toBeDefined();
   });
 });

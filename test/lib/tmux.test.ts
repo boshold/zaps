@@ -32,7 +32,6 @@ import {
   zoomPane,
   getWindowName,
   renameWindow,
-  editPaneCapture,
   listPanes,
   displayPopup,
   getWindowOption,
@@ -461,27 +460,6 @@ describe("renameWindow", () => {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
-  });
-});
-
-describe("editPaneCapture", () => {
-  it("captures full raw history through the bound handle before opening the editor", async () => {
-    mockSpawn.mockImplementationOnce(() => createMockProc("  history \n\n"));
-    mockSpawn.mockImplementationOnce(() => createSilentMockProc(0));
-    await editPaneCapture("%1", "Capture");
-    expect(mockSpawn.mock.calls[0]?.[1]).toEqual([
-      "-u",
-      "capture-pane",
-      "-t",
-      "%1",
-      "-p",
-      "-N",
-      "-S",
-      "-",
-    ]);
-    const args = mockSpawn.mock.calls[1]?.[1];
-    expect(args).toEqual(expect.arrayContaining(["display-popup", "-T", "Capture"]));
-    expect(args?.at(-1)).not.toContain("tmux capture-pane");
   });
 });
 

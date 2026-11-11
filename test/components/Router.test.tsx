@@ -1,10 +1,8 @@
-import { EventEmitter } from "node:events";
-
 import { render } from "ink-testing-library";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DaemonClient } from "../../src/client/daemon-client.js";
+import { DaemonClient, TerminalActionError } from "../../src/client/daemon-client.js";
 import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
 import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
@@ -16,6 +14,7 @@ import type { ProjectedServiceStatus, ServiceMeta, TaskInfo } from "../../src/da
 import type { OverlayApi } from "../../src/hooks/useOverlay.js";
 import { useOverlay } from "../../src/hooks/useOverlay.js";
 import { AppProvider } from "../../src/hooks/useZaps.js";
+import type { TerminalActionResult } from "../../src/lib/backend/schemas.js";
 import type { BackendCapabilities } from "../../src/lib/backend/types.js";
 import {
   parseServiceStatus,
@@ -34,39 +33,32 @@ vi.mock("../../src/lib/open.js", () => ({
 }));
 
 vi.mock("../../src/lib/tmux.js", () => ({
-  zoomPane: vi.fn(),
-  editPaneCapture: vi.fn().mockResolvedValue(undefined),
   // Quitting asks tmux to detach the client (managed mode only).
   detachClient: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../src/lib/task/popup-picker.js", () => ({
-  popupPickerAvailable: vi.fn().mockResolvedValue(false),
-  runPopupPicker: vi.fn().mockResolvedValue(null),
-}));
-
-vi.mock("../../src/lib/task/output-popup.js", () => ({
-  outputPopupAvailable: vi.fn().mockResolvedValue(true),
-  showOutputPopup: vi.fn().mockResolvedValue(undefined),
-}));
-
-const { outputPopupAvailable, showOutputPopup } =
-  await import("../../src/lib/task/output-popup.js");
 const { openInBrowser } = await import("../../src/lib/open.js");
-const { zoomPane, editPaneCapture, detachClient } = await import("../../src/lib/tmux.js");
-const { popupPickerAvailable, runPopupPicker } = await import("../../src/lib/task/popup-picker.js");
+const { detachClient } = await import("../../src/lib/tmux.js");
+
+const zoomWeb = { action: "zoom", target: { kind: "service", name: "web" } };
+const zoomDashboard = { action: "zoom", target: { kind: "dashboard" } };
+const editWeb = { action: "editOutput", service: "web" };
+const popupTask = { key: "migrate", name: "Run migrations", description: null };
 
 // ── helpers ────────────────────────────────────────────────────────────
 
 function createMockClient(): DaemonClient {
-  const emitter = new EventEmitter();
-  const client = Object.assign(emitter, {
+  const client = new DaemonClient("/unused", "test");
+  vi.spyOn(client, "uiBound", "get").mockReturnValue(true);
+  vi.spyOn(client, "connected", "get").mockReturnValue(true);
+  return Object.assign(client, {
     connect: vi.fn(),
+    connectUi: vi.fn(),
+    terminalAction: vi.fn<DaemonClient["terminalAction"]>(async ({ action }) =>
+      action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
+    ),
     disconnect: vi.fn(),
-    connected: true,
-    uiBound: true,
     deliverUpgradeNotice: vi.fn(),
-    session: "test",
     attach: vi.fn().mockResolvedValue({
       configPath: "/fake/.zaps.ts",
       projectDir: "/fake",
@@ -93,7 +85,6 @@ function createMockClient(): DaemonClient {
     })),
     rebuildDocker: vi.fn().mockResolvedValue(undefined),
   });
-  return client as unknown as DaemonClient;
 }
 
 function makeStatus(overrides: Partial<ServiceStatus> = {}): ServiceStatus {
@@ -346,60 +337,58 @@ describe("Router", () => {
 
   // ── dashboard input: zoom pane (z) ──────────────────────────
 
-  it("zooms the projected pane with z even if the pane map has a different target", () => {
+  it("zooms the configured service with z even if the pane map differs", () => {
     const paneMap = { web: "%2" };
-    const { stdin } = renderRouter({
+    const { stdin, client } = renderRouter({
       paneMap,
       capabilities: fullCapabilities,
       statuses: [{ ...makeStatus({ paneId: "%1" }), actions: liveActions }],
     });
     stdin.write("z");
-    expect(zoomPane).toHaveBeenCalledWith("%1");
+    expect(client.terminalAction).toHaveBeenCalledWith(zoomWeb);
   });
 
-  it("does not zoom without a projected pane target", () => {
-    const { stdin } = renderRouter({
+  it("does not zoom without a live service action", () => {
+    const { stdin, client } = renderRouter({
       paneMap: {},
       capabilities: fullCapabilities,
-      statuses: [{ ...makeStatus(), actions: liveActions }],
+      statuses: [{ ...makeStatus(), actions: unavailableActions }],
     });
     stdin.write("z");
-    expect(zoomPane).not.toHaveBeenCalled();
+    expect(client.terminalAction).not.toHaveBeenCalled();
   });
 
   // ── dashboard input: zoom TUI pane (Z) ─────────────────────
 
-  it("zooms TUI pane with Z key", () => {
-    const paneMap = { "@tui": "%0", web: "%1" };
-    const { stdin } = renderRouter({
-      paneMap,
+  it("zooms the dashboard with Z without a pane address", () => {
+    const { stdin, client } = renderRouter({
       capabilities: fullCapabilities,
       statuses: [{ ...makeStatus(), actions: liveActions }],
     });
     stdin.write("Z");
-    expect(zoomPane).toHaveBeenCalledWith("%0");
+    expect(client.terminalAction).toHaveBeenCalledWith(zoomDashboard);
   });
 
   // ── dashboard input: edit pane capture (E) ───────────────────
 
   it("captures pane with E key", () => {
     const paneMap = { web: "%1" };
-    const { stdin } = renderRouter({
+    const { stdin, client } = renderRouter({
       paneMap,
       capabilities: fullCapabilities,
       statuses: [{ ...makeStatus({ paneId: "%1" }), actions: liveActions }],
     });
     stdin.write("E");
-    expect(editPaneCapture).toHaveBeenCalledWith("%1", "web");
+    expect(client.terminalAction).toHaveBeenCalledWith(editWeb);
   });
 
   it("updates service hints immediately while edit capture is pending", async () => {
-    const edit = deferred<void>();
-    vi.mocked(editPaneCapture).mockReturnValueOnce(edit.promise);
+    const edit = deferred<TerminalActionResult>();
     const { client, stdin, lastFrame } = renderRouter({
       capabilities: { ...fullCapabilities, zoom: false },
       statuses: [{ ...makeStatus({ paneId: "%1", isDocker: true }), actions: liveActions }],
     });
+    vi.mocked(client.terminalAction).mockReturnValueOnce(edit.promise);
     const busyHints = ["[E]dit", "[r]estart", "[R]ebuild"];
     for (const hint of busyHints) {
       expect(lastFrame()).toContain(hint);
@@ -411,7 +400,7 @@ describe("Router", () => {
       stdin.write("a");
     });
     expect(client.restartAll).not.toHaveBeenCalled();
-    expect(editPaneCapture).toHaveBeenCalledExactlyOnceWith("%1", "web");
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith(editWeb);
     expect(client.restartService).not.toHaveBeenCalled();
     for (const hint of busyHints) {
       expect(lastFrame()).not.toContain(hint);
@@ -419,7 +408,7 @@ describe("Router", () => {
     expect(lastFrame()).toContain("[l]ogs");
 
     await act(async () => {
-      edit.resolve(undefined);
+      edit.resolve({ action: "editOutput", done: true });
     });
     for (const hint of busyHints) {
       expect(lastFrame()).toContain(hint);
@@ -430,24 +419,24 @@ describe("Router", () => {
 
   it("does not zoom a detached service even if a pane is mapped", () => {
     const statuses = [makeStatus({ name: "worker", isDetached: true, paneId: "%1" })];
-    const { stdin } = renderRouter({
+    const { stdin, client } = renderRouter({
       statuses,
       capabilities: fullCapabilities,
       paneMap: { worker: "%1" },
     });
     stdin.write("z");
-    expect(zoomPane).not.toHaveBeenCalled();
+    expect(client.terminalAction).not.toHaveBeenCalled();
   });
 
   it("does not edit-capture a detached service even if a pane is mapped", () => {
     const statuses = [makeStatus({ name: "worker", isDetached: true, paneId: "%1" })];
-    const { stdin } = renderRouter({
+    const { stdin, client } = renderRouter({
       statuses,
       capabilities: fullCapabilities,
       paneMap: { worker: "%1" },
     });
     stdin.write("E");
-    expect(editPaneCapture).not.toHaveBeenCalled();
+    expect(client.terminalAction).not.toHaveBeenCalled();
   });
 
   it("still opens logs for a detached service with l key", async () => {
@@ -464,7 +453,7 @@ describe("Router", () => {
     ["shell", unavailableCapabilities],
     ["tmux", mixedCapabilities],
   ] as const)(
-    "suppresses pane hotkeys and popup probes with %s capabilities",
+    "suppresses pane hotkeys and popup requests with %s capabilities",
     async (backend, capabilities) => {
       const { stdin, client } = renderRouter({
         backend,
@@ -485,14 +474,12 @@ describe("Router", () => {
       stdin.write("E");
       stdin.write("o");
       stdin.write("r");
-      expect(zoomPane).not.toHaveBeenCalled();
-      expect(editPaneCapture).not.toHaveBeenCalled();
+      expect(client.terminalAction).not.toHaveBeenCalled();
       expect(openInBrowser).toHaveBeenCalledWith("http://localhost:3000");
       expect(client.restartService).toHaveBeenCalledWith("web");
 
       await pressKey(stdin, "t");
-      expect(popupPickerAvailable).not.toHaveBeenCalled();
-      expect(runPopupPicker).not.toHaveBeenCalled();
+      expect(client.terminalAction).not.toHaveBeenCalled();
       expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
       await pressKey(stdin, "\t");
       await pressKey(stdin, "\t");
@@ -513,8 +500,7 @@ describe("Router", () => {
       await pressKey(stdin, "f");
       expect(overlay?.top?.id).toBe("failed-output");
       await pressKey(stdin, "p");
-      expect(outputPopupAvailable).not.toHaveBeenCalled();
-      expect(showOutputPopup).not.toHaveBeenCalled();
+      expect(client.terminalAction).not.toHaveBeenCalled();
       expect(client.getTaskOutput).toHaveBeenCalledWith("failed-run");
     },
   );
@@ -527,20 +513,19 @@ describe("Router", () => {
       paneMap: { web: "%1", "@tui": "%0" },
     });
     stdin.write("z");
-    expect(zoomPane).toHaveBeenCalledExactlyOnceWith("%1");
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith(zoomWeb);
     act(() => {
       client.emit("service.stateChange", "web", { ...stopped, actions: unavailableActions });
     });
     await pressKey(stdin, "z");
     await pressKey(stdin, "E");
     await pressKey(stdin, "Z");
-    expect(vi.mocked(zoomPane).mock.calls).toEqual([["%1"], ["%0"]]);
-    expect(editPaneCapture).not.toHaveBeenCalled();
+    expect(vi.mocked(client.terminalAction).mock.calls).toEqual([[zoomWeb], [zoomDashboard]]);
   });
 
   it.each([
-    ["zoom", zoomPane],
-    ["edit", editPaneCapture],
+    ["zoom", zoomWeb],
+    ["edit", editWeb],
   ] as const)("guards a stale palette %s command after pane removal", async (query, action) => {
     const stopped = { ...makeStatus({ state: "stopped", paneId: "%1" }), actions: liveActions };
     const { stdin, client } = renderRouter({
@@ -552,7 +537,7 @@ describe("Router", () => {
     expect(overlay?.top?.id).toBe("command-palette");
     await pressKey(stdin, query);
     await pressKey(stdin, "\r");
-    expect(action).toHaveBeenCalledOnce();
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith(action);
     expect(overlay?.isOpen).toBe(false);
     await pressKey(stdin, ":");
     expect(overlay?.top?.id).toBe("command-palette");
@@ -562,7 +547,7 @@ describe("Router", () => {
     });
     await pressKey(stdin, "\r");
     expect(overlay?.isOpen).toBe(false);
-    expect(action).toHaveBeenCalledOnce();
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith(action);
   });
 
   it("updates an open task picker when pane runs become unavailable", async () => {
@@ -587,9 +572,8 @@ describe("Router", () => {
     expect(overlay?.isOpen).toBe(false);
   });
 
-  it("checks popup capability again after the picker probe resolves", async () => {
-    const probe = deferred<boolean>();
-    vi.mocked(popupPickerAvailable).mockReturnValueOnce(probe.promise);
+  it("checks live popup capability before launching a returned selection", async () => {
+    const picker = deferred<TerminalActionResult>();
     const tasks = [{ key: "build", name: "Build", description: null }];
     const ui = { task: { popupPicker: true } };
     const { stdin, client } = renderRouter({
@@ -597,16 +581,17 @@ describe("Router", () => {
       capabilities: fullCapabilities,
       ui: resolveUiConfig(ui),
     });
+    vi.mocked(client.terminalAction).mockReturnValueOnce(picker.promise);
     await pressKey(stdin, "t");
-    expect(popupPickerAvailable).toHaveBeenCalledOnce();
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith({ action: "taskPicker" });
     act(() => {
       client.emit("session.configReloaded", makeSessionSnapshot({ tasks, ui }));
     });
     await act(async () => {
-      probe.resolve(true);
+      picker.resolve({ action: "taskPicker", taskKey: "build" });
     });
-    expect(runPopupPicker).not.toHaveBeenCalled();
-    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
+    expect(client.runTask).not.toHaveBeenCalled();
+    expect(overlay?.isOpen).toBe(false);
   });
 
   it("disables escalation in an open output overlay after a capability refresh", async () => {
@@ -616,14 +601,20 @@ describe("Router", () => {
     });
     await pressKey(stdin, "f");
     expect(overlay?.top?.id).toBe("failed-output");
-    expect(outputPopupAvailable).toHaveBeenCalledOnce();
+    expect(client.terminalAction).not.toHaveBeenCalled();
     await pressKey(stdin, "p");
-    expect(showOutputPopup).toHaveBeenCalledOnce();
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith({
+      action: "taskOutput",
+      runId: "failed-run",
+    });
     act(() => {
       client.emit("session.configReloaded", makeSessionSnapshot());
     });
     await pressKey(stdin, "p");
-    expect(showOutputPopup).toHaveBeenCalledOnce();
+    expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith({
+      action: "taskOutput",
+      runId: "failed-run",
+    });
     expect(overlay?.top?.id).toBe("failed-output");
     expect(client.getTaskOutput).toHaveBeenCalledOnce();
   });
@@ -792,60 +783,124 @@ describe("Router", () => {
     expect(overlay?.isOpen).toBe(false);
   });
 
-  // ── optional fzf popup picker (P04-T05) ──────────────────────
+  describe("popup picker", () => {
+    function openPopupPicker() {
+      return renderRouter({
+        tasks: [popupTask],
+        capabilities: fullCapabilities,
+        ui: resolveUiConfig({ task: { popupPicker: true, defaultMode: "pane" } }),
+      });
+    }
 
-  it("opens the fzf popup picker and runs the selection in the background when enabled + available", async () => {
-    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
-    vi.mocked(runPopupPicker).mockResolvedValue("migrate");
-    const client = createMockClient();
-    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin } = renderRouter({
-      tasks,
-      client,
-      capabilities: { ...unavailableCapabilities, popups: true },
-      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    it("waits for the popup selection and launches it once in the background", async () => {
+      const picker = deferred<TerminalActionResult>();
+      const { stdin, client } = openPopupPicker();
+      vi.mocked(client.terminalAction).mockReturnValueOnce(picker.promise);
+      await pressKey(stdin, "t");
+      await pressKey(stdin, "t");
+      expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith({ action: "taskPicker" });
+      expect(client.runTask).not.toHaveBeenCalled();
+      expect(overlay?.isOpen).toBe(false);
+      await act(async () => {
+        picker.resolve({ action: "taskPicker", taskKey: "migrate" });
+      });
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {});
+      expect(client.runTaskInPane).not.toHaveBeenCalled();
+      expect(overlay?.isOpen).toBe(false);
     });
-    await pressKey(stdin, "t");
-    // Let the async popup flow settle.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(runPopupPicker).toHaveBeenCalled();
-    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
-    // No in-app overlay — the popup is the whole UI.
-    expect(overlay?.isOpen).toBe(false);
-  });
 
-  it("falls back to the in-app picker when the popup is unavailable (old tmux / no fzf)", async () => {
-    vi.mocked(popupPickerAvailable).mockResolvedValue(false);
-    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin } = renderRouter({
-      tasks,
-      capabilities: { ...unavailableCapabilities, popups: true },
-      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    it("cancels without starting a task or opening the in-app picker", async () => {
+      const { stdin, client } = openPopupPicker();
+      await pressKey(stdin, "t");
+      expect(client.terminalAction).toHaveBeenCalledExactlyOnceWith({ action: "taskPicker" });
+      expect(client.runTask).not.toHaveBeenCalled();
+      expect(overlay?.isOpen).toBe(false);
     });
-    await pressKey(stdin, "t");
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(runPopupPicker).not.toHaveBeenCalled();
-    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
-  });
 
-  it("falls back to the in-app picker when the popup launch errors", async () => {
-    vi.mocked(popupPickerAvailable).mockResolvedValue(true);
-    vi.mocked(runPopupPicker).mockRejectedValue(new Error("popup blew up"));
-    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
-    const { stdin } = renderRouter({
-      tasks,
-      capabilities: { ...unavailableCapabilities, popups: true },
-      ui: resolveUiConfig({ task: { popupPicker: true } }),
+    it("opens one in-app picker after backend_unavailable", async () => {
+      const { stdin, client } = openPopupPicker();
+      vi.mocked(client.terminalAction).mockRejectedValueOnce(
+        new TerminalActionError("fzf unavailable", "backend_unavailable"),
+      );
+      await pressKey(stdin, "t");
+      expect(overlay?.stack.map(({ id }) => id)).toEqual([TASK_PICKER_ID]);
+      expect(client.runTask).not.toHaveBeenCalled();
     });
-    await pressKey(stdin, "t");
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
+
+    it.each([
+      {
+        label: "terminal_busy",
+        reason: new TerminalActionError("popup occupied", "terminal_busy"),
+      },
+      { label: "an untyped failure", reason: new Error("backend_unavailable") },
+    ])("leaves the dashboard in place after $label", async ({ reason }) => {
+      const { stdin, client } = openPopupPicker();
+      vi.mocked(client.terminalAction).mockRejectedValueOnce(reason);
+      await pressKey(stdin, "t");
+      expect(client.runTask).not.toHaveBeenCalled();
+      expect(overlay?.isOpen).toBe(false);
     });
-    expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
+
+    it.each(["selection", "unavailable"])(
+      "discards stale %s after disconnect and reattach",
+      async (outcome) => {
+        const picker = deferred<TerminalActionResult>();
+        const { stdin, client, lastFrame } = openPopupPicker();
+        vi.mocked(client.terminalAction).mockReturnValueOnce(picker.promise);
+        vi.mocked(client.connectUi).mockResolvedValue(makeSessionSnapshot());
+        await pressKey(stdin, "t");
+        act(() => {
+          client.emit("disconnect");
+        });
+        expect(lastFrame()).toContain("Daemon connection lost");
+        await pressKey(stdin, "r");
+        expect(client.connectUi).toHaveBeenCalledOnce();
+        await act(async () => {
+          if (outcome === "selection") {
+            picker.resolve({ action: "taskPicker", taskKey: "migrate" });
+          } else {
+            picker.reject(new TerminalActionError("fzf unavailable", "backend_unavailable"));
+          }
+        });
+        expect(client.runTask).not.toHaveBeenCalled();
+        expect(overlay?.isOpen).toBe(false);
+        expect(lastFrame()).not.toContain("Daemon connection lost");
+      },
+    );
+
+    it("discards an old selection after a newer picker attempt opens", async () => {
+      const first = deferred<TerminalActionResult>();
+      const second = deferred<TerminalActionResult>();
+      const { stdin, client } = openPopupPicker();
+      vi.mocked(client.terminalAction)
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await pressKey(stdin, "t");
+      await pressKey(stdin, "?");
+      expect(overlay?.top?.id).toBe("help");
+      await pressEscape(stdin);
+      await pressKey(stdin, "t");
+      await act(async () => {
+        first.resolve({ action: "taskPicker", taskKey: "migrate" });
+      });
+      expect(client.runTask).not.toHaveBeenCalled();
+      await act(async () => {
+        second.resolve({ action: "taskPicker", taskKey: "migrate" });
+      });
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {});
+    });
+
+    it("discards a popup selection after its Router unmounts", async () => {
+      const picker = deferred<TerminalActionResult>();
+      const { stdin, client, unmount } = openPopupPicker();
+      vi.mocked(client.terminalAction).mockReturnValueOnce(picker.promise);
+      await pressKey(stdin, "t");
+      act(unmount);
+      await act(async () => {
+        picker.resolve({ action: "taskPicker", taskKey: "migrate" });
+      });
+      expect(client.runTask).not.toHaveBeenCalled();
+    });
   });
 
   // ── docker rebuild overlay (Router integration) ──────────────

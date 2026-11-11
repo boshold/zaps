@@ -1,12 +1,8 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 
 import { z } from "zod";
 
 import { getEnv } from "./env.js";
-import { shellEscape } from "./service/env.js";
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -481,24 +477,6 @@ function createTmux(resolveSocket: () => string | null) {
     });
   }
 
-  // P05-T04 removes this legacy UI bridge; owned editors use editOperationCapture.
-  async function editPaneCapture(target: string, title: string): Promise<void> {
-    const editor = getEnv("EDITOR") || "vim";
-    const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-capture-"));
-    const file = path.join(dir, "output");
-    try {
-      await writeFile(file, await capturePaneHistory(target), "utf8");
-      await displayPopup({
-        command: `sh -c ${shellEscape(`${editor} ${shellEscape(file)}`)}`,
-        title,
-        width: "90%",
-        height: "90%",
-      });
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  }
-
   return {
     getSocket: resolveSocket,
     listClients,
@@ -510,7 +488,6 @@ function createTmux(resolveSocket: () => string | null) {
     detachClient,
     displayMessage,
     displayPopup,
-    editPaneCapture,
     getWindowName,
     getWindowOption,
     getWindowSize,
@@ -570,7 +547,6 @@ export const {
   detachClient,
   displayMessage,
   displayPopup,
-  editPaneCapture,
   getWindowName,
   getWindowOption,
   getWindowSize,

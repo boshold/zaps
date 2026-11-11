@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { TerminalActionError } from "#src/client/daemon-client.js";
 import type { DockerConfig, NoticeLevel, UiTaskMode } from "#src/config/types.js";
 import type { SessionSnapshot } from "#src/daemon/session.js";
 import { useInputRouter } from "#src/hooks/useInputRouter.js";
@@ -25,13 +26,11 @@ import {
   canZoomDashboard,
   serviceAvailability,
 } from "#src/lib/backend/capabilities.js";
+import type { TerminalActionParams, TerminalActionResult } from "#src/lib/backend/schemas.js";
 import { buildCommandRegistry } from "#src/lib/command-registry.js";
 import { detachManagedClient } from "#src/lib/managed-detach.js";
 import { notifyFailure } from "#src/lib/notifier.js";
 import { openInBrowser } from "#src/lib/open.js";
-import { outputPopupAvailable, showOutputPopup } from "#src/lib/task/output-popup.js";
-import { popupPickerAvailable, runPopupPicker } from "#src/lib/task/popup-picker.js";
-import { editPaneCapture, zoomPane } from "#src/lib/tmux.js";
 
 import { Dashboard } from "./Dashboard.js";
 import type { BusyServices } from "./dashboard/busyServices.js";
@@ -57,8 +56,7 @@ export function Router({
   autoStart?: boolean;
 }) {
   const { view, logTarget, goToLogs, goToDashboard } = useRouter();
-  const { client, paneMap, tasks, servicesMeta, ui, statuses, capabilities, connected, retry } =
-    useZaps();
+  const { client, tasks, servicesMeta, ui, statuses, capabilities, connected, retry } = useZaps();
   // In-app notification surface: success → transient toast, failure → sticky.
   const { notify, ackAll, toasts, dismiss } = useToasts();
   const { restart, toggle, restartAll, rebuildDocker } = useServiceActions(client);
@@ -217,11 +215,11 @@ export function Router({
     connected,
     statuses,
     servicesMeta,
-    paneMap,
     tasks,
     taskHistory,
     runningTask,
     ui,
+    toasts,
   };
   const latest = useRef(current);
   useLayoutEffect(() => {
@@ -233,16 +231,27 @@ export function Router({
     const status = state.connected
       ? state.statuses.find((entry) => entry.name === name)
       : undefined;
-    return {
-      ...serviceAvailability(state.capabilities, status, busyServices.getSnapshot().has(name)),
-      paneId: status?.paneId,
-    };
+    return serviceAvailability(state.capabilities, status, busyServices.getSnapshot().has(name));
   }
 
   // Per-consumer input gating. Exactly one base view is active at a time; the top
   // Overlay owns input instead. Each view/overlay owns its own useInput.
   const overlay = useOverlay();
   const flags = useInputRouter(view, { ready, connected });
+
+  const popupAttempt = useRef<symbol | null>(null);
+  useLayoutEffect(() => {
+    function invalidatePopup() {
+      popupAttempt.current = null;
+    }
+    client.on("disconnect", invalidatePopup);
+    client.on("session.destroyed", invalidatePopup);
+    return () => {
+      invalidatePopup();
+      client.off("disconnect", invalidatePopup);
+      client.off("session.destroyed", invalidatePopup);
+    };
+  }, [client, connected, overlay.top]);
 
   // A lost daemon connection force-closes every overlay. The global keys
   // (q/Ctrl-C/r) yield to overlays, so a palette left open at the moment of
@@ -361,7 +370,7 @@ export function Router({
   // Acknowledge a single failure by clearing its sticky toast(s) (the overlay
   // Calls this on close). dismiss-by-id is safe even against a stale list.
   function dismissFailureToast(runId: string) {
-    for (const toast of toasts) {
+    for (const toast of latest.current.toasts) {
       if (toast.runId === runId && toast.sticky) {
         dismiss(toast.id);
       }
@@ -373,22 +382,55 @@ export function Router({
   // Otherwise re-fetch and snap the user's scroll back to the tail.
   const fetchTaskOutput = useCallback(async (id: string) => client.getTaskOutput(id), [client]);
 
-  // Open the failed-output overlay for a run (entry point from the `f` key on a
-  // Sticky failure). Resolves popup availability first so the overlay only offers
-  // Escalation when tmux supports it. With `ui.failOutput: popup` the overlay
-  // Escalates straight to the popup on open (Q3). Closing acks the sticky toast.
-  function openFailedOutput(runId: string, taskName: string) {
-    void (async () => {
-      const canPopup = latest.current.capabilities.popups && (await outputPopupAvailable());
-      if (!latest.current.connected) {
+  async function presentPopup(
+    params: Extract<TerminalActionParams, { action: "taskPicker" | "taskOutput" }>,
+    onDone?: (result: TerminalActionResult) => void,
+    onUnavailable?: () => void,
+  ) {
+    if (popupAttempt.current || !latest.current.connected || !client.uiBound) {
+      return;
+    }
+    const attempt = Symbol();
+    popupAttempt.current = attempt;
+    const isCurrent = () =>
+      popupAttempt.current === attempt && latest.current.connected && client.uiBound;
+    try {
+      const result = await client.terminalAction(params);
+      if (isCurrent()) {
+        onDone?.(result);
+      }
+    } catch (error) {
+      if (!isCurrent()) {
         return;
       }
-      async function showPopup(title: string, lines: string[]) {
-        if (!latest.current.connected || !latest.current.capabilities.popups) {
-          throw new Error("Popup unavailable");
+      if (error instanceof TerminalActionError) {
+        if (error.code === "backend_unavailable") {
+          onUnavailable?.();
+          return;
         }
-        await showOutputPopup(title, lines);
+        if (error.code === "terminal_busy") {
+          return;
+        }
       }
+      notify({
+        level: "info",
+        message: error instanceof Error ? error.message : "Terminal action failed",
+        runId: null,
+        sticky: false,
+      });
+    } finally {
+      if (popupAttempt.current === attempt) {
+        popupAttempt.current = null;
+      }
+    }
+  }
+
+  function openFailedOutput(runId: string, taskName: string) {
+    const state = latest.current;
+    if (!state.connected || !client.uiBound || popupAttempt.current) {
+      return;
+    }
+    const showInApp = () => {
       overlay.push({
         id: FAILED_OUTPUT_ID,
         render: () => (
@@ -396,13 +438,25 @@ export function Router({
             runId={runId}
             taskName={taskName}
             fetchOutput={fetchTaskOutput}
-            showPopup={canPopup ? showPopup : undefined}
-            startInPopup={ui.failOutput === "popup"}
+            showPopup={(id) => {
+              if (latest.current.capabilities.popups) {
+                void presentPopup({ action: "taskOutput", runId: id });
+              }
+            }}
             onClose={() => dismissFailureToast(runId)}
           />
         ),
       });
-    })();
+    };
+    if (state.capabilities.popups && state.ui.failOutput === "popup") {
+      void presentPopup(
+        { action: "taskOutput", runId },
+        () => dismissFailureToast(runId),
+        showInApp,
+      );
+    } else {
+      showInApp();
+    }
   }
 
   function runAllServicesAction(action: () => Promise<void>) {
@@ -413,24 +467,27 @@ export function Router({
   }
 
   function zoomService(name: string) {
-    const { zoom, paneId } = availabilityFor(name);
-    if (zoom && paneId) {
-      void zoomPane(paneId);
+    if (availabilityFor(name).zoom) {
+      void client
+        .terminalAction({ action: "zoom", target: { kind: "service", name } })
+        .catch(() => undefined);
     }
   }
 
   function zoomDashboard() {
     const state = latest.current;
-    const paneId = state.paneMap["@tui"];
-    if (state.connected && canZoomDashboard(state.capabilities) && paneId) {
-      void zoomPane(paneId);
+    if (state.connected && canZoomDashboard(state.capabilities)) {
+      void client
+        .terminalAction({ action: "zoom", target: { kind: "dashboard" } })
+        .catch(() => undefined);
     }
   }
 
   function editCaptureService(name: string) {
-    const { editOutput, paneId } = availabilityFor(name);
-    if (editOutput && paneId) {
-      runGuardedServiceAction(name, async () => editPaneCapture(paneId, name));
+    if (availabilityFor(name).editOutput) {
+      runGuardedServiceAction(name, async () => {
+        await client.terminalAction({ action: "editOutput", service: name });
+      });
     }
   }
 
@@ -482,36 +539,30 @@ export function Router({
     }
   }
 
-  // `t` opens the task picker. With `ui.task.popupPicker` enabled AND a capable
-  // Host (tmux >= 3.2 + fzf), launch fzf in a tmux popup and run the pick in the
-  // Background. Otherwise — and on any popup failure or a missing dependency —
-  // Fall back to the in-app TaskPicker, which stays the primary path (P04-T04).
   function openTaskPicker() {
-    if (!ui.task.popupPicker || !capabilities.popups) {
+    const state = latest.current;
+    if (!state.connected || !client.uiBound || popupAttempt.current) {
+      return;
+    }
+    if (!state.ui.task.popupPicker || !state.capabilities.popups) {
       openInAppTaskPicker();
       return;
     }
-    void (async () => {
-      try {
-        const available = await popupPickerAvailable();
-        const state = latest.current;
+    void presentPopup(
+      { action: "taskPicker" },
+      (result) => {
+        const { capabilities: liveCapabilities, ui: liveUi } = latest.current;
         if (
-          available &&
-          state.connected &&
-          state.capabilities.popups &&
-          state.ui.task.popupPicker
+          result.action === "taskPicker" &&
+          result.taskKey !== null &&
+          liveCapabilities.popups &&
+          liveUi.task.popupPicker
         ) {
-          const key = await runPopupPicker(state.tasks);
-          if (key) {
-            launchTask(key, "background");
-          }
-          return;
+          launchTask(result.taskKey, "background");
         }
-      } catch {
-        /* Popup failed — fall through to the in-app picker */
-      }
-      openInAppTaskPicker();
-    })();
+      },
+      openInAppTaskPicker,
+    );
   }
 
   function openPalette() {
