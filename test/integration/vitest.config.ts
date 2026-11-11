@@ -16,6 +16,7 @@ export default defineConfig({
     globalSetup: "./test/integration/global-setup.ts",
     coverage: {
       provider: "v8",
+      reportsDirectory: "coverage/integration-tmux",
       reporter: ["text", "json-summary", "json"],
       include: ["src/**"],
       exclude: ["src/config/native-babel.ts"],

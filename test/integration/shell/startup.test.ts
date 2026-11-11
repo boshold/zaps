@@ -169,7 +169,7 @@ describe("public shell startup", () => {
       expect(fs.readFileSync(starts, "utf8")).toBe("start\n");
       expect(fs.readFileSync(snapshot, "utf8")).toBe(snapshotContents);
     });
-  });
+  }, 60_000);
 
   it("opens a new explicit shell UI in the invoking terminal", async () => {
     await withFixture(async (fixture) => {

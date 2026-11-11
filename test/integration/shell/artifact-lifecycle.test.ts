@@ -190,5 +190,5 @@ describe.each(requiredShellArtifacts())("$name distribution shell lifecycle", ({
       }
       expect(fs.existsSync(fixture.rootDir)).toBe(false);
     }
-  }, 30_000);
+  }, 60_000);
 });

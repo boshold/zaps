@@ -7,6 +7,12 @@ export default defineConfig({
     hookTimeout: 15_000,
     pool: "forks",
     fileParallelism: false,
-    coverage: { reportsDirectory: "coverage/integration-shell" },
+    coverage: {
+      provider: "v8",
+      reporter: ["text", "json-summary", "json"],
+      reportsDirectory: "coverage/integration-shell",
+      include: ["src/**"],
+      exclude: ["src/config/native-babel.ts"],
+    },
   },
 });
