@@ -65,14 +65,25 @@ async function socketIsAlive(socketPath: string): Promise<boolean> {
 
 async function confirmSocketGone(socketPath: string): Promise<void> {
   const deadline = Date.now() + 1000;
-  // eslint-disable-next-line no-await-in-loop -- wait for the owned listener to close
-  while (await socketIsAlive(socketPath)) {
-    if (Date.now() >= deadline) {
-      throw new Error(`Private tmux socket remains active: ${socketPath}`);
+  let resetError: Error | undefined;
+  while (Date.now() < deadline) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- wait for the owned listener to close
+      if (!(await socketIsAlive(socketPath))) {
+        return;
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ECONNRESET") {
+        throw error;
+      }
+      resetError = error;
     }
     // eslint-disable-next-line no-await-in-loop -- bounded polling of concrete socket state
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
+  throw new Error(`Private tmux socket closure was not confirmed: ${socketPath}`, {
+    cause: resetError,
+  });
 }
 
 async function cleanupTestTmuxServers(

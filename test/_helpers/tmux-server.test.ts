@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 
 import { cleanupTestTmuxServers } from "../integration/helpers/tmux-server.js";
 
@@ -65,4 +65,46 @@ it("removes the root after independently confirming an already-gone server", asy
     throw new Error("Server already gone");
   });
   expect(fs.existsSync(root)).toBe(false);
+});
+
+it("retries a reset until the private socket is positively gone", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zt-cleanup-"));
+  const socketPath = path.join(root, "gone");
+  const reset = Object.assign(new Error("Listener is closing"), { code: "ECONNRESET" });
+  const createConnection = vi.spyOn(net, "createConnection").mockImplementationOnce(() => {
+    const connection = new net.Socket();
+    queueMicrotask(() => connection.emit("error", reset));
+    return connection;
+  });
+  try {
+    await cleanupTestTmuxServers([socketPath], root, () => undefined);
+    expect(createConnection).toHaveBeenCalledTimes(2);
+    expect(fs.existsSync(root)).toBe(false);
+  } finally {
+    createConnection.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("retains the root when repeated resets never confirm socket closure", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zt-cleanup-"));
+  const reset = Object.assign(new Error("Listener state is unknown"), { code: "ECONNRESET" });
+  const createConnection = vi.spyOn(net, "createConnection").mockImplementation(() => {
+    const connection = new net.Socket();
+    queueMicrotask(() => connection.emit("error", reset));
+    return connection;
+  });
+  try {
+    await expect(
+      cleanupTestTmuxServers([path.join(root, "unknown")], root, () => undefined),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("retained"),
+      errors: [expect.objectContaining({ cause: expect.objectContaining({ cause: reset }) })],
+    });
+    expect(createConnection.mock.calls.length).toBeGreaterThan(1);
+    expect(fs.existsSync(root)).toBe(true);
+  } finally {
+    createConnection.mockRestore();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
