@@ -202,6 +202,13 @@ function statusOf(manager: TaskServiceManager, name: string): ServiceStatus | un
   return manager.getAllStatuses().find((s) => s.name === name);
 }
 
+const FAILED_WAIT_STATES: ReadonlySet<ServiceState> = new Set([
+  "error",
+  "stopped",
+  "stopping",
+  "unavailable",
+]);
+
 async function waitForReady(
   manager: TaskServiceManager,
   name: string,
@@ -224,7 +231,7 @@ async function waitForReady(
         resolve();
         return true;
       }
-      if (!status || status.state === "error" || status.state === "stopped") {
+      if (!status || FAILED_WAIT_STATES.has(status.state)) {
         cleanup();
         reject(new ServiceStartFailedError(name, status?.lastError ?? status?.state));
         return true;

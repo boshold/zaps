@@ -427,18 +427,19 @@ describe("ensureTaskServices", () => {
       ).resolves.toEqual({ started: [] });
     });
 
-    it.each<ServiceState>(["error", "stopped"])("fails on %s", async (state) => {
-      const mgr = new FakeManager({ db: "starting" });
-      const run = ensureTaskServices([entry("db", "wait")], { manager: mgr, signal });
-      await Promise.resolve();
-      mgr.set("db", state, state === "error" ? "crashed" : undefined);
-      await expect(run).rejects.toThrow(
-        state === "error"
-          ? 'Service "db" failed to start: crashed'
-          : 'Service "db" failed to start: stopped',
-      );
-      expect(mgr.listenerCount("stateChange")).toBe(0);
-    });
+    it.each<ServiceState>(["error", "stopped", "stopping", "unavailable"])(
+      "fails on %s",
+      async (state) => {
+        const mgr = new FakeManager({ db: "starting" });
+        const run = ensureTaskServices([entry("db", "wait")], { manager: mgr, signal });
+        await Promise.resolve();
+        mgr.set("db", state, state === "error" ? "crashed" : undefined);
+        await expect(run).rejects.toThrow(
+          `Service "db" failed to start: ${state === "error" ? "crashed" : state}`,
+        );
+        expect(mgr.listenerCount("stateChange")).toBe(0);
+      },
+    );
 
     it("fails when the service has no status", async () => {
       const mgr = new FakeManager({});
