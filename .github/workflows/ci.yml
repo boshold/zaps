@@ -71,6 +71,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:coverage
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
         if: always()
         with:
           name: unit-coverage-${{ matrix.node }}
@@ -141,6 +143,8 @@ jobs:
         env:
           TERM: xterm-256color
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
         if: always()
         with:
           name: tmux-integration-coverage-${{ matrix.tmux }}
@@ -196,6 +200,8 @@ jobs:
         env:
           TERM: xterm-256color
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Coverage is reporting only; artifact outages must not fail tests.
+        continue-on-error: true
         if: always()
         with:
           name: shell-coverage-${{ matrix.os }}
@@ -213,37 +219,45 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: unit-coverage-26
           path: coverage/unit/
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: tmux-integration-coverage-3.8
           path: coverage/integration/
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: shell-coverage-ubuntu-latest
           path: coverage/shell-linux/
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
         with:
           name: shell-coverage-macos-latest
           path: coverage/shell-macos/
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Unit Tests
           json-summary-path: coverage/unit/coverage-summary.json
           json-final-path: coverage/unit/coverage-final.json
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Integration Tests
           json-summary-path: coverage/integration/coverage-summary.json
           json-final-path: coverage/integration/coverage-final.json
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Shell Integration (Linux)
           json-summary-path: coverage/shell-linux/coverage-summary.json
           json-final-path: coverage/shell-linux/coverage-final.json
       - uses: davelosert/vitest-coverage-report-action@74c2d9210b4fc44c84d8213f61d7ec99837b7aa0 # v2.13.2
+        continue-on-error: true
         with:
           name: Shell Integration (macOS)
           json-summary-path: coverage/shell-macos/coverage-summary.json

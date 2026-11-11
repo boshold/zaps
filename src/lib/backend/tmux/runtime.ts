@@ -482,8 +482,17 @@ class TmuxRuntime implements RuntimeDriver {
       );
       if (record.output) {
         const drainDeadline = Math.min(Date.now() + 1000, deadline);
-        await bounded(async () => record.output?.drain(), drainDeadline);
-        await bounded(async () => record.output?.poll(), drainDeadline);
+        try {
+          await bounded(async () => record.output?.drain(), drainDeadline);
+          await bounded(async () => record.output?.poll(), drainDeadline);
+        } catch (error) {
+          throw new Error(
+            `${String(error instanceof Error ? error.message : error)}: output drain`,
+            {
+              cause: error,
+            },
+          );
+        }
       }
       this.release(record, record.wrapperExit);
     } catch (error) {
