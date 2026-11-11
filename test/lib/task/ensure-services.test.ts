@@ -265,11 +265,15 @@ describe("ensureTaskServices", () => {
       const mgr = new FakeManager({ db: "stopped", api: "error" });
       const err = await ensureTaskServices(
         [entry("db", "start"), entry("api", "start", { state: "error" })],
-        { start: false, manager: mgr, signal },
+        { start: false, manager: mgr, signal, taskKey: "seed" },
       ).catch((error: unknown) => error);
       expect(err).toBeInstanceOf(ServicesNotRunningError);
       if (err instanceof ServicesNotRunningError) {
         expect(err.code).toBe("services_not_running");
+        expect(err.taskKey).toBe("seed");
+        expect(err.message).toBe(
+          'Task "seed" needs services that are not running: db (stopped), api (error)',
+        );
         expect(err.services).toEqual([
           { name: "db", state: "stopped" },
           { name: "api", state: "error" },
@@ -296,9 +300,25 @@ describe("ensureTaskServices", () => {
       expect(err).toBeInstanceOf(ServiceUnavailableError);
       if (err instanceof ServiceUnavailableError) {
         expect(err.code).toBe("service_unavailable");
-        expect(err.message).toContain("binary 'x' not found");
+        expect(err.message).toBe(`Service "x" is unavailable: binary 'x' not found`);
       }
       expect(mgr.startCalls).toEqual([]);
+    });
+
+    it("ServicesNotRunningError without taskKey uses fallback wording", () => {
+      expect(new ServicesNotRunningError([{ name: "db", state: "stopped" }]).message).toBe(
+        "Required services are not running: db (stopped)",
+      );
+    });
+
+    it("ServiceUnavailableError joins one sentence per service", async () => {
+      const mgr = new FakeManager({});
+      await expect(
+        ensureTaskServices(
+          [entry("a", "blocked", { reason: "r1" }), entry("b", "blocked", { reason: "r2" })],
+          { manager: mgr, signal },
+        ),
+      ).rejects.toThrow('Service "a" is unavailable: r1; Service "b" is unavailable: r2');
     });
 
     it("blocked entry without reason uses the fallback", async () => {
@@ -350,7 +370,7 @@ describe("ensureTaskServices", () => {
       expect(err.code).toBe("service_start_failed");
       expect(err.service).toBe("db");
       expect(err.lastError).toBe("ready check timed out");
-      expect(err.message).toBe("Service 'db' failed to start: ready check timed out");
+      expect(err.message).toBe('Service "db" failed to start: ready check timed out');
     }
     expect(mgr.startCalls).toEqual(["db"]);
   });
@@ -414,8 +434,8 @@ describe("ensureTaskServices", () => {
       mgr.set("db", state, state === "error" ? "crashed" : undefined);
       await expect(run).rejects.toThrow(
         state === "error"
-          ? "Service 'db' failed to start: crashed"
-          : "Service 'db' failed to start: stopped",
+          ? 'Service "db" failed to start: crashed'
+          : 'Service "db" failed to start: stopped',
       );
       expect(mgr.listenerCount("stateChange")).toBe(0);
     });

@@ -40,6 +40,8 @@ interface EnsureTaskServicesOptions {
   manager: TaskServiceManager;
   signal: AbortSignal;
   onEvent?: (event: TaskServiceEvent) => void;
+  /** Used in error messages. */
+  taskKey?: string;
 }
 
 const TASK_SERVICE_HEARTBEAT_MS = 30_000;
@@ -50,10 +52,16 @@ class ServicesNotRunningError extends Error {
   public readonly code = "services_not_running";
   public readonly services: { name: string; state: ServiceState }[];
 
-  public constructor(services: { name: string; state: ServiceState }[]) {
+  public readonly taskKey: string | undefined;
+
+  public constructor(services: { name: string; state: ServiceState }[], taskKey?: string) {
+    const list = services.map((s) => `${s.name} (${s.state})`).join(", ");
     super(
-      `Required services not running: ${services.map((s) => `${s.name} (${s.state})`).join(", ")}`,
+      taskKey === undefined
+        ? `Required services are not running: ${list}`
+        : `Task "${taskKey}" needs services that are not running: ${list}`,
     );
+    this.taskKey = taskKey;
     this.name = "ServicesNotRunningError";
     this.services = services;
   }
@@ -64,9 +72,7 @@ class ServiceUnavailableError extends Error {
   public readonly services: { name: string; reason: string }[];
 
   public constructor(services: { name: string; reason: string }[]) {
-    super(
-      `Required services unavailable: ${services.map((s) => `${s.name} (${s.reason})`).join(", ")}`,
-    );
+    super(services.map((s) => `Service "${s.name}" is unavailable: ${s.reason}`).join("; "));
     this.name = "ServiceUnavailableError";
     this.services = services;
   }
@@ -78,7 +84,7 @@ class ServiceStartFailedError extends Error {
   public readonly lastError: string | undefined;
 
   public constructor(service: string, lastError: string | undefined) {
-    super(`Service '${service}' failed to start${lastError ? `: ${lastError}` : ""}`);
+    super(`Service "${service}" failed to start${lastError ? `: ${lastError}` : ""}`);
     this.name = "ServiceStartFailedError";
     this.service = service;
     this.lastError = lastError;
@@ -226,7 +232,7 @@ async function waitForReady(
 
 async function ensureTaskServices(
   plan: readonly TaskServicePlanEntry[],
-  { start, manager, signal, onEvent }: EnsureTaskServicesOptions,
+  { start, manager, signal, onEvent, taskKey }: EnsureTaskServicesOptions,
 ): Promise<{ started: string[] }> {
   const blocked = plan.filter((e) => e.action === "blocked");
   if (blocked.length > 0) {
@@ -237,7 +243,10 @@ async function ensureTaskServices(
   const starts = plan.filter((e) => e.action === "start");
   const permitted = start === true || (start === undefined && starts.every((e) => e.startable));
   if (starts.length > 0 && !permitted) {
-    throw new ServicesNotRunningError(starts.map((e) => ({ name: e.name, state: e.state })));
+    throw new ServicesNotRunningError(
+      starts.map((e) => ({ name: e.name, state: e.state })),
+      taskKey,
+    );
   }
   if (signal.aborted) {
     throw abortError();
