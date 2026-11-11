@@ -9,6 +9,7 @@ import {
   createProcessInspection,
   sameProcess,
 } from "#src/lib/backend/runtime/process-inspection.js";
+import type { ProcessIdentity } from "#src/lib/backend/runtime/process-inspection.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import type { ExecutionEvent } from "#src/lib/backend/types.js";
 import { ipcRequest } from "#src/lib/ipc/client.js";
@@ -307,7 +308,15 @@ describe("shell lifecycle races", () => {
                 `import fs from 'node:fs'; import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(holder)}], { stdio: 'inherit' }); const timer = setInterval(() => { if (fs.existsSync(${JSON.stringify(release)})) { process.stdout.write('leader-tail'); process.exit(23); } }, 10);`,
               );
         const events: ExecutionEvent[] = [];
+        const observedMembers = new Map<number, ProcessIdentity>();
         const runner = new ProcessRunner({
+          readProcessIdentity: async (pid) => {
+            const current = await inspection.readProcessIdentity(pid);
+            if (current) {
+              observedMembers.set(pid, current);
+            }
+            return current;
+          },
           onLines: () => {
             /* Events own output. */
           },
@@ -325,6 +334,10 @@ describe("shell lifecycle races", () => {
             env: { ...fixture.env },
           });
           const identity = await birth(ready);
+          await waitForCondition(() => {
+            const observed = observedMembers.get(identity.pid);
+            return observed !== undefined && sameProcess(observed, identity);
+          });
           const started = Date.now();
           if (mode === "leader-exit") {
             fs.writeFileSync(release, "go");

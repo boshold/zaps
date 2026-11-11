@@ -212,17 +212,18 @@ describe("shell integration harness", () => {
           `
         const { fork } = require('node:child_process');
         const child = fork('-e', [${JSON.stringify(childProgram)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
-        child.once('message', () => { console.log(child.pid); child.disconnect(); process.exit(0); });
+        child.once('message', () => { console.log(child.pid); process.stdin.once('data', () => { child.disconnect(); process.exit(0); }); });
       `,
         ]);
-        await waitForCondition(
-          () => launcher.child.exitCode !== null && launcher.stdout.trim() !== "",
-        );
+        await waitForCondition(() => launcher.stdout.trim() !== "");
+        expect(launcher.child.exitCode).toBeNull();
         const pid = z.coerce.number().int().positive().parse(launcher.stdout.trim());
         const inspection = createProcessInspection();
         const before = await inspection.readProcessIdentity(pid);
         expect(before).not.toBeNull();
-        expect(launcher.members.has(pid)).toBe(true);
+        await launcher.refreshOwnership();
+        expect(launcher.members.get(pid)).toEqual(before);
+        launcher.child.stdin.end("release\n");
         const launcherResult = await launcher.result;
         expect(launcherResult.code).toBe(0);
         await fixture.cleanup();
