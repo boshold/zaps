@@ -17,7 +17,7 @@ interface Harness {
   out: string[];
   err: string[];
   tmuxCalls: string[][];
-  inner: { outcome?: { exitCode: number; message?: string } };
+  inner: { outcome?: { exitCode: number; message?: string; rollback?: true } };
   recordOutcome(): void;
 }
 
@@ -259,20 +259,30 @@ describe("ensureTmuxContext — managed creation", () => {
     expect(h.tmuxCalls.map((args) => args[2])).toEqual([
       "new-session",
       "set-option",
-      "set-option",
       "attach-session",
     ]);
-    expect(callFor(h, "new-session")).toContain("-d");
-    expect(h.tmuxCalls[1]).toEqual([
-      "-L",
-      "zaps",
+    const create = callFor(h, "new-session");
+    const name = create?.find((arg) => arg.startsWith("zaps-zaps-bootstrap-test-"));
+    expect(create).toContain("-d");
+    expect(create?.slice(create.indexOf("--"))).toEqual([
+      "--",
+      "/bin/sh",
+      "-c",
+      "while IFS= read -r line; do :; done",
+      ";",
       "set-option",
       "-t",
-      "$3:",
+      `=${name}:`,
       "destroy-unattached",
       "off",
+      ";",
+      "set-option",
+      "-t",
+      `=${name}:`,
+      "@zaps-bootstrap-pending",
+      "on",
     ]);
-    expect(h.tmuxCalls[2]).toEqual([
+    expect(h.tmuxCalls[1]).toEqual([
       "-L",
       "zaps",
       "set-option",
@@ -314,7 +324,7 @@ describe("ensureTmuxContext — managed creation", () => {
 
   it("returns a foreground conflict without waiting for the attached client", async () => {
     const h = harness();
-    h.inner.outcome = { exitCode: 1, message: "backend_conflict: shell won" };
+    h.inner.outcome = { exitCode: 1, message: "backend_conflict: shell won", rollback: true };
     let close: () => void = () => undefined;
     const result = new Promise<number>((resolve) => {
       close = () => resolve(0);
@@ -338,6 +348,25 @@ describe("ensureTmuxContext — managed creation", () => {
       "kill-session -t '$3'",
     ]);
     expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("closes only the foreground client when the create outcome is uncertain", async () => {
+    const h = harness();
+    h.inner.outcome = { exitCode: 1, message: "daemon connection closed" };
+    let close: () => void = () => undefined;
+    const result = new Promise<number>((resolve) => {
+      close = () => resolve(0);
+    });
+    const stop = vi.fn(close);
+    h.deps.startTmuxClient = vi.fn(() => {
+      h.recordOutcome();
+      return { result, close: stop };
+    });
+    await expect(run(h)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("daemon connection closed");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(h.deps.daemonSession).toHaveBeenCalledOnce();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 
   it("uses the recorded detached result when the dead pane status is unreadable", async () => {
@@ -429,16 +458,16 @@ describe("ensureTmuxContext — managed creation", () => {
     h.deps.tmux.capturePane = vi.fn().mockResolvedValue("Error: bad config\n\n");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 3 });
     expect(h.err.join("")).toContain("Error: bad config");
-    expect(callFor(h, "if-shell")).toBeDefined();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 
-  it("reports timeout and cleans up only the provisioned host", async () => {
+  it("preserves the provisioned host when startup times out", async () => {
     const h = harness();
     h.inner.outcome = undefined;
     h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("0|");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("Timed out waiting for");
-    expect(callFor(h, "if-shell")).toBeDefined();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 
   it("reports failure for a vanished pane with no result", async () => {
@@ -457,7 +486,7 @@ describe("ensureTmuxContext — managed creation", () => {
     expect(h.tmuxCalls).toHaveLength(0);
   });
 
-  it("cleans up when the pane cannot be respawned with zaps", async () => {
+  it("reports a failed respawn without inferring rollback authority", async () => {
     const h = harness();
     h.deps.runTmux = vi.fn(async (args: string[]) => {
       h.tmuxCalls.push(args);
@@ -465,7 +494,7 @@ describe("ensureTmuxContext — managed creation", () => {
     });
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
     expect(h.err.join("")).toContain("Failed to start zaps in managed tmux session");
-    expect(callFor(h, "if-shell")).toBeDefined();
+    expect(callFor(h, "if-shell")).toBeUndefined();
   });
 });
 
@@ -473,11 +502,31 @@ describe("ensureTmuxContext — stale session (F9)", () => {
   it("kills the leftover session before creating a fresh one", async () => {
     const h = harness();
     h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi
+      .fn()
+      .mockResolvedValueOnce("$5|%5|42|")
+      .mockResolvedValue("1|0");
     await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 0 });
-    expect(h.deps.tmux.killSession).toHaveBeenCalledWith(
-      expect.stringContaining("zaps-zaps-bootstrap-test-"),
-    );
-    expect(h.tmuxCalls[0][2]).toBe("new-session");
+    expect(h.tmuxCalls[0]).toEqual([
+      "-L",
+      "zaps",
+      "if-shell",
+      "-F",
+      "-t",
+      "$5",
+      "#{&&:#{==:#{pid},42},#{==:#{@zaps-bootstrap-pending},}}",
+      "kill-session -t '$5'",
+    ]);
+    expect(h.tmuxCalls[1][2]).toBe("new-session");
+  });
+
+  it("preserves a pending host on retry even when the daemon list is empty", async () => {
+    const h = harness();
+    h.deps.tmux.hasSession = vi.fn().mockResolvedValue(true);
+    h.deps.tmux.displayMessage = vi.fn().mockResolvedValue("$5|%5|42|on");
+    await expect(run(h, true)).resolves.toEqual({ proceed: false, exitCode: 1 });
+    expect(h.err.join("")).toContain("retry after startup settles");
+    expect(h.tmuxCalls).toEqual([]);
   });
 
   it("never reaps a session the daemon still owns", async () => {

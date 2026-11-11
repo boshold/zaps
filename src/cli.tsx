@@ -9,6 +9,7 @@ import {
   managedBootstrapReporter,
   reattachManaged,
 } from "./cli/bootstrap-tmux.js";
+import type { ManagedStartup } from "./cli/bootstrap-tmux.js";
 import { renderCliError } from "./cli/errors.js";
 import type { SessionInfo, SessionIpc } from "./cli/helpers.js";
 import {
@@ -160,14 +161,15 @@ const upCommand = command(
     if (!startupInvocation) {
       renderCliError(new StartupArgumentError("invalid_request", "Invalid startup arguments."));
     }
-    const report = startupInvocation.managedBootstrap ? managedBootstrapReporter() : undefined;
+    const managed: ManagedStartup | undefined = startupInvocation.managedBootstrap
+      ? { canRollback: true }
+      : undefined;
+    const report = managed ? managedBootstrapReporter(managed) : undefined;
+    if (managed && report) {
+      managed.onUiReady = () => report({ exitCode: 0 });
+    }
     try {
-      await runStartup(
-        startupInvocation.intent,
-        globalSession(),
-        startupInvocation.managedBootstrap,
-        report ? () => report({ exitCode: 0 }) : undefined,
-      );
+      await runStartup(startupInvocation.intent, globalSession(), managed);
       report?.({ exitCode: process.exitCode === undefined ? 0 : Number(process.exitCode) });
     } catch (error) {
       renderStartupError(error, report ? (message) => report({ exitCode: 1, message }) : undefined);

@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -100,46 +102,98 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
     expect(sessions[0]).toMatchObject({ managed: true, tmuxSession: project.sessionName });
   });
 
-  it("opens new default startup in managed tmux and preserves the caller environment", async () => {
-    const { port, release } = await reservePort();
-    const config = serviceConfig(port).replace(
-      "services: {",
-      `hooks: { onBeforeStart: () => {
-        if (process.env.ZAPS_TEST_BOOTSTRAP_VALUE !== "caller") {
-          throw new Error("Managed bootstrap lost caller environment");
-        }
-      } }, services: {`,
-    );
-    project = await createProject(config);
-    await release();
-
+  it("opens default startup with global destroy-unattached enabled", async () => {
+    project = await createProject(`import fs from "node:fs";
+      export function config(lib) {
+        return lib.define({
+          name: "managed-global-option",
+          hooks: { onBeforeStart: () => {
+            const marker = process.env.ZAPS_TEST_BOOTSTRAP_MARKER;
+            if (!marker) {
+              throw new Error("Managed bootstrap lost caller environment");
+            }
+            fs.writeFileSync(marker, "ready");
+          } },
+          services: { worker: { start: "exit 99", flags: { start: false } } },
+        });
+      }`);
+    const hookMarker = path.join(project.dir, "startup-hook-ran");
     const { runtimeDir } = project;
-    const result = await runZaps(
-      [],
-      project.dir,
-      project.runtimeDir,
-      { ZAPS_TEST_BOOTSTRAP_VALUE: "caller" },
-      {
-        detachFrom: project.sessionName,
-        ready: async () => {
-          if (!(await serviceAnswers(port))) {
-            return false;
-          }
-          return !fs
-            .readdirSync(path.join(runtimeDir, "zaps"))
-            .some((name) => name.startsWith("bootstrap-"));
+    const shellMarker = path.join(project.dir, "default-command-ran");
+    await managed([
+      "start-server",
+      ";",
+      "set-option",
+      "-s",
+      "exit-empty",
+      "off",
+      ";",
+      "set-option",
+      "-g",
+      "destroy-unattached",
+      "on",
+      ";",
+      "set-option",
+      "-g",
+      "default-command",
+      `if [ -f "$ZAPS_ENVIRONMENT_SNAPSHOT" ]; then touch "${shellMarker}"; fi; exec /bin/sh`,
+    ]);
+    await expect(managed(["show-options", "-gv", "destroy-unattached"])).resolves.toBe("on");
+    try {
+      const result = await runZaps(
+        [],
+        project.dir,
+        project.runtimeDir,
+        { ZAPS_TEST_BOOTSTRAP_MARKER: hookMarker },
+        {
+          detachFrom: project.sessionName,
+          ready: async () => {
+            if (!fs.existsSync(hookMarker)) {
+              return false;
+            }
+            return !fs
+              .readdirSync(path.join(runtimeDir, "zaps"))
+              .some((name) => name.startsWith("bootstrap-"));
+          },
         },
-      },
-    );
-    expect(result.code, result.stdout + result.stderr).toBe(0);
-    expect(result.stdout).toContain("detached");
-    expect(await serviceAnswers(port)).toBe(true);
-    await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
+      );
+      expect(result.code, result.stdout.slice(-1000) + result.stderr).toBe(0);
+      expect(result.stdout).toContain("detached");
+      expect(fs.readFileSync(hookMarker, "utf8")).toBe("ready");
+      await expect(managedSessionExists(project.sessionName)).resolves.toBe(true);
+      expect(fs.existsSync(shellMarker)).toBe(false);
+      await expect(
+        managed([
+          "show-options",
+          "-qv",
+          "-t",
+          `=${project.sessionName}:`,
+          "@zaps-bootstrap-pending",
+        ]),
+      ).resolves.toBe("");
+    } finally {
+      await managed([
+        "set-option",
+        "-gu",
+        "default-command",
+        ";",
+        "set-option",
+        "-gu",
+        "destroy-unattached",
+        ";",
+        "set-option",
+        "-s",
+        "exit-empty",
+        "on",
+      ]);
+    }
   });
 
   it("returns a foreground backend conflict and removes only the provisional managed host", async () => {
     const candidate = await createProject(`import fs from "node:fs";
+import net from "node:net";
       import path from "node:path";
+import { createInterface } from "node:readline";
       export async function config(lib) {
         const root = process.env.ZAPS_TEST_GATE_ROOT;
         if (root && process.env.ZAPS_MANAGED_TMUX === "1") {
@@ -184,6 +238,67 @@ describe.skipIf(!hasTmux() || !hasBinary())("managed tmux create", { timeout: 12
       await foreground;
     }
   });
+
+  it.each(["close", "conflict"] as const)(
+    "keeps uncertain create ownership and rolls back confirmed rejection (%s)",
+    async (reply) => {
+      const candidate = await createProject(`export function config(lib) {
+        return lib.define({ name: "create-reply", services: {
+          worker: { start: "exit 99", flags: { start: false } }
+        } });
+      }`);
+      project = candidate;
+      const daemonDir = path.join(candidate.runtimeDir, "zaps");
+      fs.mkdirSync(daemonDir);
+      const pidFile = path.join(daemonDir, "daemon.pid");
+      fs.writeFileSync(pidFile, String(process.pid));
+      const methods: string[] = [];
+      const request = z.object({ id: z.string(), method: z.string() });
+      const daemon = net.createServer((socket) => {
+        createInterface({ input: socket }).once("line", (line) => {
+          const { id, method } = request.parse(JSON.parse(line));
+          methods.push(method);
+          if (method === "session.create") {
+            if (reply === "close") {
+              socket.end();
+              return;
+            }
+            socket.end(
+              `${JSON.stringify({ id, error: "authoritative conflict", errorCode: "backend_conflict" })}\n`,
+            );
+            return;
+          }
+          const result = method === "daemon.ping" ? "pong" : [];
+          socket.end(`${JSON.stringify({ id, result })}\n`);
+        });
+      });
+      await new Promise<void>((resolve) =>
+        daemon.listen(path.join(daemonDir, "daemon.sock"), resolve),
+      );
+      try {
+        const first = await runZaps(["up", "-d"], candidate.dir, candidate.runtimeDir);
+        expect(first.code).toBe(1);
+        if (reply === "conflict") {
+          expect(first.stderr).toContain("backend_conflict");
+          await expect(managedSessionExists(candidate.sessionName)).resolves.toBe(false);
+          return;
+        }
+        expect(first.stderr).toContain("daemon connection closed");
+        await expect(managedSessionExists(candidate.sessionName)).resolves.toBe(true);
+        const retry = await runZaps(["up", "-d"], candidate.dir, candidate.runtimeDir);
+        expect(retry.code).toBe(1);
+        expect(retry.stderr).toContain("retry after startup settles");
+        await expect(managedSessionExists(candidate.sessionName)).resolves.toBe(true);
+        expect(methods.filter((method) => method === "session.create")).toHaveLength(1);
+        expect(methods.at(-1)).toBe("session.list");
+      } finally {
+        fs.unlinkSync(pidFile);
+        await new Promise<void>((resolve, reject) => {
+          daemon.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
 
   it("reports a detached startup hook failure and keeps the registered tmux session", async () => {
     project = await createProject(`export function config(lib) {

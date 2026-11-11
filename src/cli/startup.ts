@@ -5,7 +5,11 @@ import { loadProjectContext } from "#src/config/project-context.js";
 import { ensureDaemon } from "#src/daemon/index.js";
 import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
 import { sessionId } from "#src/daemon/session.js";
-import { sessionCreateParamsSchema, sessionCreatedSchema } from "#src/lib/backend/schemas.js";
+import {
+  ipcErrorResponseSchema,
+  sessionCreateParamsSchema,
+  sessionCreatedSchema,
+} from "#src/lib/backend/schemas.js";
 import type { BackendId } from "#src/lib/backend/types.js";
 import { parseDaemonStatus, parseServiceStatus } from "#src/lib/backend/wire.js";
 import { getEnv } from "#src/lib/env.js";
@@ -17,6 +21,7 @@ import { currentPaneId, currentSession, selectPane, sendKeys } from "#src/lib/tm
 import { StartupArgumentError, selectStartupBackend } from "./backend-selection.js";
 import type { StartupIntent } from "./backend-selection.js";
 import { consumeManagedEnvironmentSnapshot, ensureTmuxContext } from "./bootstrap-tmux.js";
+import type { ManagedStartup } from "./bootstrap-tmux.js";
 import { renderCliError } from "./errors.js";
 import {
   CliError,
@@ -178,20 +183,26 @@ async function startShell(project: ProjectIdentity, attachUi: boolean): Promise<
 async function startTmux(
   project: ProjectIdentity,
   attachUi: boolean,
-  onUiReady?: () => void,
+  managed?: ManagedStartup,
 ): Promise<void> {
   const originPane = await currentPaneId();
   const tmuxSession = await currentSession(originPane);
   const sock = await ensureDaemon(resolveCommandArgv());
-  const raw = readDaemonResult(
-    await ipcRequest(sock, "session.create", {
-      ...project,
-      tmuxSession,
-      originPane,
-      tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
-      managedTmux: getEnv("ZAPS_MANAGED_TMUX") === "1",
-    }),
-  );
+  if (managed) {
+    managed.canRollback = false;
+  }
+  const response = await ipcRequest(sock, "session.create", {
+    ...project,
+    tmuxSession,
+    originPane,
+    tmuxSocket: getEnv("ZAPS_TMUX_SOCKET") ?? null,
+    managedTmux: getEnv("ZAPS_MANAGED_TMUX") === "1",
+  });
+  const rejection = ipcErrorResponseSchema.safeParse(response);
+  if (managed && rejection.success && rejection.data.errorCode === "backend_conflict") {
+    managed.canRollback = true;
+  }
+  const raw = readDaemonResult(response);
   const session = z.union([sessionCreatedSchema, legacyTmuxCreatedSchema]).parse(raw);
   if ("backend" in session && session.backend !== "tmux") {
     throw new CliError("Daemon returned an unexpected tmux session.");
@@ -205,7 +216,12 @@ async function startTmux(
   const focusPane = session.focusPane ?? tuiPaneId;
   if (tuiPaneId === originPane) {
     await selectPane(focusPane);
-    await runTui({ sessionId: session.id, socketPath: sock, autoStart: true, onReady: onUiReady });
+    await runTui({
+      sessionId: session.id,
+      socketPath: sock,
+      autoStart: true,
+      onReady: managed?.onUiReady,
+    });
   } else {
     await sendKeys(
       tuiPaneId,
@@ -226,7 +242,7 @@ async function launchTmux(
   attachUi: boolean,
   sock: string,
   existing: ListedSession | undefined,
-  onUiReady?: () => void,
+  managed?: ManagedStartup,
 ): Promise<void> {
   const bootstrap = await ensureTmuxContext({
     configPath: project.configPath,
@@ -249,11 +265,11 @@ async function launchTmux(
     return;
   }
   if (!existing) {
-    await startTmux(project, attachUi, onUiReady);
+    await startTmux(project, attachUi, managed);
     return;
   }
   if (attachUi) {
-    await runTui({ sessionId: existing.id, socketPath: sock, onReady: onUiReady });
+    await runTui({ sessionId: existing.id, socketPath: sock, onReady: managed?.onUiReady });
     return;
   }
   reportExisting(existing);
@@ -276,13 +292,12 @@ async function listRunningSessions(sock: string) {
 async function runStartup(
   intent: StartupIntent,
   sessionSelector: string | undefined,
-  managedBootstrap: boolean,
-  onUiReady?: () => void,
+  managed?: ManagedStartup,
 ): Promise<void> {
   if (!intent.background && !intent.detach) {
     requireUiTerminal();
   }
-  if (managedBootstrap && intent.explicitBackend === "tmux") {
+  if (managed && intent.explicitBackend === "tmux") {
     consumeManagedEnvironmentSnapshot();
   }
 
@@ -319,7 +334,7 @@ async function runStartup(
     return;
   }
 
-  await launchTmux(project, attachUi, sock, existing, onUiReady);
+  await launchTmux(project, attachUi, sock, existing, managed);
 }
 
 export { renderStartupError, reportDetachedStartup, requireUiTerminal, runStartup };

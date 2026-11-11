@@ -15,8 +15,8 @@ import {
   buildNewWindowArgs,
   buildRespawnArgs,
   buildSetPaneOptionArgs,
+  buildSetSessionOptionArgs,
   hasManagedSession,
-  killStaleSession,
   managedSessionName,
   tmuxAvailable,
 } from "#src/lib/managed-tmux.js";
@@ -39,13 +39,22 @@ const MANAGED_BOOTSTRAP_FLAG = "--managed-bootstrap";
 
 const execFileAsync = promisify(execFile);
 const resultFile = "result.json";
+const pendingOption = "@zaps-bootstrap-pending";
 const bootstrapOutcomeSchema = z.strictObject({
   exitCode: z.number().int().min(0).max(255),
   message: z.string().optional(),
+  rollback: z.literal(true).optional(),
 });
 type BootstrapOutcome = z.infer<typeof bootstrapOutcomeSchema>;
 
-function managedBootstrapReporter(): ((outcome: BootstrapOutcome) => void) | undefined {
+interface ManagedStartup {
+  canRollback: boolean;
+  onUiReady?: () => void;
+}
+
+function managedBootstrapReporter(
+  startup: ManagedStartup,
+): ((outcome: Omit<BootstrapOutcome, "rollback">) => void) | undefined {
   const snapshot = process.env[ENVIRONMENT_SNAPSHOT_VARIABLE];
   if (!snapshot || !process.env.TMUX || !process.env.TMUX_PANE) {
     return undefined;
@@ -61,7 +70,9 @@ function managedBootstrapReporter(): ((outcome: BootstrapOutcome) => void) | und
     }
     reported = true;
     try {
-      fs.writeFileSync(path.join(directory, resultFile), JSON.stringify(outcome), {
+      const result =
+        outcome.exitCode !== 0 && startup.canRollback ? { ...outcome, rollback: true } : outcome;
+      fs.writeFileSync(path.join(directory, resultFile), JSON.stringify(result), {
         flag: "wx",
         mode: 0o600,
       });
@@ -289,9 +300,21 @@ async function provisionSession(
   name: string,
   env: Record<string, string>,
 ): Promise<ProvisionedSession> {
-  const args = buildCreateArgs({ name, detach: true, env, ...deps.size() });
+  const args = buildCreateArgs({
+    name,
+    detach: true,
+    env,
+    zapsArgv: ["/bin/sh", "-c", "while IFS= read -r line; do :; done"],
+    ...deps.size(),
+  });
   args.splice(3, 0, "-P", "-F", "#{session_id}|#{pane_id}|#{pid}");
-  const stdout = await deps.createTmux(args);
+  const stdout = await deps.createTmux([
+    ...args,
+    ";",
+    ...buildSetSessionOptionArgs(name, "destroy-unattached", "off").slice(2),
+    ";",
+    ...buildSetSessionOptionArgs(name, pendingOption, "on").slice(2),
+  ]);
   const [session, pane, serverPid] = provisionedSessionSchema.parse(stdout.trim().split("|"));
   return { session, pane, serverPid };
 }
@@ -348,32 +371,56 @@ async function waitForManagedOutcome(
   return { exitCode: 1, message: `Timed out waiting for ${launch.name} to start.` };
 }
 
+async function ownedHostCommand(
+  deps: BootstrapDeps,
+  host: Pick<ProvisionedSession, "session" | "serverPid">,
+  command: string,
+  requireUnmarked = false,
+): Promise<number> {
+  const serverMatch = `#{==:#{pid},${host.serverPid}}`;
+  const match = requireUnmarked ? `#{&&:${serverMatch},#{==:#{${pendingOption}},}}` : serverMatch;
+  return deps.runTmux(
+    ["-L", MANAGED_SOCKET, "if-shell", "-F", "-t", host.session, match, command],
+    false,
+  );
+}
+
+async function daemonOwnsHost(deps: BootstrapDeps, launch: ManagedLaunch): Promise<boolean> {
+  const owner = await deps.daemonSession(launch.configPath, launch.projectDir);
+  return owner?.managed === true && owner.tmuxSession === launch.name;
+}
+
 async function releaseUnregistered(
   deps: BootstrapDeps,
   launch: ManagedLaunch,
   host: ProvisionedSession,
 ): Promise<void> {
   try {
-    const owner = await deps.daemonSession(launch.configPath, launch.projectDir);
-    if (owner?.managed && owner.tmuxSession === launch.name) {
-      return;
+    if (!(await daemonOwnsHost(deps, launch))) {
+      await ownedHostCommand(deps, host, `kill-session -t '${host.session}'`);
     }
-    await deps.runTmux(
-      [
-        "-L",
-        MANAGED_SOCKET,
-        "if-shell",
-        "-F",
-        "-t",
-        host.session,
-        `#{==:#{pid},${host.serverPid}}`,
-        `kill-session -t '${host.session}'`,
-      ],
-      false,
-    );
   } catch {
     // An unreadable daemon view cannot prove the host is unregistered.
   }
+}
+
+async function reapUnmarkedHost(deps: BootstrapDeps, name: string): Promise<boolean> {
+  const state = await deps.tmux
+    .displayMessage(`=${name}:`, `#{session_id}|#{pane_id}|#{pid}|#{${pendingOption}}`)
+    .catch(() => "");
+  const fields = state.trim().split("|");
+  const host = provisionedSessionSchema.safeParse(fields.slice(0, 3));
+  if (!host.success || fields.length !== 4 || fields[3] !== "") {
+    return false;
+  }
+  const [session, , serverPid] = host.data;
+  const code = await ownedHostCommand(
+    deps,
+    { session, serverPid },
+    `kill-session -t '${session}'`,
+    true,
+  );
+  return code === 0;
 }
 
 async function reportManagedFailure(
@@ -384,7 +431,9 @@ async function reportManagedFailure(
   client?: ForegroundTmuxClient,
 ): Promise<void> {
   const output = outcome.message ?? (await deps.tmux.capturePane(host.pane, 200).catch(() => ""));
-  await releaseUnregistered(deps, launch, host);
+  if (outcome.rollback) {
+    await releaseUnregistered(deps, launch, host);
+  }
   if (client) {
     client.close();
     await client.result;
@@ -415,10 +464,6 @@ async function launchManaged(deps: BootstrapDeps, launch: ManagedLaunch): Promis
       return { proceed: false, exitCode: 1 };
     }
 
-    await deps.runTmux(
-      ["-L", MANAGED_SOCKET, "set-option", "-t", `${host.session}:`, "destroy-unattached", "off"],
-      false,
-    );
     await deps.runTmux(buildSetPaneOptionArgs(host.pane, "remain-on-exit", "on"), false);
     const inner = [...deps.zapsArgv(), MANAGED_BOOTSTRAP_FLAG, "up", "-B", "tmux"];
     if (detach) {
@@ -451,6 +496,9 @@ async function launchManaged(deps: BootstrapDeps, launch: ManagedLaunch): Promis
       await reportManagedFailure(deps, launch, host, outcome, client);
       client = undefined;
       return { proceed: false, exitCode: outcome.exitCode };
+    }
+    if (await daemonOwnsHost(deps, launch).catch(() => false)) {
+      await ownedHostCommand(deps, host, `set-option -u -t '${host.session}:' ${pendingOption}`);
     }
     if (client) {
       fs.rmSync(directory, { recursive: true, force: true });
@@ -600,7 +648,12 @@ async function ensureTmuxContext(options: EnsureTmuxContextOptions): Promise<Boo
       return { proceed: false, exitCode: 0 };
     }
     case "kill-stale-then-spawn": {
-      await killStaleSession(decision.name, deps.tmux);
+      if (!(await reapUnmarkedHost(deps, decision.name))) {
+        deps.io.stderr(
+          `Could not verify that managed tmux session ${decision.name} is stale. Check 'zaps ls' and retry after startup settles.\n`,
+        );
+        return { proceed: false, exitCode: 1 };
+      }
       return launchManaged(deps, { ...options, name: decision.name, detach: decision.detach });
     }
     case "spawn":
@@ -625,4 +678,4 @@ export {
   managedBootstrapReporter,
   reattachManaged,
 };
-export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux };
+export type { BootstrapDeps, BootstrapIo, BootstrapResult, BootstrapTmux, ManagedStartup };
