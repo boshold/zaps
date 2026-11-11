@@ -34,6 +34,58 @@ export interface ShellResult {
   stderr: string;
 }
 
+export interface ShellArtifact {
+  name: "node" | "native";
+  command: ShellCommand;
+}
+
+export function requiredShellArtifacts(): ShellArtifact[] {
+  const bundle = path.resolve("dist/cli.mjs");
+  const native = path.resolve("dist/zaps");
+  for (const artifact of [bundle, native]) {
+    if (!fs.statSync(artifact).isFile()) {
+      throw new Error(`Required distribution artifact is not a file: ${artifact}`);
+    }
+  }
+  fs.accessSync(bundle, fs.constants.R_OK);
+  fs.accessSync(native, fs.constants.X_OK);
+  const header = Buffer.alloc(32);
+  const descriptor = fs.openSync(native, "r");
+  try {
+    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+      throw new Error("Native artifact header is incomplete");
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  const architecture = process.arch;
+  let linuxMachine = 0;
+  let darwinCpu = 0;
+  if (architecture === "x64") {
+    linuxMachine = 62;
+    darwinCpu = 16_777_223;
+  } else if (architecture === "arm64") {
+    linuxMachine = 183;
+    darwinCpu = 16_777_228;
+  }
+  const matchesHost =
+    (process.platform === "linux" &&
+      linuxMachine !== 0 &&
+      header.subarray(0, 6).equals(Buffer.from([127, 69, 76, 70, 2, 1])) &&
+      header.readUInt16LE(18) === linuxMachine) ||
+    (process.platform === "darwin" &&
+      darwinCpu !== 0 &&
+      header.readUInt32LE(0) === 4_277_009_103 &&
+      header.readUInt32LE(4) === darwinCpu);
+  if (!matchesHost) {
+    throw new Error(`Required native artifact must match ${process.platform}/${architecture}`);
+  }
+  return [
+    { name: "node", command: { file: process.execPath, args: [bundle] } },
+    { name: "native", command: { file: native, args: [] } },
+  ];
+}
+
 export async function waitForCondition(
   condition: () => boolean | Promise<boolean>,
   timeoutMs = 5000,
@@ -69,7 +121,19 @@ export function createShellTestEnvironment({
       fs.accessSync(argument, fs.constants.R_OK);
     }
   }
-  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-shell-"));
+  const temporaryDirectory = os.tmpdir();
+  const socketTemplate = path.join(
+    temporaryDirectory,
+    "zaps-shell-XXXXXX",
+    "runtime",
+    "daemon.sock",
+  );
+  const rootDir = fs.mkdtempSync(
+    path.join(
+      Buffer.byteLength(socketTemplate) >= 100 ? "/tmp" : temporaryDirectory,
+      "zaps-shell-",
+    ),
+  );
   const projectDir = path.join(rootDir, "project");
   const runtimeDir = path.join(rootDir, "runtime");
   const homeDir = path.join(rootDir, "home");
@@ -122,6 +186,7 @@ export function createShellTestEnvironment({
   const inspection = createProcessInspection();
   const execFileAsync = promisify(execFile);
   const children = new Set<ReturnType<typeof spawnCommand>>();
+  const ownedProcesses = new Map<number, ProcessIdentity>();
   let cleanupPromise: Promise<void> | undefined;
   let sentinelCalls = "";
 
@@ -357,10 +422,68 @@ export function createShellTestEnvironment({
     });
   }
 
+  async function cleanupRecordedProcesses(): Promise<void> {
+    async function live(): Promise<ProcessIdentity[]> {
+      const result: ProcessIdentity[] = [];
+      for (const expected of ownedProcesses.values()) {
+        const actual = await inspection.readProcessIdentity(expected.pid);
+        if (actual && sameProcess(expected, actual)) {
+          const { stdout } = await execFileAsync("ps", [
+            "-o",
+            "stat=",
+            "-p",
+            String(actual.pid),
+          ]).catch((error: unknown) => {
+            if (
+              error instanceof Error &&
+              "code" in error &&
+              error.code === 1 &&
+              "stdout" in error &&
+              error.stdout === ""
+            ) {
+              return { stdout: "" };
+            }
+            throw error;
+          });
+          if (stdout.trim() && !stdout.trim().startsWith("Z")) {
+            result.push(actual);
+          }
+        }
+      }
+      return result;
+    }
+    for (const signal of ["SIGTERM", "SIGKILL"] satisfies NodeJS.Signals[]) {
+      for (const expected of await live()) {
+        const actual = await inspection.readProcessIdentity(expected.pid);
+        if (actual && sameProcess(expected, actual)) {
+          try {
+            process.kill(expected.pid, signal);
+          } catch (error) {
+            if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) {
+              throw error;
+            }
+          }
+        }
+      }
+      try {
+        await waitForCondition(async () => {
+          const remaining = await live();
+          return remaining.length === 0;
+        }, 2000);
+        return;
+      } catch (error) {
+        if (signal === "SIGKILL") {
+          throw error;
+        }
+      }
+    }
+  }
+
   async function cleanupOwnedResources(): Promise<void> {
-    const outcomes = await Promise.allSettled(
-      [...children].map(async (handle) => cleanupChild(handle)),
-    );
+    const outcomes = await Promise.allSettled([
+      cleanupRecordedProcesses(),
+      ...[...children].map(async (handle) => cleanupChild(handle)),
+    ]);
     readTmuxCalls();
     const errors: unknown[] = [];
     for (const outcome of outcomes) {
@@ -369,7 +492,7 @@ export function createShellTestEnvironment({
       }
     }
     if (errors.length) {
-      const diagnostics: ProcessIdentity[] = [];
+      const diagnostics: ProcessIdentity[] = [...ownedProcesses.values()];
       for (const handle of children) {
         for (const member of handle.members.values()) {
           diagnostics.push(member);
@@ -395,6 +518,20 @@ export function createShellTestEnvironment({
     configPath,
     env: Object.freeze(env),
     spawn: spawnCommand,
+    async ownProcessGroup(pid: number): Promise<ProcessIdentity> {
+      if (cleanupPromise) {
+        throw new Error("Shell fixture already cleaned up");
+      }
+      const identity = await inspection.readProcessIdentity(pid);
+      if (!identity || identity.pgid !== pid) {
+        throw new Error(`Expected live private process group leader: ${pid}`);
+      }
+      ownedProcesses.set(pid, identity);
+      for (const member of await inspection.getProcessMembers(identity)) {
+        ownedProcesses.set(member.pid, member);
+      }
+      return identity;
+    },
     async run(args: readonly string[] = [], extraEnv: Record<string, string> = {}) {
       return spawnCommand(args, extraEnv).result;
     },
