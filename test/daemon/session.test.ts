@@ -1740,10 +1740,14 @@ describe("Session.prepareTask", () => {
     });
     const pending = session.prepareTask("seed");
     await Promise.resolve();
-    const reload = session.reload().catch((error: unknown) => error);
+    const reload = session.reload();
     await expect(pending).rejects.toBeInstanceOf(SessionClosingError);
-    await reload;
-    await expect(session.prepareTask("lint")).resolves.toEqual({ startedServices: [] });
+    // The fixture reload may fail after the abort point; renewal must happen either way.
+    await Promise.allSettled([reload]);
+    // Swap in a manager where db is ready: the plan is all `ok`, so ensure only
+    // Checks the (renewed) preparation signal.
+    session.manager = prepareManager(new Map([["db", serviceStatus("db", "ready", [5432])]]));
+    await expect(session.prepareTask("seed")).resolves.toEqual({ startedServices: [] });
   });
 
   it("tasks.run sees the URL of a service started in the same request", async () => {
