@@ -681,7 +681,12 @@ const configCommand = command(
           ? Object.fromEntries(
               Object.entries(config.project.tasks).map(([key, t]) => [
                 key,
-                { name: t.name, description: t.description ?? null },
+                {
+                  name: t.name,
+                  description: t.description ?? null,
+                  services: t.services ?? [],
+                  autoStart: t.autoStart ?? false,
+                },
               ]),
             )
           : {},
@@ -709,7 +714,9 @@ const configCommand = command(
     if (config.project.tasks) {
       process.stdout.write("\nTasks:\n");
       for (const [key, t] of Object.entries(config.project.tasks)) {
-        process.stdout.write(`  ${key}  ${t.name}\n`);
+        const svcStr = t.services?.length ? `  services: ${t.services.join(", ")}` : "";
+        const autoStr = t.autoStart ? " [autoStart]" : "";
+        process.stdout.write(`  ${key}  ${t.name}${autoStr}${svcStr}\n`);
       }
     }
   },

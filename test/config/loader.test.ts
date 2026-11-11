@@ -579,6 +579,164 @@ describe("loadConfig", () => {
       "Task 'migrate' references unknown dependency 'nonexistent'",
     );
   });
+
+  describe("task services", () => {
+    it("loads configs without services/autoStart unchanged", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: { lint: { name: "Lint", commands: "pnpm lint" } },
+          });
+        }
+      `,
+      );
+
+      const result = await loadConfig(configPath, tmpDir);
+      expect(result.project.tasks?.lint.services).toBeUndefined();
+      expect(result.project.tasks?.lint.autoStart).toBeUndefined();
+    });
+
+    it("keeps known service names", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" }, db: { start: "pg" } },
+            tasks: { seed: { name: "Seed", commands: "x", services: ["db", "api"], autoStart: true } },
+          });
+        }
+      `,
+      );
+
+      const result = await loadConfig(configPath, tmpDir);
+      expect(result.project.tasks?.seed.services).toEqual(["db", "api"]);
+      expect(result.project.tasks?.seed.autoStart).toBe(true);
+    });
+
+    it("throws on unknown service", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: { seed: { name: "Seed", commands: "x", services: ["nope"] } },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        "Task 'seed' requires unknown service 'nope'",
+      );
+    });
+
+    it("throws on autoStart without services", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: { seed: { name: "Seed", commands: "x", autoStart: true } },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        "Task 'autoStart' requires 'services'",
+      );
+    });
+
+    it("expands group names and dedupes", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(lib) {
+          return lib.define({
+            services: {
+              infra: { docker: { service: ["postgres", "redis"], expand: true } },
+              api: { start: "node server.js" },
+            },
+            tasks: {
+              seed: { name: "Seed", commands: "x", services: ["redis", "infra", "api", "infra"] },
+            },
+          });
+        }
+      `,
+      );
+
+      const result = await loadConfig(configPath, tmpDir);
+      expect(result.project.tasks?.seed.services).toEqual(["redis", "postgres", "api"]);
+    });
+  });
+
+  describe("task dependsOn cycles", () => {
+    it("throws on a two-task cycle", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: {
+              a: { name: "A", commands: "x", dependsOn: ["b"] },
+              b: { name: "B", commands: "x", dependsOn: ["a"] },
+            },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        "Circular task dependency detected: a \u2192 b \u2192 a",
+      );
+    });
+
+    it("throws on a self-cycle", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: { a: { name: "A", commands: "x", dependsOn: ["a"] } },
+          });
+        }
+      `,
+      );
+
+      await expect(loadConfig(configPath, tmpDir)).rejects.toThrow(
+        "Circular task dependency detected",
+      );
+    });
+
+    it("accepts an acyclic chain", async () => {
+      const configPath = writeConfig(
+        ".zaps.ts",
+        `
+        export function config(z) {
+          return z.define({
+            services: { api: { start: "npm start" } },
+            tasks: {
+              a: { name: "A", commands: "x", dependsOn: ["b", "c"] },
+              b: { name: "B", commands: "x", dependsOn: ["c"] },
+              c: { name: "C", commands: "x" },
+            },
+          });
+        }
+      `,
+      );
+
+      const result = await loadConfig(configPath, tmpDir);
+      expect(Object.keys(result.project.tasks ?? {})).toEqual(["a", "b", "c"]);
+    });
+  });
 });
 
 describe("docker expand", () => {

@@ -335,7 +335,43 @@ function validateSentraScopes(project: ProjectConfig): void {
   }
 }
 
-function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>): void {
+function expandTaskServiceGroups(project: ProjectConfig, groups: Map<string, string[]>): void {
+  for (const task of Object.values(project.tasks ?? {})) {
+    if (task.services) {
+      task.services = [...new Set(task.services.flatMap((name) => groups.get(name) ?? [name]))];
+    }
+  }
+}
+
+function validateTasks(project: ProjectConfig, strippedServices: ReadonlySet<string>): void {
+  if (!project.tasks) {
+    return;
+  }
+  for (const [name, task] of Object.entries(project.tasks)) {
+    for (const dep of task.dependsOn ?? []) {
+      if (!project.tasks[dep]) {
+        throw new Error(`Task '${name}' references unknown dependency '${dep}'`);
+      }
+    }
+    // Stripped optional services are allowed; they block the task at run time (G3).
+    for (const svc of task.services ?? []) {
+      if (!project.services[svc] && !strippedServices.has(svc)) {
+        throw new Error(`Task '${name}' requires unknown service '${svc}'`);
+      }
+    }
+  }
+
+  const cycle = detectCycles(project.tasks);
+  if (cycle) {
+    throw new Error(`Circular task dependency detected: ${cycle.join(" \u2192 ")}`);
+  }
+}
+
+function validateSemantics(
+  project: ProjectConfig,
+  groups: Map<string, string[]>,
+  strippedServices: ReadonlySet<string>,
+): void {
   validateServiceDeps(project);
   validateSentraTargets(project);
   validateSentraScopes(project);
@@ -344,18 +380,7 @@ function validateSemantics(project: ProjectConfig, groups: Map<string, string[]>
   validateDetachedGroups(project);
   validateLazyPaneGroups(project);
 
-  // Validate task dependsOn refs
-  if (project.tasks) {
-    const taskNames = Object.keys(project.tasks);
-    for (const name of taskNames) {
-      const deps = project.tasks[name].dependsOn ?? [];
-      for (const dep of deps) {
-        if (!project.tasks[dep]) {
-          throw new Error(`Task '${name}' references unknown dependency '${dep}'`);
-        }
-      }
-    }
-  }
+  validateTasks(project, strippedServices);
 
   // Validate layout pane refs (accept group names as valid pane refs)
   if (project.layout) {
@@ -672,6 +697,9 @@ export async function loadConfig(
   // Is evaluated for that child, and a child depending on a stripped optional
   // Degrades gracefully instead of producing a hard load error (G3).
   const groups = expandDockerServices(project);
+  // Before stripping: a fully stripped group disappears from `groups`.
+  expandTaskServiceGroups(project, groups);
+  const expandedServiceNames = Object.keys(project.services);
 
   const unavailableServices = await resolveOptionalServices(project.services);
   if (unavailableServices.size > 0) {
@@ -683,7 +711,9 @@ export async function loadConfig(
   const name = project.name || path.basename(projectDir);
   const resolved = { ...project, name };
 
-  validateSemantics(resolved, groups);
+  // Includes owner-cascaded siblings, which are not in `unavailableServices`.
+  const strippedServices = new Set(expandedServiceNames.filter((n) => !project.services[n]));
+  validateSemantics(resolved, groups, strippedServices);
 
   // Derived per-service `lazyPane` resolved ONCE — manager + createLayout read
   // From this map instead of re-implementing the rule + guard.
