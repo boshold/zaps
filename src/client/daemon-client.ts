@@ -7,6 +7,7 @@ import type { ProjectedServiceStatus, SessionSnapshot } from "#src/daemon/sessio
 import type { TaskOutputSnapshot } from "#src/daemon/task-output-store.js";
 import {
   backendErrorCodeSchema,
+  ipcErrorResponseSchema,
   terminalActionParamsSchema,
   terminalActionResultSchema,
 } from "#src/lib/backend/schemas.js";
@@ -24,6 +25,11 @@ import {
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
+
+const terminalActionResponseSchema = z.union([
+  z.strictObject({ id: z.string(), result: terminalActionResultSchema }),
+  ipcErrorResponseSchema,
+]);
 
 export class DaemonRequestError extends Error {
   public override readonly name: string = "DaemonRequestError";
@@ -240,10 +246,11 @@ export class DaemonClient extends EventEmitter {
     if (this.boundSubscription !== subscription || !this.uiBound) {
       throw new Error("daemon connection closed");
     }
-    if (response.error !== undefined) {
-      throw new TerminalActionError(response.error, response.errorCode);
+    const reply = terminalActionResponseSchema.parse(response);
+    if ("error" in reply) {
+      throw new TerminalActionError(reply.error, reply.errorCode);
     }
-    const result = terminalActionResultSchema.parse(response.result);
+    const { result } = reply;
     if (result.action !== parsed.action) {
       throw new Error("Invalid terminal action response");
     }

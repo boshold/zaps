@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 
 import { unavailableActions, unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
@@ -17,7 +18,7 @@ vi.mock("../../src/lib/ipc/client.js", () => ({
   ipcSubscribe: (...args: unknown[]) => mockIpcSubscribe(...args),
 }));
 
-const { DaemonClient } = await import("../../src/client/daemon-client.js");
+const { DaemonClient, TerminalActionError } = await import("../../src/client/daemon-client.js");
 
 describe("DaemonClient", () => {
   let client: InstanceType<typeof DaemonClient>;
@@ -401,6 +402,52 @@ describe("DaemonClient", () => {
         await rejected;
       },
     );
+
+    it.each([
+      { id: "null-error", error: null, errorCode: "backend_unavailable" },
+      {
+        id: "mixed-reply",
+        error: "missing fzf",
+        errorCode: "backend_unavailable",
+        result: { action: "taskPicker", taskKey: "build" },
+      },
+      {
+        id: "selection-with-error-code",
+        result: { action: "taskPicker", taskKey: "build" },
+        errorCode: "backend_unavailable",
+      },
+    ])("rejects a malformed terminal reply ($id) before dispatch", async (response) => {
+      const request = acceptMockResponse(mockSub.request);
+      mockIpcSubscribe.mockReturnValueOnce({
+        ...mockSub,
+        request: async (...args: Parameters<typeof request>) =>
+          args[0] === "terminal.action" ? response : request(...args),
+      });
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
+      client.connect();
+      await client.bindUi();
+
+      await expect(client.terminalAction({ action: "taskPicker" })).rejects.toBeInstanceOf(
+        ZodError,
+      );
+    });
+
+    it.each([
+      { id: "typed", error: "missing fzf", errorCode: "backend_unavailable" },
+      { id: "legacy", error: "unavailable" },
+    ] satisfies IpcResponse[])("preserves a valid terminal error ($id)", async (response) => {
+      mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
+      client.connect();
+      await client.bindUi();
+      mockSub.request.mockResolvedValueOnce(response);
+      const action = client.terminalAction({ action: "taskPicker" });
+
+      await expect(action).rejects.toBeInstanceOf(TerminalActionError);
+      await expect(action).rejects.toMatchObject({
+        message: response.error,
+        code: response.errorCode,
+      });
+    });
 
     it("preserves busy errors without fallback and rejects socket loss", async () => {
       mockSub.request.mockResolvedValueOnce({ id: "attach", result: wireSnapshot() });
