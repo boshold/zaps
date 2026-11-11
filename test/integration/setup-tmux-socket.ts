@@ -1,17 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { afterAll, expect } from "vitest";
 
-/**
- * Give every integration FILE its own tmux server socket.
- *
- * With one shared server the suite raced against itself: the last `kill-session`
- * of one file tears the server down while the next file is creating its session
- * (`server exited unexpectedly`), and a client attached by one file resizes the
- * windows another file measures. A socket per file removes both — servers are
- * started on demand by the first command and exit when their last session dies.
- */
+import { initializeTestTmuxServer, testTmuxSocketPath } from "./helpers/tmux-server.js";
+
 function socketName(): string {
   const { testPath } = expect.getState();
   if (!testPath) {
@@ -28,14 +23,42 @@ function socketName(): string {
 }
 
 const socket = socketName();
+const previousEnvironment = {
+  TMPDIR: process.env.TMPDIR,
+  TMUX_TMPDIR: process.env.TMUX_TMPDIR,
+  ZAPS_TEST_TMUX_ROOT: process.env.ZAPS_TEST_TMUX_ROOT,
+};
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "zt-"));
+process.env.TMPDIR = root;
+process.env.TMUX_TMPDIR = root;
+process.env.ZAPS_TEST_TMUX_ROOT = root;
 process.env.ZAPS_TMUX_SOCKET = socket;
+const ownedSockets = [testTmuxSocketPath(socket, root), testTmuxSocketPath("zaps", root)];
 
 afterAll(() => {
-  // The file owns this server outright, so a kill-server is safe (and reaps any
-  // Session a failed test left behind). Never touches the default server.
   try {
-    execFileSync("tmux", ["-L", socket, "kill-server"], { stdio: "ignore" });
-  } catch {
-    /* Server already gone — nothing to reap */
+    for (const socketPath of ownedSockets) {
+      try {
+        execFileSync("tmux", ["-S", socketPath, "kill-server"], {
+          stdio: "ignore",
+          timeout: 5000,
+        });
+      } catch {
+        /* The private server may already be gone. */
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(previousEnvironment)) {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+      } else {
+        process.env[key] = value;
+      }
+    }
   }
 });
+
+if (spawnSync("tmux", ["-V"], { stdio: "ignore" }).status === 0) {
+  initializeTestTmuxServer(socket);
+}

@@ -10,6 +10,7 @@ import { MANAGED_SOCKET, managedSessionName } from "#src/lib/managed-tmux.js";
 import { shellEscape } from "#src/lib/service/env.js";
 
 import { scriptPtyArgs } from "./pty.js";
+import { initializeTestTmuxServer } from "./tmux-server.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -101,6 +102,7 @@ export interface Project {
 }
 
 export async function createProject(configBody: string): Promise<Project> {
+  initializeTestTmuxServer(MANAGED_SOCKET);
   const dir = await mkdtemp(path.join(os.tmpdir(), "zaps-managed-"));
   // Real path: macOS tmpdir is a symlink, and zaps resolves cwd before hashing.
   const realDir = fs.realpathSync(dir);
