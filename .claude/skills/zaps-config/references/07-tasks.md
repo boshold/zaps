@@ -47,18 +47,18 @@ Give database tasks the same dynamic database environment as the app when they n
 
 ## Options
 
-| Field         | Type                                             | Default | Description                                  |
-| ------------- | ------------------------------------------------ | ------- | -------------------------------------------- |
-| `name`        | `string`                                         | —       | Display name shown in TUI                    |
-| `description` | `string`                                         | —       | Optional description                         |
-| `commands`    | `Command \| Command[]`                           | —       | Shell command(s) to execute                  |
-| `run`         | `(ctx: TaskRunContext) => Promise<void>`         | —       | Programmatic task function                   |
-| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run commands in a tmux popup                 |
-| `shortcut`    | `string`                                         | —       | Single key to trigger the task from TUI      |
-| `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first           |
-| `cwd`         | `string`                                         | —       | Working directory for the task               |
-| `env`         | `EnvConfig`                                      | —       | Environment variables                        |
-| `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Inject a Sentry DSN ([Sentra](11-sentra.md)) |
+| Field         | Type                                             | Default | Description                                                   |
+| ------------- | ------------------------------------------------ | ------- | ------------------------------------------------------------- |
+| `name`        | `string`                                         | —       | Display name shown in TUI                                     |
+| `description` | `string`                                         | —       | Optional description                                          |
+| `commands`    | `Command \| Command[]`                           | —       | Shell command(s) to execute                                   |
+| `run`         | `(ctx: TaskRunContext) => Promise<void>`         | —       | Programmatic task function                                    |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Configured hook popup preference; public runs stay background |
+| `shortcut`    | `string`                                         | —       | Display hint in the task picker                               |
+| `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first                            |
+| `cwd`         | `string`                                         | —       | Working directory for the task                                |
+| `env`         | `EnvConfig`                                      | —       | Environment variables                                         |
+| `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Inject a Sentry DSN ([Sentra](11-sentra.md))                  |
 
 **Required**: Every task must have exactly one of `commands` or `run` — not both.
 
@@ -118,7 +118,17 @@ tasks: {
 
 ## Popup
 
-`popup` runs commands in a tmux popup window instead of inline. **Only works with `commands`** — validation rejects `popup` with `run`.
+`popup` is a presentation preference for configured hook execution, including task
+dependencies. It only works with `commands`; validation rejects `popup` with `run`.
+Public `zaps run` and UI background requests execute the whole dependency graph in
+background mode regardless of popup preferences. Accepted background runs keep
+their captured config/environment and output across UI disconnect and reload.
+Destroying the session stops owned child processes; JavaScript callbacks must
+cooperate with cancellation.
+
+Configured hooks use a task-owned tmux popup when supported and a usable client is
+available. Shell or no usable client before launch falls back to background with
+a notice. A started popup that loses its client fails once without rerunning.
 
 | Value               | Behavior                                  |
 | ------------------- | ----------------------------------------- |
@@ -142,6 +152,17 @@ tasks: {
   },
 }
 ```
+
+## UI modes and explicit pane runs
+
+The in-app picker supports background execution on both backends. Shell uses
+background when `ui.task.defaultMode` is `pane`, disables the `Tab` pane shortcut,
+and falls back from popup pickers/output to in-app overlays. Explicit unsupported
+pane requests fail instead of silently changing execution mode.
+
+A supported explicit pane run executes only the selected task's shell commands.
+It does not traverse `dependsOn` or run a programmatic `run` callback. Use a public
+background run when dependency traversal is required.
 
 ## Shortcuts
 

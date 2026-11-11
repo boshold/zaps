@@ -38,8 +38,8 @@
    <hr>
    <p>
       <h3>⚡ Painless project setup ⚡</h3>
-      <div>Zero Ass Pain Setup — a terminal session manager that orchestrates dev services inside tmux with an interactive TUI.</div>
-      <div>Define services, dependencies, tasks, and layout in a single config file. ZAPS handles tmux pane layout, service lifecycle, crash recovery, and a keyboard-driven dashboard.</div>
+      <div>Zero Ass Pain Setup. Run dev services with tmux panes or a background shell backend and an interactive TUI.</div>
+      <div>Define services, dependencies, tasks, and layout in one config file. ZAPS manages service lifecycle, readiness, restart policy, logs, and a keyboard-driven dashboard.</div>
    </p>
 </div>
 
@@ -49,18 +49,20 @@
 
 ## Prerequisites
 
-- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) (>= 3.5) — it has to be
-  installed, but you don't have to know it or start it yourself: `zaps` opens and
-  manages its own session for you. See
-  [Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux).
+- Linux or macOS, with `ps` and `ss` on Linux or `lsof` on macOS for PID-based port detection.
+- [tmux](https://github.com/tmux/tmux/wiki#-is-awesome) >= 3.5 for the tmux backend. The shell backend needs no tmux installation.
+- An interactive terminal on both stdin and stdout to open the UI. Use `-b` for noninteractive startup.
+
+Shell services and background task commands use noninteractive `sh` semantics.
+Interactive input, a PTY, and Bash-specific syntax are not provided by the shell
+backend. Run an explicit interpreter such as `bash script.sh` when needed.
 
 ## Install
 
-### npm (Node >= 22.15)
+### Package install (Node >= 22.15)
 
 ```bash
-npm install -g @bosdev/zaps
-# or: pnpm add -g @bosdev/zaps
+pnpm add -g @bosdev/zaps
 ```
 
 The package name is `@bosdev/zaps`; the installed command is `zaps`. The native
@@ -97,39 +99,53 @@ zaps init          # Scaffold .zaps.mts config
 zaps               # Launch
 ```
 
-Run it from any normal terminal. `zaps` starts your services and opens the
-dashboard; press `q` to get your terminal back (services keep running) and `zaps`
-again to come back. See
-[Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux).
+Run `zaps` from an interactive terminal to start services and open the dashboard.
+New sessions use tmux by default; ZAPS creates a managed tmux session when needed.
 
-## Running without tmux (auto-tmux)
+## Backends and background sessions
 
-You can run `zaps` straight from a normal terminal — no tmux knowledge required.
-When you're not already in tmux, ZAPS starts a session for you, keeps it on its
-own private tmux server (so it can never disturb a tmux setup you may use for
-other things), and drops you into the dashboard.
+Start without tmux, then open the same session's UI:
 
 ```bash
-zaps          # starts services + opens the dashboard
-# press q     → back to your shell, services keep running
-zaps          # back into the dashboard
-zaps down     # stop the services and clean everything up
+zaps -b && zaps
 ```
 
-**`q` vs `zaps down`**
+`-b` / `--background` starts a new shell session, waits for the startup/readiness
+result, and returns. The daemon owns its services, so they keep running after the
+launching command or terminal closes. The second command opens the UI directly
+in your terminal without restarting services or invoking tmux. `zaps attach` also
+opens an existing session's UI.
 
-| Action      | What happens                                                                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `q`         | Leaves the dashboard. Services keep running in the background. Your terminal prints `detached — services still running. zaps to re-attach, zaps down to stop.` |
-| `zaps down` | Stops every service and removes the session, including the tmux session ZAPS created (`Killed managed tmux session zaps-<name>-<id>.`)                         |
-| `Ctrl-D`    | Same as `zaps down`, from inside the dashboard (asks to confirm with `y`)                                                                                      |
+Backend selection applies when creating a session. Without `-B`, later startup
+reuses its stored backend, including when `-b` is present. An explicit conflicting
+backend fails with `backend_conflict`; run `zaps down` before switching. There is
+no saved backend preference, config field, or automatic fallback when tmux is
+missing. The startup command matrix is in [Lifecycle](#lifecycle).
 
-**Starting in the background**
+### Quit and shutdown
 
-```bash
-zaps up -d    # Session zaps-<name>-<id> started (detached, managed tmux). zaps attach to view.
-zaps attach   # open the dashboard later
-```
+`q` or `Ctrl-C` leaves the UI while services and ordinary background tasks keep
+running. Run `zaps` again to reopen it. `Ctrl-D` requests shutdown and asks for `y`
+confirmation; `zaps down` stops owned resources and destroys the selected session.
+
+A managed tmux UI detaches only when exactly one outer client can be verified for
+its dashboard. With ambiguous or unverifiable client ownership, it stays open and
+shows a manual-detach hint. Use your tmux detach command, or target the correct
+managed session yourself. A UI inside your own tmux unsubscribes without detaching
+that host. Configured hook popups follow their client lifetime and may fail when
+that client detaches; ordinary background tasks continue.
+
+The UI reports shutdown failures it receives. Managed teardown can remove the
+dashboard pane before a later cleanup-error response arrives, so that pane cannot
+always display the final result. A surviving CLI request can report its explicit
+destruction result.
+
+Service and task logs are retained in daemon memory. Closing the UI does not
+clear them; destroying the session or losing the daemon loses that history.
+Services do not survive daemon failure, and ZAPS does not adopt orphaned processes
+or restore session state. After cleanup, start a new session explicitly.
+
+### Environment and session location
 
 Each ZAPS command sends its current directory and shell environment to the daemon.
 Services started by that command use the same environment even when the daemon or
@@ -146,48 +162,42 @@ the stored environment for that session. Already running processes keep their ol
 environment until they restart. The daemon keeps separate context for each project
 and never changes its own working directory.
 
-**Seeing where a session lives**
+`zaps ls` shows the stored backend and location. Shell sessions have no tmux
+location; tmux sessions show their host and whether ZAPS manages it.
 
-`zaps ls` shows a location column: the tmux session hosting each project, marked
-`(managed)` when ZAPS created it (i.e. `zaps down` will remove it too).
+### Tmux sessions
 
-```
-a1b2c3d4e5f6  my-app  /home/me/my-app  zaps-my-app-a1b2c3d4e5f6 (managed)
-```
+For a new tmux session, `zaps` uses your current tmux host when invoked inside one.
+From a normal terminal it creates a managed session on a separate tmux server.
+Existing personal/managed tmux sessions retain their attach-context restrictions;
+ZAPS prints a hint when the caller's context is incompatible. Selecting shell
+ignores ambient tmux variables and never starts tmux.
 
-**If you already use tmux**
-
-Nothing changes: run `zaps` inside your own tmux session and it uses that session's
-panes, exactly as before. ZAPS only creates a session of its own when you're not in
-one. A session belongs to the place it was started, so ZAPS refuses to mix them:
-
-- `Session "<name>" is running inside tmux session '<tmux>'. Attach from within tmux, or run zaps down first.`
-- `Session "<name>" is running in a zaps-managed tmux. Re-attach from a plain terminal (zaps attach), or run zaps down first.`
-
-In the second case ZAPS also prints a copy-pasteable line for tmux users who would
-rather attach by hand (`=` forces an exact name match):
-
-```bash
-tmux -L zaps attach -t =zaps-my-app-a1b2c3d4e5f6
-```
-
-**Turning it off**
-
-Set `ZAPS_AUTO_TMUX=0` to disable auto-start; `zaps` then requires you to be inside
-tmux yourself and errors with `zaps must be run from inside a tmux session.`
-
-If tmux isn't installed at all, ZAPS says so instead of starting:
-`zaps requires tmux (>= 3.5) — install it and re-run.`
+Set `ZAPS_AUTO_TMUX=0` to disable automatic managed-tmux startup. This affects tmux
+sessions only; `zaps -b` and `zaps -B shell` still select shell for a new session.
 
 ## Commands
 
 ### Lifecycle
 
-| Command            | Description                                                                |
-| ------------------ | -------------------------------------------------------------------------- |
-| `zaps` / `zaps up` | Smart default: attach if session running, else create + start + attach TUI |
-| `zaps up -d`       | Create session and start services without attaching TUI (detached)         |
-| `zaps down`        | Stop all services and destroy session                                      |
+| Command                                  | New-session backend | Initial UI                |
+| ---------------------------------------- | ------------------- | ------------------------- |
+| `zaps` / `zaps up`                       | tmux                | Open                      |
+| `zaps -b` / `zaps up --background`       | shell               | None                      |
+| `zaps -B shell` / `zaps --backend shell` | shell               | Open in invoking terminal |
+| `zaps -b -B tmux`                        | tmux                | None                      |
+| `zaps up -d`                             | tmux                | None; legacy detach flag  |
+| `zaps up -d -B shell`                    | shell               | None                      |
+
+These backend defaults apply only to new sessions. Existing sessions keep their
+backend unless an explicit mismatch is rejected. `-b` and `-B` apply only to root
+startup or `up`; explicit `-B` wins regardless of flag order. The legacy `-d` flag
+belongs after `up`, not at the root. Background startup suppresses the UI even
+when an explicit backend is supplied.
+
+Use `zaps attach` to open an existing session and `zaps down` to stop its services
+and destroy it. UI startup rejects redirected stdin or stdout before creating a
+session or printing terminal escapes; background startup does not require a TTY.
 
 ### Service Operations
 
@@ -582,7 +592,7 @@ isn't interruptible.
 | --------------- | -------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------- |
 | `start`         | `string \| () => string`                     | —       | Command to start the service (long-running process)                                                       |
 | `run`           | `string \| () => string`                     | —       | Interchangeable with `start` — either satisfies the "needs a command" rule (`start` wins if both are set) |
-| `stop`          | `string \| () => string`                     | —       | Custom stop command (default: Ctrl-C)                                                                     |
+| `stop`          | `string \| () => string`                     | —       | Reserved; accepted by config but not executed                                                             |
 | `docker`        | `DockerConfig`                               | —       | Docker Compose service config                                                                             |
 | `ready`         | `ReadyConfig`                                | —       | How to detect the service is ready                                                                        |
 | `dependsOn`     | `string[]`                                   | `[]`    | Services that must be ready first                                                                         |
@@ -592,14 +602,18 @@ isn't interruptible.
 | `flags`         | `{ start?: boolean, open?: boolean }`        | —       | `start`: auto-start on launch (default `true`), `open`: auto-open URL when ready                          |
 | `detached`      | `boolean`                                    | `false` | Run outside tmux (no pane)                                                                                |
 | `lazyPane`      | `boolean`                                    | _auto_  | Create the pane on start, drop it on explicit stop (default `true` when `flags.start: false`)             |
-| `raw`           | `boolean`                                    | `false` | Bypass the service wrapper                                                                                |
+| `raw`           | `boolean`                                    | `false` | Bypass the service wrapper; requires tmux, rejected by shell                                              |
 | `restart`       | `{ maxRetries?, backoff? }`                  | —       | Auto-restart on crash                                                                                     |
 | `onBeforeStart` | `() => void \| Promise<void>`                | —       | Callback before command is sent                                                                           |
 | `onReady`       | `() => void \| Promise<void>`                | —       | Callback when service becomes ready                                                                       |
-| `onStop`        | `() => void \| Promise<void>`                | —       | Callback when service stops                                                                               |
+| `onStop`        | `() => void \| Promise<void>`                | —       | Post-exit cleanup hook; not a graceful stop command                                                       |
 | `onOutput`      | `(line: string) => void \| Promise<void>`    | —       | Called for each new output line                                                                           |
 | `optional`      | `boolean \| () => Promise<boolean>`          | —       | Mark service as optional (see below)                                                                      |
 | `sentra`        | `boolean \| { env: Record<string, string> }` | —       | Send Sentry SDK errors to ZAPS (see [Sentry Errors](#sentry-errors-sentra))                               |
+
+`stop` is reserved and unimplemented. Normal stop signals the owned process and
+uses bounded cleanup; `onStop` runs after exit and cannot send a graceful command
+before termination.
 
 ### Optional Services
 
@@ -648,8 +662,7 @@ optional: async (ctx) => await ctx.hasBinary("grafana") && await ctx.hasBinary("
 
 ### Detached Services
 
-Set `detached: true` to run a service **pane-less** — outside the tmux layout, with no
-visible pane:
+Set `detached: true` to run a service without a pane in the tmux backend:
 
 ```typescript
 services: {
@@ -661,14 +674,18 @@ services: {
 }
 ```
 
-- Full lifecycle still applies — start/stop/restart, ready detection, and crash
-  recovery all work the same as a paned service.
+- Service controls, readiness, and configured crash retries work as for a paned service.
 - `zaps up -d` starts the whole session detached (services run, no TUI attached);
   `zaps attach` later to view it.
 - **No tmux pane**, so there is no live terminal to scroll — read its output via the
   log buffer (`zaps logs worker`, `-f` to stream).
-- A detached service **must not** appear in `layout`, and cannot be combined with
-  `docker` or `raw` (both need a pane) — these are config load errors.
+- A detached service must not appear in `layout`. Config validation also rejects
+  combining `detached` with `docker` or `raw`.
+
+Shell sessions run every service without a pane, whether or not `detached` is set.
+Valid layout and lazy-pane preferences have no presentation effect there;
+`flags.start` still controls autostart. Existing config validation remains active,
+and `raw: true` is rejected before any shell session is created or reloaded.
 
 ### Lazy Panes
 
@@ -819,7 +836,7 @@ can't be mistaken for each other. The project name is resolved by precedence:
 
 ### Expanded Docker Services
 
-When you have multiple Docker Compose services that can share a single tmux pane, use `expand: true` to split them into individually addressable services:
+Use `expand: true` to address members of one shared Docker Compose execution individually. Tmux presents the group in one pane; shell runs it in the daemon:
 
 ```typescript
 services: {
@@ -839,13 +856,28 @@ services: {
 
 This creates three individual services (`postgres`, `redis`, `mailpit`) that:
 
-- Share a single tmux pane (one `docker compose up` command)
+- Share one attached `docker compose up` execution and one log producer
 - Each have independent status, ready detection, and lifecycle
 - Can be started/stopped/restarted individually
 - Can be referenced individually in `dependsOn`
 - Appear as grouped rows in the TUI dashboard
 
 Layout references use the group name: `{ pane: "infra" }`.
+
+Plain member start/stop/restart preserves the shared execution while siblings
+remain active, including when controlling the launch-owner member. The last
+active member stops the shared execution. Readiness for plain start/restart
+accepts healthy unchanged container IDs even if initial build/recreate flags are
+configured. Shared logs continue for attached siblings; Compose may stop streaming
+a member's output after that member is restarted.
+
+Explicit rebuild of any combined-group member returns `unsupported_config` before
+changing config, status, containers, execution, or logs, including requests with
+empty overrides. The UI hides/disables these rebuild actions. Standalone Docker
+rebuild remains supported; full group recreation is deferred. Initial group
+launch keeps the configured member set and existing build/recreate behavior. An
+initial build that reuses an unchanged image may still wait for a new container ID;
+plain member operations do not have that recreation expectation.
 
 Use `expand: { ... }` instead of `expand: true` to provide per-child overrides:
 
@@ -892,7 +924,7 @@ services: {
 
 Shutdown runs in reverse topological order.
 
-### Crash Recovery
+### Service crash retries
 
 Enable auto-restart with exponential backoff:
 
@@ -903,9 +935,9 @@ restart: {
 }
 ```
 
-Backoff doubles per retry: 2s → 4s → 8s → 16s → 32s. Crash monitoring polls the
-pane every 2s for `raw`-mode services and every 10s for wrapper-mode ones (where the
-wrapper's exit notification is the primary signal, so the poll is just a backstop).
+Backoff doubles per retry: 2s, 4s, 8s, 16s, then 32s. The shared manager applies
+the configured restart policy to both backends. These retries require a running
+daemon; they do not restore services after daemon failure.
 
 ### Dynamic Environment
 
@@ -1006,10 +1038,15 @@ tasks: {
 | `env`         | `Record<string, string>`                         | —       | Environment variables                                                       |
 | `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                                   |
 | `shortcut`    | `string`                                         | —       | Hint key shown beside the task in the picker                                |
-| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Run in tmux popup window (commands only)                                    |
+| `popup`       | `boolean \| { width?: string; height?: string }` | —       | Configured hook popup preference (commands only)                            |
 | `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Send Sentry SDK errors to ZAPS (see [Sentry Errors](#sentry-errors-sentra)) |
 
-Task dependencies are resolved and executed before the task itself.
+Background tasks resolve dependencies before the selected task. `zaps run` and
+in-app background runs execute every dependency in background mode, regardless of
+its `popup` setting. Accepted runs retain their captured config/environment and
+output through UI disconnect or service-manager reload. Session destruction stops
+owned child processes; arbitrary JavaScript callbacks must cooperate with
+cancellation.
 
 ### Programmatic Tasks
 
@@ -1075,7 +1112,9 @@ Pick a different key for the task to keep a shortcut.
 
 ## Layout
 
-Define a custom tmux pane layout. The `@tui` pane is **required** — it hosts the ZAPS dashboard.
+Define a custom tmux pane layout. The `@tui` pane is required because it hosts the
+ZAPS dashboard. Shell ignores valid layout and lazy-pane presentation preferences,
+while normal configuration validation and autostart flags still apply.
 
 ```typescript
 layout: {
@@ -1103,8 +1142,12 @@ If no layout is specified, `@tui` gets the main pane and each non-detached servi
 
 ## TUI
 
-The TUI is built around a dashboard, overlays (command palette, task picker, help,
-failed-output), and a responsive layout that adapts to the pane size.
+The TUI provides a dashboard, command palette, task picker, help, logs and failure
+output for either backend. Available actions follow backend capabilities and live
+service targets. Shell keeps service controls, URLs, background tasks and in-app
+overlays; focus, zoom, pane capture/edit, task panes, popups and raw input are
+unavailable. Unsupported keys do nothing, and unavailable actions/hints are hidden.
+Combined Docker-group rebuild actions are also unavailable.
 
 ### Global keys
 
@@ -1152,23 +1195,33 @@ when `cols < ui.wideThreshold` (default `100`). See [UI Config](#ui-config).
 
 ### Task picker (`t`)
 
-Fuzzy picker over the project's tasks. Each task can run in two modes:
+Fuzzy picker over the project's tasks. Pane mode requires a live terminal capability:
 
 | Key       | Action                                                                |
 | --------- | --------------------------------------------------------------------- |
 | type      | Fuzzy-filter tasks                                                    |
 | `Up/Down` | Move selection                                                        |
 | `Enter`   | Run in the default mode (`ui.task.defaultMode`, default `background`) |
-| `Tab`     | Run live in a tmux pane                                               |
+| `Tab`     | Run in a pane when supported; disabled in shell                       |
 | `Esc`     | Close                                                                 |
 
 - **Background** runs stream into the daemon's retained output buffer; success
   shows a transient toast, failure a sticky one.
-- **Run-in-pane** opens a tmux pane/window running the task live; the pane stays
-  open on completion so the output stays inspectable.
+- **Run-in-pane** opens a pane/window for the selected task's shell commands only;
+  it does not traverse dependencies or run a programmatic `run` callback. The pane
+  stays open on completion so its output remains inspectable.
 
-Set `ui.task.popupPicker: true` to use an `fzf` tmux popup instead of the in-app
-picker (falls back to the in-app picker when tmux < 3.2 or `fzf` is absent).
+In shell, a configured pane default falls back to background for `Enter`, and
+`Tab` is disabled. Explicit unsupported pane requests fail rather than changing
+mode. `ui.task.popupPicker: true` uses an `fzf` popup only with supported popups and
+a usable client; otherwise it falls back to the in-app picker. A busy terminal
+operation or lost daemon connection is reported rather than opening another
+fallback.
+
+A task's `popup` option applies to configured hook execution, including dependency
+nodes. It uses an owned tmux client when available; shell or no usable client
+before launch falls back to background with a notice. If a started hook popup
+loses its client, that run fails once without rerunning in background.
 
 ### Log view (`l`)
 
@@ -1188,8 +1241,8 @@ emits an out-of-band terminal notification per `ui.notifications` (default
 
 Press `f` to open the **failed-output overlay** for the latest sticky failure
 (`Up/Down/j/k` scroll, `Esc` close). Inside it, `p` escalates to a larger tmux
-`display-popup` (when tmux supports it). With `ui.failOutput: popup` the overlay
-escalates straight to the popup on open.
+`display-popup` when supported and a client is available. With `ui.failOutput:
+popup`, ZAPS attempts that presentation on open; shell retains the in-app overlay.
 
 ## UI Config
 
@@ -1209,14 +1262,14 @@ ui: {
 }
 ```
 
-| Option             | Type                                       | Default        | Description                                                                                 |
-| ------------------ | ------------------------------------------ | -------------- | ------------------------------------------------------------------------------------------- |
-| `icons`            | `"nerd" \| "unicode" \| "ascii"`           | `"nerd"`       | Glyph tier. `ZAPS_ICONS` env overrides the config value.                                    |
-| `notifications`    | `"off" \| "bell" \| "osc9" \| "osc9+bell"` | `"osc9"`       | Out-of-band failure notification channel (OSC 9 desktop notification and/or terminal bell). |
-| `failOutput`       | `"overlay" \| "popup"`                     | `"overlay"`    | Where the `f` failed-output view opens; `popup` escalates straight to a tmux popup.         |
-| `wideThreshold`    | `number` (int ≥ 40)                        | `100`          | Minimum terminal columns to show the detail pane; below it the pane collapses.              |
-| `task.defaultMode` | `"background" \| "pane"`                   | `"background"` | Mode for `Enter` in the task picker (`Tab` always runs in a pane).                          |
-| `task.popupPicker` | `boolean`                                  | `false`        | Use an `fzf` tmux popup picker instead of the in-app one (falls back when unavailable).     |
+| Option             | Type                                       | Default        | Description                                                                                                 |
+| ------------------ | ------------------------------------------ | -------------- | ----------------------------------------------------------------------------------------------------------- |
+| `icons`            | `"nerd" \| "unicode" \| "ascii"`           | `"nerd"`       | Glyph tier. `ZAPS_ICONS` env overrides the config value.                                                    |
+| `notifications`    | `"off" \| "bell" \| "osc9" \| "osc9+bell"` | `"osc9"`       | Out-of-band failure notification channel (OSC 9 desktop notification and/or terminal bell).                 |
+| `failOutput`       | `"overlay" \| "popup"`                     | `"overlay"`    | Where the `f` failed-output view opens; `popup` escalates straight to a tmux popup.                         |
+| `wideThreshold`    | `number` (int ≥ 40)                        | `100`          | Minimum terminal columns to show the detail pane; below it the pane collapses.                              |
+| `task.defaultMode` | `"background" \| "pane"`                   | `"background"` | Mode for `Enter` in the task picker (`Tab` needs pane support; shell falls back to background for `Enter`). |
+| `task.popupPicker` | `boolean`                                  | `false`        | Use an `fzf` tmux popup picker instead of the in-app one (falls back when unavailable).                     |
 
 ## Service States
 
@@ -1527,21 +1580,18 @@ Add the following to your project's `CLAUDE.md` to help Claude use ZAPS effectiv
 
 ### `zaps daemon stop` tears down services
 
-`zaps daemon stop` now performs a **full cleanup**: it stops every service in every
-session the daemon manages before shutting the daemon down, and reports what it tore
-down (`Stopped <n> session(s), <m> service(s).`). It is no longer a bare process kill.
-Sessions ZAPS started for you (see
-[Running without tmux (auto-tmux)](#running-without-tmux-auto-tmux)) are removed as
-part of that cleanup — each one prints `Killed managed tmux session <name>.`.
-Sessions running inside your own tmux are left alone.
+`zaps daemon stop` cleans owned services, tasks and session resources before
+shutting down. This applies to both backends. Managed tmux sessions are removed;
+your personal tmux host is preserved while its ZAPS services stop. Cleanup errors
+are reported instead of being described as a successful shutdown.
 
 ### A session ZAPS started is stuck
 
-`zaps down` is the normal way out, and it also removes the tmux session. If a
-session was left behind (e.g. the daemon was killed with `kill -9`), running `zaps`
-in that project detects the leftover and replaces it — no manual cleanup needed.
-To inspect or clean up by hand, everything ZAPS creates lives on its own tmux
-server:
+`zaps down` stops the selected session and removes any ZAPS-managed tmux host.
+After daemon failure, there is no live-process adoption or restored log history.
+Stale managed tmux hosts are checked conservatively; uncertain ownership requires
+inspection rather than assuming cleanup succeeded. Shell sessions have no tmux
+host to inspect. For a managed tmux host, target its exact session name:
 
 ```bash
 tmux -L zaps ls                 # list the sessions ZAPS created

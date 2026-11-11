@@ -6,7 +6,7 @@
 | --------------- | ------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------- |
 | `start`         | `string \| () => string`                          | —           | Long-running process command (server)                                                        |
 | `run`           | `string \| () => string`                          | —           | One-shot command                                                                             |
-| `stop`          | `string \| () => string`                          | —           | Custom stop command                                                                          |
+| `stop`          | `string \| () => string`                          | —           | Reserved; accepted but not executed                                                          |
 | `cwd`           | `string`                                          | —           | Working directory for the service                                                            |
 | `detached`      | `boolean`                                         | `false`     | Run pane-less (outside the tmux layout)                                                      |
 | `lazyPane`      | `boolean`                                         | _auto_      | Pane created on start, dropped on explicit stop (default `true` when `flags.start: false`)   |
@@ -17,12 +17,12 @@
 | `env`           | `EnvConfig`                                       | —           | Environment variables                                                                        |
 | `flags`         | `ServiceFlags`                                    | —           | `{ start?: boolean, open?: boolean }`                                                        |
 | `url`           | `string \| false \| (ctx) => string`              | auto-detect | URL for the service                                                                          |
-| `raw`           | `boolean`                                         | `false`     | Bypass the service wrapper                                                                   |
+| `raw`           | `boolean`                                         | `false`     | Bypass wrapper; requires tmux, rejected by shell                                             |
 | `restart`       | `{ maxRetries?, backoff? }`                       | —           | Restart policy with exponential backoff                                                      |
 | `onBeforeStart` | `() => void \| Promise<void>`                     | —           | Hook: before the service command is sent                                                     |
 | `onReady`       | `() => void \| Promise<void>`                     | —           | Hook: service reached ready state                                                            |
-| `onStop`        | `() => void \| Promise<void>`                     | —           | Hook: service stopped                                                                        |
-| `onOutput`      | `(line: string) => void \| Promise<void>`         | —           | Hook: new output line from tmux pane                                                         |
+| `onStop`        | `() => void \| Promise<void>`                     | —           | Hook: post-exit cleanup, not a graceful stop command                                         |
+| `onOutput`      | `(line: string) => void \| Promise<void>`         | —           | Hook: new retained output line from the execution                                            |
 | `optional`      | `boolean \| (ctx) => boolean \| Promise<boolean>` | —           | Mark service as optional (skip if unavailable); the function form gets `ctx.hasBinary(name)` |
 | `sentra`        | `boolean \| { env: Record<string, string> }`      | —           | Inject a Sentry DSN so ZAPS collects the app's errors (see [Sentra](11-sentra.md))           |
 
@@ -46,8 +46,27 @@ start: () => `node server.js --port=${getPort()}`;
 
 ### start vs run
 
-- `start` — long-running process (e.g. dev server). Stays alive, monitored for crashes.
-- `run` — one-shot command. Executes and exits.
+`start` and `run` are interchangeable service command fields; `start` wins if both
+are set. Use a task for a manually triggered command rather than relying on `run`
+to change service lifecycle semantics.
+
+## Backend behavior and stop hooks
+
+Shell runs all services without panes, regardless of `detached`. Valid layout and
+lazy-pane preferences have no presentation effect; `flags.start` still controls
+autostart. Existing config validation remains active. `raw: true` requires tmux
+and fails complete shell preflight before session creation or reload effects.
+
+Commands use noninteractive `sh` semantics in shell mode. There is no interactive
+stdin or PTY; use an explicit interpreter for Bash-specific scripts. PID-based
+readiness requires `ps` plus `ss` on Linux or `lsof` on macOS.
+
+`stop` is a reserved, unimplemented field. Normal stop signals owned processes;
+`onStop` runs after exit as cleanup and cannot replace a pre-termination graceful
+command. Configured crash retries require the daemon to remain alive. They do not
+provide daemon-failure recovery or adoption. Service logs are retained in memory
+for the session, including across UI detach, and are lost with its destruction or
+daemon failure.
 
 ## Detached Services
 
@@ -55,7 +74,7 @@ start: () => `node server.js --port=${getPort()}`;
 
 - Still managed by ServiceManager (start/stop/ready detection and crash recovery all work)
 - **Must NOT appear in layout** — config load error if a detached service is referenced in layout
-- **Cannot combine with `docker` or `raw`** — both require a pane; either combination is a config load error
+- **Cannot combine with `docker` or `raw`**: these remain config load errors
 - Requires a `start` or `run` command (there is no pane to interact with otherwise)
 - No live terminal — read its output via the log buffer (`zaps logs <name>`, `-f` to stream)
 
@@ -197,8 +216,8 @@ services: {
 ```
 
 - `onReady` — fires once when service reaches ready state
-- `onStop` — fires when service is stopped
-- `onOutput` — fires for each new output line (monitors the tmux pane)
+- `onStop` runs after service exit for cleanup, not before termination
+- `onOutput` receives new execution output lines for either backend
 
 ## Optional Services
 

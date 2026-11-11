@@ -1,7 +1,7 @@
 {
   "name": "@bosdev/zaps",
   "version": "0.8.0",
-  "description": "Zero Ass Pain Setup — a tmux-based dev environment orchestrator: define services, dependencies, tasks, and layout in one config file, with ready detection, crash recovery, and a keyboard-driven TUI.",
+  "description": "Zero Ass Pain Setup: orchestrate dev services with tmux or a background shell backend, readiness, logs, tasks, and a keyboard-driven TUI.",
   "keywords": [
     "cli",
     "dev-environment",
