@@ -134,6 +134,8 @@ export interface SessionCreateParams {
   env?: Record<string, string>;
   startupPending?: boolean;
   ephemeral?: boolean;
+  /** Invoked when an ephemeral session becomes unused; must destroy it via the store. */
+  onAutoDestroy?: () => Promise<void>;
 }
 
 export function sessionId(configPath: string, projectDir?: string): string {
@@ -164,9 +166,22 @@ export class Session {
   private readonly subscriptionRegistrations = new Map<net.Socket, symbol>();
   private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
-  public ephemeral: boolean;
-  public startupPending: boolean;
+  private ephemeralFlag: boolean;
+  private startupPendingFlag: boolean;
+  private pendingTaskCount = 0;
+  private autoDestroyScheduled = false;
+  private readonly onAutoDestroy?: () => Promise<void>;
   public readonly taskExecution: TaskExecutionService;
+
+  public get ephemeral(): boolean {
+    return this.ephemeralFlag;
+  }
+  public get startupPending(): boolean {
+    return this.startupPendingFlag;
+  }
+  public get pendingTasks(): number {
+    return this.pendingTaskCount;
+  }
 
   public get taskHistory(): TaskRunRecord[] {
     return this.taskExecution.history;
@@ -226,8 +241,9 @@ export class Session {
     this.deps = params.deps;
     this.manager = manager;
     this.configLoadedAt = Date.now();
-    this.startupPending = params.startupPending === true;
-    this.ephemeral = params.ephemeral === true;
+    this.startupPendingFlag = params.startupPending === true;
+    this.ephemeralFlag = params.ephemeral === true;
+    this.onAutoDestroy = params.onAutoDestroy;
 
     this.memberUnits = resolveExecutionUnits(this.config);
     this.logBuffers = allocateLogBuffers(this.memberUnits);
@@ -284,6 +300,9 @@ export class Session {
   private wireManagerEvents(manager: ServiceManager): void {
     // Forward service stateChange events to subscribers
     manager.on("stateChange", (svcName: string, status: ServiceStatus) => {
+      if (status.state === "starting") {
+        this.clearEphemeral();
+      }
       void this.updatePresentationTitle(manager);
       this.broadcast({
         session: this.id,
@@ -375,8 +394,8 @@ export class Session {
     if (this.initialStartup) {
       return;
     }
-    this.startupPending = false;
-    this.ephemeral = false;
+    this.startupPendingFlag = false;
+    this.clearEphemeral();
     const { manager, name } = this;
     const pending = this.startAll();
     this.startPromise = pending;
@@ -687,6 +706,56 @@ export class Session {
     return this.uiBindings.get(socket);
   }
 
+  public clearEphemeral(): void {
+    this.ephemeralFlag = false;
+  }
+
+  /** Count a task request; the returned release re-checks ephemeral auto-destroy. */
+  public acquireTask(): () => void {
+    this.pendingTaskCount += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.pendingTaskCount -= 1;
+      this.scheduleAutoDestroy();
+    };
+  }
+
+  private isUnused(): boolean {
+    return (
+      this.ephemeralFlag &&
+      this.pendingTaskCount === 0 &&
+      this.subscribers.size === 0 &&
+      !this.destroyed
+    );
+  }
+
+  /** Deferred so the triggering IPC response is written first. */
+  private scheduleAutoDestroy(): void {
+    if (!this.onAutoDestroy || this.autoDestroyScheduled || !this.isUnused()) {
+      return;
+    }
+    this.autoDestroyScheduled = true;
+    setImmediate(() => {
+      this.autoDestroyScheduled = false;
+      void this.maybeAutoDestroy();
+    });
+  }
+
+  private async maybeAutoDestroy(): Promise<void> {
+    if (!this.onAutoDestroy || !this.isUnused()) {
+      return;
+    }
+    try {
+      await this.onAutoDestroy();
+    } catch {
+      /* The store callback logs its own failures. */
+    }
+  }
+
   /** Drop socket ownership and stop polling when no subscribers remain. */
   public removeSubscriber(socket: net.Socket): void {
     this.uiBindings.get(socket)?.controller.abort();
@@ -697,6 +766,7 @@ export class Session {
     if (this.subscribers.size === 0) {
       this.stopStalePoll();
     }
+    this.scheduleAutoDestroy();
   }
 
   /** True if the root config file was modified after the last successful load. */

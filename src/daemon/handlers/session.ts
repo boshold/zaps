@@ -76,6 +76,46 @@ async function prepareForRequest(
   }
 }
 
+async function runTask(req: IpcRequest, session: Session, socket: Socket): Promise<IpcResponse> {
+  const { key, start } = z
+    .object({ key: z.string(), start: z.boolean().optional() })
+    .parse(req.params);
+  const tasks = session.config.project.tasks ?? {};
+  if (!Object.hasOwn(tasks, key)) {
+    return ipcErr(req.id, `Unknown task: ${key}`);
+  }
+
+  let startedServices: string[] = [];
+  try {
+    startedServices = await prepareForRequest(session, socket, key, start, (event) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "service", data: event });
+      }
+    });
+  } catch (error) {
+    return ipcErr(req.id, error);
+  }
+
+  const outcome = await session.taskExecution.run(key, {
+    startedServices,
+    config: session.config,
+    cwd: session.config.projectDir,
+    env: session.env,
+    mode: "background",
+    onLine: (line) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "line", data: line });
+      }
+    },
+    onProgress: (taskKey, result) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
+      }
+    },
+  });
+  return ipcOk(req.id, { ...outcome, startedServices });
+}
+
 /** Record + broadcast the terminal state of a run-in-pane run. */
 function completePaneRun(
   session: Session,
@@ -576,44 +616,12 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-
-    const { key, start } = z
-      .object({ key: z.string(), start: z.boolean().optional() })
-      .parse(req.params);
-    const tasks = session.config.project.tasks ?? {};
-    if (!Object.hasOwn(tasks, key)) {
-      return ipcErr(req.id, `Unknown task: ${key}`);
-    }
-
-    let startedServices: string[] = [];
+    const release = session.acquireTask();
     try {
-      startedServices = await prepareForRequest(session, socket, key, start, (event) => {
-        if (!socket.destroyed && socket.writable) {
-          send(socket, { id: req.id, event: "service", data: event });
-        }
-      });
-    } catch (error) {
-      return ipcErr(req.id, error);
+      return await runTask(req, session, socket);
+    } finally {
+      release();
     }
-
-    const outcome = await session.taskExecution.run(key, {
-      startedServices,
-      config: session.config,
-      cwd: session.config.projectDir,
-      env: session.env,
-      mode: "background",
-      onLine: (line) => {
-        if (!socket.destroyed && socket.writable) {
-          send(socket, { id: req.id, event: "line", data: line });
-        }
-      },
-      onProgress: (taskKey, result) => {
-        if (!socket.destroyed && socket.writable) {
-          send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
-        }
-      },
-    });
-    return ipcOk(req.id, { ...outcome, startedServices });
   },
 
   async "tasks.runInPane"(req, store, socket) {

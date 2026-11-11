@@ -468,6 +468,101 @@ describe("session creation with real shell orchestration", () => {
     expect(server.list()).toEqual([]);
   });
 
+  describe("ephemeral auto-destroy", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    async function ephemeral(socket: string) {
+      await server.start(socket);
+      return server.create({ ...request(), startServices: false, ephemeral: true });
+    }
+
+    it("destroys the session after an independent task, after responding", async () => {
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-task.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await vi.waitFor(() => expect(server.get(session.id)).toBeUndefined());
+      expect(session.destroyed).toBe(true);
+    });
+
+    it("destroys the session when preflight rejects the run", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const socket = path.join(root, "auto-preflight.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "seed" }, 5000, session.id);
+      expect(response.errorCode).toBe("services_not_running");
+      await vi.waitFor(() => expect(server.get(session.id)).toBeUndefined());
+    });
+
+    it("keeps the session once the task started a service", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: {
+          seed: { name: "Seed", commands: "true", services: ["db"], autoStart: true },
+        },
+      };
+      const socket = path.join(root, "auto-start.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "seed" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      expect(session.ephemeral).toBe(false);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+      await session.manager.stopAll();
+    });
+
+    it("never auto-destroys a normal session", async () => {
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-normal.sock");
+      await server.start(socket);
+      const session = await server.create(request());
+      await session.startPromise;
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
+    it("logs destroy failures instead of throwing", async () => {
+      const log = vi.fn();
+      server.stop();
+      server = new DaemonServer({ log });
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-fail.sock");
+      const session = await ephemeral(socket);
+      const destroy = vi.spyOn(server, "destroy").mockRejectedValueOnce(new Error("boom"));
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith(expect.stringContaining("auto-destroy")),
+      );
+      expect(destroy).toHaveBeenCalledWith(session.id);
+    });
+  });
+
   it("disposes backend resources when manager construction throws", async () => {
     config.bindActions = () => {
       throw new Error("manager failed");

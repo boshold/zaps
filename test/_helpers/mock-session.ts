@@ -82,6 +82,8 @@ export interface MockSession {
   broadcast: ReturnType<typeof vi.fn>;
   pushTaskRecord: ReturnType<typeof vi.fn>;
   prepareTask: ReturnType<typeof vi.fn<Session["prepareTask"]>>;
+  acquireTask: ReturnType<typeof vi.fn<Session["acquireTask"]>>;
+  release: ReturnType<typeof vi.fn<() => void>>;
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
   focusPane: string;
@@ -219,6 +221,10 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     reload: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
     prepareTask: vi.fn<Session["prepareTask"]>().mockResolvedValue({ startedServices: [] }),
+    ...(() => {
+      const release = vi.fn<() => void>();
+      return { release, acquireTask: vi.fn<Session["acquireTask"]>(() => release) };
+    })(),
     broadcast: vi.fn(),
     pushTaskRecord: vi.fn(),
     ...overrides,

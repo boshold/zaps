@@ -998,6 +998,41 @@ describe("session handlers", () => {
         createMockSocket() as never,
       );
       expect(res.error).toContain("Unknown task");
+      expect(session.acquireTask).toHaveBeenCalledTimes(1);
+      expect(session.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds a pending task from before preparation until the run settles", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s" } });
+      let finishPrepare: (value: { startedServices: string[] }) => void = () => undefined;
+      session.prepareTask.mockImplementation(
+        async () =>
+          new Promise((resolve) => {
+            finishPrepare = resolve;
+          }),
+      );
+      const pending = sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "seed" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(session.acquireTask).toHaveBeenCalledTimes(1);
+      expect(session.release).not.toHaveBeenCalled();
+      finishPrepare({ startedServices: [] });
+      await pending;
+      expect(session.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases the pending task when request parsing throws", async () => {
+      const { session } = taskSession({});
+      await expect(
+        sessionHandlers["tasks.run"](
+          { id: "run", method: "tasks.run", session: session.id, params: { key: 42 } },
+          createMockStore([session]),
+          createMockSocket() as never,
+        ),
+      ).rejects.toThrow();
+      expect(session.release).toHaveBeenCalledTimes(1);
     });
 
     it.each([false, true])("runs popup DAG in background with UI binding %s", async (bound) => {
@@ -1161,6 +1196,7 @@ describe("session handlers", () => {
       );
       expect(res).toEqual({ id: "run", error: failure.message, errorCode: code });
       expect(execute).not.toHaveBeenCalled();
+      expect(session.release).toHaveBeenCalledTimes(1);
       expect(owner.history).toEqual([]);
       expect(broadcast).not.toHaveBeenCalled();
     });

@@ -215,6 +215,113 @@ describe("Session", () => {
     });
   });
 
+  describe("ephemeral auto-destroy", () => {
+    async function flush(): Promise<void> {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+
+    async function ephemeralSession(ephemeral = true) {
+      const onAutoDestroy = vi.fn(async () => undefined);
+      const sessionManager = createMockManager();
+      const created = new Session(
+        { ...(await createSessionParams()), startupPending: true, ephemeral, onAutoDestroy },
+        sessionManager,
+      );
+      return { created, onAutoDestroy, sessionManager };
+    }
+
+    it("destroys after the last task settles, once the response tick passed", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const release = created.acquireTask();
+      expect(created.pendingTasks).toBe(1);
+      release();
+      release();
+      expect(created.pendingTasks).toBe(0);
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
+
+    it("never destroys a non-ephemeral session", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession(false);
+      created.acquireTask()();
+      const socket = new Socket();
+      created.addSubscriber(socket);
+      created.removeSubscriber(socket);
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("clears ephemeral permanently on the first service starting transition", async () => {
+      const { created, onAutoDestroy, sessionManager } = await ephemeralSession();
+      const release = created.acquireTask();
+      sessionManager.emit("stateChange", "api", {
+        name: "api",
+        state: "starting",
+        ports: [],
+        retryCount: 0,
+      });
+      expect(created.ephemeral).toBe(false);
+      sessionManager.emit("stateChange", "api", {
+        name: "api",
+        state: "stopped",
+        ports: [],
+        retryCount: 0,
+      });
+      release();
+      await flush();
+      expect(created.ephemeral).toBe(false);
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("keeps the session while subscribed and destroys on the last unsubscribe", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const first = new Socket();
+      const second = new Socket();
+      created.addSubscriber(first);
+      created.addSubscriber(second);
+      created.acquireTask()();
+      created.removeSubscriber(first);
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      created.removeSubscriber(second);
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+      expect(created.ephemeral).toBe(true);
+    });
+
+    it("survives overlapping runs until both settled", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const first = created.acquireTask();
+      const second = created.acquireTask();
+      first();
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      second();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-checks the condition when the deferred destroy runs", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      created.acquireTask()();
+      created.acquireTask();
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("swallows callback failures", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      onAutoDestroy.mockRejectedValueOnce(new Error("boom"));
+      created.acquireTask()();
+      await flush();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("UI socket binding", () => {
     it("requires acknowledged subscription on the same socket and session", async () => {
       const socket = new Socket();
