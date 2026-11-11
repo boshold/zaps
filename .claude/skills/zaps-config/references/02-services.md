@@ -5,7 +5,7 @@
 | Field           | Type                                              | Default     | Description                                                                                  |
 | --------------- | ------------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------- |
 | `start`         | `string \| () => string`                          | —           | Long-running process command (server)                                                        |
-| `run`           | `string \| () => string`                          | —           | Service command alias; start takes precedence                                                                             |
+| `run`           | `string \| () => string`                          | —           | Service command alias; start takes precedence                                                |
 | `stop`          | `string \| () => string`                          | —           | Reserved; accepted but not executed                                                          |
 | `cwd`           | `string`                                          | —           | Working directory for the service                                                            |
 | `detached`      | `boolean`                                         | `false`     | Run pane-less (outside the tmux layout)                                                      |
