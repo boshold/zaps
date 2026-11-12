@@ -13,7 +13,7 @@ import {
 import type { BackendId } from "#src/lib/backend/types.js";
 import { parseDaemonStatus, parseServiceStatus } from "#src/lib/backend/wire.js";
 import { getEnv } from "#src/lib/env.js";
-import { ipcRequest, ipcSubscribe } from "#src/lib/ipc/client.js";
+import { ipcRequest, ipcSend, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "#src/lib/tmux.js";
@@ -231,6 +231,28 @@ async function startTmux(
   }
 }
 
+const TASK_ONLY_HINT =
+  "Session runs on the shell backend (created by 'zaps run'). For tmux panes: zaps down && zaps up\n";
+
+function isTaskOnly(session: ListedSession): boolean {
+  return "startupPending" in session && session.startupPending === true;
+}
+
+/** Run the deferred initial startup of a session kept after `zaps run`. */
+async function startPendingSession(
+  sock: string,
+  session: ListedSession,
+  attachUi: boolean,
+): Promise<void> {
+  process.stderr.write(TASK_ONLY_HINT);
+  if (!attachUi) {
+    await reportDetachedStartup(sock, session);
+    return;
+  }
+  await ipcSend(sock, "services.startAll", { startup: true }, session.id);
+  await runTui({ sessionId: session.id, socketPath: sock });
+}
+
 function reportExisting(session: Pick<ListedSession, "name" | "backend">): void {
   process.stdout.write(
     `Session "${session.name}" is already running (${session.backend}). Run 'zaps attach' to open the UI.\n`,
@@ -321,6 +343,10 @@ async function runStartup(
 
   const { backend, attachUi } = selectStartupBackend(intent, existing?.backend);
   const project = { configPath, projectDir, resolvedProjectDir: config.projectDir };
+  if (existing && isTaskOnly(existing)) {
+    await startPendingSession(sock, existing, attachUi);
+    return;
+  }
   if (existing && !attachUi && (intent.background || backend === "shell")) {
     reportExisting(existing);
     return;

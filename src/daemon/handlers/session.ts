@@ -526,6 +526,9 @@ export const sessionHandlers: Record<
         }
         return ipcOk(req.id, { started: options.names });
       }
+      if (session.startupPending) {
+        session.beginInitialStartup();
+      }
       await (options && "startup" in options
         ? session.waitForInitialStartup()
         : session.manager.startAll());

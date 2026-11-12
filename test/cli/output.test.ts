@@ -398,6 +398,14 @@ describe("sessionRows", () => {
     expect(sessionRows([])).toEqual([]);
   });
 
+  it("marks task-only sessions", () => {
+    expect(
+      sessionRows([
+        { id: "s", name: "app", projectDir: "/s", backend: "shell", startupPending: true },
+      ]),
+    ).toEqual([["s", "app", "/s", "shell", "task-only"]]);
+  });
+
   it("puts the location last, after id/name/dir", () => {
     expect(
       sessionRows([

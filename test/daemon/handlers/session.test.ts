@@ -634,6 +634,53 @@ describe("session handlers", () => {
       expect(res.error).toBe("boom");
     });
 
+    it.each([undefined, {}, { startup: true }])(
+      "begins the deferred startup of a task-only session for %j",
+      async (params) => {
+        const session = createMockSession({ startupPending: true });
+        const res = await sessionHandlers["services.startAll"](
+          { id: "r", method: "services.startAll", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.result).toEqual({ started: "all" });
+        expect(session.beginInitialStartup).toHaveBeenCalledTimes(1);
+        if (params && "startup" in params) {
+          expect(session.waitForInitialStartup).toHaveBeenCalledTimes(1);
+          expect(session.manager.startAll).not.toHaveBeenCalled();
+        } else {
+          expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it("leaves the deferred startup pending for named starts", async () => {
+      const session = createMockSession({ startupPending: true });
+      const res = await sessionHandlers["services.startAll"](
+        {
+          id: "r",
+          method: "services.startAll",
+          session: session.id,
+          params: { names: ["api"] },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toEqual({ started: ["api"] });
+      expect(session.beginInitialStartup).not.toHaveBeenCalled();
+    });
+
+    it("does not re-begin startup on regular sessions", async () => {
+      const session = createMockSession();
+      await sessionHandlers["services.startAll"](
+        { id: "r", method: "services.startAll", session: session.id, params: { startup: true } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(session.beginInitialStartup).not.toHaveBeenCalled();
+      expect(session.waitForInitialStartup).toHaveBeenCalledTimes(1);
+    });
+
     it("returns error when named services start fails", async () => {
       const session = createMockSession();
       session.manager.startService.mockRejectedValue(new Error("named start failed"));

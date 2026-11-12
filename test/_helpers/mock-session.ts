@@ -83,6 +83,8 @@ export interface MockSession {
   pushTaskRecord: ReturnType<typeof vi.fn>;
   prepareTask: ReturnType<typeof vi.fn<Session["prepareTask"]>>;
   acquireTask: ReturnType<typeof vi.fn<Session["acquireTask"]>>;
+  beginInitialStartup: ReturnType<typeof vi.fn<Session["beginInitialStartup"]>>;
+  waitForInitialStartup: ReturnType<typeof vi.fn<Session["waitForInitialStartup"]>>;
   release: ReturnType<typeof vi.fn<() => void>>;
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
@@ -221,6 +223,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     reload: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
     prepareTask: vi.fn<Session["prepareTask"]>().mockResolvedValue({ startedServices: [] }),
+    beginInitialStartup: vi.fn<Session["beginInitialStartup"]>(),
+    waitForInitialStartup: vi.fn<Session["waitForInitialStartup"]>().mockResolvedValue(undefined),
     ...(() => {
       const release = vi.fn<() => void>();
       return { release, acquireTask: vi.fn<Session["acquireTask"]>(() => release) };

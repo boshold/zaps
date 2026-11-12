@@ -113,6 +113,32 @@ export async function ipcRequest(
   });
 }
 
+/** Deliver a request without awaiting its response; resolves once it is flushed. */
+export async function ipcSend(
+  socketPath: string,
+  method: string,
+  params?: unknown,
+  session?: string,
+): Promise<void> {
+  const req: IpcRequest = {
+    id: generateId(),
+    method,
+    context: captureRequestContext(),
+    ...(params !== undefined && { params }),
+    ...(session && { session }),
+  };
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(socketPath);
+    socket.on("connect", () => {
+      socket.end(`${JSON.stringify(req)}\n`, () => {
+        resolve();
+      });
+    });
+    socket.on("data", () => undefined);
+    socket.on("error", reject);
+  });
+}
+
 export async function ipcStream(
   socketPath: string,
   method: string,

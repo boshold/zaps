@@ -167,6 +167,7 @@ interface SessionRowData {
   projectDir: string;
   tmuxSession?: string;
   managed?: boolean;
+  startupPending?: true;
 }
 
 /**
@@ -175,6 +176,9 @@ interface SessionRowData {
  * Empty when an older daemon didn't report one.
  */
 function sessionLocation(session: SessionRowData): string {
+  if (session.startupPending) {
+    return "task-only";
+  }
   if (session.backend === "shell" || !session.tmuxSession) {
     return "";
   }

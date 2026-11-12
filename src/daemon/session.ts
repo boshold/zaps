@@ -23,6 +23,7 @@ import {
   runWithEnvironment,
 } from "#src/lib/request-context.js";
 import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
+import { topoSort } from "#src/lib/service/graph.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
 import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
 import {
@@ -89,6 +90,39 @@ function compatibilityProjection(view: PresentationSnapshot): CompatibilityProje
     originPane: view.originPane,
     ...(view.focusPane === undefined ? {} : { focusPane: view.focusPane }),
   };
+}
+
+function activeServiceNames(manager: ServiceManager): Set<string> {
+  return new Set(
+    manager
+      .getAllStatuses()
+      .filter((status) => status.state !== "stopped" && status.state !== "unavailable")
+      .map((status) => status.name),
+  );
+}
+
+async function restartServices(
+  manager: ServiceManager,
+  config: ResolvedConfig,
+  names: ReadonlySet<string>,
+): Promise<void> {
+  const { services } = config.project;
+  const graph: Record<string, { dependsOn: string[] }> = {};
+  for (const name of names) {
+    if (Object.hasOwn(services, name)) {
+      graph[name] = { dependsOn: (services[name].dependsOn ?? []).filter((d) => names.has(d)) };
+    }
+  }
+  for (const name of topoSort(graph).flat()) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- Sequential start respects deps
+      await manager.startService(name);
+    } catch (error) {
+      if (error instanceof SessionClosingError) {
+        return;
+      }
+    }
+  }
 }
 
 interface PrepareTaskOptions {
@@ -497,6 +531,7 @@ export class Session {
     }
     preflightBackendCompatibility(newConfig.project.services, this.backend.capabilities);
     const newConfigLoadedAt = Date.now();
+    const restartOnly = this.startupPendingFlag ? activeServiceNames(this.manager) : undefined;
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
     this.preparation.abort();
@@ -555,10 +590,12 @@ export class Session {
       return;
     }
 
-    // 9. Start services as a tracked promise.
+    // 9. Start services as a tracked promise. Task-only sessions restart only what ran.
     this.startPromise = runWithEnvironment({ ...loaded.env }, async () => {
       try {
-        await newManager.startAll();
+        await (restartOnly
+          ? restartServices(newManager, newConfig, restartOnly)
+          : newManager.startAll());
       } catch {
         /* Errors surfaced via stateChange */
       }

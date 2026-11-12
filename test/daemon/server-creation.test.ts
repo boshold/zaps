@@ -468,6 +468,48 @@ describe("session creation with real shell orchestration", () => {
     expect(server.list()).toEqual([]);
   });
 
+  describe("task-only reload", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    it("restarts only previously running services in dependency order and keeps flags", async () => {
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          web: { start: keepAlive(), dependsOn: ["db"], sentra: false },
+          idle: { start: keepAlive(), sentra: false },
+        },
+      };
+      const session = await server.create({ ...request(), startServices: false });
+      await session.manager.startService("db");
+      await session.manager.startService("web");
+      const start = vi.spyOn(ShellRuntime.prototype, "start");
+      await session.reload();
+      await session.startPromise;
+      expect(start.mock.calls.map(([spec]) => spec.unitId)).toEqual(["db", "web"]);
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      expect(session.manager.getStatus("web")?.state).toBe("ready");
+      expect(session.manager.getStatus("idle")?.state).toBe("stopped");
+      expect(session.startupPending).toBe(true);
+      await session.manager.stopAll();
+    });
+
+    it("reloads regular sessions with a full start", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+      };
+      const session = await server.create(request());
+      await session.startPromise;
+      await session.manager.stopAll();
+      await session.reload();
+      await session.startPromise;
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      await session.manager.stopAll();
+    });
+  });
+
   describe("ephemeral auto-destroy", () => {
     const keepAlive = () =>
       `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
@@ -541,6 +583,49 @@ describe("session creation with real shell orchestration", () => {
       });
       expect(server.get(session.id)).toBe(session);
     });
+
+    it("still clears ephemeral on a service start after a reload", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+      };
+      const session = await ephemeral(path.join(root, "auto-reload.sock"));
+      await session.reload();
+      await session.startPromise;
+      expect(session.ephemeral).toBe(true);
+      expect(session.startupPending).toBe(true);
+      await session.manager.startService("db");
+      expect(session.ephemeral).toBe(false);
+      await session.manager.stopAll();
+    });
+
+    it.each(["replaced", "missing"])(
+      "does not destroy when the store entry is %s",
+      async (variant) => {
+        config.project = { name: "creation", services: {} };
+        const session = await ephemeral(path.join(root, `auto-guard-${variant}.sock`));
+        const sessions = Reflect.get(server, "sessions");
+        if (!(sessions instanceof Map)) {
+          throw new Error("sessions map missing");
+        }
+        if (variant === "missing") {
+          sessions.delete(session.id);
+        } else {
+          sessions.set(session.id, { id: session.id });
+        }
+        const destroy = vi.spyOn(server, "destroy");
+        session.acquireTask()();
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(destroy).not.toHaveBeenCalled();
+        expect(session.destroyed).toBe(false);
+        sessions.set(session.id, session);
+      },
+    );
 
     it("logs destroy failures instead of throwing", async () => {
       const log = vi.fn();
