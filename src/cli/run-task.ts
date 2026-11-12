@@ -85,8 +85,9 @@ class SessionGoneError extends Error {
   public override readonly name = "SessionGoneError";
 }
 
-function isSessionGone(res: { error?: string; errorCode?: string }): boolean {
-  return res.error === "Unknown session" || res.errorCode === "session_closing";
+/** Only sent before task execution starts, so a retry cannot run the task twice. */
+function isSessionGone(res: { error?: string }): boolean {
+  return res.error === "Unknown session";
 }
 
 function startHint(names: readonly string[]): string {
@@ -198,24 +199,26 @@ async function runTaskCommand(
   if (sessionArg) {
     return deps.withDaemon(async (ipc) => runTask(ipc, run, io), sessionArg);
   }
-  try {
-    return await deps.withDaemon(async (ipc) => runTask(ipc, { ...run, retryable: true }, io));
-  } catch (error) {
-    if (error instanceof SessionGoneError) {
-      return runImplicit(run, deps, io, false);
+  const retryOnce = async (attempt: () => Promise<number>): Promise<number> => {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (error instanceof SessionGoneError) {
+        return runImplicit(run, deps, io, false);
+      }
+      throw error;
     }
+  };
+  try {
+    return await retryOnce(async () =>
+      deps.withDaemon(async (ipc) => runTask(ipc, { ...run, retryable: true }, io)),
+    );
+  } catch (error) {
     if (!isMissingSession(error)) {
       throw error;
     }
   }
-  try {
-    return await runImplicit(run, deps, io, true);
-  } catch (error) {
-    if (error instanceof SessionGoneError) {
-      return runImplicit(run, deps, io, false);
-    }
-    throw error;
-  }
+  return retryOnce(async () => runImplicit(run, deps, io, true));
 }
 
 export {

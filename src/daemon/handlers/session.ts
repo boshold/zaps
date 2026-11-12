@@ -76,7 +76,13 @@ async function prepareForRequest(
   }
 }
 
+/** Same reply as a missing session: the CLI may safely retry, nothing has run. */
+const UNKNOWN_SESSION = "Unknown session";
+
 async function runTask(req: IpcRequest, session: Session, socket: Socket): Promise<IpcResponse> {
+  if (!session.taskExecution.accepting) {
+    return ipcErr(req.id, UNKNOWN_SESSION);
+  }
   const { key, start } = z
     .object({ key: z.string(), start: z.boolean().optional() })
     .parse(req.params);
@@ -93,6 +99,9 @@ async function runTask(req: IpcRequest, session: Session, socket: Socket): Promi
       }
     });
   } catch (error) {
+    if (error instanceof SessionClosingError && !session.taskExecution.accepting) {
+      return ipcErr(req.id, UNKNOWN_SESSION);
+    }
     return ipcErr(req.id, error);
   }
 

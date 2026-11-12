@@ -57,6 +57,7 @@ async function createShellSession(
 }
 
 function rawServiceName(error: DaemonRejectionError, config: ResolvedConfig): string {
+  // Matches BackendCompatibilityError (src/lib/backend/compatibility.ts).
   const named = /Service '(?<name>[^']+)'/.exec(error.message)?.groups?.name;
   if (named) {
     return named;
@@ -104,5 +105,5 @@ async function ensureImplicitSession(
   }
 }
 
-export { DaemonRejectionError, createShellSession, ensureImplicitSession };
+export { DaemonRejectionError, createShellSession, ensureImplicitSession, readResult };
 export type { ImplicitSessionOptions, ShellProject };

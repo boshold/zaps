@@ -275,6 +275,30 @@ describe("runTaskCommand", () => {
     expect(err).toEqual(["Error: session_closing\n"]);
   });
 
+  it.each([
+    ["implicit", {}],
+    ["project", { project: async () => 0 }],
+  ])("never retries session_closing after task output (%s session)", async (_kind, extra) => {
+    const closing: IpcResponse = {
+      id: "r",
+      error: "session_closing",
+      errorCode: "session_closing",
+    };
+    const { value } = deps({ ...extra, implicit: [closing] });
+    if ("project" in extra) {
+      value.withDaemon.mockImplementationOnce(async (fn) =>
+        fn(fakeIpc(closing, [["line", "seeded"]])),
+      );
+    } else {
+      value.sessionIpc.mockImplementationOnce(() => fakeIpc(closing, [["line", "seeded"]]));
+    }
+    const { io, out, err } = capture();
+    await expect(runTaskCommand({ key: "seed", format: "text" }, value, io)).resolves.toBe(1);
+    expect(out).toEqual(["seeded\n"]);
+    expect(err).toEqual(["Error: session_closing\n"]);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes("project" in extra ? 0 : 1);
+  });
+
   it("falls back to an implicit session when the project session vanished", async () => {
     const { value } = deps({ project: async () => 0, implicit: [gone] });
     const { io, err } = capture();

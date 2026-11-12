@@ -1248,6 +1248,36 @@ describe("session handlers", () => {
       expect(broadcast).not.toHaveBeenCalled();
     });
 
+    it("tasks.run reports a closing session as unknown before preparing", async () => {
+      const { session, owner, execute } = taskSession({ seed: { name: "Seed", commands: "s" } });
+      owner.close();
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: "Unknown session" });
+      expect(session.prepareTask).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("tasks.run reports unknown session when the session closes during preparation", async () => {
+      const { session, owner, execute } = taskSession({
+        seed: { name: "Seed", commands: "s", services: ["db"] },
+      });
+      session.prepareTask.mockImplementation(async () => {
+        owner.close();
+        throw new SessionClosingError();
+      });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: "Unknown session" });
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it("tasks.run aborts preparation when the socket closes", async () => {
       const { session } = taskSession({ seed: { name: "Seed", commands: "s", services: ["db"] } });
       let seen: AbortSignal | undefined;
