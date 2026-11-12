@@ -23,10 +23,10 @@ import {
   parseSessionSnapshot,
   taskPreflightSchema,
 } from "#src/lib/backend/wire.js";
+import type { TaskPreflightResponse } from "#src/lib/backend/wire.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
-import type { TaskPreflight } from "#src/lib/task/ensure-services.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 // Covers service startup before the pane opens.
@@ -440,7 +440,7 @@ export class DaemonClient extends EventEmitter {
     return res.result as TaskOutputSnapshot;
   }
 
-  public async preflightTask(key: string): Promise<TaskPreflight> {
+  public async preflightTask(key: string): Promise<TaskPreflightResponse> {
     const res = await this.request("tasks.preflight", { key });
     if (res.error) {
       throw new DaemonRequestError(res.error, res.errorCode);

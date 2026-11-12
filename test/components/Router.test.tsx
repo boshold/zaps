@@ -8,6 +8,7 @@ import {
   TerminalActionError,
 } from "../../src/client/daemon-client.js";
 import { OverlayHost } from "../../src/components/overlay/OverlayHost.js";
+import { START_SERVICES_ID } from "../../src/components/overlay/StartServicesOverlay.js";
 import { TASK_PICKER_ID } from "../../src/components/overlay/TaskPicker.js";
 import { Router } from "../../src/components/Router.js";
 import { ShellProviders } from "../../src/components/ShellProviders.js";
@@ -52,6 +53,7 @@ const { detachClient } = await import("../../src/lib/tmux.js");
 const zoomWeb = { action: "zoom", target: { kind: "service", name: "web" } };
 const zoomDashboard = { action: "zoom", target: { kind: "dashboard" } };
 const editWeb = { action: "editOutput", service: "web" };
+const NO_START = { start: undefined };
 const popupTask = { key: "migrate", name: "Run migrations", description: null };
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -86,6 +88,13 @@ function createMockClient(): DaemonClient {
     getLogSnapshot: vi.fn().mockResolvedValue([]),
     runTask: vi.fn().mockResolvedValue({ success: true }),
     runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
+    preflightTask: vi.fn<DaemonClient["preflightTask"]>(async (key) => ({
+      key,
+      services: [],
+      needsStart: false,
+      autoStart: false,
+      blocked: [],
+    })),
     getTaskOutput: vi.fn(async (runId: string) => ({
       runId,
       taskKey: "build",
@@ -499,13 +508,13 @@ describe("Router", () => {
       await pressKey(stdin, "\t");
       await pressKey(stdin, "\t");
       if (capabilities.taskPanes) {
-        expect(client.runTaskInPane).toHaveBeenCalledExactlyOnceWith("build");
+        expect(client.runTaskInPane).toHaveBeenCalledExactlyOnceWith("build", undefined, NO_START);
       } else {
         expect(client.runTaskInPane).not.toHaveBeenCalled();
         expect(client.runTask).not.toHaveBeenCalled();
         expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
         await pressKey(stdin, "\r");
-        expect(client.runTask).toHaveBeenCalledExactlyOnceWith("build", {});
+        expect(client.runTask).toHaveBeenCalledExactlyOnceWith("build", {}, NO_START);
       }
       expect(overlay?.isOpen).toBe(false);
 
@@ -583,7 +592,7 @@ describe("Router", () => {
     expect(client.runTaskInPane).not.toHaveBeenCalled();
     expect(overlay?.top?.id).toBe(TASK_PICKER_ID);
     await pressKey(stdin, "\r");
-    expect(client.runTask).toHaveBeenCalledExactlyOnceWith("build", {});
+    expect(client.runTask).toHaveBeenCalledExactlyOnceWith("build", {}, NO_START);
     expect(overlay?.isOpen).toBe(false);
   });
 
@@ -844,8 +853,152 @@ describe("Router", () => {
     // Second lands. Whichever runs, the task fires once and the overlay closes.
     await pressKey(stdin, "\r");
     await pressKey(stdin, "\r");
-    expect(client.runTask).toHaveBeenCalledWith("migrate", {});
+    expect(client.runTask).toHaveBeenCalledWith("migrate", {}, NO_START);
     expect(overlay?.isOpen).toBe(false);
+  });
+
+  describe("start-services launch flow", () => {
+    const tasks: TaskInfo[] = [{ key: "migrate", name: "Run migrations", description: null }];
+    const downArrow = "\u001B[B";
+
+    function preflight(
+      overrides: Partial<Awaited<ReturnType<DaemonClient["preflightTask"]>>> = {},
+    ): Awaited<ReturnType<DaemonClient["preflightTask"]>> {
+      return {
+        key: "migrate",
+        services: [
+          { name: "db", state: "stopped", action: "start", required: false, startable: true },
+          { name: "api", state: "stopped", action: "start", required: true, startable: true },
+        ],
+        needsStart: true,
+        autoStart: false,
+        blocked: [],
+        ...overrides,
+      };
+    }
+
+    async function launchFromPicker(stdin: { write: (data: string) => void }) {
+      await pressKey(stdin, "t");
+      await pressKey(stdin, downArrow);
+      await pressKey(stdin, "\r");
+    }
+
+    async function launchFromPalette(stdin: { write: (data: string) => void }) {
+      await pressKey(stdin, ":");
+      await pressKey(stdin, "Run task");
+      await pressKey(stdin, "\r");
+    }
+
+    it("launches immediately when nothing needs to start", async () => {
+      const { stdin, client } = renderRouter({ tasks });
+      await launchFromPicker(stdin);
+      expect(client.preflightTask).toHaveBeenCalledExactlyOnceWith("migrate");
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
+      expect(overlay?.isOpen).toBe(false);
+    });
+
+    it("falls back to a plain launch when preflight fails", async () => {
+      const { stdin, client } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockRejectedValueOnce(new Error("Unknown method"));
+      await launchFromPicker(stdin);
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
+    });
+
+    it("starts services without a prompt when the task has autoStart", async () => {
+      const { stdin, client } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(preflight({ autoStart: true }));
+      await launchFromPicker(stdin);
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, { start: true });
+      expect(overlay?.isOpen).toBe(false);
+    });
+
+    it("passes start to pane launches", async () => {
+      const { stdin, client } = renderRouter({
+        tasks,
+        capabilities: fullCapabilities,
+        ui: resolveUiConfig({ notifications: "off", task: { defaultMode: "pane" } }),
+      });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(preflight({ autoStart: true }));
+      await launchFromPicker(stdin);
+      expect(client.runTaskInPane).toHaveBeenCalledExactlyOnceWith("migrate", undefined, {
+        start: true,
+      });
+    });
+
+    it.each(["y", "\r"])("asks before starting services and launches on %j", async (key) => {
+      const { stdin, client } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(preflight());
+      await launchFromPicker(stdin);
+      expect(overlay?.top?.id).toBe(START_SERVICES_ID);
+      expect(client.runTask).not.toHaveBeenCalled();
+      await pressKey(stdin, "j");
+      expect(overlay?.top?.id).toBe(START_SERVICES_ID);
+      await pressKey(stdin, key);
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, { start: true });
+      expect(overlay?.isOpen).toBe(false);
+    });
+
+    it.each(["n", "escape"])("cancels the prompt on %s without launching", async (key) => {
+      const { stdin, client } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(preflight());
+      await launchFromPicker(stdin);
+      expect(overlay?.top?.id).toBe(START_SERVICES_ID);
+      await pressKey(stdin, "j");
+      await (key === "escape" ? pressEscape(stdin) : pressKey(stdin, key));
+      expect(overlay?.isOpen).toBe(false);
+      expect(client.runTask).not.toHaveBeenCalled();
+    });
+
+    it("shows an error toast and launches nothing when a service is unavailable", async () => {
+      const { stdin, client, lastFrame } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(
+        preflight({ blocked: ["gpu"], needsStart: false }),
+      );
+      await launchFromPicker(stdin);
+      expect(client.runTask).not.toHaveBeenCalled();
+      expect(overlay?.isOpen).toBe(false);
+      expect(lastFrame()).toContain("Task Run migrations: service gpu is unavailable");
+    });
+
+    it("shows the daemon message when the launch is rejected", async () => {
+      const { stdin, client, lastFrame } = renderRouter({ tasks });
+      vi.mocked(client.runTask).mockRejectedValueOnce(
+        new DaemonRequestError('Service "db" failed to start: boom', "service_start_failed"),
+      );
+      await launchFromPicker(stdin);
+      expect(lastFrame()).toContain('Service "db" failed to start: boom');
+    });
+
+    it("toasts while a task waits for services", () => {
+      const { client, lastFrame } = renderRouter({ tasks });
+      act(() => {
+        client.emit("task.preparing", "migrate", ["db", "api"]);
+      });
+      expect(lastFrame()).toContain("Task Run migrations: waiting for db, api");
+    });
+
+    it("clears the shortcut running guard when the prompt is cancelled", async () => {
+      const { stdin, client } = renderRouter({ tasks });
+      vi.mocked(client.preflightTask).mockResolvedValueOnce(preflight());
+      await launchFromPalette(stdin);
+      expect(overlay?.top?.id).toBe(START_SERVICES_ID);
+      await pressKey(stdin, "j");
+      await pressKey(stdin, "n");
+      expect(overlay?.isOpen).toBe(false);
+      await launchFromPalette(stdin);
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
+    });
+
+    it("clears the shortcut running guard when the launch is rejected", async () => {
+      const { stdin, client, lastFrame } = renderRouter({ tasks });
+      vi.mocked(client.runTask).mockRejectedValueOnce(
+        new DaemonRequestError("needs services", "services_not_running"),
+      );
+      await launchFromPalette(stdin);
+      expect(lastFrame()).toContain("needs services");
+      await launchFromPalette(stdin);
+      expect(client.runTask).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe("popup picker", () => {
@@ -869,7 +1022,7 @@ describe("Router", () => {
       await act(async () => {
         picker.resolve({ action: "taskPicker", taskKey: "migrate" });
       });
-      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {});
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
       expect(client.runTaskInPane).not.toHaveBeenCalled();
       expect(overlay?.isOpen).toBe(false);
     });
@@ -952,7 +1105,7 @@ describe("Router", () => {
       await act(async () => {
         second.resolve({ action: "taskPicker", taskKey: "migrate" });
       });
-      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {});
+      expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
     });
 
     it("discards a popup selection after its Router unmounts", async () => {

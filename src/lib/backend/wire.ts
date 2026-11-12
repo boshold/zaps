@@ -228,6 +228,7 @@ const taskPreflightSchema = z.strictObject({
   autoStart: z.boolean(),
   blocked: z.array(z.string()),
 }) satisfies z.ZodType<TaskPreflight>;
+type TaskPreflightResponse = z.infer<typeof taskPreflightSchema>;
 const taskListEntrySchema = z.object({
   key: z.string(),
   name: z.string(),
@@ -266,3 +267,4 @@ export {
   taskPreflightSchema,
   taskListEntrySchema,
 };
+export type { TaskPreflightResponse };
