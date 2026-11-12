@@ -811,11 +811,14 @@ export class Session {
     this.uiBindings.delete(socket);
     this.acknowledgedSubscribers.delete(socket);
     this.subscriptionRegistrations.delete(socket);
-    this.subscribers.delete(socket);
+    const wasSubscriber = this.subscribers.delete(socket);
     if (this.subscribers.size === 0) {
       this.stopStalePoll();
     }
-    this.scheduleAutoDestroy();
+    // The store calls this for every closing socket; only real subscribers count.
+    if (wasSubscriber) {
+      this.scheduleAutoDestroy();
+    }
   }
 
   /** True if the root config file was modified after the last successful load. */

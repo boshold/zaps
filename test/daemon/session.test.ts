@@ -292,6 +292,13 @@ describe("Session", () => {
       expect(created.ephemeral).toBe(true);
     });
 
+    it("ignores closing sockets that never subscribed", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      created.removeSubscriber(new Socket());
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
     it("survives overlapping runs until both settled", async () => {
       const { created, onAutoDestroy } = await ephemeralSession();
       const first = created.acquireTask();

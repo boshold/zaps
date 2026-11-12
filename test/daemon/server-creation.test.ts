@@ -651,6 +651,21 @@ describe("session creation with real shell orchestration", () => {
       expect(session.destroyed).toBe(true);
     });
 
+    it("survives unrelated client sockets closing before the first task", async () => {
+      config.project = { name: "creation", services: {} };
+      const socket = path.join(root, "auto-idle.sock");
+      const session = await ephemeral(socket);
+      expect(await ipcRequest(socket, "daemon.ping")).toMatchObject({ result: "pong" });
+      await vi.waitFor(async () => {
+        const status = await ipcRequest(socket, "daemon.status");
+        expect(status.error).toBeUndefined();
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
     it("destroys the session when preflight rejects the run", async () => {
       config.project = {
         name: "creation",
