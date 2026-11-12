@@ -5,11 +5,14 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CliError, sessionIpc } from "#src/cli/helpers.js";
+import { runTaskCommand } from "#src/cli/run-task.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import { sessionHandlers } from "#src/daemon/handlers/session.js";
 import { createShutdownAll } from "#src/daemon/index.js";
 import { DaemonServer } from "#src/daemon/server.js";
+import { Session } from "#src/daemon/session.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
 import { ProcessRunner } from "#src/lib/backend/runtime/process-runner.js";
 import { ShellRuntime } from "#src/lib/backend/shell/runtime.js";
@@ -18,6 +21,7 @@ import { ipcRequest } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
+import { ensureImplicitSession } from "#src/lib/session/implicit.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 vi.mock("#src/config/project-context.js", () => ({ loadProjectContext: vi.fn() }));
@@ -416,6 +420,365 @@ describe("session creation with real shell orchestration", () => {
       readiness.resolve(true);
       socket.destroy();
     }
+  });
+
+  it("creates an idle session without initial startup when startServices is false", async () => {
+    const command = `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+    const hook = vi.fn();
+    config.project = {
+      name: "creation",
+      hooks: { onBeforeStart: hook },
+      services: { api: { start: command, sentra: false } },
+    };
+    const begin = vi.spyOn(Session.prototype, "beginInitialStartup");
+    const start = vi.spyOn(ShellRuntime.prototype, "start");
+    const session = await server.create({ ...request(), startServices: false, ephemeral: true });
+    expect(begin).not.toHaveBeenCalled();
+    expect(session.startPromise).toBeNull();
+    expect(session.startupPending).toBe(true);
+    expect(session.ephemeral).toBe(true);
+    expect(session.manager.getStatus("api")?.state).toBe("stopped");
+    expect(hook).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+
+    const again = await server.create(request());
+    expect(again).toBe(session);
+    expect(begin).not.toHaveBeenCalled();
+    expect(session.startupPending).toBe(true);
+    expect(session.ephemeral).toBe(true);
+  });
+
+  it("keeps startup flags off for normal creates and ignores new params on existing sessions", async () => {
+    const begin = vi.spyOn(Session.prototype, "beginInitialStartup");
+    const session = await server.create(request());
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(session.startupPending).toBe(false);
+    expect(session.ephemeral).toBe(false);
+    await session.startPromise;
+
+    const again = await server.create({ ...request(), startServices: false, ephemeral: true });
+    expect(again).toBe(session);
+    expect(begin).toHaveBeenCalledTimes(1);
+    expect(session.startupPending).toBe(false);
+    expect(session.ephemeral).toBe(false);
+  });
+
+  it("rejects ephemeral creates that would start services", async () => {
+    await expect(server.create({ ...request(), ephemeral: true })).rejects.toThrow(/startServices/);
+    await expect(
+      server.create({ ...request(), ephemeral: true, startServices: true }),
+    ).rejects.toThrow(/startServices/);
+    expect(server.list()).toEqual([]);
+  });
+
+  describe("zaps run without a session", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    async function runWithoutSession(socket: string, key: string, start?: boolean) {
+      fs.writeFileSync(config.configPath, "export default {};\n");
+      await server.start(socket);
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runTaskCommand(
+        { key, format: "text", ...(start === undefined ? {} : { start }) },
+        {
+          withDaemon: async () => {
+            throw new CliError("No running zaps session for this project.");
+          },
+          ensureImplicitSession,
+          ensureDaemon: async () => socket,
+          sessionIpc,
+          cwd: () => root,
+        },
+        {
+          stdout: (text) => out.push(text),
+          stderr: (text) => err.push(text),
+          data: () => undefined,
+        },
+      );
+      return { code, out, err };
+    }
+
+    it("runs an independent task and leaves no session behind", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: {
+          hello: { name: "Hello", commands: "echo hi" },
+          broken: { name: "Broken", commands: "exit 3" },
+        },
+      };
+      const start = vi.spyOn(ShellRuntime.prototype, "start");
+      const socket = path.join(root, "run-implicit.sock");
+      const ok = await runWithoutSession(socket, "hello");
+      expect(ok.code).toBe(0);
+      expect(ok.out).toEqual(["hi\n"]);
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+      const failed = await runWithoutSession(socket, "broken");
+      expect(failed.code).toBe(1);
+      expect(failed.err).toContain("Task failed.\n");
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+      expect(start.mock.calls.map(([spec]) => spec.unitId)).not.toContain("db");
+    });
+
+    it("keeps a task-only session with ready services after --start", async () => {
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          idle: { start: keepAlive(), sentra: false },
+        },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const socket = path.join(root, "run-start.sock");
+      const result = await runWithoutSession(socket, "seed", true);
+      expect(result.code).toBe(0);
+      expect(result.err).toEqual(["Starting db…\n", "db ready\n"]);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      const [session] = server.list();
+      expect(session.startupPending).toBe(true);
+      expect(session.ephemeral).toBe(false);
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      expect(session.manager.getStatus("idle")?.state).toBe("stopped");
+      await session.manager.stopAll();
+    });
+
+    it("prints the implicit hint and destroys the session when services are missing", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const result = await runWithoutSession(path.join(root, "run-missing.sock"), "seed");
+      expect(result.code).toBe(1);
+      expect(result.err.at(-1)).toBe('Rerun with --start, or run "zaps up" first.\n');
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+    });
+  });
+
+  describe("task-only reload", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    it("restarts only previously running services in dependency order and keeps flags", async () => {
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          web: { start: keepAlive(), dependsOn: ["db"], sentra: false },
+          idle: { start: keepAlive(), sentra: false },
+        },
+      };
+      const session = await server.create({ ...request(), startServices: false });
+      await session.manager.startService("db");
+      await session.manager.startService("web");
+      const start = vi.spyOn(ShellRuntime.prototype, "start");
+      await session.reload();
+      await session.startPromise;
+      expect(start.mock.calls.map(([spec]) => spec.unitId)).toEqual(["db", "web"]);
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      expect(session.manager.getStatus("web")?.state).toBe("ready");
+      expect(session.manager.getStatus("idle")?.state).toBe("stopped");
+      expect(session.startupPending).toBe(true);
+      await session.manager.stopAll();
+    });
+
+    it("skips stopping services and logs failed restarts", async () => {
+      const log = vi.fn();
+      server.stop();
+      server = new DaemonServer({ log });
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          web: { start: keepAlive(), sentra: false },
+        },
+      };
+      const session = await server.create({ ...request(), startServices: false });
+      await session.manager.startService("db");
+      const real = session.manager.getAllStatuses();
+      vi.spyOn(session.manager, "getAllStatuses").mockReturnValue([
+        ...real.filter((status) => status.name !== "web"),
+        { name: "web", state: "stopping", ports: [], retryCount: 0 },
+      ]);
+      vi.spyOn(ServiceManager.prototype, "startService").mockRejectedValueOnce(
+        new Error("port busy"),
+      );
+      await session.reload();
+      await session.startPromise;
+      expect(log).toHaveBeenCalledWith("reload: cannot restart service db: Error: port busy");
+      expect(session.manager.getStatus("web")?.state).toBe("stopped");
+    });
+
+    it("reloads regular sessions with a full start", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+      };
+      const session = await server.create(request());
+      await session.startPromise;
+      await session.manager.stopAll();
+      await session.reload();
+      await session.startPromise;
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      await session.manager.stopAll();
+    });
+  });
+
+  describe("ephemeral auto-destroy", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    async function ephemeral(socket: string) {
+      await server.start(socket);
+      return server.create({ ...request(), startServices: false, ephemeral: true });
+    }
+
+    it("destroys the session after an independent task, after responding", async () => {
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-task.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await vi.waitFor(() => expect(server.get(session.id)).toBeUndefined());
+      expect(session.destroyed).toBe(true);
+    });
+
+    it("survives unrelated client sockets closing before the first task", async () => {
+      config.project = { name: "creation", services: {} };
+      const socket = path.join(root, "auto-idle.sock");
+      const session = await ephemeral(socket);
+      expect(await ipcRequest(socket, "daemon.ping")).toMatchObject({ result: "pong" });
+      await vi.waitFor(async () => {
+        const status = await ipcRequest(socket, "daemon.status");
+        expect(status.error).toBeUndefined();
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
+    it("destroys the session when preflight rejects the run", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const socket = path.join(root, "auto-preflight.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "seed" }, 5000, session.id);
+      expect(response.errorCode).toBe("services_not_running");
+      await vi.waitFor(() => expect(server.get(session.id)).toBeUndefined());
+    });
+
+    it("keeps the session once the task started a service", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: {
+          seed: { name: "Seed", commands: "true", services: ["db"], autoStart: true },
+        },
+      };
+      const socket = path.join(root, "auto-start.sock");
+      const session = await ephemeral(socket);
+      const response = await ipcRequest(socket, "tasks.run", { key: "seed" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      expect(session.ephemeral).toBe(false);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+      await session.manager.stopAll();
+    });
+
+    it("never auto-destroys a normal session", async () => {
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-normal.sock");
+      await server.start(socket);
+      const session = await server.create(request());
+      await session.startPromise;
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(server.get(session.id)).toBe(session);
+    });
+
+    it("still clears ephemeral on a service start after a reload", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+      };
+      const session = await ephemeral(path.join(root, "auto-reload.sock"));
+      await session.reload();
+      await session.startPromise;
+      expect(session.ephemeral).toBe(true);
+      expect(session.startupPending).toBe(true);
+      await session.manager.startService("db");
+      expect(session.ephemeral).toBe(false);
+      await session.manager.stopAll();
+    });
+
+    it.each(["replaced", "missing"])(
+      "does not destroy when the store entry is %s",
+      async (variant) => {
+        config.project = { name: "creation", services: {} };
+        const session = await ephemeral(path.join(root, `auto-guard-${variant}.sock`));
+        const sessions = Reflect.get(server, "sessions");
+        if (!(sessions instanceof Map)) {
+          throw new Error("sessions map missing");
+        }
+        if (variant === "missing") {
+          sessions.delete(session.id);
+        } else {
+          sessions.set(session.id, { id: session.id });
+        }
+        const destroy = vi.spyOn(server, "destroy");
+        session.acquireTask()();
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve);
+        });
+        expect(destroy).not.toHaveBeenCalled();
+        expect(session.destroyed).toBe(false);
+        sessions.set(session.id, session);
+      },
+    );
+
+    it("logs destroy failures instead of throwing", async () => {
+      const log = vi.fn();
+      server.stop();
+      server = new DaemonServer({ log });
+      config.project = {
+        name: "creation",
+        services: {},
+        tasks: { hello: { name: "Hello", commands: "true" } },
+      };
+      const socket = path.join(root, "auto-fail.sock");
+      const session = await ephemeral(socket);
+      const destroy = vi.spyOn(server, "destroy").mockRejectedValueOnce(new Error("boom"));
+      const response = await ipcRequest(socket, "tasks.run", { key: "hello" }, 5000, session.id);
+      expect(response.error).toBeUndefined();
+      await vi.waitFor(() =>
+        expect(log).toHaveBeenCalledWith(expect.stringContaining("auto-destroy")),
+      );
+      expect(destroy).toHaveBeenCalledWith(session.id);
+    });
   });
 
   it("disposes backend resources when manager construction throws", async () => {

@@ -1,0 +1,376 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { CliError } from "../../src/cli/helpers.js";
+import type { SessionIpc } from "../../src/cli/helpers.js";
+import {
+  createServiceProgressPrinter,
+  resolveStartFlag,
+  runTask,
+  runTaskCommand,
+} from "../../src/cli/run-task.js";
+import type { IpcResponse } from "../../src/lib/ipc/protocol.js";
+
+type Frame = [event: string, data: unknown];
+
+function fakeIpc(response: IpcResponse, frames: Frame[] = [], preflight?: IpcResponse) {
+  const stream = vi.fn<SessionIpc["stream"]>(async (_method, _params, onEvent) => {
+    for (const [event, data] of frames) {
+      onEvent(event, data);
+    }
+    return response;
+  });
+  const request = vi.fn<SessionIpc["request"]>(async () => preflight ?? { id: "p", error: "x" });
+  return { stream, request };
+}
+
+function capture() {
+  const out: string[] = [];
+  const err: string[] = [];
+  const data: unknown[] = [];
+  return {
+    io: {
+      stdout: (t: string) => out.push(t),
+      stderr: (t: string) => err.push(t),
+      data: (d: unknown) => data.push(d),
+    },
+    out,
+    err,
+    data,
+  };
+}
+
+describe("resolveStartFlag", () => {
+  it.each([
+    [{}, undefined],
+    [{ start: true }, true],
+    [{ noStart: true }, false],
+    [{ start: false, noStart: false }, undefined],
+  ])("%o → %s", (flags, expected) => {
+    expect(resolveStartFlag(flags)).toBe(expected);
+  });
+
+  it("rejects --start with --no-start", () => {
+    expect(() => resolveStartFlag({ start: true, noStart: true })).toThrow(CliError);
+    expect(() => resolveStartFlag({ start: true, noStart: true })).toThrow(
+      "--start and --no-start cannot be used together",
+    );
+  });
+});
+
+describe("createServiceProgressPrinter", () => {
+  it("prints each phase once per service and ignores malformed data", () => {
+    const lines: string[] = [];
+    const print = createServiceProgressPrinter((t) => lines.push(t));
+    print({ name: "db", phase: "starting" });
+    print({ name: "db", phase: "starting" });
+    print({ name: "api", phase: "waiting" });
+    print({ name: "api", phase: "waiting" });
+    print({ name: "db", phase: "ready" });
+    print({ name: "api", phase: "ready" });
+    print({ name: "x", phase: "bogus" });
+    print("nope");
+    expect(lines).toEqual(["Starting db…\n", "Waiting for api…\n", "db ready\n", "api ready\n"]);
+  });
+});
+
+describe("runTask", () => {
+  const ok: IpcResponse = { id: "r", result: { success: true, runId: "1", startedServices: [] } };
+
+  it.each([
+    [undefined, { key: "seed" }],
+    [true, { key: "seed", start: true }],
+    [false, { key: "seed", start: false }],
+  ])("start=%s sends %o", async (start, params) => {
+    const ipc = fakeIpc(ok);
+    await runTask(ipc, { key: "seed", start, format: "text" }, capture().io);
+    expect(ipc.stream).toHaveBeenCalledWith("tasks.run", params, expect.any(Function));
+  });
+
+  it("streams task output to stdout and service progress to stderr", async () => {
+    const ipc = fakeIpc(ok, [
+      ["service", { name: "db", phase: "starting" }],
+      ["service", { name: "db", phase: "starting" }],
+      ["service", { name: "db", phase: "ready" }],
+      ["line", "hello"],
+      ["progress", { key: "seed", result: "success" }],
+    ]);
+    const c = capture();
+    await expect(runTask(ipc, { key: "seed", format: "text" }, c.io)).resolves.toBe(0);
+    expect(c.out).toEqual(["hello\n"]);
+    expect(c.err).toEqual(["Starting db…\n", "db ready\n"]);
+  });
+
+  it("returns 1 with Task failed. on failure", async () => {
+    const c = capture();
+    const code = await runTask(
+      fakeIpc({ id: "r", result: { success: false, runId: "1", startedServices: [] } }),
+      { key: "seed", format: "text" },
+      c.io,
+    );
+    expect(code).toBe(1);
+    expect(c.err).toEqual(["Task failed.\n"]);
+  });
+
+  it("writes the result incl. startedServices for --json, keeping lines off stdout", async () => {
+    const result = { success: true, runId: "1", startedServices: ["db"] };
+    const c = capture();
+    const code = await runTask(
+      fakeIpc({ id: "r", result }, [
+        ["line", "hello"],
+        ["service", { name: "db", phase: "ready" }],
+      ]),
+      { key: "seed", format: "json" },
+      c.io,
+    );
+    expect(code).toBe(0);
+    expect(c.out).toEqual([]);
+    expect(c.data).toEqual([result]);
+    expect(c.err).toEqual(["db ready\n"]);
+  });
+
+  it("appends the start hint for services_not_running using preflight names", async () => {
+    const ipc = fakeIpc(
+      {
+        id: "r",
+        error: 'Task "seed" needs services that are not running: db (stopped), api (error)',
+        errorCode: "services_not_running",
+      },
+      [],
+      {
+        id: "p",
+        result: {
+          key: "seed",
+          services: [
+            { name: "cache", state: "ready", action: "ok", required: true, startable: false },
+            { name: "db", state: "stopped", action: "start", required: true, startable: false },
+            { name: "api", state: "error", action: "start", required: true, startable: false },
+          ],
+          needsStart: true,
+          autoStart: false,
+          blocked: [],
+        },
+      },
+    );
+    const c = capture();
+    await expect(runTask(ipc, { key: "seed", format: "text" }, c.io)).resolves.toBe(1);
+    expect(ipc.request).toHaveBeenCalledWith("tasks.preflight", { key: "seed" });
+    expect(c.err).toEqual([
+      'Error: Task "seed" needs services that are not running: db (stopped), api (error)\n',
+      'Start them with "zaps start db api" or rerun with --start.\n',
+    ]);
+  });
+
+  it("falls back to a generic hint when preflight fails", async () => {
+    const ipc = fakeIpc({ id: "r", error: "m", errorCode: "services_not_running" });
+    ipc.request.mockRejectedValue(new Error("gone"));
+    const c = capture();
+    await runTask(ipc, { key: "seed", format: "text" }, c.io);
+    expect(c.err[1]).toBe('Start them with "zaps start <services>" or rerun with --start.\n');
+  });
+
+  it.each(["service_start_failed", "service_unavailable"] as const)(
+    "prints %s errors without hint",
+    async (errorCode) => {
+      const ipc = fakeIpc({ id: "r", error: 'Service "db" failed to start: boom', errorCode });
+      const c = capture();
+      await expect(runTask(ipc, { key: "seed", format: "text" }, c.io)).resolves.toBe(1);
+      expect(c.err).toEqual(['Error: Service "db" failed to start: boom\n']);
+      expect(ipc.request).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("runTask notices", () => {
+  const notice = {
+    level: "warn",
+    message: 'config changed since the session loaded it. Run "zaps reload".',
+  };
+
+  it("prints notices as warnings on stderr", async () => {
+    const ipc = fakeIpc({ id: "r", result: { success: true } }, [
+      ["notice", notice],
+      ["notice", { level: "info", message: "ignored" }],
+      ["line", "out"],
+    ]);
+    const { io, out, err } = capture();
+    await expect(runTask(ipc, { key: "lint", format: "text" }, io)).resolves.toBe(0);
+    expect(err).toEqual([
+      'Warning: config changed since the session loaded it. Run "zaps reload".\n',
+    ]);
+    expect(out).toEqual(["out\n"]);
+  });
+
+  it("keeps --json output unaffected", async () => {
+    const result = { success: true, runId: "r1", startedServices: [] };
+    const ipc = fakeIpc({ id: "r", result }, [["notice", notice]]);
+    const { io, out, err, data } = capture();
+    await expect(runTask(ipc, { key: "lint", format: "json" }, io)).resolves.toBe(0);
+    expect(data).toEqual([result]);
+    expect(out).toEqual([]);
+    expect(err).toHaveLength(1);
+  });
+});
+
+describe("runTaskCommand", () => {
+  const ok: IpcResponse = { id: "r", result: { success: true } };
+  const gone: IpcResponse = { id: "r", error: "Unknown session" };
+
+  function deps(options: { project?: () => Promise<number>; implicit?: IpcResponse[] }) {
+    const responses = [...(options.implicit ?? [ok])];
+    const ipcs: ReturnType<typeof fakeIpc>[] = [];
+    const value = {
+      withDaemon: vi.fn(
+        async (
+          fn: (ipc: Pick<SessionIpc, "request" | "stream">) => Promise<number>,
+          sessionArg?: string,
+        ): Promise<number> => {
+          if (sessionArg || options.project) {
+            return fn(fakeIpc(sessionArg ? ok : gone));
+          }
+          throw new CliError("No running zaps session for this project.");
+        },
+      ),
+      ensureImplicitSession: vi.fn(async () => ({ sessionId: "implicit", socketPath: "/s" })),
+      ensureDaemon: vi.fn(async () => "/s"),
+      sessionIpc: vi.fn(() => {
+        const ipc = fakeIpc(responses.shift() ?? ok);
+        ipcs.push(ipc);
+        return ipc;
+      }),
+      cwd: () => "/project",
+    };
+    return { value, ipcs };
+  }
+
+  it("keeps -s on the explicit session without implicit creation", async () => {
+    const { value } = deps({});
+    const { io } = capture();
+    await expect(
+      runTaskCommand({ key: "lint", format: "text", sessionArg: "abc" }, value, io),
+    ).resolves.toBe(0);
+    expect(value.withDaemon).toHaveBeenCalledWith(expect.any(Function), "abc");
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it("reports a vanished explicit session without retrying", async () => {
+    const { value } = deps({});
+    value.withDaemon.mockImplementationOnce(async (fn) => fn(fakeIpc(gone)));
+    const { io, err } = capture();
+    await expect(
+      runTaskCommand({ key: "lint", format: "text", sessionArg: "abc" }, value, io),
+    ).resolves.toBe(1);
+    expect(err).toEqual(["Error: Unknown session\n"]);
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["No running zaps session for this project.", "Daemon not running."])(
+    "creates an implicit session when: %s",
+    async (message) => {
+      const { value } = deps({});
+      value.withDaemon.mockRejectedValueOnce(new CliError(message));
+      const { io } = capture();
+      await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(0);
+      expect(value.ensureImplicitSession).toHaveBeenCalledWith({
+        cwd: "/project",
+        ensureDaemon: value.ensureDaemon,
+        task: "lint",
+      });
+      expect(value.sessionIpc).toHaveBeenCalledWith("/s", "implicit");
+    },
+  );
+
+  it("rethrows other session lookup errors", async () => {
+    const { value } = deps({});
+    value.withDaemon.mockRejectedValueOnce(new CliError("Cannot access zaps daemon socket"));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "Cannot access",
+    );
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it("retries once when the implicit session vanished", async () => {
+    const { value } = deps({ implicit: [gone, ok] });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(0);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(2);
+    expect(err).toEqual([]);
+  });
+
+  it("gives up after the single retry", async () => {
+    const { value } = deps({
+      implicit: [gone, { id: "r", error: "session_closing", errorCode: "session_closing" }],
+    });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(1);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(2);
+    expect(err).toEqual(["Error: session_closing\n"]);
+  });
+
+  it.each([
+    ["implicit", {}],
+    ["project", { project: async () => 0 }],
+  ])("never retries session_closing after task output (%s session)", async (_kind, extra) => {
+    const closing: IpcResponse = {
+      id: "r",
+      error: "session_closing",
+      errorCode: "session_closing",
+    };
+    const { value } = deps({ ...extra, implicit: [closing] });
+    if ("project" in extra) {
+      value.withDaemon.mockImplementationOnce(async (fn) =>
+        fn(fakeIpc(closing, [["line", "seeded"]])),
+      );
+    } else {
+      value.sessionIpc.mockImplementationOnce(() => fakeIpc(closing, [["line", "seeded"]]));
+    }
+    const { io, out, err } = capture();
+    await expect(runTaskCommand({ key: "seed", format: "text" }, value, io)).resolves.toBe(1);
+    expect(out).toEqual(["seeded\n"]);
+    expect(err).toEqual(["Error: session_closing\n"]);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes("project" in extra ? 0 : 1);
+  });
+
+  it("falls back to an implicit session when the project session vanished", async () => {
+    const { value } = deps({ project: async () => 0, implicit: [gone] });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(1);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(1);
+    expect(err).toEqual(["Error: Unknown session\n"]);
+  });
+
+  it("does not go implicit again when the fallback reports a missing session", async () => {
+    const { value } = deps({ project: async () => 0 });
+    value.ensureImplicitSession.mockRejectedValueOnce(new CliError("Daemon not running."));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "Daemon not running.",
+    );
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the implicit start hint without a preflight", async () => {
+    const { value, ipcs } = deps({
+      implicit: [
+        {
+          id: "r",
+          error: 'Task "seed" needs services that are not running: db (stopped)',
+          errorCode: "services_not_running",
+        },
+      ],
+    });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "seed", format: "text" }, value, io)).resolves.toBe(1);
+    expect(err).toEqual([
+      'Error: Task "seed" needs services that are not running: db (stopped)\n',
+      'Rerun with --start, or run "zaps up" first.\n',
+    ]);
+    expect(ipcs[0].request).not.toHaveBeenCalled();
+  });
+
+  it("propagates implicit creation failures", async () => {
+    const { value } = deps({});
+    value.ensureImplicitSession.mockRejectedValueOnce(new CliError("No config found."));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "No config found.",
+    );
+  });
+});

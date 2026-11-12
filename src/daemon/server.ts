@@ -35,6 +35,7 @@ import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
@@ -514,11 +515,14 @@ class DaemonServer implements SessionStore {
           }
           return backendRef.current.paneFor(name);
         },
-        tasks: () =>
-          Object.entries(ref.session?.config.project.tasks ?? {}).map(([key, task]) => ({
+        tasks: () => {
+          const tasks = ref.session?.config.project.tasks ?? {};
+          return Object.entries(tasks).map(([key, task]) => ({
             key,
             name: task.name,
-          })),
+            requiredServices: resolveTaskServiceRequirements(tasks, key).services,
+          }));
+        },
         output: (runId) => ref.session?.taskOutput.get(runId) ?? undefined,
         reconcile: async (layout) => {
           if (!backendRef.current) {
@@ -667,6 +671,20 @@ class DaemonServer implements SessionStore {
         deps,
         shellEnv: params.shellEnv,
         env: loaded.env,
+        ...(this.log ? { log: this.log } : {}),
+        onAutoDestroy: async () => {
+          if (!ref.session || this.sessions.get(id) !== ref.session) {
+            return;
+          }
+          try {
+            await this.destroy(id);
+          } catch (error) {
+            this.log?.(`auto-destroy: cannot destroy session ${id}: ${String(error)}`);
+          }
+        },
+        ...(params.backend === "shell" && params.startServices === false
+          ? { startupPending: true, ephemeral: params.ephemeral === true }
+          : {}),
       };
 
       this.assertAccepting();
@@ -681,7 +699,9 @@ class DaemonServer implements SessionStore {
 
       // Start services in background — TUI connects and sees them starting.
       // Tracked so reload/destroy can cooperatively abort and await it (A5).
-      session.beginInitialStartup();
+      if (!session.startupPending) {
+        session.beginInitialStartup();
+      }
 
       return session;
     } catch (error) {

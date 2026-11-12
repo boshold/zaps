@@ -37,6 +37,7 @@ export const daemonHandlers: Record<
       daemonStatusSchema.required({ supportedBackends: true }).parse({
         pid: process.pid,
         supportedBackends,
+        capabilities: { implicitSessions: true },
         sessions: store.list().map((s) => ({
           id: s.id,
           name: s.name,
@@ -76,6 +77,8 @@ export const daemonHandlers: Record<
           createdAt: s.createdAt,
           backend: s.backend.id,
           capabilities: { ...s.backend.capabilities },
+          ...(s.startupPending ? { startupPending: true } : {}),
+          ...(s.ephemeral ? { ephemeral: true } : {}),
         };
         if (host.backend === "tmux") {
           return sessionListEntrySchema.parse(

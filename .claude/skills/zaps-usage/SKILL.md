@@ -7,7 +7,44 @@ description: Run or inspect ZAPS development services and tasks. Use for service
 
 Run `zaps prime-agent` outside the sandbox, then follow its instructions.
 
-If it reports `Daemon not running.`, tell the user to start their ZAPS session outside the sandbox, then retry it.
+If it reports `Daemon not running.`, tell the user to start their ZAPS session outside the sandbox, then retry it. Tasks are the exception: they work without a session (see below).
+
+## Run tasks
+
+`zaps run <task>` and `zaps tasks` work without `zaps up`. Without a session, `zaps tasks` reads the config, and `zaps run` creates a background session for the run. The session is removed afterwards unless services were started for the task; then it stays and `zaps ls` shows `task-only`.
+
+```bash
+zaps tasks                 # key, name, description, [services: ... · autostart]
+zaps run lint              # independent task: runs right away
+zaps run seed --start      # start missing required services first
+zaps run seed --no-start   # never start services, even with autoStart
+```
+
+Service progress (`Starting db…`, `db ready`) goes to stderr, task output to stdout.
+
+When a required service is not running and starting is not allowed, the task does not run and the command exits 1. With a running session:
+
+```
+Error: Task "seed" needs services that are not running: db (stopped)
+Start them with "zaps start db" or rerun with --start.
+```
+
+Without a session (the background session is already gone, so `zaps start` would not help):
+
+```
+Error: Task "seed" needs services that are not running: db (stopped)
+Rerun with --start, or run "zaps up" first.
+```
+
+React like this:
+
+- Rerun with `--start` if starting the services is fine for the user, or run `zaps start <service>` first.
+- `service_start_failed`: the service failed or did not get ready. Check `zaps logs <service>`.
+- `service_unavailable`: an optional service is not available on this machine. Starting does not help; tell the user.
+- `uses raw input, which needs tmux`: the config has a `raw: true` service. The user must run `zaps up` first.
+- `Warning: config changed since the session loaded it`: the task still ran with the old config. Suggest `zaps reload`.
+
+MCP clients: `tasks_run` takes an optional `start` (`true` = `--start`, `false` = `--no-start`, omitted = the task's `autoStart`) and also works without a session. `tasks_list` shows `requiredServices` and `autoStart` per task.
 
 ## Inspect app runtime errors
 

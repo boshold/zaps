@@ -73,6 +73,13 @@ function createMockClient(statuses: ServiceStatus[] = []): DaemonClient {
       action === "taskPicker" ? { action, taskKey: null } : { action, done: true },
     ),
     runTaskInPane: vi.fn().mockResolvedValue({ runId: "run_1", paneId: "%9" }),
+    preflightTask: vi.fn<DaemonClient["preflightTask"]>(async (key) => ({
+      key,
+      services: [],
+      needsStart: false,
+      autoStart: false,
+      blocked: [],
+    })),
   });
 }
 
@@ -662,7 +669,9 @@ describe("Keyboard routing — Tasks view", () => {
       /* Flush */
     });
 
-    expect(vi.mocked(client.runTaskInPane)).toHaveBeenCalledWith("build");
+    expect(vi.mocked(client.runTaskInPane)).toHaveBeenCalledWith("build", undefined, {
+      start: undefined,
+    });
   });
 
   it("up/down navigates the task picker", async () => {

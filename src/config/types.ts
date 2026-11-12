@@ -164,6 +164,8 @@ export interface TaskConfig {
   popup?: boolean | { width?: string; height?: string };
   cwd?: string;
   dependsOn?: string[];
+  services?: string[];
+  autoStart?: boolean;
   env?: EnvConfig;
   shortcut?: string;
   sentra?: SentraTarget;

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -9,6 +9,7 @@ import type { TerminalOperationContext } from "../../../src/lib/backend/tmux/ope
 import { shellEscape } from "../../../src/lib/service/env.js";
 import {
   buildFzfScript,
+  formatPickerLine,
   parseSelection,
   popupPickerAvailable,
   runPopupPicker,
@@ -33,11 +34,67 @@ afterEach(async () => {
 describe("buildFzfScript", () => {
   it("displays only the name column and routes the pick through the temp files", () => {
     const script = buildFzfScript("/tmp/in", "/tmp/out");
-    expect(script).toContain("fzf --with-nth=2..");
+    expect(script).toContain(String.raw`--delimiter='\t'`);
+    expect(script).toContain("--with-nth=2..");
+    expect(script).toContain("--nth=1");
+    expect(script).toContain("--ansi");
     expect(script).toContain("< '/tmp/in'");
     expect(script).toContain("> '/tmp/out'");
     // Always exits 0 so the popup closes even on cancel.
     expect(script.trim().endsWith("exit 0")).toBe(true);
+  });
+});
+
+const hasFzf = (() => {
+  try {
+    execFileSync("fzf", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(!hasFzf)("fzf script with real fzf", () => {
+  async function filter(query: string) {
+    const input = path.join(directory, "in");
+    const output = path.join(directory, "out");
+    await writeFile(
+      input,
+      `${[
+        { key: "verify", name: "Verify mail", requiredServices: ["mailhog", "api"] },
+        { key: "lint", name: "Lint code" },
+      ]
+        .map(formatPickerLine)
+        .join("\n")}\n`,
+    );
+    const script = buildFzfScript(input, output).replace("fzf ", `fzf --filter=${query} `);
+    execFileSync("sh", ["-c", script]);
+    return readFile(output, "utf8");
+  }
+
+  it("matches on the name only and keeps the key parseable", async () => {
+    expect(parseSelection(await filter("mail"))).toBe("verify");
+    expect(await filter("api")).toBe("");
+    expect(parseSelection(await filter("lint"))).toBe("lint");
+  });
+});
+
+describe("formatPickerLine", () => {
+  it("writes `key<TAB>name` for independent tasks", () => {
+    expect(formatPickerLine({ key: "lint", name: "Lint code" })).toBe("lint\tLint code");
+    expect(formatPickerLine({ key: "lint", name: "Lint code", requiredServices: [] })).toBe(
+      "lint\tLint code",
+    );
+  });
+
+  it("appends the dimmed required services as a third column", () => {
+    expect(
+      formatPickerLine({
+        key: "verify",
+        name: "Verify mail",
+        requiredServices: ["mailhog", "api"],
+      }),
+    ).toBe("verify\tVerify mail\t\u001B[2mneeds mailhog, api\u001B[0m");
   });
 });
 
@@ -49,6 +106,10 @@ describe("parseSelection", () => {
   it("returns null for an empty selection (cancel)", () => {
     expect(parseSelection("")).toBeNull();
     expect(parseSelection("\n  \n")).toBeNull();
+  });
+
+  it("recovers the key from a line with a services column", () => {
+    expect(parseSelection("verify\tVerify mail\tneeds mailhog\n")).toBe("verify");
   });
 
   it("uses the first non-empty line", () => {
@@ -89,6 +150,16 @@ describe("runPopupPicker", () => {
     });
     expect(key).toBe("seed");
     expect(popup).toHaveBeenCalledOnce();
+  });
+
+  it("writes the services column and still returns the selected key", async () => {
+    const pickFirst = (inFile: string, outFile: string) =>
+      `sed -n 1p ${shellEscape(inFile)} > ${shellEscape(outFile)}`;
+    const key = await runPopupPicker(
+      [{ key: "verify", name: "Verify mail", requiredServices: ["mailhog"] }],
+      { operation: makeOperation(), buildScript: pickFirst },
+    );
+    expect(key).toBe("verify");
   });
 
   it("returns null when the picker writes no selection (cancel)", async () => {

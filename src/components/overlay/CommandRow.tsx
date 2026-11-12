@@ -9,6 +9,11 @@ interface CommandRowProps {
   indexes: number[];
   /** Optional dimmed trailing hint (url, shortcut). */
   hint?: string;
+  /**
+   * Optional dimmed text after the title; only gets leftover width, so it collapses
+   * first. Any string (even empty) pushes the hint to the right edge.
+   */
+  detail?: string;
   selected: boolean;
 }
 
@@ -28,15 +33,30 @@ function renderTitle(title: string, indexes: number[]): ReactNode[] {
 }
 
 /** One palette result row: selection marker, fuzzy-highlighted title, optional hint. */
-export function CommandRow({ title, indexes, hint, selected }: CommandRowProps) {
+export function CommandRow({ title, indexes, hint, detail, selected }: CommandRowProps) {
   const { icon } = useIcons();
   const marker = selected ? `${icon("selection")} ` : "  ";
 
   return (
     <Box>
-      <Text color={selected ? "cyan" : undefined}>{marker}</Text>
-      <Text bold={selected}>{renderTitle(title, indexes)}</Text>
-      {hint ? <Text dimColor>{`  ${hint}`}</Text> : null}
+      <Box flexShrink={0}>
+        <Text color={selected ? "cyan" : undefined}>{marker}</Text>
+      </Box>
+      <Box flexShrink={1}>
+        <Text bold={selected} wrap="truncate-end">
+          {renderTitle(title, indexes)}
+        </Text>
+      </Box>
+      {detail === undefined ? null : (
+        <Box flexGrow={1} flexShrink={1} flexBasis={0}>
+          {detail ? <Text dimColor wrap="truncate-end">{`  ${detail}`}</Text> : null}
+        </Box>
+      )}
+      {hint ? (
+        <Box flexShrink={1}>
+          <Text dimColor wrap="truncate-end">{`  ${hint}`}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

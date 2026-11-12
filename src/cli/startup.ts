@@ -4,18 +4,14 @@ import { discoverConfig } from "#src/config/discovery.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import { ensureDaemon } from "#src/daemon/index.js";
 import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
-import { sessionId } from "#src/daemon/session.js";
-import {
-  ipcErrorResponseSchema,
-  sessionCreateParamsSchema,
-  sessionCreatedSchema,
-} from "#src/lib/backend/schemas.js";
+import { ipcErrorResponseSchema, sessionCreatedSchema } from "#src/lib/backend/schemas.js";
 import type { BackendId } from "#src/lib/backend/types.js";
 import { parseDaemonStatus, parseServiceStatus } from "#src/lib/backend/wire.js";
 import { getEnv } from "#src/lib/env.js";
-import { ipcRequest, ipcSubscribe } from "#src/lib/ipc/client.js";
+import { ipcRequest, ipcSend, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
+import { NO_CONFIG, createShellSession } from "#src/lib/session/implicit.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "#src/lib/tmux.js";
 
 import { StartupArgumentError, selectStartupBackend } from "./backend-selection.js";
@@ -163,16 +159,7 @@ async function startShell(project: ProjectIdentity, attachUi: boolean): Promise<
       "The running daemon does not support the shell backend. Upgrade Zaps and restart the daemon when its running sessions can be stopped.",
     );
   }
-  const params = sessionCreateParamsSchema.parse({ ...project, backend: "shell" });
-  const session = sessionCreatedSchema.parse(
-    readDaemonResult(await ipcRequest(sock, "session.create", params)),
-  );
-  if (
-    session.backend !== "shell" ||
-    session.id !== sessionId(project.configPath, project.resolvedProjectDir)
-  ) {
-    throw new CliError("Daemon returned an unexpected shell session.");
-  }
+  const session = await createShellSession(sock, project);
   if (attachUi) {
     await runTui({ sessionId: session.id, socketPath: sock });
     return;
@@ -229,6 +216,28 @@ async function startTmux(
     );
     await selectPane(focusPane);
   }
+}
+
+const TASK_ONLY_HINT =
+  "Session runs on the shell backend (created by 'zaps run'). For tmux panes: zaps down && zaps up\n";
+
+function isTaskOnly(session: ListedSession): boolean {
+  return session.backend === "shell" && session.startupPending === true;
+}
+
+/** Run the deferred initial startup of a session kept after `zaps run`. */
+async function startPendingSession(
+  sock: string,
+  session: ListedSession,
+  attachUi: boolean,
+): Promise<void> {
+  process.stderr.write(TASK_ONLY_HINT);
+  if (!attachUi) {
+    await reportDetachedStartup(sock, session);
+    return;
+  }
+  await ipcSend(sock, "services.startAll", { startup: true }, session.id);
+  await runTui({ sessionId: session.id, socketPath: sock });
 }
 
 function reportExisting(session: Pick<ListedSession, "name" | "backend">): void {
@@ -304,7 +313,7 @@ async function runStartup(
   const projectDir = process.cwd();
   const configPath = discoverConfig(projectDir);
   if (!configPath) {
-    throw new CliError("No config found. Run `zaps init` to create one.");
+    throw new CliError(NO_CONFIG);
   }
   const { config } = await loadProjectContext(configPath, projectDir, captureEnvironment());
   const sock = socketPath();
@@ -321,6 +330,10 @@ async function runStartup(
 
   const { backend, attachUi } = selectStartupBackend(intent, existing?.backend);
   const project = { configPath, projectDir, resolvedProjectDir: config.projectDir };
+  if (existing && isTaskOnly(existing)) {
+    await startPendingSession(sock, existing, attachUi);
+    return;
+  }
   if (existing && !attachUi && (intent.background || backend === "shell")) {
     reportExisting(existing);
     return;

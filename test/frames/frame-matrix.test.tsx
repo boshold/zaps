@@ -33,6 +33,7 @@ const { CommandPaletteBody } = await import("../../src/components/overlay/Comman
 const { unavailableCapabilities } = await import("../../src/lib/backend/wire.js");
 const { TaskPickerBody } = await import("../../src/components/overlay/TaskPickerBody.js");
 const { FailedOutputBody } = await import("../../src/components/overlay/FailedOutputBody.js");
+const { StartServicesBody } = await import("../../src/components/overlay/StartServicesBody.js");
 const { ToastList } = await import("../../src/components/toast/ToastList.js");
 const { AppProvider } = await import("../../src/hooks/useZaps.js");
 const { resolveUiConfig } = await import("../../src/config/index.js");
@@ -356,6 +357,24 @@ describe("overlay body frames", () => {
     const frame = lastFrame() ?? "";
     fits(frame, 24);
     expect(frame).toContain("no longer available");
+  });
+
+  it("start-services body lists services and fits", () => {
+    setSize(24, 80);
+    const { lastFrame } = render(
+      <StartServicesBody
+        taskName="Verify mail"
+        services={[
+          { name: "db", state: "stopped", required: false },
+          { name: "mailhog", state: "stopped", required: true },
+        ]}
+      />,
+    );
+    const frame = lastFrame() ?? "";
+    fits(frame, 24);
+    nonBlank(frame);
+    expect(frame).toContain("mailhog (stopped)");
+    expect(frame).toContain("y start · n cancel");
   });
 
   it("toast list renders toasts + a sticky-failure badge and fits", () => {

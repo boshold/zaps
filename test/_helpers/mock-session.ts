@@ -71,6 +71,8 @@ export interface MockSession {
   };
   subscribers: Set<unknown>;
   createdAt: number;
+  ephemeral: boolean;
+  startupPending: boolean;
   taskHistory: unknown[];
   deps: { zapsCommand: string; sessionId: string; sentra?: SentraDeps };
   attachSnapshot: ReturnType<typeof vi.fn>;
@@ -79,6 +81,12 @@ export interface MockSession {
   destroy: ReturnType<typeof vi.fn>;
   broadcast: ReturnType<typeof vi.fn>;
   pushTaskRecord: ReturnType<typeof vi.fn>;
+  prepareTask: ReturnType<typeof vi.fn<Session["prepareTask"]>>;
+  acquireTask: ReturnType<typeof vi.fn<Session["acquireTask"]>>;
+  beginInitialStartup: ReturnType<typeof vi.fn<Session["beginInitialStartup"]>>;
+  isConfigStale: ReturnType<typeof vi.fn<Session["isConfigStale"]>>;
+  waitForInitialStartup: ReturnType<typeof vi.fn<Session["waitForInitialStartup"]>>;
+  release: ReturnType<typeof vi.fn<() => void>>;
   addSubscriber: ReturnType<typeof vi.fn>;
   removeSubscriber: ReturnType<typeof vi.fn>;
   focusPane: string;
@@ -104,6 +112,8 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     },
     id: "abc123",
     name: "test-project",
+    ephemeral: false,
+    startupPending: false,
     configPath: "/fake/.zaps.mts",
     projectDir: "/fake",
     config: {
@@ -213,6 +223,14 @@ export function createMockSession(overrides: Partial<MockSession> = {}): MockSes
     startAll: vi.fn().mockResolvedValue(undefined),
     reload: vi.fn().mockResolvedValue(undefined),
     destroy: vi.fn().mockResolvedValue(undefined),
+    prepareTask: vi.fn<Session["prepareTask"]>().mockResolvedValue({ startedServices: [] }),
+    beginInitialStartup: vi.fn<Session["beginInitialStartup"]>(),
+    isConfigStale: vi.fn<Session["isConfigStale"]>(() => false),
+    waitForInitialStartup: vi.fn<Session["waitForInitialStartup"]>().mockResolvedValue(undefined),
+    ...(() => {
+      const release = vi.fn<() => void>();
+      return { release, acquireTask: vi.fn<Session["acquireTask"]>(() => release) };
+    })(),
     broadcast: vi.fn(),
     pushTaskRecord: vi.fn(),
     ...overrides,

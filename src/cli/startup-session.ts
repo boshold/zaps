@@ -1,16 +1,8 @@
 import { sessionId } from "#src/daemon/session.js";
 import { parseSessionList } from "#src/lib/backend/wire.js";
-import type { IpcResponse } from "#src/lib/ipc/protocol.js";
+import { readResult as readDaemonResult } from "#src/lib/session/implicit.js";
 
-import { CliError, requestDaemon } from "./helpers.js";
-
-function readDaemonResult(response: IpcResponse): unknown {
-  if (response.error !== undefined) {
-    const code = response.errorCode;
-    throw new CliError(code ? `${code}: ${response.error}` : response.error);
-  }
-  return response.result;
-}
+import { requestDaemon } from "./helpers.js";
 
 type ListedSession = ReturnType<typeof parseSessionList>[number];
 

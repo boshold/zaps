@@ -1,10 +1,12 @@
 import { Socket } from "node:net";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import type { ResolvedConfig, TaskConfig } from "#src/config/types.js";
 import type { UiBinding } from "#src/daemon/session.js";
 import { TaskExecutionService } from "#src/daemon/task-execution.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import type { CommandExecutor } from "#src/lib/backend/runtime/command-executor.js";
 import { TerminalOperationError } from "#src/lib/backend/terminal-error.js";
 import {
@@ -19,8 +21,14 @@ import type {
   SessionBackend,
   TerminalDriver,
 } from "#src/lib/backend/types.js";
+import { taskListEntrySchema, taskPreflightSchema } from "#src/lib/backend/wire.js";
 import type { DaemonEvent } from "#src/lib/ipc/protocol.js";
 import { createServiceStatus } from "#src/lib/service/state.js";
+import {
+  ServiceStartFailedError,
+  ServiceUnavailableError,
+  ServicesNotRunningError,
+} from "#src/lib/task/ensure-services.js";
 
 import { ConfigError } from "../../../src/config/errors.js";
 import { sessionHandlers } from "../../../src/daemon/handlers/session.js";
@@ -116,6 +124,7 @@ function taskSession(tasks: Record<string, TaskConfig>) {
     owner,
     execute,
     displayPopup,
+    broadcast,
   };
 }
 
@@ -625,6 +634,53 @@ describe("session handlers", () => {
       expect(res.error).toBe("boom");
     });
 
+    it.each([undefined, {}, { startup: true }])(
+      "begins the deferred startup of a task-only session for %j",
+      async (params) => {
+        const session = createMockSession({ startupPending: true });
+        const res = await sessionHandlers["services.startAll"](
+          { id: "r", method: "services.startAll", session: session.id, params },
+          createMockStore([session]),
+          createMockSocket() as never,
+        );
+        expect(res.result).toEqual({ started: "all" });
+        expect(session.beginInitialStartup).toHaveBeenCalledTimes(1);
+        if (params && "startup" in params) {
+          expect(session.waitForInitialStartup).toHaveBeenCalledTimes(1);
+          expect(session.manager.startAll).not.toHaveBeenCalled();
+        } else {
+          expect(session.manager.startAll).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it("leaves the deferred startup pending for named starts", async () => {
+      const session = createMockSession({ startupPending: true });
+      const res = await sessionHandlers["services.startAll"](
+        {
+          id: "r",
+          method: "services.startAll",
+          session: session.id,
+          params: { names: ["api"] },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toEqual({ started: ["api"] });
+      expect(session.beginInitialStartup).not.toHaveBeenCalled();
+    });
+
+    it("does not re-begin startup on regular sessions", async () => {
+      const session = createMockSession();
+      await sessionHandlers["services.startAll"](
+        { id: "r", method: "services.startAll", session: session.id, params: { startup: true } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(session.beginInitialStartup).not.toHaveBeenCalled();
+      expect(session.waitForInitialStartup).toHaveBeenCalledTimes(1);
+    });
+
     it("returns error when named services start fails", async () => {
       const session = createMockSession();
       session.manager.startService.mockRejectedValue(new Error("named start failed"));
@@ -843,6 +899,141 @@ describe("session handlers", () => {
       const res = await sessionHandlers["tasks.list"](req, store, socket as never);
       expect(res.result).toEqual([]);
     });
+
+    it("includes services, requiredServices, autoStart and dependsOn", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        migrate: { name: "Migrate", commands: "m", services: ["db"], autoStart: true },
+        seed: { name: "Seed", commands: "s", services: ["api"], dependsOn: ["migrate"] },
+        lint: { name: "Lint", commands: "l" },
+      };
+      const res = await sessionHandlers["tasks.list"](
+        { id: "r", method: "tasks.list", session: session.id },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(z.array(taskListEntrySchema).parse(res.result)).toEqual([
+        {
+          key: "migrate",
+          name: "Migrate",
+          description: null,
+          services: ["db"],
+          requiredServices: ["db"],
+          autoStart: true,
+          dependsOn: [],
+        },
+        {
+          key: "seed",
+          name: "Seed",
+          description: null,
+          services: ["api"],
+          requiredServices: ["db", "api"],
+          autoStart: false,
+          dependsOn: ["migrate"],
+        },
+        {
+          key: "lint",
+          name: "Lint",
+          description: null,
+          services: [],
+          requiredServices: [],
+          autoStart: false,
+          dependsOn: [],
+        },
+      ]);
+    });
+
+    it("returns error for unknown session", async () => {
+      const res = await sessionHandlers["tasks.list"](
+        { id: "r", method: "tasks.list", session: "nope" },
+        createMockStore([]),
+        createMockSocket() as never,
+      );
+      expect(res.error).toBe("Unknown session");
+    });
+  });
+
+  describe("tasks.preflight", () => {
+    function preflightSession() {
+      const session = createMockSession();
+      session.config.project.services = {
+        api: { start: "npm dev", dependsOn: ["db"] },
+        db: { start: "pg" },
+      };
+      session.config.unavailableServices = new Map([
+        ["mail", { name: "mail", reason: "binary 'mailhog' not found" }],
+      ]);
+      session.manager.getAllStatuses.mockReturnValue([
+        { name: "api", state: "stopped", ports: [], retryCount: 0 },
+        { name: "db", state: "stopped", ports: [], retryCount: 0 },
+        { name: "mail", state: "unavailable", ports: [], retryCount: 0 },
+      ]);
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "s", services: ["api"], autoStart: true },
+        mail: { name: "Mail", commands: "m", services: ["mail"] },
+        lint: { name: "Lint", commands: "l" },
+      };
+      return session;
+    }
+
+    async function preflight(session: ReturnType<typeof createMockSession>, params: unknown) {
+      return sessionHandlers["tasks.preflight"](
+        { id: "p", method: "tasks.preflight", session: session.id, params },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+    }
+
+    it("returns the plan and summary without side effects", async () => {
+      const session = preflightSession();
+      const res = await preflight(session, { key: "seed" });
+      expect(taskPreflightSchema.parse(res.result)).toEqual({
+        key: "seed",
+        services: [
+          { name: "db", state: "stopped", action: "start", required: false, startable: true },
+          { name: "api", state: "stopped", action: "start", required: true, startable: true },
+        ],
+        needsStart: true,
+        autoStart: true,
+        blocked: [],
+      });
+      expect(session.manager.startService).not.toHaveBeenCalled();
+      expect(session.manager.startAll).not.toHaveBeenCalled();
+    });
+
+    it("reports blocked services with reason", async () => {
+      const res = await preflight(preflightSession(), { key: "mail" });
+      expect(taskPreflightSchema.parse(res.result)).toMatchObject({
+        services: [{ name: "mail", action: "blocked", reason: "binary 'mailhog' not found" }],
+        needsStart: false,
+        blocked: ["mail"],
+      });
+    });
+
+    it("returns an empty plan for an independent task", async () => {
+      const res = await preflight(preflightSession(), { key: "lint" });
+      expect(res.result).toEqual({
+        key: "lint",
+        services: [],
+        needsStart: false,
+        autoStart: true,
+        blocked: [],
+      });
+    });
+
+    it.each(["missing", "constructor"])("returns Unknown task for %s", async (key) => {
+      const res = await preflight(preflightSession(), { key });
+      expect(res.error).toBe(`Unknown task: ${key}`);
+    });
+
+    it("returns Unknown session", async () => {
+      const res = await sessionHandlers["tasks.preflight"](
+        { id: "p", method: "tasks.preflight", session: "nope", params: { key: "seed" } },
+        createMockStore([]),
+        createMockSocket() as never,
+      );
+      expect(res.error).toBe("Unknown session");
+    });
   });
 
   describe("tasks.run", () => {
@@ -854,6 +1045,41 @@ describe("session handlers", () => {
         createMockSocket() as never,
       );
       expect(res.error).toContain("Unknown task");
+      expect(session.acquireTask).toHaveBeenCalledTimes(1);
+      expect(session.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("holds a pending task from before preparation until the run settles", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s" } });
+      let finishPrepare: (value: { startedServices: string[] }) => void = () => undefined;
+      session.prepareTask.mockImplementation(
+        async () =>
+          new Promise((resolve) => {
+            finishPrepare = resolve;
+          }),
+      );
+      const pending = sessionHandlers["tasks.run"](
+        { id: "run", method: "tasks.run", session: session.id, params: { key: "seed" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(session.acquireTask).toHaveBeenCalledTimes(1);
+      expect(session.release).not.toHaveBeenCalled();
+      finishPrepare({ startedServices: [] });
+      await pending;
+      expect(session.release).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases the pending task when request parsing throws", async () => {
+      const { session } = taskSession({});
+      await expect(
+        sessionHandlers["tasks.run"](
+          { id: "run", method: "tasks.run", session: session.id, params: { key: 42 } },
+          createMockStore([session]),
+          createMockSocket() as never,
+        ),
+      ).rejects.toThrow();
+      expect(session.release).toHaveBeenCalledTimes(1);
     });
 
     it.each([false, true])("runs popup DAG in background with UI binding %s", async (bound) => {
@@ -939,6 +1165,265 @@ describe("session handlers", () => {
       expect(owner.output.get(owner.history[0]?.runId ?? "missing")?.lines).toEqual([
         "command output",
       ]);
+    });
+  });
+
+  describe("task service preparation", () => {
+    function runReq(session: { id: string }, params: unknown): IpcRequest {
+      return { id: "run", method: "tasks.run", session: session.id, params };
+    }
+
+    it("tasks.run prepares first, forwards service events and returns startedServices", async () => {
+      const { session, execute, owner } = taskSession({
+        seed: { name: "Seed", commands: "seed", services: ["db"] },
+      });
+      const order: string[] = [];
+      session.prepareTask.mockImplementation(async (_key, opts) => {
+        order.push("prepare");
+        opts?.onEvent?.({ name: "db", phase: "starting" });
+        return { startedServices: ["db"] };
+      });
+      execute.mockImplementation(async () => {
+        order.push("execute");
+        return { success: true, exitCode: 0, output: [] };
+      });
+      const socket = Object.assign(createMockSocket(), { writable: true });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed", start: true }),
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(order).toEqual(["prepare", "execute"]);
+      expect(session.prepareTask).toHaveBeenCalledWith("seed", {
+        start: true,
+        signal: expect.any(AbortSignal),
+        onEvent: expect.any(Function),
+      });
+      expect(res.result).toEqual({
+        success: true,
+        runId: expect.any(String),
+        startedServices: ["db"],
+      });
+      expect(socket.write).toHaveBeenCalledWith(
+        `${JSON.stringify({ id: "run", event: "service", data: { name: "db", phase: "starting" } })}\n`,
+      );
+      expect(owner.history[0]).toMatchObject({ taskKey: "seed", startedServices: ["db"] });
+      expect(socket.listenerCount("close")).toBe(0);
+    });
+
+    it.each([true, false])(
+      "tasks.run emits the stale-config notice only when stale (%s)",
+      async (stale) => {
+        const { session } = taskSession({ lint: { name: "Lint", commands: "lint" } });
+        session.isConfigStale.mockReturnValue(stale);
+        const order: string[] = [];
+        session.prepareTask.mockImplementation(async () => {
+          order.push("prepare");
+          return { startedServices: [] };
+        });
+        const socket = Object.assign(createMockSocket(), { writable: true });
+        socket.write.mockImplementation((line: string) => {
+          if (line.includes('"notice"')) {
+            order.push("notice");
+          }
+          return true;
+        });
+        await sessionHandlers["tasks.run"](
+          runReq(session, { key: "lint" }),
+          createMockStore([session]),
+          socket as never,
+        );
+        const notice = `${JSON.stringify({
+          id: "run",
+          event: "notice",
+          data: {
+            level: "warn",
+            message: 'config changed since the session loaded it. Run "zaps reload".',
+          },
+        })}\n`;
+        if (stale) {
+          expect(socket.write).toHaveBeenCalledWith(notice);
+          expect(order).toEqual(["notice", "prepare"]);
+        } else {
+          expect(socket.write).not.toHaveBeenCalledWith(notice);
+        }
+      },
+    );
+
+    it("tasks.run without services keeps the record shape", async () => {
+      const { session, owner } = taskSession({ lint: { name: "Lint", commands: "lint" } });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "lint" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toMatchObject({ success: true, startedServices: [] });
+      expect(owner.history[0]).not.toHaveProperty("startedServices");
+    });
+
+    it.each([
+      [
+        new ServicesNotRunningError([{ name: "db", state: "stopped" }], "seed"),
+        "services_not_running",
+      ],
+      [new ServiceStartFailedError("db", "boom"), "service_start_failed"],
+      [new ServiceUnavailableError([{ name: "db", reason: "missing" }]), "service_unavailable"],
+      [new SessionClosingError(), "session_closing"],
+    ])("tasks.run maps %s to %s without executing anything", async (failure, code) => {
+      const { session, execute, owner, broadcast } = taskSession({
+        dep: { name: "Dep", commands: "dep" },
+        seed: { name: "Seed", commands: "seed", services: ["db"], dependsOn: ["dep"] },
+      });
+      session.prepareTask.mockRejectedValue(failure);
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: failure.message, errorCode: code });
+      expect(execute).not.toHaveBeenCalled();
+      expect(session.release).toHaveBeenCalledTimes(1);
+      expect(owner.history).toEqual([]);
+      expect(broadcast).not.toHaveBeenCalled();
+    });
+
+    it("tasks.run reports a closing session as unknown before preparing", async () => {
+      const { session, owner, execute } = taskSession({ seed: { name: "Seed", commands: "s" } });
+      owner.close();
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: "Unknown session" });
+      expect(session.prepareTask).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("tasks.run reports unknown session when the session closes during preparation", async () => {
+      const { session, owner, execute } = taskSession({
+        seed: { name: "Seed", commands: "s", services: ["db"] },
+      });
+      session.prepareTask.mockImplementation(async () => {
+        owner.close();
+        throw new SessionClosingError();
+      });
+      const res = await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "run", error: "Unknown session" });
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it("tasks.run aborts preparation when the socket closes", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s", services: ["db"] } });
+      let seen: AbortSignal | undefined;
+      session.prepareTask.mockImplementation(
+        async (_key, opts) =>
+          new Promise((_resolve, reject) => {
+            seen = opts?.signal;
+            opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      );
+      const socket = createMockSocket();
+      const pending = sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        socket as never,
+      );
+      await vi.waitFor(() => {
+        expect(seen).toBeDefined();
+      });
+      socket.destroyed = true;
+      socket.emit("close");
+      await expect(pending).resolves.toMatchObject({ error: "aborted" });
+      expect(seen?.aborted).toBe(true);
+    });
+
+    it("tasks.run aborts immediately when the socket is already closed", async () => {
+      const { session } = taskSession({ seed: { name: "Seed", commands: "s", services: ["db"] } });
+      const socket = createMockSocket();
+      socket.destroyed = true;
+      await sessionHandlers["tasks.run"](
+        runReq(session, { key: "seed" }),
+        createMockStore([session]),
+        socket as never,
+      );
+      expect(session.prepareTask.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    });
+
+    it("tasks.runInPane prepares before the status snapshot and records startedServices", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "echo seed", services: ["api"] },
+      };
+      const order: string[] = [];
+      session.prepareTask.mockImplementation(async () => {
+        order.push("prepare");
+        return { startedServices: ["api"] };
+      });
+      session.manager.getAllStatuses.mockImplementation(() => {
+        order.push("snapshot");
+        return [{ name: "api", state: "ready", ports: [3000], retryCount: 0 }];
+      });
+      const res = await sessionHandlers["tasks.runInPane"](
+        {
+          id: "pane",
+          method: "tasks.runInPane",
+          session: session.id,
+          params: { key: "seed", start: false },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.result).toMatchObject({ runId: expect.any(String) });
+      expect(order[0]).toBe("prepare");
+      expect(session.prepareTask).toHaveBeenCalledWith("seed", {
+        start: false,
+        signal: expect.any(AbortSignal),
+        onEvent: undefined,
+      });
+      expect(session.pushTaskRecord).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: "pane", startedServices: ["api"] }),
+      );
+    });
+
+    it("tasks.runInPane returns service errors before creating anything", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = {
+        seed: { name: "Seed", commands: "echo seed", services: ["api"] },
+      };
+      session.prepareTask.mockRejectedValue(
+        new ServicesNotRunningError([{ name: "api", state: "stopped" }], "seed"),
+      );
+      const res = await sessionHandlers["tasks.runInPane"](
+        { id: "pane", method: "tasks.runInPane", session: session.id, params: { key: "seed" } },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res.errorCode).toBe("services_not_running");
+      expect(session.pushTaskRecord).not.toHaveBeenCalled();
+      expect(session.broadcast).not.toHaveBeenCalled();
+      expect(session.backend.terminal.runTaskInPane).not.toHaveBeenCalled();
+      expect(session.paneRunInfo.size).toBe(0);
+    });
+
+    it("tasks.preflight rejects unexpected params with invalid_request", async () => {
+      const session = createMockSession();
+      session.config.project.tasks = { seed: { name: "Seed", commands: "s" } };
+      const res = await sessionHandlers["tasks.preflight"](
+        {
+          id: "p",
+          method: "tasks.preflight",
+          session: session.id,
+          params: { key: "seed", start: true },
+        },
+        createMockStore([session]),
+        createMockSocket() as never,
+      );
+      expect(res).toEqual({ id: "p", error: "invalid_request", errorCode: "invalid_request" });
     });
   });
 

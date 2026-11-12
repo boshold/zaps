@@ -16,6 +16,11 @@ import { CommandRow } from "./CommandRow.js";
 
 const PICKER_ROWS = 10;
 
+function servicesDetail(task: TaskInfo): string {
+  const services = task.requiredServices ?? [];
+  return services.length > 0 ? `needs ${services.join(", ")}` : "";
+}
+
 /** Render one ranked task as a highlighted row (module-scope: captures nothing). */
 function renderRow(match: FuzzyMatch<TaskInfo>, _index: number, selected: boolean) {
   return (
@@ -23,6 +28,7 @@ function renderRow(match: FuzzyMatch<TaskInfo>, _index: number, selected: boolea
       title={match.item.name}
       indexes={match.indexes}
       hint={match.item.shortcut}
+      detail={servicesDetail(match.item)}
       selected={selected}
     />
   );

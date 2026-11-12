@@ -42,6 +42,7 @@ import { DOCKER_REBUILD_ID, DockerRebuildOverlay } from "./overlay/DockerRebuild
 import { FAILED_OUTPUT_ID, FailedOutputOverlay } from "./overlay/FailedOutputOverlay.js";
 import { HELP_OVERLAY_ID, HelpOverlay } from "./overlay/HelpOverlay.js";
 import { SHUTDOWN_CONFIRM_ID, ShutdownConfirmOverlay } from "./overlay/ShutdownConfirmOverlay.js";
+import { START_SERVICES_ID, StartServicesOverlay } from "./overlay/StartServicesOverlay.js";
 import { TASK_PICKER_ID, TaskPicker } from "./overlay/TaskPicker.js";
 import type { TaskRunRecord } from "./TaskRunRecord.js";
 
@@ -125,61 +126,6 @@ export function Router({
     });
   }
 
-  // Subscribe to daemon task events. `runId` correlates start↔complete; a missing
-  // One (older daemon) falls back to the task key so behavior degrades to the
-  // Pre-runId single-flight matching rather than breaking.
-  useEffect(() => {
-    function handleTaskStart(taskKey: string, taskName: string, runId?: string) {
-      onTaskComplete({
-        runId: runId ?? taskKey,
-        taskKey,
-        taskName,
-        result: "running",
-        timestamp: Date.now(),
-      });
-      setRunningTask(taskKey);
-    }
-    function handleTaskComplete(
-      taskKey: string,
-      taskName: string,
-      result: "success" | "error",
-      runId?: string,
-    ) {
-      onTaskComplete({ runId: runId ?? taskKey, taskKey, taskName, result, timestamp: Date.now() });
-      setRunningTask((cur) => (cur === taskKey ? null : cur));
-      // In-app signal that a background run finished. Success is transient;
-      // Failure is sticky and carries the runId so the overlay (P05-T05) can
-      // Open its captured output.
-      notify({
-        level: result === "error" ? "error" : "success",
-        message: result === "error" ? `${taskName} failed` : `${taskName} succeeded`,
-        runId: runId ?? null,
-        sticky: result === "error",
-      });
-      // Out-of-band desktop/terminal nudge on failure, per ui.notifications.
-      // Unconditional (no focus gate, Q6); complements the sticky toast above.
-      if (result === "error") {
-        notifyFailure(taskName, ui.notifications);
-      }
-    }
-    function handleSnapshot(snapshot: SessionSnapshot) {
-      setTaskHistory(snapshot.taskHistory);
-      setRunningTask(
-        snapshot.taskHistory.find((record) => record.result === "running")?.taskKey ?? null,
-      );
-    }
-    client.on("session.snapshot", handleSnapshot);
-    client.on("session.configReloaded", handleSnapshot);
-    client.on("task.start", handleTaskStart);
-    client.on("task.complete", handleTaskComplete);
-    return () => {
-      client.off("session.snapshot", handleSnapshot);
-      client.off("session.configReloaded", handleSnapshot);
-      client.off("task.start", handleTaskStart);
-      client.off("task.complete", handleTaskComplete);
-    };
-  }, [client, notify, ui.notifications]);
-
   // Surface config-eval notices (cli.warn/info/success during a daemon reload)
   // As transient toasts. `warn` has no ToastLevel, so it maps to `info`.
   useEffect(() => {
@@ -225,6 +171,75 @@ export function Router({
   useLayoutEffect(() => {
     latest.current = current;
   });
+
+  function taskLabel(key: string) {
+    return latest.current.tasks.find((task) => task.key === key)?.name ?? key;
+  }
+
+  // Subscribe to daemon task events. `runId` correlates start↔complete; a missing
+  // One (older daemon) falls back to the task key so behavior degrades to the
+  // Pre-runId single-flight matching rather than breaking.
+  useEffect(() => {
+    function handleTaskStart(taskKey: string, taskName: string, runId?: string) {
+      onTaskComplete({
+        runId: runId ?? taskKey,
+        taskKey,
+        taskName,
+        result: "running",
+        timestamp: Date.now(),
+      });
+      setRunningTask(taskKey);
+    }
+    function handleTaskComplete(
+      taskKey: string,
+      taskName: string,
+      result: "success" | "error",
+      runId?: string,
+    ) {
+      onTaskComplete({ runId: runId ?? taskKey, taskKey, taskName, result, timestamp: Date.now() });
+      setRunningTask((cur) => (cur === taskKey ? null : cur));
+      // In-app signal that a background run finished. Success is transient;
+      // Failure is sticky and carries the runId so the overlay (P05-T05) can
+      // Open its captured output.
+      notify({
+        level: result === "error" ? "error" : "success",
+        message: result === "error" ? `${taskName} failed` : `${taskName} succeeded`,
+        runId: runId ?? null,
+        sticky: result === "error",
+      });
+      // Out-of-band desktop/terminal nudge on failure, per ui.notifications.
+      // Unconditional (no focus gate, Q6); complements the sticky toast above.
+      if (result === "error") {
+        notifyFailure(taskName, ui.notifications);
+      }
+    }
+    function handleTaskPreparing(taskKey: string, services: string[]) {
+      notify({
+        level: "info",
+        message: `Task ${taskLabel(taskKey)}: waiting for ${services.join(", ")}`,
+        runId: null,
+        sticky: false,
+      });
+    }
+    function handleSnapshot(snapshot: SessionSnapshot) {
+      setTaskHistory(snapshot.taskHistory);
+      setRunningTask(
+        snapshot.taskHistory.find((record) => record.result === "running")?.taskKey ?? null,
+      );
+    }
+    client.on("session.snapshot", handleSnapshot);
+    client.on("session.configReloaded", handleSnapshot);
+    client.on("task.start", handleTaskStart);
+    client.on("task.complete", handleTaskComplete);
+    client.on("task.preparing", handleTaskPreparing);
+    return () => {
+      client.off("task.preparing", handleTaskPreparing);
+      client.off("session.snapshot", handleSnapshot);
+      client.off("session.configReloaded", handleSnapshot);
+      client.off("task.start", handleTaskStart);
+      client.off("task.complete", handleTaskComplete);
+    };
+  }, [client, notify, ui.notifications]);
 
   function availabilityFor(name: string) {
     const state = latest.current;
@@ -505,6 +520,77 @@ export function Router({
     }
   }
 
+  function notifyError(message: string) {
+    notify({ level: "error", message, runId: null, sticky: true });
+  }
+
+  async function dispatchLaunch(
+    run: (start?: boolean) => Promise<unknown>,
+    onAbort: () => void,
+    start?: boolean,
+  ) {
+    try {
+      await run(start);
+    } catch (error) {
+      onAbort();
+      notifyError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function preflightOrNull(key: string) {
+    try {
+      return await client.preflightTask(key);
+    } catch {
+      return null;
+    }
+  }
+
+  // Preflight decides whether to launch directly, with `start`, after a prompt,
+  // Or not at all. A failing preflight (older daemon) falls back to a plain run.
+  async function launchWithPreflight(
+    key: string,
+    run: (start?: boolean) => Promise<unknown>,
+    onAbort: () => void = () => undefined,
+  ) {
+    const dispatch = (start?: boolean) => void dispatchLaunch(run, onAbort, start);
+    const preflight = await preflightOrNull(key);
+    if (preflight === null) {
+      dispatch();
+      return;
+    }
+    const [blocked] = preflight.blocked;
+    if (blocked !== undefined) {
+      onAbort();
+      notifyError(`Task ${taskLabel(key)}: service ${blocked} is unavailable`);
+      return;
+    }
+    const toStart = preflight.services.filter((service) => service.action === "start");
+    if (toStart.length === 0) {
+      dispatch();
+      return;
+    }
+    if (preflight.autoStart) {
+      dispatch(true);
+      return;
+    }
+    if (!latest.current.connected) {
+      onAbort();
+      return;
+    }
+    overlay.push({
+      id: START_SERVICES_ID,
+      render: () => (
+        <StartServicesOverlay
+          key={key}
+          taskName={taskLabel(key)}
+          services={toStart}
+          onConfirm={() => dispatch(true)}
+          onCancel={onAbort}
+        />
+      ),
+    });
+  }
+
   function runTaskByKey(key: string) {
     const state = latest.current;
     if (!state.connected || state.runningTask || !state.tasks.some((task) => task.key === key)) {
@@ -512,9 +598,11 @@ export function Router({
     }
     // Optimistic running guard; task.start/complete events update history.
     setRunningTask(key);
-    void client.runTask(key, {}).catch(() => {
-      /* Task execution error handled by daemon */
-    });
+    void launchWithPreflight(
+      key,
+      async (start) => client.runTask(key, {}, { start }),
+      () => setRunningTask((cur) => (cur === key ? null : cur)),
+    );
   }
 
   function taskIsRunning(key: string) {
@@ -533,15 +621,11 @@ export function Router({
     ) {
       return;
     }
-    if (mode === "pane") {
-      void client.runTaskInPane(key).catch(() => {
-        /* Tmux/IPC error handled by daemon */
-      });
-    } else {
-      void client.runTask(key, {}).catch(() => {
-        /* Task execution error handled by daemon */
-      });
-    }
+    void launchWithPreflight(key, async (start) =>
+      mode === "pane"
+        ? client.runTaskInPane(key, undefined, { start })
+        : client.runTask(key, {}, { start }),
+    );
   }
 
   function openInAppTaskPicker() {

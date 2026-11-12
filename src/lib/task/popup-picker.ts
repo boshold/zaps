@@ -21,20 +21,31 @@ async function binaryAvailable(
 interface PopupTask {
   key: string;
   name: string;
+  requiredServices?: string[];
 }
 
 /** Builds the in-popup picker command (injectable so tests can stub `fzf`). */
 type PickerScriptBuilder = (inFile: string, outFile: string) => string;
 
+const DIM = "\u001B[2m";
+const RESET = "\u001B[0m";
+
+/** One `key\tname[\tneeds …]` picker line; the services column is dimmed. */
+function formatPickerLine(task: PopupTask): string {
+  const services = task.requiredServices ?? [];
+  const needs = services.length > 0 ? `\t${DIM}needs ${services.join(", ")}${RESET}` : "";
+  return `${task.key}\t${task.name}${needs}`;
+}
+
 /**
- * Build the `fzf` script run inside the popup. The task list is fed in as
- * `key\tname` lines; `--with-nth=2..` displays only the name while the selected
- * line fzf emits is still the original `key\tname`, so the key is recovered from
- * field 1. A trailing `exit 0` makes the popup close even when fzf is cancelled
- * (non-zero exit), in which case the output file is empty → no selection.
+ * Build the `fzf` script run inside the popup. Lines are tab-delimited
+ * `key\tname[\tneeds …]`; `--with-nth=2..` hides the key, `--nth=1` (relative to
+ * the displayed fields) restricts matching to the name. The emitted line is the
+ * original, so the key is recovered from field 1. A trailing `exit 0` closes the
+ * popup even when fzf is cancelled, leaving the output empty → no selection.
  */
 function buildFzfScript(inFile: string, outFile: string): string {
-  return `fzf --with-nth=2.. < ${shellEscape(inFile)} > ${shellEscape(outFile)}; exit 0`;
+  return `fzf --ansi --delimiter='\\t' --with-nth=2.. --nth=1 < ${shellEscape(inFile)} > ${shellEscape(outFile)}; exit 0`;
 }
 
 /** Recover the task key from a selected `key\tname` line (empty → null). */
@@ -71,11 +82,7 @@ async function runPopupPicker(
   operation.signal.throwIfAborted();
   const input = path.join(operation.directory, "tasks");
   const output = path.join(operation.directory, "selection");
-  await writeFile(
-    input,
-    `${tasks.map((task) => `${task.key}\t${task.name}`).join("\n")}\n`,
-    "utf8",
-  );
+  await writeFile(input, `${tasks.map(formatPickerLine).join("\n")}\n`, "utf8");
   await operation.popup({
     command: `sh -c ${shellEscape(buildScript(input, output))}`,
     title: "Run a task",
@@ -85,5 +92,5 @@ async function runPopupPicker(
   return parseSelection(await readFile(output, "utf8").catch(() => ""));
 }
 
-export { buildFzfScript, parseSelection, popupPickerAvailable, runPopupPicker };
+export { buildFzfScript, formatPickerLine, parseSelection, popupPickerAvailable, runPopupPicker };
 export type { PopupTask };

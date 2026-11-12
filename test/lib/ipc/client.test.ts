@@ -5,6 +5,7 @@ import { z } from "zod";
 
 let mockSocket: EventEmitter & {
   write: ReturnType<typeof vi.fn>;
+  end: ReturnType<typeof vi.fn<(data: string, done: () => void) => void>>;
   destroy: ReturnType<typeof vi.fn>;
   destroyed: boolean;
 };
@@ -16,10 +17,12 @@ vi.mock("node:net", () => ({
       const { EventEmitter: EE } = require("node:events") as typeof import("node:events");
       const socket = new EE() as EventEmitter & {
         write: ReturnType<typeof vi.fn>;
+        end: ReturnType<typeof vi.fn<(data: string, done: () => void) => void>>;
         destroy: ReturnType<typeof vi.fn>;
         destroyed: boolean;
       };
       socket.write = vi.fn();
+      socket.end = vi.fn<(data: string, done: () => void) => void>();
       socket.destroy = vi.fn(() => {
         socket.destroyed = true;
       });
@@ -30,7 +33,41 @@ vi.mock("node:net", () => ({
   },
 }));
 
-const { ipcRequest, ipcStream, ipcSubscribe } = await import("../../../src/lib/ipc/client.js");
+const { ipcRequest, ipcSend, ipcStream, ipcSubscribe } =
+  await import("../../../src/lib/ipc/client.js");
+
+describe("ipcSend", () => {
+  it("writes the request, half-closes and resolves once flushed", async () => {
+    const promise = ipcSend("/test.sock", "services.startAll", { startup: true }, "s1");
+    let flushed = false;
+    void promise.then(() => {
+      flushed = true;
+      return true;
+    });
+    mockSocket.emit("connect");
+    expect(mockSocket.end).toHaveBeenCalledTimes(1);
+    const [[line, done]] = mockSocket.end.mock.calls;
+    const req = z
+      .object({ method: z.string(), params: z.unknown(), session: z.string() })
+      .parse(JSON.parse(line));
+    expect(req).toMatchObject({
+      method: "services.startAll",
+      params: { startup: true },
+      session: "s1",
+    });
+    await Promise.resolve();
+    expect(flushed).toBe(false);
+    done();
+    await promise;
+    mockSocket.emit("data", Buffer.from("ignored\n"));
+  });
+
+  it("rejects on socket error", async () => {
+    const promise = ipcSend("/test.sock", "daemon.ping");
+    mockSocket.emit("error", new Error("ENOENT"));
+    await expect(promise).rejects.toThrow("ENOENT");
+  });
+});
 
 describe("ipcRequest", () => {
   beforeEach(() => {

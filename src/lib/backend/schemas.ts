@@ -45,7 +45,17 @@ const createCommon = {
   resolvedProjectDir: z.string().optional(),
 };
 const sessionCreateParamsSchema = z.discriminatedUnion("backend", [
-  z.strictObject({ ...createCommon, backend: z.literal("shell") }),
+  z
+    .strictObject({
+      ...createCommon,
+      backend: z.literal("shell"),
+      startServices: z.boolean().optional(),
+      ephemeral: z.boolean().optional(),
+    })
+    .refine((value) => value.ephemeral !== true || value.startServices === false, {
+      message: "Ephemeral sessions require startServices: false",
+      path: ["ephemeral"],
+    }),
   z
     .strictObject({
       ...createCommon,
@@ -91,6 +101,8 @@ const listCommon = {
   configPath: z.string(),
   projectDir: z.string(),
   createdAt: z.number().finite(),
+  startupPending: z.literal(true).optional(),
+  ephemeral: z.literal(true).optional(),
 };
 const sessionListEntrySchema = z.discriminatedUnion("backend", [
   z.strictObject({
@@ -145,6 +157,9 @@ const backendErrorCodeSchema = z.enum([
   "backend_unavailable",
   "session_closing",
   "terminal_busy",
+  "services_not_running",
+  "service_start_failed",
+  "service_unavailable",
 ]);
 type BackendErrorCode = z.infer<typeof backendErrorCodeSchema>;
 const ipcErrorResponseSchema = z.strictObject({

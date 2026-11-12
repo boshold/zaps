@@ -618,4 +618,58 @@ describe("loadConfig with optional services", () => {
     expect(result.project.services.api.dependsOn).toEqual([]);
     expect(result.project.services.db).toBeUndefined();
   });
+
+  it("keeps task services referencing an unavailable optional service", async () => {
+    mockSpawn.mockImplementation((_cmd: string, args: string[]) => {
+      const [, cmdStr] = args;
+      return fakeProc("close", cmdStr.includes("rainfrog") ? 1 : 0);
+    });
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.define({
+          name: "test",
+          services: {
+            api: { start: "node server.js" },
+            db: { start: "rainfrog -u pg", optional: true },
+          },
+          tasks: { seed: { name: "Seed", commands: "x", services: ["api", "db"] } },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.project.services.db).toBeUndefined();
+    expect(result.unavailableServices.has("db")).toBe(true);
+    expect(result.project.tasks?.seed.services).toEqual(["api", "db"]);
+  });
+
+  it("expands a fully stripped group in task services before stripping", async () => {
+    mockSpawn.mockReturnValue(fakeProc("close", 0));
+    const configPath = writeConfig(
+      ".zaps.ts",
+      `
+      export function config(z) {
+        return z.define({
+          name: "test",
+          services: {
+            api: { start: "node server.js" },
+            infra: {
+              docker: { service: ["pg", "redis"], expand: { pg: { optional: () => false } } },
+            },
+          },
+          tasks: { seed: { name: "Seed", commands: "x", services: ["infra"] } },
+        });
+      }
+    `,
+    );
+
+    const result = await loadConfig(configPath, tmpDir);
+    expect(result.groups.has("infra")).toBe(false);
+    expect(result.project.services.redis).toBeUndefined();
+    expect(result.unavailableServices.has("redis")).toBe(false);
+    expect(result.project.tasks?.seed.services).toEqual(["pg", "redis"]);
+  });
 });

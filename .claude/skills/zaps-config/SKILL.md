@@ -15,7 +15,7 @@ Read only the references relevant to the request. Check the installed ZAPS versi
 | [Docker](references/04-docker.md)                   | Compose services and readiness                               |
 | [Environment](references/05-environment.md)         | Static and dynamic env, ServiceContext                       |
 | [Dependencies](references/06-dependencies.md)       | Startup order and `restartWith`                              |
-| [Tasks](references/07-tasks.md)                     | Commands, `run`, shortcuts, task dependencies                |
+| [Tasks](references/07-tasks.md)                     | Commands, `run`, shortcuts, task deps, required services     |
 | [Layout](references/08-layout.md)                   | Pane placement and sizing                                    |
 | [Hooks](references/09-hooks.md)                     | Lifecycle actions and cross-service restarts                 |
 | [UI](references/10-ui.md)                           | TUI options                                                  |
@@ -27,6 +27,7 @@ Read only the references relevant to the request. Check the installed ZAPS versi
 - Export `config({ define }: Library)` and return `define({ services: { ... } })`.
 - Use `pnpm` for commands in pnpm projects. Follow the project's package manager elsewhere.
 - Do not add `flags.open: true` or `browser.open()` unless the user asks for browser opening. An explicit `url` can still appear in the TUI.
+- Give tasks that need running services a `services` list. Add `autoStart: true` only when starting those services for the task is expected.
 - Keep setup, migration, and seed tasks manual unless startup needs them. If a task must run before a service, use the relevant hook and check its failure behavior.
 - For custom layouts, put `@tui` at the top left with enough room to read it, and focus it. Start with the 60% wide, 60% high pattern in the layout reference, then adapt to the project.
 - Distinguish an unavailable optional service (`optional`) from one that is installed but starts only on request (`flags.start: false`). Use both when both apply.

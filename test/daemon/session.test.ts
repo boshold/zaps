@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ResolvedConfig, ServiceConfig } from "#src/config/types.js";
+import { SessionClosingError } from "#src/lib/backend/admission-error.js";
 import { ShellSessionBackend } from "#src/lib/backend/shell/session.js";
 import { TmuxSessionBackend } from "#src/lib/backend/tmux/session.js";
 import type {
@@ -24,6 +25,7 @@ import type { SessionCreateParams } from "../../src/daemon/session.js";
 import { Session, sessionId } from "../../src/daemon/session.js";
 import type { ServiceManager } from "../../src/lib/service/manager.js";
 import { createMockStore } from "../_helpers/mock-session.js";
+import { createMockSocket } from "../_helpers/mock-socket.js";
 import { managerDependencies } from "../_helpers/service-runtime.js";
 import type { ServiceManagerFixtureDeps as ServiceManagerDeps } from "../_helpers/service-runtime.js";
 import type { TmuxFixtureParams } from "../_helpers/session-backend.js";
@@ -191,6 +193,140 @@ describe("Session", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  describe("startup lifecycle flags", () => {
+    it("defaults to false", () => {
+      expect(session.startupPending).toBe(false);
+      expect(session.ephemeral).toBe(false);
+    });
+
+    it("clears both flags when the initial startup begins", async () => {
+      const pending = new Session(
+        { ...(await createSessionParams()), startupPending: true, ephemeral: true },
+        createMockManager(),
+      );
+      expect(pending.startupPending).toBe(true);
+      expect(pending.ephemeral).toBe(true);
+      pending.beginInitialStartup();
+      expect(pending.startupPending).toBe(false);
+      expect(pending.ephemeral).toBe(false);
+      await pending.waitForInitialStartup();
+    });
+  });
+
+  describe("ephemeral auto-destroy", () => {
+    async function flush(): Promise<void> {
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+    }
+
+    async function ephemeralSession(ephemeral = true) {
+      const onAutoDestroy = vi.fn(async () => undefined);
+      const sessionManager = createMockManager();
+      const created = new Session(
+        { ...(await createSessionParams()), startupPending: true, ephemeral, onAutoDestroy },
+        sessionManager,
+      );
+      return { created, onAutoDestroy, sessionManager };
+    }
+
+    it("destroys after the last task settles, once the response tick passed", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const release = created.acquireTask();
+      expect(created.pendingTasks).toBe(1);
+      release();
+      release();
+      expect(created.pendingTasks).toBe(0);
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
+
+    it("never destroys a non-ephemeral session", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession(false);
+      created.acquireTask()();
+      const socket = new Socket();
+      created.addSubscriber(socket);
+      created.removeSubscriber(socket);
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("clears ephemeral permanently on the first service starting transition", async () => {
+      const { created, onAutoDestroy, sessionManager } = await ephemeralSession();
+      const release = created.acquireTask();
+      sessionManager.emit("stateChange", "api", {
+        name: "api",
+        state: "starting",
+        ports: [],
+        retryCount: 0,
+      });
+      expect(created.ephemeral).toBe(false);
+      sessionManager.emit("stateChange", "api", {
+        name: "api",
+        state: "stopped",
+        ports: [],
+        retryCount: 0,
+      });
+      release();
+      await flush();
+      expect(created.ephemeral).toBe(false);
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("keeps the session while subscribed and destroys on the last unsubscribe", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const first = new Socket();
+      const second = new Socket();
+      created.addSubscriber(first);
+      created.addSubscriber(second);
+      created.acquireTask()();
+      created.removeSubscriber(first);
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      created.removeSubscriber(second);
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+      expect(created.ephemeral).toBe(true);
+    });
+
+    it("ignores closing sockets that never subscribed", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      created.removeSubscriber(new Socket());
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("survives overlapping runs until both settled", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      const first = created.acquireTask();
+      const second = created.acquireTask();
+      first();
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+      second();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
+
+    it("re-checks the condition when the deferred destroy runs", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      created.acquireTask()();
+      created.acquireTask();
+      await flush();
+      expect(onAutoDestroy).not.toHaveBeenCalled();
+    });
+
+    it("swallows callback failures", async () => {
+      const { created, onAutoDestroy } = await ephemeralSession();
+      onAutoDestroy.mockRejectedValueOnce(new Error("boom"));
+      created.acquireTask()();
+      await flush();
+      await flush();
+      expect(onAutoDestroy).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("UI socket binding", () => {
@@ -813,6 +949,34 @@ describe("Session", () => {
       const snap = s.attachSnapshot();
       expect(snap.tasks).toHaveLength(1);
       expect(snap.tasks[0].shortcut).toBe("b");
+    });
+
+    it("includes requiredServices (chain union) and autoStart per task", async () => {
+      const params = await createSessionParams({
+        config: {
+          project: {
+            name: "test-project",
+            services: { api: { start: "npm dev" }, db: { start: "pg" } },
+            tasks: {
+              migrate: { name: "Migrate", commands: "m", services: ["db"], autoStart: true },
+              seed: { name: "Seed", commands: "s", services: ["api"], dependsOn: ["migrate"] },
+              lint: { name: "Lint", commands: "l" },
+            },
+          },
+          configPath: "/test/.zaps.mts",
+          projectDir: "/test",
+          groups: new Map(),
+          unavailableServices: new Map(),
+          lazyPaneByService: new Map(),
+        } as SessionCreateParams["config"],
+      });
+
+      const snap = new Session(params, createMockManager()).attachSnapshot();
+      expect(snap.tasks.map((t) => [t.key, t.requiredServices, t.autoStart])).toEqual([
+        ["migrate", ["db"], true],
+        ["seed", ["db", "api"], false],
+        ["lint", [], false],
+      ]);
     });
   });
 
@@ -1554,5 +1718,194 @@ describe("Session presentation-independent logs", () => {
       { service: "a", lines: ["live sibling"] },
       { service: "b", lines: ["live sibling"] },
     ]);
+  });
+});
+
+describe("Session.prepareTask", () => {
+  type Statuses = Map<string, ServiceStatus>;
+
+  function serviceStatus(name: string, state: ServiceStatus["state"], ports: number[] = []) {
+    return { name, state, ports, retryCount: 0 };
+  }
+
+  function prepareManager(statuses: Statuses): ServiceManager {
+    const manager = createMockManager();
+    const set = (name: string, state: ServiceStatus["state"], ports: number[] = []) => {
+      const status = serviceStatus(name, state, ports);
+      statuses.set(name, status);
+      manager.emit("stateChange", name, status);
+    };
+    Object.assign(manager, {
+      getAllStatuses: vi.fn(() => [...statuses.values()]),
+      startService: vi.fn(async (name: string) => {
+        set(name, "starting");
+        set(name, "ready", [5432]);
+        return { noop: false };
+      }),
+      set,
+    });
+    return manager;
+  }
+
+  async function prepareSession(statuses: Statuses, manager = prepareManager(statuses)) {
+    const params = await createSessionParams({
+      config: {
+        project: {
+          name: "test-project",
+          services: { api: { start: "npm dev" }, db: { start: "pg" } },
+          tasks: {
+            lint: { name: "Lint", commands: "lint" },
+            seed: { name: "Seed", commands: "seed", services: ["db"] },
+            migrate: { name: "Migrate", commands: "m", services: ["db"], autoStart: true },
+            probe: {
+              name: "Probe",
+              services: ["db"],
+              autoStart: true,
+              run: async (ctx) => {
+                ctx.stdout.write(`url=${ctx.url("db") ?? "none"}\n`);
+              },
+            },
+          },
+        },
+        configPath: "/test/.zaps.mts",
+        projectDir: "/test",
+        groups: new Map(),
+        unavailableServices: new Map(),
+        lazyPaneByService: new Map(),
+      } as SessionCreateParams["config"],
+    });
+    const session = new Session(params, manager);
+    const broadcast = vi.spyOn(session, "broadcast");
+    return { session, manager, broadcast };
+  }
+
+  function preparingEvents(broadcast: { mock: { calls: Parameters<Session["broadcast"]>[] } }) {
+    return broadcast.mock.calls.filter(([e]) => e.event === "task.preparing").map(([e]) => e.data);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns immediately for a task without services", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "stopped")]]);
+    const { session, manager, broadcast } = await prepareSession(statuses);
+    await expect(session.prepareTask("lint")).resolves.toEqual({ startedServices: [] });
+    expect(manager.getAllStatuses).not.toHaveBeenCalled();
+    expect(preparingEvents(broadcast)).toEqual([]);
+  });
+
+  it("does not broadcast when all services are ready", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "ready", [5432])]]);
+    const { session, broadcast } = await prepareSession(statuses);
+    await expect(session.prepareTask("seed")).resolves.toEqual({ startedServices: [] });
+    expect(preparingEvents(broadcast)).toEqual([]);
+  });
+
+  it("starts autostart services, broadcasts task.preparing once and forwards events", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "stopped")]]);
+    const { session, manager, broadcast } = await prepareSession(statuses);
+    const onEvent = vi.fn();
+    await expect(session.prepareTask("migrate", { onEvent })).resolves.toEqual({
+      startedServices: ["db"],
+    });
+    expect(manager.startService).toHaveBeenCalledWith("db");
+    expect(preparingEvents(broadcast)).toEqual([{ key: "migrate", services: ["db"] }]);
+    expect(onEvent.mock.calls.map(([e]) => e)).toEqual([
+      { name: "db", phase: "starting" },
+      { name: "db", phase: "ready" },
+    ]);
+  });
+
+  it("fails fast without permission, with the task key in the message and no broadcast", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "stopped")]]);
+    const { session, manager, broadcast } = await prepareSession(statuses);
+    await expect(session.prepareTask("seed")).rejects.toMatchObject({
+      code: "services_not_running",
+      message: 'Task "seed" needs services that are not running: db (stopped)',
+    });
+    await expect(session.prepareTask("migrate", { start: false })).rejects.toMatchObject({
+      code: "services_not_running",
+    });
+    expect(manager.startService).not.toHaveBeenCalled();
+    expect(preparingEvents(broadcast)).toEqual([]);
+  });
+
+  it("start: true permits starting without autoStart", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "stopped")]]);
+    const { session } = await prepareSession(statuses);
+    await expect(session.prepareTask("seed", { start: true })).resolves.toEqual({
+      startedServices: ["db"],
+    });
+  });
+
+  it("aborts on the request signal, leaving services alone", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "starting")]]);
+    const { session, manager } = await prepareSession(statuses);
+    const controller = new AbortController();
+    const pending = session.prepareTask("seed", { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    await expect(pending).rejects.toThrow("Task service preparation aborted");
+    expect(manager.listenerCount("stateChange")).toBe(1);
+  });
+
+  it("maps destroy during ensure to session_closing", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "starting")]]);
+    const { session } = await prepareSession(statuses);
+    const pending = session.prepareTask("seed");
+    await Promise.resolve();
+    session.closeAdmission();
+    await expect(pending).rejects.toBeInstanceOf(SessionClosingError);
+    await expect(session.prepareTask("seed")).rejects.toBeInstanceOf(SessionClosingError);
+  });
+
+  it("maps reload during ensure to session_closing and recovers afterwards", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "starting")]]);
+    const { session } = await prepareSession(statuses);
+    const { loadConfig } = await import("#src/config/loader.js");
+    vi.mocked(loadConfig).mockResolvedValue({
+      ...session.config,
+      bindActions: undefined,
+    });
+    const pending = session.prepareTask("seed");
+    await Promise.resolve();
+    const reload = session.reload();
+    await expect(pending).rejects.toBeInstanceOf(SessionClosingError);
+    // The fixture reload may fail after the abort point; renewal must happen either way.
+    await Promise.allSettled([reload]);
+    // Swap in a manager where db is ready: the plan is all `ok`, so ensure only
+    // Checks the (renewed) preparation signal.
+    session.manager = prepareManager(new Map([["db", serviceStatus("db", "ready", [5432])]]));
+    await expect(session.prepareTask("seed")).resolves.toEqual({ startedServices: [] });
+  });
+
+  it("tasks.run sees the URL of a service started in the same request", async () => {
+    const statuses: Statuses = new Map([["db", serviceStatus("db", "stopped")]]);
+    const { session, broadcast } = await prepareSession(statuses);
+    const socket = Object.assign(createMockSocket(), { writable: true });
+    const store = {
+      ...createMockStore(),
+      get: (id: string) => (id === session.id ? session : undefined),
+    };
+    const res = await sessionHandlers["tasks.run"](
+      { id: "r", method: "tasks.run", session: session.id, params: { key: "probe" } },
+      store,
+      socket as never,
+    );
+    expect(res.result).toMatchObject({ success: true, startedServices: ["db"] });
+    const written = socket.write.mock.calls.map((call: unknown[]) => String(call[0])).join("");
+    expect(written).toContain('"event":"service"');
+    expect(written).toMatch(/"event":"line","data":"url=[^"]*5432/);
+    const events = broadcast.mock.calls.map(([e]) => e.event);
+    expect(events.indexOf("task.preparing")).toBeLessThan(events.indexOf("task.start"));
+    expect(session.taskExecution.history[0]).toMatchObject({
+      taskKey: "probe",
+      startedServices: ["db"],
+    });
   });
 });

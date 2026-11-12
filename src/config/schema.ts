@@ -295,11 +295,20 @@ const taskConfigSchema = z
     ),
     cwd: z.optional(z.string()),
     dependsOn: z.optional(z.array(z.string())),
+    services: z.optional(z.array(z.string())),
+    autoStart: z.optional(z.boolean()),
     env: z.optional(envConfigSchema),
     shortcut: z.optional(z.string()),
     sentra: z.optional(sentraTargetSchema),
   })
   .superRefine((val, ctx) => {
+    if (val.autoStart && !val.services?.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Task 'autoStart' requires 'services'",
+        input: val,
+      });
+    }
     if (val.commands && val.run) {
       ctx.addIssue({
         code: "custom",

@@ -2,6 +2,7 @@ import { encode } from "@toon-format/toon";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  formatTaskList,
   isCodingAgent,
   parseServiceList,
   primeAgentPrompt,
@@ -14,6 +15,59 @@ import {
 } from "../../src/cli/output.js";
 
 const AGENT_VARS = ["CLAUDECODE", "CURSOR_TRACE_DIR"];
+
+describe("formatTaskList", () => {
+  it("shows chain services and the autostart marker", () => {
+    expect(
+      formatTaskList([
+        {
+          key: "lint",
+          name: "Lint",
+          description: "Run oxlint",
+          services: [],
+          requiredServices: [],
+          autoStart: false,
+          dependsOn: [],
+        },
+        {
+          key: "verifyMail",
+          name: "Verify mail",
+          description: "Check mail delivery",
+          services: ["mailhog"],
+          requiredServices: ["mailhog"],
+          autoStart: true,
+          dependsOn: [],
+        },
+        {
+          key: "deploy",
+          name: "Deploy",
+          description: null,
+          services: ["api"],
+          requiredServices: ["db", "api"],
+          autoStart: false,
+          dependsOn: ["migrate"],
+        },
+      ]),
+    ).toBe(
+      [
+        "KEY         NAME         DESCRIPTION",
+        "lint        Lint         Run oxlint",
+        "verifyMail  Verify mail  Check mail delivery  [services: mailhog · autostart]",
+        "deploy      Deploy       -                    [services: db, api]",
+      ].join("\n"),
+    );
+  });
+
+  it("accepts entries from older daemons without requirement fields", () => {
+    expect(formatTaskList([{ key: "a", name: "A", description: null }])).toBe(
+      ["KEY  NAME  DESCRIPTION", "a    A     -"].join("\n"),
+    );
+  });
+
+  it("reports an empty list", () => {
+    expect(formatTaskList([])).toBe("No tasks configured.");
+  });
+});
 
 describe("primeAgentPrompt", () => {
   it("wraps concise context in one instruction and a TOON fence", () => {
@@ -29,8 +83,13 @@ describe("primeAgentPrompt", () => {
         { name: "db", state: "stopped", ports: [] },
       ],
       [
-        { key: "lint", name: "Lint", description: null },
-        { key: "seed", name: "Seed", description: "Seed development data" },
+        { key: "lint", name: "Lint", description: null, requiredServices: [] },
+        {
+          key: "seed",
+          name: "Seed",
+          description: "Seed development data",
+          requiredServices: ["db", "api"],
+        },
       ],
     );
 
@@ -43,7 +102,9 @@ describe("primeAgentPrompt", () => {
     expect(output).toContain("configPath: /workspace/example-project/.zaps.mts");
     expect(output).toContain("Keep command output concise");
     expect(output).toContain('web,ready,"3000","http://localhost:3000"');
-    expect(output).toContain("tasks[2]{key,description}:");
+    expect(output).toContain("tasks[2]{key,description,needs}:");
+    expect(output).toContain('lint,Lint,""');
+    expect(output).toContain('seed,Seed development data,"db,api"');
     expect(output).toContain("zaps restart [service...]");
     expect(output).toMatch(/\n```\n$/u);
     expect(output).not.toMatch(/zaps (?:up|down|daemon)/u);
@@ -86,8 +147,8 @@ describe("primeAgentPrompt — sentra", () => {
       services[2]{name,state,ports,url,errors}:
         web,ready,"3000","",2
         db,ready,"","",""
-      tasks[1]{key,description}:
-        lint,Lint
+      tasks[1]{key,description,needs}:
+        lint,Lint,""
       sentra:
         status: running
         services[1]: web
@@ -125,8 +186,8 @@ describe("primeAgentPrompt — sentra", () => {
       services[2]{name,state,ports,url,errors}:
         web,ready,"3000","",""
         db,ready,"","",""
-      tasks[1]{key,description}:
-        lint,Lint
+      tasks[1]{key,description,needs}:
+        lint,Lint,""
       sentra:
         status: disabled
         services: []
@@ -335,6 +396,14 @@ describe("sessionRows", () => {
       ["s", "shell", "/s", "shell", ""],
     ]);
     expect(sessionRows([])).toEqual([]);
+  });
+
+  it("marks task-only sessions", () => {
+    expect(
+      sessionRows([
+        { id: "s", name: "app", projectDir: "/s", backend: "shell", startupPending: true },
+      ]),
+    ).toEqual([["s", "app", "/s", "shell", "task-only"]]);
   });
 
   it("puts the location last, after id/name/dir", () => {

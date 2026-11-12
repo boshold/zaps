@@ -24,8 +24,12 @@ import { sanitizeSegment, sentraEnvFor } from "#src/lib/sentra/config.js";
 import { buildServiceContext, resolveEnv } from "#src/lib/service/env.js";
 import { GroupedDockerRebuildError } from "#src/lib/service/manager.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { planTaskServices, summarizePlan } from "#src/lib/task/ensure-services.js";
+import type { TaskPreflight, TaskServiceEvent } from "#src/lib/task/ensure-services.js";
+import { buildTaskListEntries } from "#src/lib/task/list-entry.js";
 import { newRunId } from "#src/lib/task/run-id.js";
 import { buildWrapperCommand, joinTaskCommands } from "#src/lib/task/run-in-pane.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 
 function send(socket: Socket, msg: object): void {
   socket.write(`${JSON.stringify(msg)}\n`);
@@ -44,6 +48,88 @@ function normalizeCommands(commands: Command | Command[] | undefined): Command[]
     return [];
   }
   return Array.isArray(commands) ? commands : [commands];
+}
+
+/** Run `Session.prepareTask`, aborting it when the request socket closes. */
+async function prepareForRequest(
+  session: Session,
+  socket: Socket,
+  key: string,
+  start: boolean | undefined,
+  onEvent?: (event: TaskServiceEvent) => void,
+): Promise<string[]> {
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  socket.once("close", onClose);
+  if (socket.destroyed) {
+    controller.abort();
+  }
+  try {
+    const { startedServices } = await session.prepareTask(key, {
+      start,
+      signal: controller.signal,
+      onEvent,
+    });
+    return startedServices;
+  } finally {
+    socket.off("close", onClose);
+  }
+}
+
+/** Same reply as a missing session: the CLI may safely retry, nothing has run. */
+const UNKNOWN_SESSION = "Unknown session";
+const STALE_CONFIG_NOTICE: { level: "warn"; message: string } = {
+  level: "warn",
+  message: 'config changed since the session loaded it. Run "zaps reload".',
+};
+
+async function runTask(req: IpcRequest, session: Session, socket: Socket): Promise<IpcResponse> {
+  if (!session.taskExecution.accepting) {
+    return ipcErr(req.id, UNKNOWN_SESSION);
+  }
+  const { key, start } = z
+    .object({ key: z.string(), start: z.boolean().optional() })
+    .parse(req.params);
+  const tasks = session.config.project.tasks ?? {};
+  if (!Object.hasOwn(tasks, key)) {
+    return ipcErr(req.id, `Unknown task: ${key}`);
+  }
+  if (session.isConfigStale() && !socket.destroyed && socket.writable) {
+    send(socket, { id: req.id, event: "notice", data: STALE_CONFIG_NOTICE });
+  }
+
+  let startedServices: string[] = [];
+  try {
+    startedServices = await prepareForRequest(session, socket, key, start, (event) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "service", data: event });
+      }
+    });
+  } catch (error) {
+    if (error instanceof SessionClosingError && !session.taskExecution.accepting) {
+      return ipcErr(req.id, UNKNOWN_SESSION);
+    }
+    return ipcErr(req.id, error);
+  }
+
+  const outcome = await session.taskExecution.run(key, {
+    startedServices,
+    config: session.config,
+    cwd: session.config.projectDir,
+    env: session.env,
+    mode: "background",
+    onLine: (line) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "line", data: line });
+      }
+    },
+    onProgress: (taskKey, result) => {
+      if (!socket.destroyed && socket.writable) {
+        send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
+      }
+    },
+  });
+  return ipcOk(req.id, { ...outcome, startedServices });
 }
 
 /** Record + broadcast the terminal state of a run-in-pane run. */
@@ -456,6 +542,9 @@ export const sessionHandlers: Record<
         }
         return ipcOk(req.id, { started: options.names });
       }
+      if (session.startupPending) {
+        session.beginInitialStartup();
+      }
       await (options && "startup" in options
         ? session.waitForInitialStartup()
         : session.manager.startAll());
@@ -514,13 +603,31 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
+    return ipcOk(req.id, buildTaskListEntries(session.config.project.tasks ?? {}));
+  },
+
+  async "tasks.preflight"(req, store) {
+    const session = getSession(req, store);
+    if (!session) {
+      return ipcErr(req.id, "Unknown session");
+    }
+    const parsed = z.strictObject({ key: z.string() }).safeParse(req.params);
+    if (!parsed.success) {
+      return ipcErr(req.id, "invalid_request", "invalid_request");
+    }
+    const { key } = parsed.data;
     const tasks = session.config.project.tasks ?? {};
-    const list = Object.entries(tasks).map(([key, t]) => ({
-      key,
-      name: t.name,
-      description: t.description ?? null,
-    }));
-    return ipcOk(req.id, list);
+    if (!Object.hasOwn(tasks, key)) {
+      return ipcErr(req.id, `Unknown task: ${key}`);
+    }
+    const plan = planTaskServices(
+      resolveTaskServiceRequirements(tasks, key),
+      session.manager.getAllStatuses(),
+      session.config.project.services,
+      session.config.unavailableServices,
+    );
+    const preflight: TaskPreflight = { key, services: plan, ...summarizePlan(plan) };
+    return ipcOk(req.id, preflight);
   },
 
   async "tasks.run"(req, store, socket) {
@@ -528,33 +635,15 @@ export const sessionHandlers: Record<
     if (!session) {
       return ipcErr(req.id, "Unknown session");
     }
-
-    const { key } = z.object({ key: z.string() }).parse(req.params);
-    const tasks = session.config.project.tasks ?? {};
-    if (!tasks[key]) {
-      return ipcErr(req.id, `Unknown task: ${key}`);
+    const release = session.acquireTask();
+    try {
+      return await runTask(req, session, socket);
+    } finally {
+      release();
     }
-
-    const outcome = await session.taskExecution.run(key, {
-      config: session.config,
-      cwd: session.config.projectDir,
-      env: session.env,
-      mode: "background",
-      onLine: (line) => {
-        if (!socket.destroyed && socket.writable) {
-          send(socket, { id: req.id, event: "line", data: line });
-        }
-      },
-      onProgress: (taskKey, result) => {
-        if (!socket.destroyed && socket.writable) {
-          send(socket, { id: req.id, event: "progress", data: { key: taskKey, result } });
-        }
-      },
-    });
-    return ipcOk(req.id, outcome);
   },
 
-  async "tasks.runInPane"(req, store) {
+  async "tasks.runInPane"(req, store, socket) {
     const session = getSession(req, store);
     if (!session) {
       return ipcErr(req.id, "Unknown session");
@@ -564,12 +653,13 @@ export const sessionHandlers: Record<
       .strictObject({
         key: z.string().min(1),
         target: z.enum(["pane", "window"]).default("window"),
+        start: z.boolean().optional(),
       })
       .safeParse(req.params);
     if (!parsed.success) {
       return { ...ipcErr(req.id, "invalid_request"), errorCode: "invalid_request" };
     }
-    const { key, target } = parsed.data;
+    const { key, target, start } = parsed.data;
     if (!session.taskExecution.accepting) {
       return {
         ...ipcErr(req.id, "session_closing", "session_closing"),
@@ -581,9 +671,16 @@ export const sessionHandlers: Record<
       return { ...ipcErr(req.id, "unsupported_capability"), errorCode: "unsupported_capability" };
     }
     const tasks = session.config.project.tasks ?? {};
-    const task = tasks[key];
-    if (!task) {
+    if (!Object.hasOwn(tasks, key)) {
       return ipcErr(req.id, "unknown_task");
+    }
+    const task = tasks[key];
+
+    let startedServices: string[] = [];
+    try {
+      startedServices = await prepareForRequest(session, socket, key, start);
+    } catch (error) {
+      return ipcErr(req.id, error);
     }
 
     // Resolve the task's shell commands (functions get the live service context).
@@ -636,6 +733,7 @@ export const sessionHandlers: Record<
       result: "running",
       timestamp: Date.now(),
       mode: "pane",
+      ...(startedServices.length > 0 ? { startedServices } : {}),
     });
     session.broadcast({
       session: session.id,

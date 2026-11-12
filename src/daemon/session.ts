@@ -23,9 +23,17 @@ import {
   runWithEnvironment,
 } from "#src/lib/request-context.js";
 import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
+import { topoSort } from "#src/lib/service/graph.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
-import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
+import type { ExecInfo, ServiceState, ServiceStatus } from "#src/lib/service/types.js";
+import {
+  ensureTaskServices,
+  isStartPermitted,
+  planTaskServices,
+} from "#src/lib/task/ensure-services.js";
+import type { TaskServiceEvent } from "#src/lib/task/ensure-services.js";
 import type { PaneRunInfo } from "#src/lib/task/run-in-pane.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 import { getTaskShortcuts } from "#src/lib/taskShortcuts.js";
 
 import { LogBuffer } from "./log-buffer.js";
@@ -84,11 +92,57 @@ function compatibilityProjection(view: PresentationSnapshot): CompatibilityProje
   };
 }
 
+const INACTIVE_STATES: ReadonlySet<ServiceState> = new Set(["stopped", "stopping", "unavailable"]);
+
+function activeServiceNames(manager: ServiceManager): Set<string> {
+  return new Set(
+    manager
+      .getAllStatuses()
+      .filter((status) => !INACTIVE_STATES.has(status.state))
+      .map((status) => status.name),
+  );
+}
+
+async function restartServices(
+  manager: ServiceManager,
+  config: ResolvedConfig,
+  names: ReadonlySet<string>,
+  log: (message: string) => void,
+): Promise<void> {
+  const { services } = config.project;
+  const graph: Record<string, { dependsOn: string[] }> = {};
+  for (const name of names) {
+    if (Object.hasOwn(services, name)) {
+      graph[name] = { dependsOn: (services[name].dependsOn ?? []).filter((d) => names.has(d)) };
+    }
+  }
+  for (const name of topoSort(graph).flat()) {
+    try {
+      // eslint-disable-next-line no-await-in-loop -- Sequential start respects deps
+      await manager.startService(name);
+    } catch (error) {
+      if (error instanceof SessionClosingError) {
+        return;
+      }
+      log(`reload: cannot restart service ${name}: ${String(error)}`);
+    }
+  }
+}
+
+interface PrepareTaskOptions {
+  start?: boolean;
+  signal?: AbortSignal;
+  onEvent?: (event: TaskServiceEvent) => void;
+}
+
 export interface TaskInfo {
   key: string;
   name: string;
   description: string | null;
   shortcut?: string;
+  /** Optional so snapshots from older daemons still parse. */
+  requiredServices?: string[];
+  autoStart?: boolean;
 }
 
 export interface ServiceMeta {
@@ -116,6 +170,12 @@ export interface SessionCreateParams {
   shellEnv?: Record<string, string>;
   /** Project .env merged with shellEnv. */
   env?: Record<string, string>;
+  startupPending?: boolean;
+  ephemeral?: boolean;
+  /** Daemon log; defaults to stderr. */
+  log?: (message: string) => void;
+  /** Invoked when an ephemeral session becomes unused; must destroy it via the store. */
+  onAutoDestroy?: () => Promise<void>;
 }
 
 export function sessionId(configPath: string, projectDir?: string): string {
@@ -146,7 +206,23 @@ export class Session {
   private readonly subscriptionRegistrations = new Map<net.Socket, symbol>();
   private readonly uiBindings = new Map<net.Socket, UiBinding>();
   public readonly createdAt = Date.now();
+  private ephemeralFlag: boolean;
+  private startupPendingFlag: boolean;
+  private pendingTaskCount = 0;
+  private autoDestroyScheduled = false;
+  private readonly onAutoDestroy?: () => Promise<void>;
+  private readonly log: (message: string) => void;
   public readonly taskExecution: TaskExecutionService;
+
+  public get ephemeral(): boolean {
+    return this.ephemeralFlag;
+  }
+  public get startupPending(): boolean {
+    return this.startupPendingFlag;
+  }
+  public get pendingTasks(): number {
+    return this.pendingTaskCount;
+  }
 
   public get taskHistory(): TaskRunRecord[] {
     return this.taskExecution.history;
@@ -182,6 +258,8 @@ export class Session {
   private destroyFailure?: AggregateError;
   private reloading = false;
   private readonly closing = new AbortController();
+  /** Aborted when the manager is about to close (reload/destroy); cuts off pending task preparation. */
+  private preparation = new AbortController();
   /** Subscriber-gated config-staleness poll; null when no subscribers (A4). */
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   /** One-shot guard so `session.configStale` fires once per false→true edge. */
@@ -204,6 +282,14 @@ export class Session {
     this.deps = params.deps;
     this.manager = manager;
     this.configLoadedAt = Date.now();
+    this.startupPendingFlag = params.startupPending === true;
+    this.ephemeralFlag = params.ephemeral === true;
+    this.onAutoDestroy = params.onAutoDestroy;
+    this.log =
+      params.log ??
+      ((message) => {
+        process.stderr.write(`${message}\n`);
+      });
 
     this.memberUnits = resolveExecutionUnits(this.config);
     this.logBuffers = allocateLogBuffers(this.memberUnits);
@@ -260,6 +346,9 @@ export class Session {
   private wireManagerEvents(manager: ServiceManager): void {
     // Forward service stateChange events to subscribers
     manager.on("stateChange", (svcName: string, status: ServiceStatus) => {
+      if (status.state === "starting") {
+        this.clearEphemeral();
+      }
       void this.updatePresentationTitle(manager);
       this.broadcast({
         session: this.id,
@@ -280,6 +369,60 @@ export class Session {
     });
   }
 
+  /**
+   * Ensure the services required by the task chain before it runs. Must finish
+   * before any status snapshot so the task sees fresh ports/URLs.
+   */
+  public async prepareTask(
+    key: string,
+    options: PrepareTaskOptions = {},
+  ): Promise<{ startedServices: string[] }> {
+    if (!this.taskExecution.accepting || this.closing.signal.aborted) {
+      throw new SessionClosingError();
+    }
+    const requirements = resolveTaskServiceRequirements(this.config.project.tasks ?? {}, key);
+    if (requirements.services.length === 0) {
+      return { startedServices: [] };
+    }
+    const { manager } = this;
+    const sessionSignal = this.preparation.signal;
+    const plan = planTaskServices(
+      requirements,
+      manager.getAllStatuses(),
+      this.config.project.services,
+      this.config.unavailableServices,
+    );
+    const pending = plan.filter((e) => e.action === "start" || e.action === "wait");
+    if (
+      pending.length > 0 &&
+      !plan.some((e) => e.action === "blocked") &&
+      isStartPermitted(plan, options.start)
+    ) {
+      this.broadcast({
+        session: this.id,
+        event: "task.preparing",
+        data: { key, services: pending.map((e) => e.name) },
+      });
+    }
+    try {
+      const { started } = await this.runWithContext(async () =>
+        ensureTaskServices(plan, {
+          start: options.start,
+          manager,
+          signal: options.signal ? AbortSignal.any([options.signal, sessionSignal]) : sessionSignal,
+          onEvent: options.onEvent,
+          taskKey: key,
+        }),
+      );
+      return { startedServices: started };
+    } catch (error) {
+      if (sessionSignal.aborted) {
+        throw new SessionClosingError();
+      }
+      throw error;
+    }
+  }
+
   public pushTaskRecord(record: TaskRunRecord): void {
     this.taskExecution.pushRecord(record);
   }
@@ -297,6 +440,8 @@ export class Session {
     if (this.initialStartup) {
       return;
     }
+    this.startupPendingFlag = false;
+    this.clearEphemeral();
     const { manager, name } = this;
     const pending = this.startAll();
     this.startPromise = pending;
@@ -371,6 +516,9 @@ export class Session {
       });
     } finally {
       this.reloading = false;
+      if (this.preparation.signal.aborted && !this.closing.signal.aborted) {
+        this.preparation = new AbortController();
+      }
     }
   }
 
@@ -395,8 +543,10 @@ export class Session {
     }
     preflightBackendCompatibility(newConfig.project.services, this.backend.capabilities);
     const newConfigLoadedAt = Date.now();
+    const restartOnly = this.startupPendingFlag ? activeServiceNames(this.manager) : undefined;
 
     // 2. Cooperatively abort any in-flight startAll, then await its settlement.
+    this.preparation.abort();
     this.manager.closeAdmission();
     this.manager.abortStartAll();
     this.taskExecution.cancelPresentations();
@@ -452,10 +602,12 @@ export class Session {
       return;
     }
 
-    // 9. Start services as a tracked promise.
+    // 9. Start services as a tracked promise. Task-only sessions restart only what ran.
     this.startPromise = runWithEnvironment({ ...loaded.env }, async () => {
       try {
-        await newManager.startAll();
+        await (restartOnly
+          ? restartServices(newManager, newConfig, restartOnly, this.log)
+          : newManager.startAll());
       } catch {
         /* Errors surfaced via stateChange */
       }
@@ -464,6 +616,7 @@ export class Session {
 
   public closeAdmission(): void {
     this.closing.abort();
+    this.preparation.abort();
     this.taskExecution.close();
     this.manager.closeAdmission();
     this.backend.runtime.closeAdmission();
@@ -602,15 +755,69 @@ export class Session {
     return this.uiBindings.get(socket);
   }
 
+  public clearEphemeral(): void {
+    this.ephemeralFlag = false;
+  }
+
+  /** Count a task request; the returned release re-checks ephemeral auto-destroy. */
+  public acquireTask(): () => void {
+    this.pendingTaskCount += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this.pendingTaskCount -= 1;
+      this.scheduleAutoDestroy();
+    };
+  }
+
+  private isUnused(): boolean {
+    return (
+      this.ephemeralFlag &&
+      this.pendingTaskCount === 0 &&
+      this.subscribers.size === 0 &&
+      !this.destroyed
+    );
+  }
+
+  /** Deferred so the triggering IPC response is written first. */
+  private scheduleAutoDestroy(): void {
+    if (!this.onAutoDestroy || this.autoDestroyScheduled || !this.isUnused()) {
+      return;
+    }
+    this.autoDestroyScheduled = true;
+    setImmediate(() => {
+      this.autoDestroyScheduled = false;
+      void this.maybeAutoDestroy();
+    });
+  }
+
+  private async maybeAutoDestroy(): Promise<void> {
+    if (!this.onAutoDestroy || !this.isUnused()) {
+      return;
+    }
+    try {
+      await this.onAutoDestroy();
+    } catch {
+      /* The store callback logs its own failures. */
+    }
+  }
+
   /** Drop socket ownership and stop polling when no subscribers remain. */
   public removeSubscriber(socket: net.Socket): void {
     this.uiBindings.get(socket)?.controller.abort();
     this.uiBindings.delete(socket);
     this.acknowledgedSubscribers.delete(socket);
     this.subscriptionRegistrations.delete(socket);
-    this.subscribers.delete(socket);
+    const wasSubscriber = this.subscribers.delete(socket);
     if (this.subscribers.size === 0) {
       this.stopStalePoll();
+    }
+    // The store calls this for every closing socket; only real subscribers count.
+    if (wasSubscriber) {
+      this.scheduleAutoDestroy();
     }
   }
 
@@ -707,7 +914,13 @@ export class Session {
     const shortcuts = getTaskShortcuts(rawTasks);
     const shortcutMap = new Map(shortcuts.map((s) => [s.name, s.shortcut]));
     const tasks: TaskInfo[] = Object.entries(rawTasks).map(([key, t]) => {
-      const info: TaskInfo = { key, name: t.name, description: t.description ?? null };
+      const info: TaskInfo = {
+        key,
+        name: t.name,
+        description: t.description ?? null,
+        requiredServices: resolveTaskServiceRequirements(rawTasks, key).services,
+        autoStart: t.autoStart ?? false,
+      };
       const shortcut = shortcutMap.get(t.name);
       if (shortcut) {
         info.shortcut = shortcut;

@@ -265,6 +265,52 @@ describe("projectConfigSchema", () => {
     });
   });
 
+  describe("task services / autoStart", () => {
+    it("accepts services and autoStart", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        tasks: { seed: { name: "Seed", commands: "x", services: ["api"], autoStart: true } },
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.tasks?.seed.services).toEqual(["api"]);
+        expect(result.data.tasks?.seed.autoStart).toBe(true);
+      }
+    });
+
+    it.each([
+      ["missing", undefined],
+      ["empty", []],
+    ])("rejects autoStart with %s services", (_label, services) => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        tasks: { seed: { name: "Seed", commands: "x", services, autoStart: true } },
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(
+          result.error.issues.some((i) => i.message === "Task 'autoStart' requires 'services'"),
+        ).toBe(true);
+      }
+    });
+
+    it("accepts autoStart: false without services", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        tasks: { seed: { name: "Seed", commands: "x", autoStart: false } },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects non-array services", () => {
+      const result = projectConfigSchema.safeParse({
+        services: { api: { start: "npm dev" } },
+        tasks: { seed: { name: "Seed", commands: "x", services: "api" } },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe("layout", () => {
     it("accepts nested split layout", () => {
       const result = projectConfigSchema.safeParse({

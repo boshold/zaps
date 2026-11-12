@@ -769,6 +769,57 @@ describe("CLI — cleye parse layer (subprocess parity)", () => {
   );
 
   it(
+    "run rejects --start with --no-start before contacting the daemon",
+    () => {
+      const res = runCli(["run", "seed", "--start", "--no-start"]);
+      expect(res.status).toBe(1);
+      expect(res.stderr).toBe("Error: --start and --no-start cannot be used together.\n");
+      const single = runCli(["run", "seed", "--no-start", "-s", "parser-test"]);
+      expect(single.stderr).not.toContain("Unknown flag");
+      expect(single.stderr).not.toContain("cannot be used together");
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
+    "config prints task services and autoStart (json + text)",
+    () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-cli-config-"));
+      try {
+        fs.writeFileSync(
+          path.join(dir, ".zaps.ts"),
+          `export function config(z) {
+            return z.define({
+              name: "cfg",
+              services: { db: { start: "pg" } },
+              tasks: {
+                lint: { name: "Lint", commands: "x" },
+                seed: { name: "Seed", commands: "x", services: ["db"], autoStart: true },
+              },
+            });
+          }`,
+        );
+        const json = runCli(["config", "--json"], {}, dir);
+        expect(json.status).toBe(0);
+        const parsed: unknown = JSON.parse(json.stdout);
+        expect(parsed).toMatchObject({
+          tasks: {
+            lint: { services: [], autoStart: false },
+            seed: { services: ["db"], autoStart: true },
+          },
+        });
+        const text = runCli(["config"], {}, dir);
+        expect(text.status).toBe(0);
+        expect(text.stdout).toContain("seed  Seed [autoStart]  services: db");
+        expect(text.stdout).toMatch(/^ {2}lint {2}Lint$/m);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    CLI_TIMEOUT,
+  );
+
+  it(
     "bare `zaps daemon` prints the group help to stdout and exits 1",
     () => {
       const res = runCli(["daemon"]);

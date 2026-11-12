@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { daemonHandlers } from "../../../src/daemon/handlers/daemon.js";
 import { registerShutdownHook } from "../../../src/daemon/shutdown.js";
@@ -304,6 +305,111 @@ describe("backend create boundary", () => {
     );
     expect(status.result).toMatchObject({ supportedBackends: ["tmux", "shell"] });
   });
+
+  it("advertises implicit session support", async () => {
+    const status = await daemonHandlers["daemon.status"](
+      { id: "s", method: "daemon.status" },
+      createMockStore(),
+    );
+    expect(status.result).toMatchObject({ capabilities: { implicitSessions: true } });
+  });
+
+  it("lists lifecycle flags only when set", async () => {
+    const shell = {
+      backend: {
+        id: "shell" as const,
+        capabilities: {
+          panes: false,
+          zoom: false,
+          popups: false,
+          taskPanes: false,
+          rawInput: false,
+          layout: false,
+        },
+      },
+      compatibilityProjection: () => ({ backend: "shell" as const, paneMap: {} }),
+    };
+    const pending = createMockSession({
+      ...shell,
+      id: "pending",
+      startupPending: true,
+      ephemeral: true,
+    });
+    const idle = createMockSession({ ...shell, id: "idle" });
+    const store = createMockStore([pending, idle]);
+    const list = await daemonHandlers["session.list"]({ id: "l", method: "session.list" }, store);
+    const [first, second] = z.array(z.record(z.string(), z.unknown())).parse(list.result);
+    expect(first).toMatchObject({ id: "pending", startupPending: true, ephemeral: true });
+    expect(second).not.toHaveProperty("startupPending");
+    expect(second).not.toHaveProperty("ephemeral");
+  });
+
+  it("forwards startServices and ephemeral to the store", async () => {
+    const session = createMockSession({
+      backend: {
+        id: "shell" as const,
+        capabilities: {
+          panes: false,
+          zoom: false,
+          popups: false,
+          taskPanes: false,
+          rawInput: false,
+          layout: false,
+        },
+      },
+      compatibilityProjection: () => ({ backend: "shell", paneMap: {} }),
+    });
+    const store = createMockStore([session]);
+    const response = await daemonHandlers["session.create"](
+      {
+        id: "r",
+        method: "session.create",
+        params: { ...params, startServices: false, ephemeral: true },
+      },
+      store,
+    );
+    expect(response.result).toMatchObject({ backend: "shell" });
+    expect(store.create).toHaveBeenCalledWith(
+      expect.objectContaining({ startServices: false, ephemeral: true }),
+    );
+  });
+
+  it.each([{ ephemeral: true }, { ephemeral: true, startServices: true }])(
+    "rejects ephemeral without startServices: false %j",
+    async (fields) => {
+      const store = createMockStore();
+      const response = await daemonHandlers["session.create"](
+        { id: "r", method: "session.create", params: { ...params, ...fields } },
+        store,
+      );
+      expect(response).toMatchObject({ errorCode: "invalid_request" });
+      expect(store.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([{ startServices: false }, { ephemeral: false }])(
+    "rejects lifecycle fields on the tmux variant %j",
+    async (fields) => {
+      const store = createMockStore();
+      const response = await daemonHandlers["session.create"](
+        {
+          id: "r",
+          method: "session.create",
+          params: {
+            backend: "tmux",
+            configPath: "/fake/.zaps.mts",
+            projectDir: "/fake",
+            tmuxSession: "main",
+            originPane: "%0",
+            ...fields,
+          },
+        },
+        store,
+      );
+      expect(response).toMatchObject({ errorCode: "invalid_request" });
+      expect(store.create).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { tmuxSession: "main" },

@@ -16,6 +16,7 @@ export type { SessionInfo };
  * identical everywhere (E7, P05-V01).
  */
 export const DAEMON_NOT_RUNNING = "Daemon not running.";
+export const NO_PROJECT_SESSION = "No running zaps session for this project.";
 
 export function daemonConnectionError(error: unknown): CliError | null {
   if (!(error instanceof Error) || !("code" in error) || !("syscall" in error)) {
@@ -137,7 +138,7 @@ export function resolveListedSessionId(sessions: SessionInfo[], sessionArg?: str
     findSessionByDir(sessions, process.cwd()) ??
     sessions.find((session) => session.id === legacyId);
   if (!resolved) {
-    throw new CliError("No running zaps session for this project.");
+    throw new CliError(NO_PROJECT_SESSION);
   }
   return resolved.id;
 }
@@ -154,6 +155,15 @@ export function formatTable(rows: string[][]): string {
     }
   }
   return rows.map((row) => row.map((cell, i) => cell.padEnd(widths[i])).join("  ")).join("\n");
+}
+
+export function sessionIpc(sock: string, id: string): Omit<SessionIpc, "session"> {
+  return {
+    sessionId: id,
+    request: async (method, params?) => requestDaemon(sock, method, params, 30_000, id),
+    stream: async (method, params, onEvent) =>
+      ipcStream(sock, method, params, onEvent, 120_000, id),
+  };
 }
 
 export async function withDaemon<T>(
@@ -182,20 +192,13 @@ export async function withDaemon<T>(
       findSessionByDir(sessions, process.cwd()) ??
       sessions.find((session) => session.id === legacyId);
     if (!match) {
-      throw new CliError("No running zaps session for this project.");
+      throw new CliError(NO_PROJECT_SESSION);
     }
     return match;
   })();
   const { id } = targetSession;
 
-  const ipc: SessionIpc = {
-    sessionId: id,
-    session: targetSession,
-    request: async (method, params?) => requestDaemon(sock, method, params, 30_000, id),
-    stream: async (method, params, onEvent) =>
-      ipcStream(sock, method, params, onEvent, 120_000, id),
-  };
-  return fn(ipc);
+  return fn({ ...sessionIpc(sock, id), session: targetSession });
 }
 
 export interface DownDeps {

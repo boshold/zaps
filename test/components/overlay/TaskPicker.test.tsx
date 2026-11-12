@@ -1,3 +1,4 @@
+import { Box } from "ink";
 import { render } from "ink-testing-library";
 import { describe, expect, it, vi } from "vitest";
 
@@ -159,5 +160,78 @@ describe("TaskPickerBody", () => {
     // No filtering happened and Enter did nothing.
     expect(lastFrame() ?? "").toContain("Seed database");
     expect(onRun).not.toHaveBeenCalled();
+  });
+
+  describe("required services", () => {
+    const tasks: TaskInfo[] = [
+      {
+        key: "verify",
+        name: "Verify mail",
+        description: null,
+        shortcut: "v",
+        requiredServices: ["mailhog", "api"],
+      },
+      { key: "lint", name: "Lint code", description: null, requiredServices: [] },
+      { key: "legacy", name: "Legacy task", description: null },
+    ];
+
+    function rowFor(frame: string, name: string) {
+      return frame.split("\n").find((line) => line.includes(name)) ?? "";
+    }
+
+    it("shows required services after the name and nothing for independent tasks", () => {
+      const frame = renderBody({ tasks }).lastFrame() ?? "";
+      expect(rowFor(frame, "Verify mail")).toMatch(/Verify mail\s+needs mailhog, api\s+v/);
+      expect(rowFor(frame, "Lint code")).not.toContain("needs");
+      expect(rowFor(frame, "Legacy task")).not.toContain("needs");
+    });
+
+    it("aligns the shortcut column for rows with and without services", () => {
+      const frame =
+        renderBody({
+          tasks: [
+            {
+              key: "verify",
+              name: "Verify",
+              description: null,
+              shortcut: "v",
+              requiredServices: ["db"],
+            },
+            { key: "lint", name: "Lint", description: null, shortcut: "l" },
+          ],
+        }).lastFrame() ?? "";
+      const verify = rowFor(frame, "Verify").trimEnd();
+      const lint = rowFor(frame, "Lint").trimEnd();
+      expect(verify.endsWith("v")).toBe(true);
+      expect(lint.endsWith("l")).toBe(true);
+      expect(verify.length).toBe(lint.length);
+    });
+
+    it("matches the query against the task name only", async () => {
+      const { stdin, lastFrame } = renderBody({ tasks });
+      await type(stdin, "mailhog");
+      expect(lastFrame() ?? "").not.toContain("Verify mail");
+    });
+
+    it("truncates the services before the name and shortcut on narrow widths", () => {
+      const { lastFrame } = render(
+        <Box width={28}>
+          <TaskPickerBody
+            tasks={tasks}
+            isRunning={() => false}
+            capabilities={mixedCapabilities}
+            defaultMode="background"
+            isActive
+            onClose={() => undefined}
+            onRun={() => undefined}
+          />
+        </Box>,
+      );
+      const row = rowFor(lastFrame() ?? "", "Verify mail");
+      expect(row).toContain("Verify mail");
+      expect(row).toContain("…");
+      expect(row).not.toContain("mailhog, api");
+      expect(row.trimEnd().endsWith("v")).toBe(true);
+    });
   });
 });

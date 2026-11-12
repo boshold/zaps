@@ -25,9 +25,11 @@ import {
   resolveSessionId,
   resolveTargetSession,
   runDown,
+  sessionIpc,
   withDaemon,
 } from "./cli/helpers.js";
 import {
+  formatTaskList,
   isCodingAgent,
   parseServiceList,
   primeAgentPrompt,
@@ -37,12 +39,15 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
+import { resolveStartFlag, runTaskCommand } from "./cli/run-task.js";
 import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { listStartupSessions } from "./cli/startup-session.js";
 import { renderStartupError, requireUiTerminal, runStartup } from "./cli/startup.js";
+import { listTasks } from "./cli/tasks-list.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { discoverConfig } from "./config/discovery.js";
+import { ConfigError } from "./config/index.js";
 import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
@@ -54,6 +59,7 @@ import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment } from "./lib/request-context.js";
 import { computeProjectSessionId } from "./lib/sentra/session-id.js";
+import { NO_CONFIG, ensureImplicitSession, loadLocalProject } from "./lib/session/implicit.js";
 import { currentSession } from "./lib/tmux.js";
 
 declare const __VERSION__: string;
@@ -523,7 +529,18 @@ const runCommand = command(
   {
     name: "run",
     parameters: ["<task>"],
-    flags: { ...sessionFlag, ...formatFlags },
+    flags: {
+      ...sessionFlag,
+      ...formatFlags,
+      start: {
+        type: Boolean,
+        description: "Start required services that are not running (overrides autoStart)",
+      },
+      noStart: {
+        type: Boolean,
+        description: "Never start required services (overrides autoStart)",
+      },
+    },
     help: { description: "Run a task" },
   },
   async (parsed) => {
@@ -532,27 +549,21 @@ const runCommand = command(
     const key = parsed._.task;
     const opts = parsed.flags;
     try {
+      const start = resolveStartFlag(opts);
       const format = resolveFormat(opts);
-      await withDaemon(async (ipc) => {
-        const res = await ipc.stream("tasks.run", { key }, (event, data) => {
-          if (format === "text" && event === "line") {
-            process.stdout.write(`${data as string}\n`);
-          }
-        });
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
-          process.exit(1);
-        }
-        if (format !== "text") {
-          writeData(res.result, format);
-          return;
-        }
-        const result = res.result as { success: boolean };
-        if (!result.success) {
-          process.stderr.write("Task failed.\n");
-          process.exit(1);
-        }
-      }, globalSession());
+      const exitCode = await runTaskCommand(
+        { key, start, format, sessionArg: globalSession() },
+        {
+          withDaemon,
+          ensureImplicitSession,
+          ensureDaemon: async () => ensureDaemon(resolveCommandArgv()),
+          sessionIpc,
+          cwd: () => process.cwd(),
+        },
+      );
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
     } catch (error) {
       if (error instanceof CliError) {
         renderCliError(error);
@@ -646,7 +657,7 @@ const configCommand = command(
     const opts = parsed.flags;
     const configPath = discoverConfig(process.cwd());
     if (!configPath) {
-      process.stderr.write("No config found. Run `zaps init` to create one.\n");
+      process.stderr.write(`${NO_CONFIG}\n`);
       process.exit(1);
     }
 
@@ -681,7 +692,12 @@ const configCommand = command(
           ? Object.fromEntries(
               Object.entries(config.project.tasks).map(([key, t]) => [
                 key,
-                { name: t.name, description: t.description ?? null },
+                {
+                  name: t.name,
+                  description: t.description ?? null,
+                  services: t.services ?? [],
+                  autoStart: t.autoStart ?? false,
+                },
               ]),
             )
           : {},
@@ -709,7 +725,9 @@ const configCommand = command(
     if (config.project.tasks) {
       process.stdout.write("\nTasks:\n");
       for (const [key, t] of Object.entries(config.project.tasks)) {
-        process.stdout.write(`  ${key}  ${t.name}\n`);
+        const svcStr = t.services?.length ? `  services: ${t.services.join(", ")}` : "";
+        const autoStr = t.autoStart ? " [autoStart]" : "";
+        process.stdout.write(`  ${key}  ${t.name}${autoStr}${svcStr}\n`);
       }
     }
   },
@@ -884,30 +902,21 @@ const tasksCommand = command(
     rejectExcessArgs("tasks", parsed._, 0);
     const opts = parsed.flags;
     try {
-      await withDaemon(async (ipc) => {
-        const res = await ipc.request("tasks.list");
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
-          process.exit(1);
-        }
-        const format = resolveFormat(opts);
-        if (format !== "text") {
-          writeData(res.result, format);
-          return;
-        }
-        const tasks = res.result as { key: string; name: string; description: string | null }[];
-        if (tasks.length === 0) {
-          process.stdout.write("No tasks configured.\n");
-          return;
-        }
-        const rows = [["KEY", "NAME", "DESCRIPTION"]];
-        for (const t of tasks) {
-          rows.push([t.key, t.name, t.description ?? "-"]);
-        }
-        process.stdout.write(`${formatTable(rows)}\n`);
-      }, globalSession());
+      const format = resolveFormat(opts);
+      const entries = await listTasks(globalSession(), {
+        withDaemon,
+        loadLocalTasks: async () => {
+          const { config } = await loadLocalProject(process.cwd());
+          return config.project.tasks ?? {};
+        },
+      });
+      if (format !== "text") {
+        writeData(entries, format);
+        return;
+      }
+      process.stdout.write(`${formatTaskList(entries)}\n`);
     } catch (error) {
-      if (error instanceof CliError) {
+      if (error instanceof CliError || error instanceof ConfigError) {
         renderCliError(error);
       }
       throw error;
