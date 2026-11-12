@@ -21,10 +21,20 @@ import {
   parseDaemonStatus,
   parseServiceStatus,
   parseSessionSnapshot,
+  taskPreflightSchema,
 } from "#src/lib/backend/wire.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { DaemonEvent, IpcResponse } from "#src/lib/ipc/protocol.js";
+import type { TaskPreflight } from "#src/lib/task/ensure-services.js";
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+// Covers service startup before the pane opens.
+const RUN_IN_PANE_TIMEOUT_MS = 600_000;
+
+function startParam(start: boolean | undefined): { start?: boolean } {
+  return start === undefined ? {} : { start };
+}
 
 const terminalActionResponseSchema = z.union([
   z.strictObject({ id: z.string(), result: terminalActionResultSchema }),
@@ -62,6 +72,7 @@ export interface DaemonClientEvents {
   "log.lines": (service: string, lines: string[]) => void;
   "task.start": (key: string, name: string, runId?: string) => void;
   "task.complete": (key: string, name: string, result: "success" | "error", runId?: string) => void;
+  "task.preparing": (key: string, services: string[]) => void;
   "session.destroyed": () => void;
   "session.snapshot": (snapshot: SessionSnapshot) => void;
   "session.configReloaded": (snapshot: SessionSnapshot) => void;
@@ -375,11 +386,12 @@ export class DaemonClient extends EventEmitter {
       onLine?: (line: string) => void;
       onProgress?: (taskKey: string, result: "success" | "error") => void;
     },
+    options: { start?: boolean } = {},
   ): Promise<{ success: boolean; runId?: string }> {
     const res = await ipcStream(
       this.socketPath,
       "tasks.run",
-      { key },
+      { key, ...startParam(options.start) },
       (event, data) => {
         if (event === "line") {
           callbacks.onLine?.(data as string);
@@ -401,11 +413,13 @@ export class DaemonClient extends EventEmitter {
   public async runTaskInPane(
     key: string,
     target?: "pane" | "window",
+    options: { start?: boolean } = {},
   ): Promise<{ runId: string; paneId: string }> {
-    const res = await this.request("tasks.runInPane", {
-      key,
-      ...(target ? { target } : {}),
-    });
+    const res = await this.request(
+      "tasks.runInPane",
+      { key, ...(target ? { target } : {}), ...startParam(options.start) },
+      RUN_IN_PANE_TIMEOUT_MS,
+    );
     if (res.error) {
       throw new DaemonRequestError(res.error, res.errorCode);
     }
@@ -426,10 +440,22 @@ export class DaemonClient extends EventEmitter {
     return res.result as TaskOutputSnapshot;
   }
 
+  public async preflightTask(key: string): Promise<TaskPreflight> {
+    const res = await this.request("tasks.preflight", { key });
+    if (res.error) {
+      throw new DaemonRequestError(res.error, res.errorCode);
+    }
+    return taskPreflightSchema.parse(res.result);
+  }
+
   // --- Internal ---
 
-  private async request(method: string, params?: unknown): Promise<IpcResponse> {
-    return ipcRequest(this.socketPath, method, params, 30_000, this.sessionId);
+  private async request(
+    method: string,
+    params?: unknown,
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<IpcResponse> {
+    return ipcRequest(this.socketPath, method, params, timeoutMs, this.sessionId);
   }
 
   public async status() {
@@ -507,6 +533,11 @@ export class DaemonClient extends EventEmitter {
       case "task.complete": {
         const task = daemonEventDataSchemas.taskComplete.parse(data);
         this.emit("task.complete", task.key, task.name, task.result, task.runId);
+        break;
+      }
+      case "task.preparing": {
+        const task = daemonEventDataSchemas.taskPreparing.parse(data);
+        this.emit("task.preparing", task.key, task.services);
         break;
       }
       case "session.destroyed": {

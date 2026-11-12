@@ -817,6 +817,26 @@ describe("DaemonClient", () => {
       mockIpcStream.mockResolvedValue({ id: "r1", error: "task error" });
       await expect(client.runTask("bad", {})).rejects.toThrow("task error");
     });
+
+    it("sends start only when defined", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", result: { success: true } });
+      await client.runTask("build", {}, { start: true });
+      await client.runTask("build", {}, { start: false });
+      await client.runTask("build", {});
+      expect(mockIpcStream.mock.calls.map((call) => call[2])).toEqual([
+        { key: "build", start: true },
+        { key: "build", start: false },
+        { key: "build" },
+      ]);
+    });
+
+    it.each(["services_not_running", "service_start_failed", "service_unavailable"])(
+      "rejects with errorCode %s",
+      async (code) => {
+        mockIpcStream.mockResolvedValue({ id: "r1", error: "svc", errorCode: code });
+        await expect(client.runTask("build", {})).rejects.toMatchObject({ code, message: "svc" });
+      },
+    );
   });
 
   describe("runTaskInPane", () => {
@@ -851,6 +871,68 @@ describe("DaemonClient", () => {
     it("throws on error response", async () => {
       mockIpcRequest.mockResolvedValue({ id: "r1", error: "tmux_failed" });
       await expect(client.runTaskInPane("build")).rejects.toThrow("tmux_failed");
+    });
+
+    it("uses a 10 minute timeout and sends start only when defined", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: { runId: "run_3", paneId: "%7" } });
+      await client.runTaskInPane("build", "window", { start: true });
+      await client.runTaskInPane("build", undefined, { start: false });
+      await client.runTaskInPane("build", undefined, {});
+      expect(mockIpcRequest.mock.calls.map((call) => [call[2], call[3]])).toEqual([
+        [{ key: "build", target: "window", start: true }, 600_000],
+        [{ key: "build", start: false }, 600_000],
+        [{ key: "build" }, 600_000],
+      ]);
+    });
+
+    it.each(["services_not_running", "service_start_failed", "service_unavailable"])(
+      "rejects with errorCode %s",
+      async (code) => {
+        mockIpcRequest.mockResolvedValue({ id: "r1", error: "svc", errorCode: code });
+        await expect(client.runTaskInPane("build")).rejects.toMatchObject({ code });
+      },
+    );
+  });
+
+  describe("preflightTask", () => {
+    const preflight = {
+      key: "e2e",
+      services: [
+        { name: "db", state: "ready", action: "ok", required: true, startable: true },
+        {
+          name: "gpu",
+          state: "unavailable",
+          action: "blocked",
+          required: true,
+          startable: false,
+          reason: "not available on this machine",
+        },
+      ],
+      needsStart: false,
+      autoStart: true,
+      blocked: ["gpu"],
+    };
+
+    it("returns the parsed preflight with the default timeout", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: preflight });
+      await expect(client.preflightTask("e2e")).resolves.toEqual(preflight);
+      expect(mockIpcRequest).toHaveBeenCalledWith(
+        "/test.sock",
+        "tasks.preflight",
+        { key: "e2e" },
+        30_000,
+        "sess1",
+      );
+    });
+
+    it("rejects a malformed preflight", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", result: { key: "e2e" } });
+      await expect(client.preflightTask("e2e")).rejects.toBeInstanceOf(ZodError);
+    });
+
+    it("throws on error response", async () => {
+      mockIpcRequest.mockResolvedValue({ id: "r1", error: "Unknown task: nope" });
+      await expect(client.preflightTask("nope")).rejects.toThrow("Unknown task: nope");
     });
   });
 
@@ -931,6 +1013,20 @@ describe("DaemonClient", () => {
       });
 
       expect(spy).toHaveBeenCalledWith("build", "Build", "run_1");
+    });
+
+    it("routes task.preparing", () => {
+      const spy = vi.fn();
+      client.on("task.preparing", spy);
+      client.connect();
+
+      eventHandler({
+        session: "sess1",
+        event: "task.preparing",
+        data: { key: "e2e", services: ["db", "api"] },
+      });
+
+      expect(spy).toHaveBeenCalledWith("e2e", ["db", "api"]);
     });
 
     it("routes task.complete", () => {
