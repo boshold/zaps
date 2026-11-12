@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CliError } from "../../src/cli/helpers.js";
 import type { SessionIpc } from "../../src/cli/helpers.js";
-import { createServiceProgressPrinter, resolveStartFlag, runTask } from "../../src/cli/run-task.js";
+import {
+  createServiceProgressPrinter,
+  resolveStartFlag,
+  runTask,
+  runTaskCommand,
+} from "../../src/cli/run-task.js";
 import type { IpcResponse } from "../../src/lib/ipc/protocol.js";
 
 type Frame = [event: string, data: unknown];
@@ -173,4 +178,135 @@ describe("runTask", () => {
       expect(ipc.request).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("runTaskCommand", () => {
+  const ok: IpcResponse = { id: "r", result: { success: true } };
+  const gone: IpcResponse = { id: "r", error: "Unknown session" };
+
+  function deps(options: { project?: () => Promise<number>; implicit?: IpcResponse[] }) {
+    const responses = [...(options.implicit ?? [ok])];
+    const ipcs: ReturnType<typeof fakeIpc>[] = [];
+    const value = {
+      withDaemon: vi.fn(
+        async (
+          fn: (ipc: Pick<SessionIpc, "request" | "stream">) => Promise<number>,
+          sessionArg?: string,
+        ): Promise<number> => {
+          if (sessionArg || options.project) {
+            return fn(fakeIpc(sessionArg ? ok : gone));
+          }
+          throw new CliError("No running zaps session for this project.");
+        },
+      ),
+      ensureImplicitSession: vi.fn(async () => ({ sessionId: "implicit", socketPath: "/s" })),
+      ensureDaemon: vi.fn(async () => "/s"),
+      sessionIpc: vi.fn(() => {
+        const ipc = fakeIpc(responses.shift() ?? ok);
+        ipcs.push(ipc);
+        return ipc;
+      }),
+      cwd: () => "/project",
+    };
+    return { value, ipcs };
+  }
+
+  it("keeps -s on the explicit session without implicit creation", async () => {
+    const { value } = deps({});
+    const { io } = capture();
+    await expect(
+      runTaskCommand({ key: "lint", format: "text", sessionArg: "abc" }, value, io),
+    ).resolves.toBe(0);
+    expect(value.withDaemon).toHaveBeenCalledWith(expect.any(Function), "abc");
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it("reports a vanished explicit session without retrying", async () => {
+    const { value } = deps({});
+    value.withDaemon.mockImplementationOnce(async (fn) => fn(fakeIpc(gone)));
+    const { io, err } = capture();
+    await expect(
+      runTaskCommand({ key: "lint", format: "text", sessionArg: "abc" }, value, io),
+    ).resolves.toBe(1);
+    expect(err).toEqual(["Error: Unknown session\n"]);
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it.each(["No running zaps session for this project.", "Daemon not running."])(
+    "creates an implicit session when: %s",
+    async (message) => {
+      const { value } = deps({});
+      value.withDaemon.mockRejectedValueOnce(new CliError(message));
+      const { io } = capture();
+      await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(0);
+      expect(value.ensureImplicitSession).toHaveBeenCalledWith({
+        cwd: "/project",
+        ensureDaemon: value.ensureDaemon,
+        task: "lint",
+      });
+      expect(value.sessionIpc).toHaveBeenCalledWith("/s", "implicit");
+    },
+  );
+
+  it("rethrows other session lookup errors", async () => {
+    const { value } = deps({});
+    value.withDaemon.mockRejectedValueOnce(new CliError("Cannot access zaps daemon socket"));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "Cannot access",
+    );
+    expect(value.ensureImplicitSession).not.toHaveBeenCalled();
+  });
+
+  it("retries once when the implicit session vanished", async () => {
+    const { value } = deps({ implicit: [gone, ok] });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(0);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(2);
+    expect(err).toEqual([]);
+  });
+
+  it("gives up after the single retry", async () => {
+    const { value } = deps({
+      implicit: [gone, { id: "r", error: "session_closing", errorCode: "session_closing" }],
+    });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(1);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(2);
+    expect(err).toEqual(["Error: session_closing\n"]);
+  });
+
+  it("falls back to an implicit session when the project session vanished", async () => {
+    const { value } = deps({ project: async () => 0, implicit: [gone] });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(1);
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(1);
+    expect(err).toEqual(["Error: Unknown session\n"]);
+  });
+
+  it("uses the implicit start hint without a preflight", async () => {
+    const { value, ipcs } = deps({
+      implicit: [
+        {
+          id: "r",
+          error: 'Task "seed" needs services that are not running: db (stopped)',
+          errorCode: "services_not_running",
+        },
+      ],
+    });
+    const { io, err } = capture();
+    await expect(runTaskCommand({ key: "seed", format: "text" }, value, io)).resolves.toBe(1);
+    expect(err).toEqual([
+      'Error: Task "seed" needs services that are not running: db (stopped)\n',
+      'Rerun with --start, or run "zaps up" first.\n',
+    ]);
+    expect(ipcs[0].request).not.toHaveBeenCalled();
+  });
+
+  it("propagates implicit creation failures", async () => {
+    const { value } = deps({});
+    value.ensureImplicitSession.mockRejectedValueOnce(new CliError("No config found."));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "No config found.",
+    );
+  });
 });

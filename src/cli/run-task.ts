@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import { taskPreflightSchema } from "#src/lib/backend/wire.js";
+import type { ImplicitSessionOptions } from "#src/lib/session/implicit.js";
 
-import { CliError } from "./helpers.js";
+import { CliError, DAEMON_NOT_RUNNING, NO_PROJECT_SESSION } from "./helpers.js";
 import type { SessionIpc } from "./helpers.js";
 import { writeData } from "./output.js";
 import type { OutputFormat } from "./output.js";
@@ -77,15 +78,36 @@ async function notRunningServices(ipc: Pick<SessionIpc, "request">, key: string)
   return [];
 }
 
+const IMPLICIT_START_HINT = 'Rerun with --start, or run "zaps up" first.';
+
+/** The session vanished before the request reached it (ephemeral auto-destroy). */
+class SessionGoneError extends Error {
+  public override readonly name = "SessionGoneError";
+}
+
+function isSessionGone(res: { error?: string; errorCode?: string }): boolean {
+  return res.error === "Unknown session" || res.errorCode === "session_closing";
+}
+
 function startHint(names: readonly string[]): string {
   const target = names.length > 0 ? names.join(" ") : "<services>";
   return `Start them with "zaps start ${target}" or rerun with --start.`;
 }
 
+interface RunTaskOptions {
+  key: string;
+  start?: boolean;
+  format: OutputFormat;
+  /** Session was created for this call; `zaps start` hints would not work. */
+  implicit?: boolean;
+  /** Throw `SessionGoneError` instead of reporting a vanished session. */
+  retryable?: boolean;
+}
+
 /** Run a task over IPC; returns the process exit code. */
 async function runTask(
   ipc: Pick<SessionIpc, "request" | "stream">,
-  options: { key: string; start?: boolean; format: OutputFormat },
+  options: RunTaskOptions,
   io: RunTaskIo = defaultIo,
 ): Promise<number> {
   const { key, start, format } = options;
@@ -102,9 +124,15 @@ async function runTask(
     },
   );
   if (res.error !== undefined) {
+    if (options.retryable && isSessionGone(res)) {
+      throw new SessionGoneError(res.error);
+    }
     io.stderr(`Error: ${res.error}\n`);
     if (res.errorCode === "services_not_running") {
-      io.stderr(`${startHint(await notRunningServices(ipc, key))}\n`);
+      const hint = options.implicit
+        ? IMPLICIT_START_HINT
+        : startHint(await notRunningServices(ipc, key));
+      io.stderr(`${hint}\n`);
     }
     return 1;
   }
@@ -119,5 +147,82 @@ async function runTask(
   return 0;
 }
 
-export { createServiceProgressPrinter, resolveStartFlag, runTask };
-export type { RunTaskIo };
+interface RunTaskCommandDeps {
+  withDaemon: (
+    fn: (ipc: Pick<SessionIpc, "request" | "stream">) => Promise<number>,
+    sessionArg?: string,
+  ) => Promise<number>;
+  ensureImplicitSession: (
+    options: ImplicitSessionOptions,
+  ) => Promise<{ sessionId: string; socketPath: string }>;
+  ensureDaemon: () => Promise<string>;
+  sessionIpc: (sock: string, id: string) => Pick<SessionIpc, "request" | "stream">;
+  cwd: () => string;
+}
+
+function isMissingSession(error: unknown): boolean {
+  return (
+    error instanceof CliError &&
+    (error.message === NO_PROJECT_SESSION || error.message === DAEMON_NOT_RUNNING)
+  );
+}
+
+async function runImplicit(
+  options: RunTaskOptions,
+  deps: RunTaskCommandDeps,
+  io: RunTaskIo,
+  retryable: boolean,
+): Promise<number> {
+  const { sessionId, socketPath } = await deps.ensureImplicitSession({
+    cwd: deps.cwd(),
+    ensureDaemon: deps.ensureDaemon,
+    task: options.key,
+  });
+  return runTask(
+    deps.sessionIpc(socketPath, sessionId),
+    { ...options, implicit: true, retryable },
+    io,
+  );
+}
+
+/**
+ * `zaps run`: use the project's session, or create an implicit one. A session
+ * that vanishes before the request reaches it is retried once.
+ */
+async function runTaskCommand(
+  options: RunTaskOptions & { sessionArg?: string },
+  deps: RunTaskCommandDeps,
+  io: RunTaskIo = defaultIo,
+): Promise<number> {
+  const { sessionArg, ...run } = options;
+  if (sessionArg) {
+    return deps.withDaemon(async (ipc) => runTask(ipc, run, io), sessionArg);
+  }
+  try {
+    return await deps.withDaemon(async (ipc) => runTask(ipc, { ...run, retryable: true }, io));
+  } catch (error) {
+    if (error instanceof SessionGoneError) {
+      return runImplicit(run, deps, io, false);
+    }
+    if (!isMissingSession(error)) {
+      throw error;
+    }
+  }
+  try {
+    return await runImplicit(run, deps, io, true);
+  } catch (error) {
+    if (error instanceof SessionGoneError) {
+      return runImplicit(run, deps, io, false);
+    }
+    throw error;
+  }
+}
+
+export {
+  SessionGoneError,
+  createServiceProgressPrinter,
+  resolveStartFlag,
+  runTask,
+  runTaskCommand,
+};
+export type { RunTaskCommandDeps, RunTaskIo };

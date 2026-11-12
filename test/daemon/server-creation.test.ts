@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CliError, sessionIpc } from "#src/cli/helpers.js";
+import { runTaskCommand } from "#src/cli/run-task.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import type { ResolvedConfig } from "#src/config/types.js";
 import { sessionHandlers } from "#src/daemon/handlers/session.js";
@@ -19,6 +21,7 @@ import { ipcRequest } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import { ServiceManager } from "#src/lib/service/manager.js";
+import { ensureImplicitSession } from "#src/lib/session/implicit.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 vi.mock("#src/config/project-context.js", () => ({ loadProjectContext: vi.fn() }));
@@ -466,6 +469,94 @@ describe("session creation with real shell orchestration", () => {
       server.create({ ...request(), ephemeral: true, startServices: true }),
     ).rejects.toThrow(/startServices/);
     expect(server.list()).toEqual([]);
+  });
+
+  describe("zaps run without a session", () => {
+    const keepAlive = () =>
+      `exec ${shellEscape(process.execPath)} -e 'setInterval(() => {}, 1000)' ${shellEscape(root)}`;
+
+    async function runWithoutSession(socket: string, key: string, start?: boolean) {
+      fs.writeFileSync(config.configPath, "export default {};\n");
+      await server.start(socket);
+      const out: string[] = [];
+      const err: string[] = [];
+      const code = await runTaskCommand(
+        { key, format: "text", ...(start === undefined ? {} : { start }) },
+        {
+          withDaemon: async () => {
+            throw new CliError("No running zaps session for this project.");
+          },
+          ensureImplicitSession,
+          ensureDaemon: async () => socket,
+          sessionIpc,
+          cwd: () => root,
+        },
+        {
+          stdout: (text) => out.push(text),
+          stderr: (text) => err.push(text),
+          data: () => undefined,
+        },
+      );
+      return { code, out, err };
+    }
+
+    it("runs an independent task and leaves no session behind", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: {
+          hello: { name: "Hello", commands: "echo hi" },
+          broken: { name: "Broken", commands: "exit 3" },
+        },
+      };
+      const start = vi.spyOn(ShellRuntime.prototype, "start");
+      const socket = path.join(root, "run-implicit.sock");
+      const ok = await runWithoutSession(socket, "hello");
+      expect(ok.code).toBe(0);
+      expect(ok.out).toEqual(["hi\n"]);
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+      const failed = await runWithoutSession(socket, "broken");
+      expect(failed.code).toBe(1);
+      expect(failed.err).toContain("Task failed.\n");
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+      expect(start.mock.calls.map(([spec]) => spec.unitId)).not.toContain("db");
+    });
+
+    it("keeps a task-only session with ready services after --start", async () => {
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          idle: { start: keepAlive(), sentra: false },
+        },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const socket = path.join(root, "run-start.sock");
+      const result = await runWithoutSession(socket, "seed", true);
+      expect(result.code).toBe(0);
+      expect(result.err).toEqual(["Starting db…\n", "db ready\n"]);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      const [session] = server.list();
+      expect(session.startupPending).toBe(true);
+      expect(session.ephemeral).toBe(false);
+      expect(session.manager.getStatus("db")?.state).toBe("ready");
+      expect(session.manager.getStatus("idle")?.state).toBe("stopped");
+      await session.manager.stopAll();
+    });
+
+    it("prints the implicit hint and destroys the session when services are missing", async () => {
+      config.project = {
+        name: "creation",
+        services: { db: { start: keepAlive(), sentra: false } },
+        tasks: { seed: { name: "Seed", commands: "true", services: ["db"] } },
+      };
+      const result = await runWithoutSession(path.join(root, "run-missing.sock"), "seed");
+      expect(result.code).toBe(1);
+      expect(result.err.at(-1)).toBe('Rerun with --start, or run "zaps up" first.\n');
+      await vi.waitFor(() => expect(server.list()).toEqual([]));
+    });
   });
 
   describe("task-only reload", () => {

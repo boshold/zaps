@@ -25,6 +25,7 @@ import {
   resolveSessionId,
   resolveTargetSession,
   runDown,
+  sessionIpc,
   withDaemon,
 } from "./cli/helpers.js";
 import {
@@ -38,7 +39,7 @@ import {
   sessionRows,
   writeData,
 } from "./cli/output.js";
-import { resolveStartFlag, runTask } from "./cli/run-task.js";
+import { resolveStartFlag, runTaskCommand } from "./cli/run-task.js";
 import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { listStartupSessions } from "./cli/startup-session.js";
@@ -56,6 +57,7 @@ import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment } from "./lib/request-context.js";
 import { computeProjectSessionId } from "./lib/sentra/session-id.js";
+import { ensureImplicitSession } from "./lib/session/implicit.js";
 import { currentSession } from "./lib/tmux.js";
 
 declare const __VERSION__: string;
@@ -547,9 +549,15 @@ const runCommand = command(
     try {
       const start = resolveStartFlag(opts);
       const format = resolveFormat(opts);
-      const exitCode = await withDaemon(
-        async (ipc) => runTask(ipc, { key, start, format }),
-        globalSession(),
+      const exitCode = await runTaskCommand(
+        { key, start, format, sessionArg: globalSession() },
+        {
+          withDaemon,
+          ensureImplicitSession,
+          ensureDaemon: async () => ensureDaemon(resolveCommandArgv()),
+          sessionIpc,
+          cwd: () => process.cwd(),
+        },
       );
       if (exitCode !== 0) {
         process.exit(exitCode);

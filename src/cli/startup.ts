@@ -4,18 +4,14 @@ import { discoverConfig } from "#src/config/discovery.js";
 import { loadProjectContext } from "#src/config/project-context.js";
 import { ensureDaemon } from "#src/daemon/index.js";
 import { isDaemonRunning, socketPath } from "#src/daemon/lifecycle.js";
-import { sessionId } from "#src/daemon/session.js";
-import {
-  ipcErrorResponseSchema,
-  sessionCreateParamsSchema,
-  sessionCreatedSchema,
-} from "#src/lib/backend/schemas.js";
+import { ipcErrorResponseSchema, sessionCreatedSchema } from "#src/lib/backend/schemas.js";
 import type { BackendId } from "#src/lib/backend/types.js";
 import { parseDaemonStatus, parseServiceStatus } from "#src/lib/backend/wire.js";
 import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcSend, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
+import { createShellSession } from "#src/lib/session/implicit.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "#src/lib/tmux.js";
 
 import { StartupArgumentError, selectStartupBackend } from "./backend-selection.js";
@@ -163,16 +159,7 @@ async function startShell(project: ProjectIdentity, attachUi: boolean): Promise<
       "The running daemon does not support the shell backend. Upgrade Zaps and restart the daemon when its running sessions can be stopped.",
     );
   }
-  const params = sessionCreateParamsSchema.parse({ ...project, backend: "shell" });
-  const session = sessionCreatedSchema.parse(
-    readDaemonResult(await ipcRequest(sock, "session.create", params)),
-  );
-  if (
-    session.backend !== "shell" ||
-    session.id !== sessionId(project.configPath, project.resolvedProjectDir)
-  ) {
-    throw new CliError("Daemon returned an unexpected shell session.");
-  }
+  const session = await createShellSession(sock, project);
   if (attachUi) {
     await runTui({ sessionId: session.id, socketPath: sock });
     return;
