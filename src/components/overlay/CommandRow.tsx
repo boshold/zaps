@@ -9,6 +9,8 @@ interface CommandRowProps {
   indexes: number[];
   /** Optional dimmed trailing hint (url, shortcut). */
   hint?: string;
+  /** Optional dimmed text after the title; truncated first on narrow widths. */
+  detail?: string;
   selected: boolean;
 }
 
@@ -28,15 +30,26 @@ function renderTitle(title: string, indexes: number[]): ReactNode[] {
 }
 
 /** One palette result row: selection marker, fuzzy-highlighted title, optional hint. */
-export function CommandRow({ title, indexes, hint, selected }: CommandRowProps) {
+export function CommandRow({ title, indexes, hint, detail, selected }: CommandRowProps) {
   const { icon } = useIcons();
   const marker = selected ? `${icon("selection")} ` : "  ";
 
   return (
     <Box>
       <Text color={selected ? "cyan" : undefined}>{marker}</Text>
-      <Text bold={selected}>{renderTitle(title, indexes)}</Text>
-      {hint ? <Text dimColor>{`  ${hint}`}</Text> : null}
+      <Box flexShrink={0}>
+        <Text bold={selected}>{renderTitle(title, indexes)}</Text>
+      </Box>
+      {detail ? (
+        <Box flexShrink={1}>
+          <Text dimColor wrap="truncate-end">{`  ${detail}`}</Text>
+        </Box>
+      ) : null}
+      {hint ? (
+        <Box flexShrink={0}>
+          <Text dimColor>{`  ${hint}`}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 }

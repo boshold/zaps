@@ -35,6 +35,7 @@ import { ErrorCounter } from "#src/lib/sentra/counter.js";
 import { SentraHost } from "#src/lib/sentra/host.js";
 import { shellEscape } from "#src/lib/service/env.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
+import { resolveTaskServiceRequirements } from "#src/lib/task/service-requirements.js";
 import { tmuxFor } from "#src/lib/tmux.js";
 
 import { DetachedRegistry } from "./detached-registry.js";
@@ -514,11 +515,14 @@ class DaemonServer implements SessionStore {
           }
           return backendRef.current.paneFor(name);
         },
-        tasks: () =>
-          Object.entries(ref.session?.config.project.tasks ?? {}).map(([key, task]) => ({
+        tasks: () => {
+          const tasks = ref.session?.config.project.tasks ?? {};
+          return Object.entries(tasks).map(([key, task]) => ({
             key,
             name: task.name,
-          })),
+            requiredServices: resolveTaskServiceRequirements(tasks, key).services,
+          }));
+        },
         output: (runId) => ref.session?.taskOutput.get(runId) ?? undefined,
         reconcile: async (layout) => {
           if (!backendRef.current) {
