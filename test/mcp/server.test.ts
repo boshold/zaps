@@ -750,6 +750,7 @@ describe("startMcpServer", () => {
         cwd: process.cwd(),
         ensureDaemon: mockEnsureDaemon,
         task: "build",
+        retryStep: "call tasks_run again",
       });
       expect(mockIpcStream).toHaveBeenCalledWith(
         IMPLICIT.socketPath,
@@ -822,6 +823,61 @@ describe("startMcpServer", () => {
         });
       },
     );
+
+    it.each([
+      { label: "a new implicit session", setup: () => setSessionList({ id: "L", result: [] }) },
+      {
+        label: "a retried implicit session",
+        setup: () => {
+          mockIpcStream.mockResolvedValueOnce({ id: "r0", error: "Unknown session" });
+        },
+      },
+    ])("only suggests start: true after $label", async ({ setup }) => {
+      mockIpcStream.mockResolvedValue({
+        id: "r1",
+        error: "needs db",
+        errorCode: "services_not_running",
+      });
+      setup();
+      const result = await runTool({ key: "build" });
+      expect(result).toEqual({
+        content: [{ type: "text", text: "Error: needs db\nCall tasks_run with start: true." }],
+        isError: true,
+      });
+    });
+
+    it("surfaces the MCP raw-service hint from implicit creation", async () => {
+      await startMcpServer(SOCK, undefined, { ensureDaemon: mockEnsureDaemon });
+      setSessionList({ id: "L", result: [] });
+      const cwdSpy = vi.spyOn(process, "cwd");
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zaps-mcp-raw-"));
+      try {
+        cwdSpy.mockReturnValue(dir);
+        fs.writeFileSync(
+          path.join(dir, ".zaps.mts"),
+          `export function config({ define }) {\n  return define({ services: { tunnel: { start: "ngrok", raw: true } }, tasks: { lint: { name: "Lint", commands: "true" } } });\n}\n`,
+        );
+        mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) => {
+          if (method === "session.list") {
+            return { id: "L", result: [] };
+          }
+          if (method === "daemon.status") {
+            return {
+              id: "s",
+              result: { pid: 1, sessions: [], capabilities: { implicitSessions: true } },
+            };
+          }
+          return { id: "c", error: "raw input", errorCode: "unsupported_config" };
+        });
+        mockEnsureDaemon.mockResolvedValue(SOCK);
+        await expect(runTool({ key: "lint" })).rejects.toThrow(
+          'Service "tunnel" uses raw input, which needs tmux. Run "zaps up" first, then call tasks_run again.',
+        );
+      } finally {
+        cwdSpy.mockRestore();
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
 
     it("keeps service and notice events out of the task output", async () => {
       mockIpcStream.mockImplementation(

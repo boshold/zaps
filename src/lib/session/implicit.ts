@@ -83,6 +83,8 @@ interface ImplicitSessionOptions {
   ensureDaemon: () => Promise<string>;
   /** Task key used in the raw-input hint. */
   task?: string;
+  /** Replaces the `"zaps run <task>"` step of the raw-input hint. */
+  retryStep?: string;
 }
 
 /** Create (or join) the project's background shell session without starting services. */
@@ -104,9 +106,9 @@ async function ensureImplicitSession(
     return { sessionId: session.id, socketPath: sock };
   } catch (error) {
     if (error instanceof DaemonRejectionError && error.code === "unsupported_config") {
-      const task = options.task ?? "<task>";
+      const retryStep = options.retryStep ?? `"zaps run ${options.task ?? "<task>"}"`;
       throw new CliError(
-        `Service "${rawServiceName(error, config)}" uses raw input, which needs tmux. Run "zaps up" first, then "zaps run ${task}".`,
+        `Service "${rawServiceName(error, config)}" uses raw input, which needs tmux. Run "zaps up" first, then ${retryStep}.`,
       );
     }
     throw error;

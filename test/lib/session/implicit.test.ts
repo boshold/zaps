@@ -115,6 +115,27 @@ describe("ensureImplicitSession", () => {
     );
   });
 
+  it("uses a custom retry step in the raw-input hint", async () => {
+    respond({
+      "daemon.status": status,
+      "session.create": {
+        id: "c",
+        error: "Service 'ngrok' sets raw: true, but this backend does not support raw input.",
+        errorCode: "unsupported_config",
+      },
+    });
+    await expect(
+      ensureImplicitSession({
+        cwd: "/project",
+        ensureDaemon,
+        task: "lint",
+        retryStep: "call tasks_run again",
+      }),
+    ).rejects.toThrow(
+      'Service "ngrok" uses raw input, which needs tmux. Run "zaps up" first, then call tasks_run again.',
+    );
+  });
+
   it("falls back to the config for the raw service name", async () => {
     mocks.services.value = { web: { start: "w" }, tunnel: { start: "t", raw: true } };
     respond({

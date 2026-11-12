@@ -38,6 +38,7 @@ const SERVICE_ERROR_CODES = new Set([
   "service_unavailable",
 ]);
 const SERVICE_ERROR_HINT = "Start them with services_start or call tasks_run with start: true.";
+const IMPLICIT_SERVICE_ERROR_HINT = "Call tasks_run with start: true.";
 
 function isDaemonDown(error: unknown): boolean {
   const code = error instanceof Error && "code" in error ? error.code : undefined;
@@ -173,15 +174,21 @@ async function startMcpServer(
   const loadLocalTasks = options.loadLocalTasks ?? defaultLoadLocalTasks;
 
   async function implicitSession(key: string) {
-    return createImplicitSession({ cwd: process.cwd(), ensureDaemon, task: key });
+    const session = await createImplicitSession({
+      cwd: process.cwd(),
+      ensureDaemon,
+      task: key,
+      retryStep: "call tasks_run again",
+    });
+    return { ...session, implicit: true };
   }
 
   /** `tasks_run` only: the project's session, or an implicit one (`-s` never falls back). */
   async function resolveTaskSession(
     key: string,
-  ): Promise<{ sessionId: string; socketPath: string }> {
+  ): Promise<{ sessionId: string; socketPath: string; implicit: boolean }> {
     const id = await findSession(true);
-    return id === null ? implicitSession(key) : { sessionId: id, socketPath };
+    return id === null ? implicitSession(key) : { sessionId: id, socketPath, implicit: false };
   }
 
   async function request(method: string, params?: unknown): Promise<unknown> {
@@ -427,16 +434,19 @@ async function startMcpServer(
       const params =
         args.start === undefined ? { key: args.key } : { key: args.key, start: args.start };
       let lines: string[] = [];
-      let res = await streamTask(await resolveTaskSession(args.key), params, lines);
+      let target = await resolveTaskSession(args.key);
+      let res = await streamTask(target, params, lines);
       // Sent only before the task starts (session auto-destroyed), so one retry cannot run it twice.
       if (!sessionArg && res.error === "Unknown session") {
         lines = [];
-        res = await streamTask(await implicitSession(args.key), params, lines);
+        target = await implicitSession(args.key);
+        res = await streamTask(target, params, lines);
       }
       if (res.error) {
+        const serviceHint = target.implicit ? IMPLICIT_SERVICE_ERROR_HINT : SERVICE_ERROR_HINT;
         const hint =
           res.errorCode !== undefined && SERVICE_ERROR_CODES.has(res.errorCode)
-            ? `\n${SERVICE_ERROR_HINT}`
+            ? `\n${serviceHint}`
             : "";
         return textResult(`Error: ${res.error}${hint}`, true);
       }
