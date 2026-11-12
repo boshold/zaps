@@ -11,7 +11,7 @@ import { getEnv } from "#src/lib/env.js";
 import { ipcRequest, ipcSend, ipcSubscribe } from "#src/lib/ipc/client.js";
 import type { IpcSubscription } from "#src/lib/ipc/client.js";
 import { captureEnvironment } from "#src/lib/request-context.js";
-import { createShellSession } from "#src/lib/session/implicit.js";
+import { NO_CONFIG, createShellSession } from "#src/lib/session/implicit.js";
 import { currentPaneId, currentSession, selectPane, sendKeys } from "#src/lib/tmux.js";
 
 import { StartupArgumentError, selectStartupBackend } from "./backend-selection.js";
@@ -313,7 +313,7 @@ async function runStartup(
   const projectDir = process.cwd();
   const configPath = discoverConfig(projectDir);
   if (!configPath) {
-    throw new CliError("No config found. Run `zaps init` to create one.");
+    throw new CliError(NO_CONFIG);
   }
   const { config } = await loadProjectContext(configPath, projectDir, captureEnvironment());
   const sock = socketPath();

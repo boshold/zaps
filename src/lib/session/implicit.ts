@@ -66,6 +66,18 @@ function rawServiceName(error: DaemonRejectionError, config: ResolvedConfig): st
   return raw?.[0] ?? "<service>";
 }
 
+/** Discover and load the project config for `cwd` without a daemon. */
+async function loadLocalProject(
+  cwd: string,
+): Promise<{ configPath: string; config: ResolvedConfig }> {
+  const configPath = discoverConfig(cwd);
+  if (!configPath) {
+    throw new CliError(NO_CONFIG);
+  }
+  const { config } = await loadProjectContext(configPath, cwd, captureEnvironment());
+  return { configPath, config };
+}
+
 interface ImplicitSessionOptions {
   cwd: string;
   ensureDaemon: () => Promise<string>;
@@ -77,11 +89,7 @@ interface ImplicitSessionOptions {
 async function ensureImplicitSession(
   options: ImplicitSessionOptions,
 ): Promise<{ sessionId: string; socketPath: string }> {
-  const configPath = discoverConfig(options.cwd);
-  if (!configPath) {
-    throw new CliError(NO_CONFIG);
-  }
-  const { config } = await loadProjectContext(configPath, options.cwd, captureEnvironment());
+  const { configPath, config } = await loadLocalProject(options.cwd);
   const sock = await options.ensureDaemon();
   const status = parseDaemonStatus(readResult(await ipcRequest(sock, "daemon.status")));
   if (!status.implicitSessions) {
@@ -105,5 +113,12 @@ async function ensureImplicitSession(
   }
 }
 
-export { DaemonRejectionError, createShellSession, ensureImplicitSession, readResult };
+export {
+  DaemonRejectionError,
+  NO_CONFIG,
+  createShellSession,
+  ensureImplicitSession,
+  loadLocalProject,
+  readResult,
+};
 export type { ImplicitSessionOptions, ShellProject };

@@ -47,6 +47,7 @@ import { renderStartupError, requireUiTerminal, runStartup } from "./cli/startup
 import { listTasks } from "./cli/tasks-list.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { discoverConfig } from "./config/discovery.js";
+import { ConfigError } from "./config/index.js";
 import { loadProjectContext } from "./config/project-context.js";
 import { scaffoldConfig } from "./config/scaffold.js";
 import { ensureDaemon, runDaemon } from "./daemon/index.js";
@@ -58,7 +59,7 @@ import { logLinesDataSchema } from "./lib/ipc/protocol.js";
 import type { DaemonEvent } from "./lib/ipc/protocol.js";
 import { captureEnvironment } from "./lib/request-context.js";
 import { computeProjectSessionId } from "./lib/sentra/session-id.js";
-import { ensureImplicitSession } from "./lib/session/implicit.js";
+import { NO_CONFIG, ensureImplicitSession, loadLocalProject } from "./lib/session/implicit.js";
 import { currentSession } from "./lib/tmux.js";
 
 declare const __VERSION__: string;
@@ -656,7 +657,7 @@ const configCommand = command(
     const opts = parsed.flags;
     const configPath = discoverConfig(process.cwd());
     if (!configPath) {
-      process.stderr.write("No config found. Run `zaps init` to create one.\n");
+      process.stderr.write(`${NO_CONFIG}\n`);
       process.exit(1);
     }
 
@@ -905,15 +906,7 @@ const tasksCommand = command(
       const entries = await listTasks(globalSession(), {
         withDaemon,
         loadLocalTasks: async () => {
-          const configPath = discoverConfig(process.cwd());
-          if (!configPath) {
-            throw new CliError("No config found. Run `zaps init` to create one.");
-          }
-          const { config } = await loadProjectContext(
-            configPath,
-            process.cwd(),
-            captureEnvironment(),
-          ).catch((error: unknown) => renderCliError(error));
+          const { config } = await loadLocalProject(process.cwd());
           return config.project.tasks ?? {};
         },
       });
@@ -923,7 +916,7 @@ const tasksCommand = command(
       }
       process.stdout.write(`${formatTaskList(entries)}\n`);
     } catch (error) {
-      if (error instanceof CliError) {
+      if (error instanceof CliError || error instanceof ConfigError) {
         renderCliError(error);
       }
       throw error;

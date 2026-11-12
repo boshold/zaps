@@ -2,7 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionId } from "#src/daemon/session.js";
 import type { IpcResponse } from "#src/lib/ipc/protocol.js";
-import { createShellSession, ensureImplicitSession } from "#src/lib/session/implicit.js";
+import {
+  NO_CONFIG,
+  createShellSession,
+  ensureImplicitSession,
+  loadLocalProject,
+} from "#src/lib/session/implicit.js";
 
 const mocks = vi.hoisted(() => ({
   discoverConfig: vi.fn<(dir: string) => string | null>(),
@@ -164,5 +169,22 @@ describe("createShellSession", () => {
         resolvedProjectDir: "/project",
       }),
     ).rejects.toThrow(/^boom$/);
+  });
+});
+
+describe("loadLocalProject", () => {
+  it("loads the discovered config without a daemon", async () => {
+    mocks.discoverConfig.mockReturnValue("/project/.zaps.mts");
+    mocks.request.mockClear();
+    await expect(loadLocalProject("/project")).resolves.toMatchObject({
+      configPath: "/project/.zaps.mts",
+      config: { projectDir: "/project" },
+    });
+    expect(mocks.request).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing config", async () => {
+    mocks.discoverConfig.mockReturnValue(null);
+    await expect(loadLocalProject("/x")).rejects.toThrow(NO_CONFIG);
   });
 });
