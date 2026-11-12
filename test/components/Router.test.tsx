@@ -989,6 +989,36 @@ describe("Router", () => {
       expect(client.runTask).toHaveBeenCalledExactlyOnceWith("migrate", {}, NO_START);
     });
 
+    it("cancels a prompt replaced by another prompt", async () => {
+      const first = deferred<Awaited<ReturnType<DaemonClient["preflightTask"]>>>();
+      const second = deferred<Awaited<ReturnType<DaemonClient["preflightTask"]>>>();
+      const { stdin, client } = renderRouter({
+        tasks: [...tasks, { key: "seed", name: "Seed", description: null }],
+      });
+      vi.mocked(client.preflightTask)
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      await pressKey(stdin, ":");
+      await pressKey(stdin, "migrations");
+      await pressKey(stdin, "\r");
+      await pressKey(stdin, "t");
+      await pressKey(stdin, "seed");
+      await pressKey(stdin, "\r");
+      expect(vi.mocked(client.preflightTask).mock.calls).toEqual([["migrate"], ["seed"]]);
+      await act(async () => {
+        first.resolve(preflight());
+      });
+      expect(overlay?.top?.id).toBe(START_SERVICES_ID);
+      await act(async () => {
+        second.resolve(preflight({ key: "seed" }));
+      });
+      await pressKey(stdin, "j");
+      await pressKey(stdin, "n");
+      expect(overlay?.isOpen).toBe(false);
+      await launchFromPalette(stdin);
+      expect(client.preflightTask).toHaveBeenCalledTimes(3);
+    });
+
     it("clears the shortcut running guard when the launch is rejected", async () => {
       const { stdin, client, lastFrame } = renderRouter({ tasks });
       vi.mocked(client.runTask).mockRejectedValueOnce(
