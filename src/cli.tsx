@@ -44,6 +44,7 @@ import { runTui } from "./cli/run-tui.js";
 import { createAutoStartRequest, runSentraCli } from "./cli/sentra.js";
 import { listStartupSessions } from "./cli/startup-session.js";
 import { renderStartupError, requireUiTerminal, runStartup } from "./cli/startup.js";
+import { listTasks } from "./cli/tasks-list.js";
 import { refuseManagedMessage, refusePersonalMessage } from "./cli/tmux-context.js";
 import { discoverConfig } from "./config/discovery.js";
 import { loadProjectContext } from "./config/project-context.js";
@@ -900,19 +901,27 @@ const tasksCommand = command(
     rejectExcessArgs("tasks", parsed._, 0);
     const opts = parsed.flags;
     try {
-      await withDaemon(async (ipc) => {
-        const res = await ipc.request("tasks.list");
-        if (res.error) {
-          process.stderr.write(`Error: ${res.error}\n`);
-          process.exit(1);
-        }
-        const format = resolveFormat(opts);
-        if (format !== "text") {
-          writeData(res.result, format);
-          return;
-        }
-        process.stdout.write(`${formatTaskList(res.result)}\n`);
-      }, globalSession());
+      const format = resolveFormat(opts);
+      const entries = await listTasks(globalSession(), {
+        withDaemon,
+        loadLocalTasks: async () => {
+          const configPath = discoverConfig(process.cwd());
+          if (!configPath) {
+            throw new CliError("No config found. Run `zaps init` to create one.");
+          }
+          const { config } = await loadProjectContext(
+            configPath,
+            process.cwd(),
+            captureEnvironment(),
+          ).catch((error: unknown) => renderCliError(error));
+          return config.project.tasks ?? {};
+        },
+      });
+      if (format !== "text") {
+        writeData(entries, format);
+        return;
+      }
+      process.stdout.write(`${formatTaskList(entries)}\n`);
     } catch (error) {
       if (error instanceof CliError) {
         renderCliError(error);

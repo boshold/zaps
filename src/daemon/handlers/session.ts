@@ -78,6 +78,10 @@ async function prepareForRequest(
 
 /** Same reply as a missing session: the CLI may safely retry, nothing has run. */
 const UNKNOWN_SESSION = "Unknown session";
+const STALE_CONFIG_NOTICE: { level: "warn"; message: string } = {
+  level: "warn",
+  message: 'config changed since the session loaded it. Run "zaps reload".',
+};
 
 async function runTask(req: IpcRequest, session: Session, socket: Socket): Promise<IpcResponse> {
   if (!session.taskExecution.accepting) {
@@ -89,6 +93,9 @@ async function runTask(req: IpcRequest, session: Session, socket: Socket): Promi
   const tasks = session.config.project.tasks ?? {};
   if (!Object.hasOwn(tasks, key)) {
     return ipcErr(req.id, `Unknown task: ${key}`);
+  }
+  if (session.isConfigStale() && !socket.destroyed && socket.writable) {
+    send(socket, { id: req.id, event: "notice", data: STALE_CONFIG_NOTICE });
   }
 
   let startedServices: string[] = [];

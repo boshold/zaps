@@ -20,6 +20,7 @@ const serviceEventSchema = z.object({
 });
 
 const runResultSchema = z.object({ success: z.boolean() });
+const noticeSchema = z.object({ level: z.literal("warn"), message: z.string() });
 
 const defaultIo: RunTaskIo = {
   stdout: (text) => {
@@ -119,6 +120,11 @@ async function runTask(
     (event, data) => {
       if (event === "service") {
         printProgress(data);
+      } else if (event === "notice") {
+        const notice = noticeSchema.safeParse(data);
+        if (notice.success) {
+          io.stderr(`Warning: ${notice.data.message}\n`);
+        }
       } else if (format === "text" && event === "line" && typeof data === "string") {
         io.stdout(`${data}\n`);
       }
@@ -199,26 +205,24 @@ async function runTaskCommand(
   if (sessionArg) {
     return deps.withDaemon(async (ipc) => runTask(ipc, run, io), sessionArg);
   }
-  const retryOnce = async (attempt: () => Promise<number>): Promise<number> => {
-    try {
-      return await attempt();
-    } catch (error) {
-      if (error instanceof SessionGoneError) {
-        return runImplicit(run, deps, io, false);
-      }
-      throw error;
+  const retryImplicit = async (error: unknown): Promise<number> => {
+    if (error instanceof SessionGoneError) {
+      return runImplicit(run, deps, io, false);
     }
+    throw error;
   };
   try {
-    return await retryOnce(async () =>
-      deps.withDaemon(async (ipc) => runTask(ipc, { ...run, retryable: true }, io)),
-    );
+    return await deps.withDaemon(async (ipc) => runTask(ipc, { ...run, retryable: true }, io));
   } catch (error) {
     if (!isMissingSession(error)) {
-      throw error;
+      return retryImplicit(error);
     }
   }
-  return retryOnce(async () => runImplicit(run, deps, io, true));
+  try {
+    return await runImplicit(run, deps, io, true);
+  } catch (error) {
+    return retryImplicit(error);
+  }
 }
 
 export {

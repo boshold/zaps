@@ -180,6 +180,37 @@ describe("runTask", () => {
   );
 });
 
+describe("runTask notices", () => {
+  const notice = {
+    level: "warn",
+    message: 'config changed since the session loaded it. Run "zaps reload".',
+  };
+
+  it("prints notices as warnings on stderr", async () => {
+    const ipc = fakeIpc({ id: "r", result: { success: true } }, [
+      ["notice", notice],
+      ["notice", { level: "info", message: "ignored" }],
+      ["line", "out"],
+    ]);
+    const { io, out, err } = capture();
+    await expect(runTask(ipc, { key: "lint", format: "text" }, io)).resolves.toBe(0);
+    expect(err).toEqual([
+      'Warning: config changed since the session loaded it. Run "zaps reload".\n',
+    ]);
+    expect(out).toEqual(["out\n"]);
+  });
+
+  it("keeps --json output unaffected", async () => {
+    const result = { success: true, runId: "r1", startedServices: [] };
+    const ipc = fakeIpc({ id: "r", result }, [["notice", notice]]);
+    const { io, out, err, data } = capture();
+    await expect(runTask(ipc, { key: "lint", format: "json" }, io)).resolves.toBe(0);
+    expect(data).toEqual([result]);
+    expect(out).toEqual([]);
+    expect(err).toHaveLength(1);
+  });
+});
+
 describe("runTaskCommand", () => {
   const ok: IpcResponse = { id: "r", result: { success: true } };
   const gone: IpcResponse = { id: "r", error: "Unknown session" };
@@ -305,6 +336,15 @@ describe("runTaskCommand", () => {
     await expect(runTaskCommand({ key: "lint", format: "text" }, value, io)).resolves.toBe(1);
     expect(value.ensureImplicitSession).toHaveBeenCalledTimes(1);
     expect(err).toEqual(["Error: Unknown session\n"]);
+  });
+
+  it("does not go implicit again when the fallback reports a missing session", async () => {
+    const { value } = deps({ project: async () => 0 });
+    value.ensureImplicitSession.mockRejectedValueOnce(new CliError("Daemon not running."));
+    await expect(runTaskCommand({ key: "lint", format: "text" }, value)).rejects.toThrow(
+      "Daemon not running.",
+    );
+    expect(value.ensureImplicitSession).toHaveBeenCalledTimes(1);
   });
 
   it("uses the implicit start hint without a preflight", async () => {

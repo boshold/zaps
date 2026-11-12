@@ -1211,6 +1211,45 @@ describe("session handlers", () => {
       expect(socket.listenerCount("close")).toBe(0);
     });
 
+    it.each([true, false])(
+      "tasks.run emits the stale-config notice only when stale (%s)",
+      async (stale) => {
+        const { session } = taskSession({ lint: { name: "Lint", commands: "lint" } });
+        session.isConfigStale.mockReturnValue(stale);
+        const order: string[] = [];
+        session.prepareTask.mockImplementation(async () => {
+          order.push("prepare");
+          return { startedServices: [] };
+        });
+        const socket = Object.assign(createMockSocket(), { writable: true });
+        socket.write.mockImplementation((line: string) => {
+          if (line.includes('"notice"')) {
+            order.push("notice");
+          }
+          return true;
+        });
+        await sessionHandlers["tasks.run"](
+          runReq(session, { key: "lint" }),
+          createMockStore([session]),
+          socket as never,
+        );
+        const notice = `${JSON.stringify({
+          id: "run",
+          event: "notice",
+          data: {
+            level: "warn",
+            message: 'config changed since the session loaded it. Run "zaps reload".',
+          },
+        })}\n`;
+        if (stale) {
+          expect(socket.write).toHaveBeenCalledWith(notice);
+          expect(order).toEqual(["notice", "prepare"]);
+        } else {
+          expect(socket.write).not.toHaveBeenCalledWith(notice);
+        }
+      },
+    );
+
     it("tasks.run without services keeps the record shape", async () => {
       const { session, owner } = taskSession({ lint: { name: "Lint", commands: "lint" } });
       const res = await sessionHandlers["tasks.run"](
