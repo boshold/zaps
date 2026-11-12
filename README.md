@@ -1638,7 +1638,11 @@ background session like `zaps run`, and `tasks_list` reads the config. `tasks_ru
 takes an optional `start` (like `--start` / `--no-start`; omitted means the task's
 `autoStart`). When required services are missing, it returns an error naming them
 and tells the agent to start them with `services_start` or call `tasks_run` with
-`start: true`. The other MCP tools need a running session.
+`start: true`. When the run used a background session created for it, that session
+is already gone, so the hint is only `Call tasks_run with start: true.` A config with
+a `raw: true` service cannot get a background session; the error then ends with
+`Run "zaps up" first, then call tasks_run again.` The other MCP tools need a running
+session.
 
 #### Resources
 

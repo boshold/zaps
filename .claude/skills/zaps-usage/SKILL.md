@@ -22,11 +22,18 @@ zaps run seed --no-start   # never start services, even with autoStart
 
 Service progress (`Starting db…`, `db ready`) goes to stderr, task output to stdout.
 
-When a required service is not running and starting is not allowed, the task does not run and the command exits 1:
+When a required service is not running and starting is not allowed, the task does not run and the command exits 1. With a running session:
 
 ```
 Error: Task "seed" needs services that are not running: db (stopped)
 Start them with "zaps start db" or rerun with --start.
+```
+
+Without a session (the background session is already gone, so `zaps start` would not help):
+
+```
+Error: Task "seed" needs services that are not running: db (stopped)
+Rerun with --start, or run "zaps up" first.
 ```
 
 React like this:
