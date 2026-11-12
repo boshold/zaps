@@ -5,10 +5,12 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TaskConfig } from "../../src/config/types.js";
 import { sessionId } from "../../src/daemon/session.js";
 import { unavailableCapabilities } from "../../src/lib/backend/wire.js";
 import type { SubscribeHandlers } from "../../src/lib/ipc/client.js";
 import { errorsParamsSchema, issuesParamsSchema } from "../../src/lib/sentra/schemas.js";
+import type { ensureImplicitSession } from "../../src/lib/session/implicit.js";
 
 // --- IPC mocks (same pattern as daemon-client tests) ---
 
@@ -661,6 +663,219 @@ describe("startMcpServer", () => {
         content: [{ type: "text", text: "Task failed." }],
         isError: true,
       });
+    });
+  });
+
+  // --- Session-less tasks ---
+
+  describe("tasks without a session", () => {
+    const IMPLICIT = { sessionId: "implicit1", socketPath: "/implicit.sock" };
+    const mockEnsureImplicit = vi.fn<typeof ensureImplicitSession>();
+    const mockLoadLocalTasks = vi.fn<(cwd: string) => Promise<Record<string, TaskConfig>>>();
+
+    function daemonDown(): void {
+      mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) => {
+        if (method === "session.list") {
+          throw Object.assign(new Error("connect ENOENT"), { code: "ENOENT" });
+        }
+        return methodResponder();
+      });
+    }
+
+    function streamLines(...lines: string[]) {
+      return async (_sock: unknown, _method: unknown, _params: unknown, onEvent: unknown) => {
+        const emit = onEvent as (event: string, data: unknown) => void;
+        for (const line of lines) {
+          emit("line", line);
+        }
+        return { id: "r1", result: { success: true } };
+      };
+    }
+
+    async function startWith(sessionArg?: string) {
+      registeredTools.clear();
+      await startMcpServer(SOCK, sessionArg, {
+        ensureDaemon: mockEnsureDaemon,
+        ensureImplicitSession: mockEnsureImplicit,
+        loadLocalTasks: mockLoadLocalTasks,
+      });
+    }
+
+    async function runTool(args: Record<string, unknown>) {
+      return registeredTools.get("tasks_run")!.cb(args) as Promise<{
+        content: { text: string }[];
+        isError?: boolean;
+      }>;
+    }
+
+    beforeEach(async () => {
+      mockEnsureImplicit.mockReset();
+      mockEnsureImplicit.mockResolvedValue(IMPLICIT);
+      mockLoadLocalTasks.mockReset();
+      await startWith();
+    });
+
+    it("declares the optional start input", () => {
+      const meta = registeredTools.get("tasks_run")!.meta as {
+        inputSchema: Record<string, { description?: string; isOptional: () => boolean }>;
+      };
+      expect(meta.inputSchema.start.isOptional()).toBe(true);
+      expect(meta.inputSchema.start.description).toBe(
+        "Start required services that are not running. Omit to follow the task's autoStart config.",
+      );
+    });
+
+    it.each([true, false])("forwards start: %s", async (start) => {
+      mockIpcStream.mockImplementation(streamLines("ok"));
+      await runTool({ key: "build", start });
+      expect(mockIpcStream).toHaveBeenCalledWith(
+        SOCK,
+        "tasks.run",
+        { key: "build", start },
+        expect.any(Function),
+        120_000,
+        SESSION,
+      );
+      expect(mockEnsureImplicit).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: "no matching session", setup: () => setSessionList({ id: "L", result: [] }) },
+      { label: "no daemon", setup: daemonDown },
+    ])("creates an implicit session with $label", async ({ setup }) => {
+      setup();
+      mockIpcStream.mockImplementation(streamLines("done"));
+      const result = await runTool({ key: "build", start: true });
+      expect(mockEnsureImplicit).toHaveBeenCalledExactlyOnceWith({
+        cwd: process.cwd(),
+        ensureDaemon: mockEnsureDaemon,
+        task: "build",
+      });
+      expect(mockIpcStream).toHaveBeenCalledWith(
+        IMPLICIT.socketPath,
+        "tasks.run",
+        { key: "build", start: true },
+        expect.any(Function),
+        120_000,
+        IMPLICIT.sessionId,
+      );
+      expect(result).toEqual({ content: [{ type: "text", text: "done" }], isError: false });
+    });
+
+    it("retries once in a fresh implicit session on Unknown session", async () => {
+      mockIpcStream
+        .mockImplementationOnce(async () => ({ id: "r1", error: "Unknown session" }))
+        .mockImplementationOnce(streamLines("second"));
+      const result = await runTool({ key: "build" });
+      expect(mockIpcStream).toHaveBeenCalledTimes(2);
+      expect(mockIpcStream.mock.calls[1]?.[5]).toBe(IMPLICIT.sessionId);
+      expect(mockEnsureImplicit).toHaveBeenCalledOnce();
+      expect(result.content[0]?.text).toBe("second");
+    });
+
+    it("does not retry twice", async () => {
+      mockIpcStream.mockResolvedValue({ id: "r1", error: "Unknown session" });
+      const result = await runTool({ key: "build" });
+      expect(mockIpcStream).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({
+        content: [{ type: "text", text: "Error: Unknown session" }],
+        isError: true,
+      });
+    });
+
+    it("does not retry on session_closing", async () => {
+      mockIpcStream.mockResolvedValue({
+        id: "r1",
+        error: "Session is closing",
+        errorCode: "session_closing",
+      });
+      const result = await runTool({ key: "build" });
+      expect(mockIpcStream).toHaveBeenCalledOnce();
+      expect(mockEnsureImplicit).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+    });
+
+    it("never creates an implicit session with an explicit -s", async () => {
+      await startWith("ghost");
+      await expect(runTool({ key: "build" })).rejects.toThrow();
+      mockIpcStream.mockResolvedValue({ id: "r1", error: "Unknown session" });
+      await startWith(SESSION);
+      const result = await runTool({ key: "build" });
+      expect(mockIpcStream).toHaveBeenCalledOnce();
+      expect(mockEnsureImplicit).not.toHaveBeenCalled();
+      expect(result.isError).toBe(true);
+    });
+
+    it.each(["services_not_running", "service_start_failed", "service_unavailable"])(
+      "adds the start hint to %s errors",
+      async (errorCode) => {
+        mockIpcStream.mockResolvedValue({ id: "r1", error: "needs db", errorCode });
+        const result = await runTool({ key: "build" });
+        expect(result).toEqual({
+          content: [
+            {
+              type: "text",
+              text: "Error: needs db\nStart them with services_start or call tasks_run with start: true.",
+            },
+          ],
+          isError: true,
+        });
+      },
+    );
+
+    it("keeps service and notice events out of the task output", async () => {
+      mockIpcStream.mockImplementation(
+        async (_sock: unknown, _method: unknown, _params: unknown, onEvent: unknown) => {
+          const emit = onEvent as (event: string, data: unknown) => void;
+          emit("service", { name: "db", phase: "starting" });
+          emit("notice", { level: "warn", message: "stale config" });
+          emit("line", "task output");
+          emit("service", { name: "db", phase: "ready" });
+          return { id: "r1", result: { success: true } };
+        },
+      );
+      const result = await runTool({ key: "build" });
+      expect(result.content[0]?.text).toBe("task output");
+    });
+
+    it.each([
+      { label: "no matching session", setup: () => setSessionList({ id: "L", result: [] }) },
+      { label: "no daemon", setup: daemonDown },
+    ])("tasks_list reads the local config with $label", async ({ setup }) => {
+      setup();
+      mockLoadLocalTasks.mockResolvedValue({
+        e2e: { name: "E2E", commands: "pnpm e2e", services: ["api"], autoStart: true },
+      });
+      const result = (await registeredTools.get("tasks_list")!.cb({})) as {
+        content: { text: string }[];
+      };
+      expect(mockLoadLocalTasks).toHaveBeenCalledWith(process.cwd());
+      expect(JSON.parse(result.content[0]?.text ?? "")).toEqual([
+        {
+          key: "e2e",
+          name: "E2E",
+          description: null,
+          services: ["api"],
+          requiredServices: ["api"],
+          autoStart: true,
+          dependsOn: [],
+        },
+      ]);
+    });
+
+    it("other tools still require a session when no daemon runs", async () => {
+      daemonDown();
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        "Daemon not running",
+      );
+      setSessionList({ id: "L", result: [] });
+      mockIpcRequest.mockImplementation(async (_sock: unknown, method: unknown) =>
+        method === "session.list" ? listResponse : methodResponder(),
+      );
+      await expect(registeredTools.get("services_list")!.cb({})).rejects.toThrow(
+        `No running zaps session for ${process.cwd()}. Run 'zaps up' first.`,
+      );
+      expect(mockEnsureImplicit).not.toHaveBeenCalled();
     });
   });
 

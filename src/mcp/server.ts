@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { requestDaemon, resolveCommandArgv } from "#src/cli/helpers.js";
 import { createAutoStartRequest } from "#src/cli/sentra.js";
+import type { TaskConfig } from "#src/config/types.js";
 import { parseSessionList } from "#src/lib/backend/wire.js";
 import { ipcRequest, ipcStream, ipcSubscribe } from "#src/lib/ipc/client.js";
 import { logLinesDataSchema } from "#src/lib/ipc/protocol.js";
@@ -25,13 +26,26 @@ import {
   resolveSentraSessionId,
 } from "#src/lib/sentra/session-id.js";
 import type { ServiceStatus } from "#src/lib/service/types.js";
+import { ensureImplicitSession, loadLocalProject } from "#src/lib/session/implicit.js";
 import { CliError, findSessionByDir, resolveTargetSession } from "#src/lib/session/resolve.js";
+import { buildTaskListEntries } from "#src/lib/task/list-entry.js";
 
 const taskResultSchema = z.object({ success: z.boolean() });
 
-function classifyDaemonError(error: unknown): Error {
+const SERVICE_ERROR_CODES = new Set([
+  "services_not_running",
+  "service_start_failed",
+  "service_unavailable",
+]);
+const SERVICE_ERROR_HINT = "Start them with services_start or call tasks_run with start: true.";
+
+function isDaemonDown(error: unknown): boolean {
   const code = error instanceof Error && "code" in error ? error.code : undefined;
-  if (code === "ENOENT" || code === "ECONNREFUSED") {
+  return code === "ENOENT" || code === "ECONNREFUSED";
+}
+
+function classifyDaemonError(error: unknown): Error {
+  if (isDaemonDown(error)) {
     return new Error("Daemon not running. Start with `zaps up` or `zaps daemon start`.", {
       cause: error,
     });
@@ -66,9 +80,37 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function streamTask(
+  target: { sessionId: string; socketPath: string },
+  params: { key: string; start?: boolean },
+  lines: string[],
+) {
+  // Inactivity-based timeout (E3, P05-T04): the 120s window resets on every
+  // Event, so a long task that keeps emitting completes.
+  return ipcStream(
+    target.socketPath,
+    "tasks.run",
+    params,
+    (event, data) => {
+      if (event === "line" && typeof data === "string") {
+        lines.push(data);
+      }
+    },
+    120_000,
+    target.sessionId,
+  );
+}
+
 interface McpServerOptions {
-  /** Starts the daemon for the sentra tools; resolves with its socket. */
+  /** Starts the daemon for the sentra tools and implicit sessions; resolves with its socket. */
   ensureDaemon?: () => Promise<string>;
+  ensureImplicitSession?: typeof ensureImplicitSession;
+  loadLocalTasks?: (cwd: string) => Promise<Record<string, TaskConfig>>;
+}
+
+async function defaultLoadLocalTasks(cwd: string): Promise<Record<string, TaskConfig>> {
+  const { config } = await loadLocalProject(cwd);
+  return config.project.tasks ?? {};
 }
 
 async function defaultEnsureDaemon(): Promise<string> {
@@ -93,11 +135,15 @@ async function startMcpServer(
    * matched verbatim (bad/ambiguous arg surfaces the CLI error); otherwise the
    * cwd is matched against `session.list` exactly as the CLI does.
    */
-  async function resolveSession(): Promise<string> {
+  /** `null` when no session matches the cwd; a stopped daemon counts as none for `tasks_*`. */
+  async function findSession(daemonDownIsNone = false): Promise<string | null> {
     let listRes: Awaited<ReturnType<typeof ipcRequest>> | undefined = undefined;
     try {
       listRes = await ipcRequest(socketPath, "session.list", undefined, 30_000);
     } catch (error) {
+      if (daemonDownIsNone && !sessionArg && isDaemonDown(error)) {
+        return null;
+      }
       throw classifyDaemonError(error);
     }
     if (listRes.error) {
@@ -111,12 +157,31 @@ async function startMcpServer(
         throw error instanceof CliError ? new Error(error.message) : error;
       }
     }
-    const dir = process.cwd();
-    const match = findSessionByDir(sessions, dir);
-    if (!match) {
-      throw new Error(`No running zaps session for ${dir}. Run 'zaps up' first.`);
+    return findSessionByDir(sessions, process.cwd())?.id ?? null;
+  }
+
+  async function resolveSession(): Promise<string> {
+    const id = await findSession();
+    if (id === null) {
+      throw new Error(`No running zaps session for ${process.cwd()}. Run 'zaps up' first.`);
     }
-    return match.id;
+    return id;
+  }
+
+  const ensureDaemon = options.ensureDaemon ?? defaultEnsureDaemon;
+  const createImplicitSession = options.ensureImplicitSession ?? ensureImplicitSession;
+  const loadLocalTasks = options.loadLocalTasks ?? defaultLoadLocalTasks;
+
+  async function implicitSession(key: string) {
+    return createImplicitSession({ cwd: process.cwd(), ensureDaemon, task: key });
+  }
+
+  /** `tasks_run` only: the project's session, or an implicit one (`-s` never falls back). */
+  async function resolveTaskSession(
+    key: string,
+  ): Promise<{ sessionId: string; socketPath: string }> {
+    const id = await findSession(true);
+    return id === null ? implicitSession(key) : { sessionId: id, socketPath };
   }
 
   async function request(method: string, params?: unknown): Promise<unknown> {
@@ -137,7 +202,7 @@ async function startMcpServer(
   const sentraRequest = createAutoStartRequest({
     request: async (sock, method, params) => requestDaemon(sock, method, params, 30_000),
     socket: () => socketPath,
-    ensureDaemon: options.ensureDaemon ?? defaultEnsureDaemon,
+    ensureDaemon,
   });
 
   /** Running session, `-s` verbatim, or the cwd config id (stopped session). */
@@ -330,41 +395,50 @@ async function startMcpServer(
   server.registerTool(
     "tasks_list",
     {
-      description: "List available tasks",
+      description: "List available tasks with their required services",
       annotations: { readOnlyHint: true },
     },
-    async () => ({
-      content: [
-        { type: "text" as const, text: JSON.stringify(await request("tasks.list"), null, 2) },
-      ],
-    }),
+    async () => {
+      const id = await findSession(true);
+      const entries =
+        id === null
+          ? buildTaskListEntries(await loadLocalTasks(process.cwd()))
+          : await request("tasks.list");
+      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+    },
   );
 
   server.registerTool(
     "tasks_run",
     {
-      description: "Run a task and return its output",
-      inputSchema: { key: z.string().describe("Task key") },
+      description:
+        "Run a task and return its output. Creates a background session when none runs for the project.",
+      inputSchema: {
+        key: z.string().describe("Task key"),
+        start: z
+          .boolean()
+          .optional()
+          .describe(
+            "Start required services that are not running. Omit to follow the task's autoStart config.",
+          ),
+      },
     },
     async (args) => {
-      const sessionId = await resolveSession();
-      const lines: string[] = [];
-      // Inactivity-based timeout (E3, P05-T04): the 120s window resets on every
-      // Line/progress event, so a long task that keeps emitting completes.
-      const res = await ipcStream(
-        socketPath,
-        "tasks.run",
-        { key: args.key },
-        (event, data) => {
-          if (event === "line" && typeof data === "string") {
-            lines.push(data);
-          }
-        },
-        120_000,
-        sessionId,
-      );
+      const params =
+        args.start === undefined ? { key: args.key } : { key: args.key, start: args.start };
+      let lines: string[] = [];
+      let res = await streamTask(await resolveTaskSession(args.key), params, lines);
+      // Sent only before the task starts (session auto-destroyed), so one retry cannot run it twice.
+      if (!sessionArg && res.error === "Unknown session") {
+        lines = [];
+        res = await streamTask(await implicitSession(args.key), params, lines);
+      }
       if (res.error) {
-        return { content: [{ type: "text" as const, text: `Error: ${res.error}` }], isError: true };
+        const hint =
+          res.errorCode !== undefined && SERVICE_ERROR_CODES.has(res.errorCode)
+            ? `\n${SERVICE_ERROR_HINT}`
+            : "";
+        return textResult(`Error: ${res.error}${hint}`, true);
       }
       const success = taskResultSchema.safeParse(res.result).data?.success ?? false;
       const output = lines.join("\n");
