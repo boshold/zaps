@@ -495,6 +495,33 @@ describe("session creation with real shell orchestration", () => {
       await session.manager.stopAll();
     });
 
+    it("skips stopping services and logs failed restarts", async () => {
+      const log = vi.fn();
+      server.stop();
+      server = new DaemonServer({ log });
+      config.project = {
+        name: "creation",
+        services: {
+          db: { start: keepAlive(), sentra: false },
+          web: { start: keepAlive(), sentra: false },
+        },
+      };
+      const session = await server.create({ ...request(), startServices: false });
+      await session.manager.startService("db");
+      const real = session.manager.getAllStatuses();
+      vi.spyOn(session.manager, "getAllStatuses").mockReturnValue([
+        ...real.filter((status) => status.name !== "web"),
+        { name: "web", state: "stopping", ports: [], retryCount: 0 },
+      ]);
+      vi.spyOn(ServiceManager.prototype, "startService").mockRejectedValueOnce(
+        new Error("port busy"),
+      );
+      await session.reload();
+      await session.startPromise;
+      expect(log).toHaveBeenCalledWith("reload: cannot restart service db: Error: port busy");
+      expect(session.manager.getStatus("web")?.state).toBe("stopped");
+    });
+
     it("reloads regular sessions with a full start", async () => {
       config.project = {
         name: "creation",

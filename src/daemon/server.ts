@@ -667,6 +667,7 @@ class DaemonServer implements SessionStore {
         deps,
         shellEnv: params.shellEnv,
         env: loaded.env,
+        ...(this.log ? { log: this.log } : {}),
         onAutoDestroy: async () => {
           if (!ref.session || this.sessions.get(id) !== ref.session) {
             return;

@@ -25,7 +25,7 @@ import {
 import { resolveExecutionUnits } from "#src/lib/service/execution-units.js";
 import { topoSort } from "#src/lib/service/graph.js";
 import type { ServiceManager, ServiceManagerDeps } from "#src/lib/service/manager.js";
-import type { ExecInfo, ServiceStatus } from "#src/lib/service/types.js";
+import type { ExecInfo, ServiceState, ServiceStatus } from "#src/lib/service/types.js";
 import {
   ensureTaskServices,
   isStartPermitted,
@@ -92,11 +92,13 @@ function compatibilityProjection(view: PresentationSnapshot): CompatibilityProje
   };
 }
 
+const INACTIVE_STATES: ReadonlySet<ServiceState> = new Set(["stopped", "stopping", "unavailable"]);
+
 function activeServiceNames(manager: ServiceManager): Set<string> {
   return new Set(
     manager
       .getAllStatuses()
-      .filter((status) => status.state !== "stopped" && status.state !== "unavailable")
+      .filter((status) => !INACTIVE_STATES.has(status.state))
       .map((status) => status.name),
   );
 }
@@ -105,6 +107,7 @@ async function restartServices(
   manager: ServiceManager,
   config: ResolvedConfig,
   names: ReadonlySet<string>,
+  log: (message: string) => void,
 ): Promise<void> {
   const { services } = config.project;
   const graph: Record<string, { dependsOn: string[] }> = {};
@@ -121,6 +124,7 @@ async function restartServices(
       if (error instanceof SessionClosingError) {
         return;
       }
+      log(`reload: cannot restart service ${name}: ${String(error)}`);
     }
   }
 }
@@ -168,6 +172,8 @@ export interface SessionCreateParams {
   env?: Record<string, string>;
   startupPending?: boolean;
   ephemeral?: boolean;
+  /** Daemon log; defaults to stderr. */
+  log?: (message: string) => void;
   /** Invoked when an ephemeral session becomes unused; must destroy it via the store. */
   onAutoDestroy?: () => Promise<void>;
 }
@@ -205,6 +211,7 @@ export class Session {
   private pendingTaskCount = 0;
   private autoDestroyScheduled = false;
   private readonly onAutoDestroy?: () => Promise<void>;
+  private readonly log: (message: string) => void;
   public readonly taskExecution: TaskExecutionService;
 
   public get ephemeral(): boolean {
@@ -278,6 +285,11 @@ export class Session {
     this.startupPendingFlag = params.startupPending === true;
     this.ephemeralFlag = params.ephemeral === true;
     this.onAutoDestroy = params.onAutoDestroy;
+    this.log =
+      params.log ??
+      ((message) => {
+        process.stderr.write(`${message}\n`);
+      });
 
     this.memberUnits = resolveExecutionUnits(this.config);
     this.logBuffers = allocateLogBuffers(this.memberUnits);
@@ -594,7 +606,7 @@ export class Session {
     this.startPromise = runWithEnvironment({ ...loaded.env }, async () => {
       try {
         await (restartOnly
-          ? restartServices(newManager, newConfig, restartOnly)
+          ? restartServices(newManager, newConfig, restartOnly, this.log)
           : newManager.startAll());
       } catch {
         /* Errors surfaced via stateChange */

@@ -235,7 +235,7 @@ const TASK_ONLY_HINT =
   "Session runs on the shell backend (created by 'zaps run'). For tmux panes: zaps down && zaps up\n";
 
 function isTaskOnly(session: ListedSession): boolean {
-  return "startupPending" in session && session.startupPending === true;
+  return session.backend === "shell" && session.startupPending === true;
 }
 
 /** Run the deferred initial startup of a session kept after `zaps run`. */
