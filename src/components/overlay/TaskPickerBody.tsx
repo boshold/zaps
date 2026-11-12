@@ -16,9 +16,9 @@ import { CommandRow } from "./CommandRow.js";
 
 const PICKER_ROWS = 10;
 
-function servicesDetail(task: TaskInfo): string | undefined {
+function servicesDetail(task: TaskInfo): string {
   const services = task.requiredServices ?? [];
-  return services.length > 0 ? `needs ${services.join(", ")}` : undefined;
+  return services.length > 0 ? `needs ${services.join(", ")}` : "";
 }
 
 /** Render one ranked task as a highlighted row (module-scope: captures nothing). */

@@ -9,7 +9,10 @@ interface CommandRowProps {
   indexes: number[];
   /** Optional dimmed trailing hint (url, shortcut). */
   hint?: string;
-  /** Optional dimmed text after the title; only gets leftover width, so it collapses first. */
+  /**
+   * Optional dimmed text after the title; only gets leftover width, so it collapses
+   * first. Any string (even empty) pushes the hint to the right edge.
+   */
   detail?: string;
   selected: boolean;
 }
@@ -44,11 +47,11 @@ export function CommandRow({ title, indexes, hint, detail, selected }: CommandRo
           {renderTitle(title, indexes)}
         </Text>
       </Box>
-      {detail ? (
+      {detail === undefined ? null : (
         <Box flexGrow={1} flexShrink={1} flexBasis={0}>
-          <Text dimColor wrap="truncate-end">{`  ${detail}`}</Text>
+          {detail ? <Text dimColor wrap="truncate-end">{`  ${detail}`}</Text> : null}
         </Box>
-      ) : null}
+      )}
       {hint ? (
         <Box flexShrink={1}>
           <Text dimColor wrap="truncate-end">{`  ${hint}`}</Text>

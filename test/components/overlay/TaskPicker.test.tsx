@@ -186,6 +186,27 @@ describe("TaskPickerBody", () => {
       expect(rowFor(frame, "Legacy task")).not.toContain("needs");
     });
 
+    it("aligns the shortcut column for rows with and without services", () => {
+      const frame =
+        renderBody({
+          tasks: [
+            {
+              key: "verify",
+              name: "Verify",
+              description: null,
+              shortcut: "v",
+              requiredServices: ["db"],
+            },
+            { key: "lint", name: "Lint", description: null, shortcut: "l" },
+          ],
+        }).lastFrame() ?? "";
+      const verify = rowFor(frame, "Verify").trimEnd();
+      const lint = rowFor(frame, "Lint").trimEnd();
+      expect(verify.endsWith("v")).toBe(true);
+      expect(lint.endsWith("l")).toBe(true);
+      expect(verify.length).toBe(lint.length);
+    });
+
     it("matches the query against the task name only", async () => {
       const { stdin, lastFrame } = renderBody({ tasks });
       await type(stdin, "mailhog");
