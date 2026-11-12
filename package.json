@@ -1,6 +1,6 @@
 {
   "name": "@bosdev/zaps",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Zero Ass Pain Setup: orchestrate dev services with tmux or a background shell backend, readiness, logs, tasks, and a keyboard-driven TUI.",
   "keywords": [
     "cli",
