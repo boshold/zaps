@@ -56,6 +56,8 @@ Give database tasks the same dynamic database environment as the app when they n
 | `popup`       | `boolean \| { width?: string; height?: string }` | —       | Configured hook popup preference; public runs stay background |
 | `shortcut`    | `string`                                         | —       | Display hint in the task picker                               |
 | `dependsOn`   | `string[]`                                       | —       | Task keys that must complete first                            |
+| `services`    | `string[]`                                       | `[]`    | Service keys or group names that must be ready first          |
+| `autoStart`   | `boolean`                                        | `false` | Start missing `services` instead of failing; needs `services` |
 | `cwd`         | `string`                                         | —       | Working directory for the task                                |
 | `env`         | `EnvConfig`                                      | —       | Environment variables                                         |
 | `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Inject a Sentry DSN ([Sentra](11-sentra.md))                  |
@@ -214,6 +216,46 @@ tasks: {
 }
 ```
 
+## Required Services
+
+`services` lists the services a task needs. Without it the task is independent: it runs right away, with or without a session, and starts nothing.
+
+Mail verification that needs mailhog and the API:
+
+```ts
+services: {
+  mailhog: {
+    start: "mailhog",
+    ready: { port: 8025 },
+    flags: { start: false },
+  },
+  db: { start: "pnpm db", ready: { port: 5432 } },
+  api: { start: "pnpm dev:api", ready: { port: 4000 }, dependsOn: ["db"] },
+},
+tasks: {
+  verifyMail: {
+    name: "Verify mail",
+    commands: "pnpm verify:mail",
+    services: ["mailhog", "api"],
+    autoStart: true,
+  },
+  seed: {
+    name: "Seed database",
+    commands: "pnpm prisma db seed",
+    services: ["db"],
+  },
+},
+```
+
+- Default (no `autoStart`): if a required service is not running, the task fails before any command runs, with `services_not_running` and the missing services and their states.
+- `autoStart: true`: ZAPS starts the missing services plus their `dependsOn` services (here `db` for `api`), waits until they are ready, then runs the task. They keep running afterwards.
+- `zaps run <task> --start` and `--no-start` override `autoStart` for one run. The TUI asks before starting when `autoStart` is not set.
+- Services in `starting`/`restarting` are waited for, even without `autoStart`.
+- A group name means all services of the group.
+- In a `dependsOn` chain, the required services of all tasks are checked before the first task runs. A service may be auto-started when at least one task in the chain that lists it has `autoStart: true`.
+- A required `optional` service that is unavailable on the machine fails the task with `service_unavailable`.
+- Use `services` for tasks that talk to a running service (seed, e2e, mail checks). Leave it off for lint, typecheck, unit tests.
+
 ## Env and Cwd
 
 ```ts
@@ -258,3 +300,5 @@ export function config({ define, task }: Library) {
 - **`shortcut` is a single key** — not a key combination
 - **`q`, `j`, `k` are reserved** — never auto-assigned, and dropped (with a load-time warning) if requested explicitly
 - **`dependsOn` references task keys** (the object key), not task `name` values
+- **`services` references service keys or group names**; unknown names fail at config load
+- **`autoStart` without `services` is a config error**

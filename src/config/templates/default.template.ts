@@ -8,6 +8,12 @@ export function config({ define }: Library) {
         ready: { port: 3000 },
       },
     },
+    // tasks: {
+    //   // Independent task: runs right away, starts nothing.
+    //   lint: { name: "Lint", commands: "pnpm lint" },
+    //   // Needs "app" to be ready. autoStart starts it when it is not running.
+    //   e2e: { name: "E2E tests", commands: "pnpm test:e2e", services: ["app"], autoStart: true },
+    // },
   });
 }
 `;

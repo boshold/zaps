@@ -212,17 +212,17 @@ session or printing terminal escapes; background startup does not require a TTY.
 | Command                  | Description                                                                                                 |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | `zaps ps`                | List services with state, ports, URL; `ERRORS` (Sentra errors since start) when Sentra is enabled. `--json` |
-| `zaps ls`                | List active sessions. `--json`                                                                              |
+| `zaps ls`                | List active sessions. Sessions created by `zaps run` show `task-only`. `--json`                             |
 | `zaps inspect <service>` | Show service details. `--json`                                                                              |
 
 ### Tasks & Logs
 
-| Command                  | Description                                                      |
-| ------------------------ | ---------------------------------------------------------------- |
-| `zaps run <task>`        | Run a task. Streams output. `--json`                             |
-| `zaps tasks`             | List configured tasks. `--json`                                  |
-| `zaps logs [service...]` | Dump log buffer. `-f` to stream live. `--tail <n>` (default 100) |
-| `zaps events`            | Stream daemon events as ndjson. `--filter <type>`                |
+| Command                  | Description                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------------- |
+| `zaps run <task>`        | Run a task, with or without a session. Streams output. `--start`, `--no-start`, `--json` |
+| `zaps tasks`             | List tasks with their required services. Works without a session. `--json`               |
+| `zaps logs [service...]` | Dump log buffer. `-f` to stream live. `--tail <n>` (default 100)                         |
+| `zaps events`            | Stream daemon events as ndjson. `--filter <type>`                                        |
 
 ### Sentry Errors
 
@@ -350,6 +350,8 @@ export function config({ define }: Library) {
         name: "Seed database",
         commands: ["npx prisma db seed", "npx prisma db fixtures"],
         dependsOn: ["migrate"],
+        services: ["db"],
+        autoStart: true,
         popup: true,
       },
     },
@@ -657,6 +659,7 @@ optional: async (ctx) => await ctx.hasBinary("grafana") && await ctx.hasBinary("
 - Shown greyed out in TUI dashboard
 - `dependsOn`/`restartWith` references silently dropped
 - Layout automatically adjusts (empty splits collapsed)
+- Tasks that list it in `services` fail with `service_unavailable`
 
 > **Note:** `optional: true` requires `start` or `run` as a string (not a function). Use the function form with `ctx.hasBinary()` for function commands or docker-only services.
 
@@ -998,7 +1001,7 @@ functions, the `url:` field, and task `run` callbacks (also as `ctx.services.url
 
 ## Tasks
 
-One-off commands runnable from the TUI:
+One-off commands you run from the TUI or with `zaps run`:
 
 ```typescript
 tasks: {
@@ -1037,6 +1040,8 @@ tasks: {
 | `cwd`         | `string`                                         | —       | Working directory                                                           |
 | `env`         | `Record<string, string>`                         | —       | Environment variables                                                       |
 | `dependsOn`   | `string[]`                                       | `[]`    | Tasks that must run first                                                   |
+| `services`    | `string[]`                                       | `[]`    | Services (or service groups) that must be ready before the task runs        |
+| `autoStart`   | `boolean`                                        | `false` | Start missing `services` instead of failing. Needs `services`               |
 | `shortcut`    | `string`                                         | —       | Hint key shown beside the task in the picker                                |
 | `popup`       | `boolean \| { width?: string; height?: string }` | —       | Configured hook popup preference (commands only)                            |
 | `sentra`      | `boolean \| { env: Record<string, string> }`     | —       | Send Sentry SDK errors to ZAPS (see [Sentry Errors](#sentry-errors-sentra)) |
@@ -1047,6 +1052,88 @@ its `popup` setting. Accepted runs retain their captured config/environment and
 output through UI disconnect or service-manager reload. Session destruction stops
 owned child processes; arbitrary JavaScript callbacks must cooperate with
 cancellation.
+
+### Required services
+
+A task with `services` runs only when those services are ready. A task without
+`services` is independent: it runs right away and starts nothing.
+
+```typescript
+tasks: {
+  lint: { name: "Lint", commands: "pnpm lint" },
+  seed: { name: "Seed", commands: "pnpm seed", services: ["db"] },
+  verifyMail: {
+    name: "Verify mail",
+    commands: "pnpm verify:mail",
+    services: ["mailhog", "api"],
+    autoStart: true,
+  },
+}
+```
+
+By default nothing is started for you. When a required service is not running,
+the task fails before any command runs:
+
+```
+Error: Task "seed" needs services that are not running: db (stopped)
+Start them with "zaps start db" or rerun with --start.
+```
+
+With `autoStart: true` (or `zaps run <task> --start`) ZAPS starts the missing
+services first, together with the services they depend on, and waits until they
+are ready. Started services keep running after the task. `--no-start` overrides
+`autoStart: true` and never starts anything.
+
+Per service state at task start:
+
+| State                    | Without start permission      | With start permission           |
+| ------------------------ | ----------------------------- | ------------------------------- |
+| `ready`                  | run                           | run                             |
+| `starting`, `restarting` | wait for `ready`              | wait for `ready`                |
+| `stopped`, `error`       | fail (`services_not_running`) | start, wait for `ready`         |
+| `stopping`               | fail (`services_not_running`) | wait until stopped, start, wait |
+| `unavailable`            | fail (`service_unavailable`)  | fail (`service_unavailable`)    |
+
+- `services` takes service keys and service group names. A group means all of its services.
+- Unknown names are rejected when the config loads (`Task '<key>' requires unknown service '<name>'`), and `autoStart` without `services` is an error.
+- Requirements of a `dependsOn` chain are checked together before the first task of the chain runs. If one is missing, no task of the chain runs. A service may be started through config when at least one task in the chain that lists it has `autoStart: true`.
+- A required [optional service](#optional-services) that is unavailable on this machine fails the task with `service_unavailable`, even with `--start`.
+- When a start fails or a service does not get ready in time, the task does not run and the error names the service (`service_start_failed`). Services already started keep running.
+- Ctrl-C while waiting stops the wait. The task does not run.
+- `zaps run --json` adds `startedServices` to the result.
+
+### Running tasks without a session
+
+`zaps run` and `zaps tasks` work without `zaps up`:
+
+```bash
+zaps tasks          # reads the config directly, no daemon needed
+zaps run lint       # creates a background session just for this run
+```
+
+Without a session for the current project (and without `-s`), `zaps run` creates
+a background shell session that starts no services. What happens to it afterwards
+depends on the task:
+
+- No service was started for the task: the session is removed when the task ends.
+- Services were started for the task: the session is kept with those services running, also when the task failed. `zaps ls` shows it as `task-only`.
+
+When a run fails because services are missing, the hint is `Rerun with --start, or run "zaps up" first.`,
+because `zaps start` cannot reach a session that is already gone.
+
+A kept `task-only` session has not done its normal startup yet:
+
+- `zaps up` or `zaps -b` runs the normal startup now, then opens the UI (`zaps up`) or prints the startup report (`zaps -b`). Services that are already ready stay as they are. The session stays on the shell backend; for tmux panes run `zaps down && zaps up`.
+- `zaps reload` restarts only the services that are not stopped, not every autostart service.
+
+Background sessions use the shell backend, also inside tmux. That has two limits:
+
+- A config with a `raw: true` service cannot run tasks without a session. Run `zaps up` first. The error says so: `Service "ngrok" uses raw input, which needs tmux. Run "zaps up" first, then "zaps run lint".`
+- `popup` tasks run in the background instead.
+
+When `zaps run` uses an existing session whose config file changed since it was
+loaded, it prints `Warning: config changed since the session loaded it. Run "zaps reload".`
+to stderr and runs the task with the loaded config.
 
 ### Programmatic Tasks
 
@@ -1205,8 +1292,15 @@ Fuzzy picker over the project's tasks. Pane mode requires a live terminal capabi
 | `Tab`     | Run in a pane when supported; disabled in shell                       |
 | `Esc`     | Close                                                                 |
 
+- Rows show the task's required services dimmed (`needs mailhog, api`).
 - **Background** runs stream into the daemon's retained output buffer; success
   shows a transient toast, failure a sticky one.
+- When the task needs services that are not running and has no `autoStart`, a
+  prompt lists them with their state (dependencies marked `(dependency)`). `y` or
+  `Enter` starts them and runs the task; `n` or `Esc` cancels. With `autoStart`
+  the services start without asking. While the task waits, a toast shows
+  `Task <name>: waiting for <services>`. An unavailable service or a rejected run
+  shows an error toast instead.
 - **Run-in-pane** opens a pane/window for the selected task's shell commands only;
   it does not traverse dependencies or run a programmatic `run` callback. The pane
   stays open on completion so its output remains inspectable.
@@ -1482,7 +1576,7 @@ ZAPS offers two integration paths for AI coding agents: **Claude Code Skills** (
 
 ### Agent Priming
 
-Use `zaps prime-agent` to get one short agent instruction followed by a fenced TOON overview of the active project (name, session ID, folder, config), every service (state, ports, URL, Sentra error count), every task, the Sentra status (`disabled` when not enabled), and the commands agents may run. With Sentra enabled, the `zaps sentra errors|issues|show` commands and a hint to check errors after testing are added. The instruction tells agents to always run ZAPS commands outside the sandbox. Session and daemon lifecycle commands are intentionally omitted.
+Use `zaps prime-agent` to get one short agent instruction followed by a fenced TOON overview of the active project (name, session ID, folder, config), every service (state, ports, URL, Sentra error count), every task with the services it needs, the Sentra status (`disabled` when not enabled), and the commands agents may run. With Sentra enabled, the `zaps sentra errors|issues|show` commands and a hint to check errors after testing are added. The instruction tells agents to always run ZAPS commands outside the sandbox. Session and daemon lifecycle commands are intentionally omitted.
 
 If daemon socket access is denied in a sandbox, the command tells the agent to rerun outside the sandbox. A stopped daemon is reported separately as `Daemon not running.`
 
@@ -1529,7 +1623,7 @@ zaps mcp --session my-app  # target specific session
 | `services_stop_all`    | Stop all (or specific) services      |
 | `services_restart_all` | Restart all (or specific) services   |
 | `logs_snapshot`        | Get recent log lines for a service   |
-| `tasks_list`           | List available tasks                 |
+| `tasks_list`           | List tasks with required services    |
 | `tasks_run`            | Run a task and return its output     |
 | `sentra_errors`        | List Sentra error events (TOON)      |
 | `sentra_issues`        | List grouped Sentra issues (TOON)    |
@@ -1537,8 +1631,14 @@ zaps mcp --session my-app  # target specific session
 
 The `sentra_*` tools take the same filters as `zaps sentra errors|issues|show`. List
 tools end with `hasMore: true|false`. Like the CLI query commands, they start the
-daemon when it is not running, so errors of a stopped session stay readable. The other
-MCP tools need a running session.
+daemon when it is not running, so errors of a stopped session stay readable.
+
+`tasks_run` and `tasks_list` also work without a session. `tasks_run` creates a
+background session like `zaps run`, and `tasks_list` reads the config. `tasks_run`
+takes an optional `start` (like `--start` / `--no-start`; omitted means the task's
+`autoStart`). When required services are missing, it returns an error naming them
+and tells the agent to start them with `services_start` or call `tasks_run` with
+`start: true`. The other MCP tools need a running session.
 
 #### Resources
 

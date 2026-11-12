@@ -29,6 +29,12 @@ describe("generateTemplate", () => {
     expect(result).not.toContain("{{ZAPS_PATH}}");
   });
 
+  it("contains a commented services/autoStart task example", async () => {
+    const result = await generateTemplate();
+    expect(result).toContain('//   lint: { name: "Lint", commands: "pnpm lint" },');
+    expect(result).toContain('services: ["app"], autoStart: true');
+  });
+
   it("does not contain unreplaced placeholders", async () => {
     const result = await generateTemplate();
     expect(result).not.toContain("{{ZAPS_PATH}}");
