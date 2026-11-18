@@ -64,7 +64,7 @@ jobs:
         with:
           # A dry run pushes no tag, so it builds the tested commit.
           ref: ${{ inputs.dry-run && github.sha || needs.release.outputs.tag }}
-      - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3.2.0
         with:
           install: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -100,7 +100,7 @@ jobs:
         with:
           # A dry run pushes no tag, so it builds the tested commit.
           ref: ${{ inputs.dry-run && github.sha || needs.release.outputs.tag }}
-      - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
+      - uses: pnpm/setup@731dfb6463bbd11c11fd0ee11fe00ed0e36d48a1 # v3.2.0
         with:
           install: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
